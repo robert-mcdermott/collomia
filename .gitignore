@@ -1,0 +1,7 @@
+.cache/
+dist/
+/collo
+/collo.exe
+.collomia/sessions/
+*.log
+.DS_Store
