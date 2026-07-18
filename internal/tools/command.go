@@ -49,7 +49,7 @@ func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*Run
 }
 
 func (t RunCommandTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800}},"required":["command"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. Set pty=true (Unix only) for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal (Unix only)"}},"required":["command"],"additionalProperties":false}`)}
 }
 func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -83,9 +83,13 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	var a struct {
 		Command string `json:"command"`
 		Timeout int    `json:"timeout_seconds"`
+		PTY     bool   `json:"pty"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
+	}
+	if a.PTY && !ptySupported {
+		return "", errors.New("pty execution is not supported on this platform; run the command without pty")
 	}
 	for _, re := range t.DeniedPatterns {
 		if re.MatchString(a.Command) {
@@ -119,19 +123,28 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
-	cmd.Dir = t.Workspace
-	if t.MinimalEnv {
-		cmd.Env = minimalEnv()
-	}
-	// The command runs in its own process group so cancellation and timeout
-	// terminate every descendant, not only the shell.
-	setProcessGroup(cmd)
 	buffer := &limitedBuffer{limit: t.MaxOutputBytes, onChunk: onOutput}
-	// One writer instance serves both streams so os/exec serializes writes.
-	cmd.Stdout = buffer
-	cmd.Stderr = buffer
-	err := cmd.Run()
+	var err error
+	if a.PTY {
+		var env []string
+		if t.MinimalEnv {
+			env = append(minimalEnv(), "TERM=xterm-256color")
+		}
+		err = runUnderPTY(runCtx, argv, t.Workspace, env, buffer)
+	} else {
+		cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+		cmd.Dir = t.Workspace
+		if t.MinimalEnv {
+			cmd.Env = minimalEnv()
+		}
+		// The command runs in its own process group so cancellation and
+		// timeout terminate every descendant, not only the shell.
+		setProcessGroup(cmd)
+		// One writer instance serves both streams so os/exec serializes writes.
+		cmd.Stdout = buffer
+		cmd.Stderr = buffer
+		err = cmd.Run()
+	}
 	out := buffer.String()
 	if sandboxed && err != nil {
 		out += "\n(command ran inside the OS sandbox; denied file or network access can cause failures — see docs/SECURITY.md)"

@@ -177,3 +177,48 @@ func (failingBackend) Available() error { return fmt.Errorf("not available") }
 func (failingBackend) Wrap([]string, sandbox.Policy) ([]string, error) {
 	return nil, fmt.Errorf("not available")
 }
+
+func TestRunCommandPTY(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty unsupported on windows")
+	}
+	tool, err := NewRunCommandTool(t.TempDir(), nil, 8*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Under a pty, stdin/stdout are terminals; `test -t 0` succeeds only
+	// when attached to one.
+	out, err := tool.Execute(t.Context(), []byte(`{"command":"if [ -t 0 ]; then echo IS-A-TTY; else echo NOT-A-TTY; fi","pty":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "IS-A-TTY") {
+		t.Fatalf("pty run should look like a terminal:\n%s", out)
+	}
+	// The same probe without pty must not see a terminal.
+	out, err = tool.Execute(t.Context(), []byte(`{"command":"if [ -t 0 ]; then echo IS-A-TTY; else echo NOT-A-TTY; fi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "NOT-A-TTY") {
+		t.Fatalf("plain run must not look like a terminal:\n%s", out)
+	}
+}
+
+func TestRunCommandPTYTimeoutKillsGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty unsupported on windows")
+	}
+	tool, err := NewRunCommandTool(t.TempDir(), nil, 8*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = tool.Execute(t.Context(), []byte(`{"command":"sleep 30","timeout_seconds":1,"pty":true}`))
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("timeout took too long: %s", elapsed)
+	}
+}

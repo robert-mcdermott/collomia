@@ -98,8 +98,12 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if opts.command == "review" {
-		ref := strings.Join(opts.args, " ")
-		opts.args = []string{app.ReviewPrompt(strings.TrimSpace(ref))}
+		ref, instructions := "", ""
+		if len(opts.args) > 0 {
+			ref = opts.args[0]
+			instructions = strings.Join(opts.args[1:], " ")
+		}
+		opts.args = []string{app.ReviewPrompt(ref, instructions)}
 		return runNonInteractive(ctx, opts)
 	}
 	if opts.command == "verify" {
@@ -269,7 +273,7 @@ Usage:
   collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
   collo capabilities [--markdown]     print the product capability matrix
   collo policy check <command…>       evaluate a command against permission rules without running it
-  collo review [ref]                  review pending changes (or changes vs a ref) headlessly
+  collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
   collo verify [focus]                detect and run this project's build/lint/test commands headlessly
   collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
   collo version                       print build information

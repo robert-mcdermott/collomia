@@ -34,6 +34,10 @@ type Config struct {
 	// by name, each with its own model, role instructions, tool allowlist,
 	// and iteration budget.
 	Agents map[string]AgentDefinition `json:"agents,omitempty"`
+	// LSP maps a language id (e.g. "go", "python", "typescript") to the
+	// command that starts its language server (e.g. ["gopls"]). Common
+	// servers found on PATH are auto-detected when unset.
+	LSP map[string][]string `json:"lsp,omitempty"`
 
 	// Source names the highest-precedence file layer for display.
 	Source string `json:"-"`

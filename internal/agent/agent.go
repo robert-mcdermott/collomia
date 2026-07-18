@@ -275,7 +275,7 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "load_skill", "delegate",
+	case "read_file", "list_files", "search_files", "search_symbols", "diagnostics", "load_skill", "delegate",
 		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
 		return true
 	}

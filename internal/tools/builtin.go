@@ -5,6 +5,7 @@ import (
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
+	"github.com/robert-mcdermott/collomia/internal/index"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 )
 
@@ -36,6 +37,8 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		DetectVerificationTool{Workspace: guard.Workspace},
 		StartProcessTool{Manager: procs, Runner: command}, ListProcessesTool{Manager: procs},
 		ProcessOutputTool{Manager: procs}, StopProcessTool{Manager: procs},
+		SearchSymbolsTool{Index: index.New(guard.Workspace)},
+		DiagnosticsTool{Guard: guard, Servers: cfg.LSP},
 	)
 	return registry, tracker, procs, nil
 }

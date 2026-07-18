@@ -214,13 +214,19 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
 // a read-only pass over pending changes with findings tied to files/lines.
-func ReviewPrompt(ref string) string {
+// A ref of "-" (or "") reviews uncommitted changes; instructions, when
+// non-empty, focus the review.
+func ReviewPrompt(ref, instructions string) string {
 	scope := "the uncommitted changes in this repository (use git_status, then git_diff; add staged=true for the index)"
-	if ref != "" {
+	if ref != "" && ref != "-" {
 		scope = fmt.Sprintf("the changes relative to %s (use git_diff with ref %q, and git_log to understand the history)", ref, ref)
 	}
+	focus := ""
+	if strings.TrimSpace(instructions) != "" {
+		focus = "\nReviewer instructions (follow these in addition to the standard checks): " + strings.TrimSpace(instructions) + "\n"
+	}
 	return fmt.Sprintf(`Review %s.
-
+%s
 Read enough surrounding code (read_file) to judge each change in context. Do not modify any files.
 
 Report:
@@ -228,7 +234,7 @@ Report:
 2. Anything the diff forgot: missing tests, stale docs, unhandled errors.
 3. A one-paragraph verdict: is this safe to merge as-is?
 
-If there are no changes to review, say so plainly.`, scope)
+If there are no changes to review, say so plainly.`, scope, focus)
 }
 
 // VerifyPrompt is the canned prompt behind `collo verify` and `/verify`: it

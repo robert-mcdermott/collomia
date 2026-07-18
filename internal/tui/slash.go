@@ -24,11 +24,12 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			m.addError(fmt.Errorf("wait for the current turn to finish first"))
 			break
 		}
-		ref := ""
+		ref, instructions := "", ""
 		if len(args) > 0 {
 			ref = args[0]
+			instructions = strings.Join(args[1:], " ")
 		}
-		return false, m.startTurn(app.ReviewPrompt(ref))
+		return false, m.startTurn(app.ReviewPrompt(ref, instructions))
 	case "/verify":
 		if m.busy {
 			m.addError(fmt.Errorf("wait for the current turn to finish first"))
