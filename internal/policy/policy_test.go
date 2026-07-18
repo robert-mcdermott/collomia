@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"path/filepath"
 	"testing"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
@@ -43,10 +44,18 @@ func TestDenyFiresOnAnyExecutable(t *testing.T) {
 
 func TestPathPrefixGlob(t *testing.T) {
 	rules := []appconfig.Rule{{Action: "deny", Path: "/repo/secrets/**"}}
-	if d := Evaluate(rules, Request{Tool: "read_file", Paths: []string{"/repo/secrets/nested/key"}, Inspectable: true}); d.Action != "deny" {
+	if d := Evaluate(rules, Request{Tool: "read_file", Paths: []string{filepath.FromSlash("/repo/secrets/nested/key")}, Inspectable: true}); d.Action != "deny" {
 		t.Fatalf("decision=%+v", d)
 	}
-	if d := Evaluate(rules, Request{Tool: "read_file", Paths: []string{"/repo/src/main.go"}, Inspectable: true}); d.Matched() {
+	if d := Evaluate(rules, Request{Tool: "read_file", Paths: []string{filepath.FromSlash("/repo/src/main.go")}, Inspectable: true}); d.Matched() {
+		t.Fatalf("decision=%+v", d)
+	}
+}
+
+func TestPathGlobPortableSeparators(t *testing.T) {
+	rules := []appconfig.Rule{{Action: "deny", Path: "/repo/*/*.go"}}
+	d := Evaluate(rules, Request{Tool: "read_file", Paths: []string{filepath.FromSlash("/repo/src/main.go")}, Inspectable: true})
+	if d.Action != "deny" {
 		t.Fatalf("decision=%+v", d)
 	}
 }
