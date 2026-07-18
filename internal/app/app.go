@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/audit"
@@ -121,13 +122,22 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		return nil, err
 	}
 	registry.Add(skills.Tool(catalog))
-	var instructions string
+	// Instructions layer global (user-level) before project (trusted only);
+	// later sections take precedence when they conflict.
+	var sections []string
+	if global, gErr := skills.GlobalInstructions(); gErr == nil && global != "" {
+		sections = append(sections, global)
+	}
 	if cfg.ProjectTrusted {
-		instructions, err = skills.ProjectInstructions(workspace)
-		if err != nil {
-			return nil, err
+		projectInstructions, pErr := skills.ProjectInstructions(workspace)
+		if pErr != nil {
+			return nil, pErr
+		}
+		if projectInstructions != "" {
+			sections = append(sections, projectInstructions)
 		}
 	}
+	instructions := strings.Join(sections, "\n\n")
 	permissions := permission.New(cfg.Permissions, opts.Approver)
 	redactor := NewRedactor(cfg)
 	logger := logging.Discard()
@@ -177,17 +187,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	board := plan.NewBoard()
 	registry.Add(plan.Tool(board))
 	if sess != nil {
-		board.OnUpdate = func(p plan.Plan) {
-			if data, err := json.Marshal(p); err == nil {
-				sess.AppendPlan(data)
-			}
-		}
-		if len(sess.PlanRaw) > 0 {
-			var restored plan.Plan
-			if json.Unmarshal(sess.PlanRaw, &restored) == nil {
-				_ = board.Set(restored)
-			}
-		}
+		attachBoard(board, sess)
 	}
 	if opts.Asker != nil {
 		registry.Add(askUserTool(opts.Asker))
@@ -207,6 +207,105 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
 	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Warnings: warnings}, nil
+}
+
+// ReviewPrompt is the canned prompt behind `collo review` and `/review`:
+// a read-only pass over pending changes with findings tied to files/lines.
+func ReviewPrompt(ref string) string {
+	scope := "the uncommitted changes in this repository (use git_status, then git_diff; add staged=true for the index)"
+	if ref != "" {
+		scope = fmt.Sprintf("the changes relative to %s (use git_diff with ref %q, and git_log to understand the history)", ref, ref)
+	}
+	return fmt.Sprintf(`Review %s.
+
+Read enough surrounding code (read_file) to judge each change in context. Do not modify any files.
+
+Report:
+1. Findings ordered by severity (bugs, then correctness risks, then style), each with the exact file and line, the problem, and a concrete suggestion.
+2. Anything the diff forgot: missing tests, stale docs, unhandled errors.
+3. A one-paragraph verdict: is this safe to merge as-is?
+
+If there are no changes to review, say so plainly.`, scope)
+}
+
+// ListModels queries a provider's live model catalog when its API supports
+// discovery (OpenAI-compatible and Anthropic endpoints do).
+func (r *Runtime) ListModels(ctx context.Context, providerName string) ([]provider.ModelInfo, error) {
+	name, p, model, err := r.Config.Selected(providerName, "")
+	if err != nil {
+		return nil, err
+	}
+	client, err := provider.New(name, p, model)
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := client.(provider.ModelLister)
+	if !ok {
+		return nil, fmt.Errorf("provider %s does not support model discovery", name)
+	}
+	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return lister.ListModels(listCtx)
+}
+
+// attachBoard wires plan persistence to a session and restores its last
+// recorded plan.
+func attachBoard(board *plan.Board, sess *session.Session) {
+	board.OnUpdate = func(p plan.Plan) {
+		if data, err := json.Marshal(p); err == nil {
+			sess.AppendPlan(data)
+		}
+	}
+	if len(sess.PlanRaw) > 0 {
+		var restored plan.Plan
+		if json.Unmarshal(sess.PlanRaw, &restored) == nil {
+			board.Restore(restored)
+			return
+		}
+	}
+	board.Clear()
+}
+
+// SwitchSession loads another saved session into the running agent:
+// conversation, plan, and persistence hooks all move over. The previous
+// session file is closed; nothing about it is lost.
+func (r *Runtime) SwitchSession(id string) error {
+	if r.Sessions == nil {
+		return fmt.Errorf("session persistence is unavailable")
+	}
+	sess, err := r.Sessions.Load(id)
+	if err != nil {
+		return err
+	}
+	if r.Session != nil {
+		r.Session.Close()
+	}
+	r.Session = sess
+	r.Agent.SetMessages(sess.Active())
+	sess.FlushInterrupted()
+	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	attachBoard(r.Plan, sess)
+	return nil
+}
+
+// NewSession starts a fresh session, leaving the previous one saved.
+func (r *Runtime) NewSession() error {
+	if r.Sessions == nil {
+		return fmt.Errorf("session persistence is unavailable")
+	}
+	providerName, model := r.Agent.Selection()
+	sess, err := r.Sessions.New(providerName, model)
+	if err != nil {
+		return err
+	}
+	if r.Session != nil {
+		r.Session.Close()
+	}
+	r.Session = sess
+	r.Agent.Clear()
+	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	attachBoard(r.Plan, sess)
+	return nil
 }
 
 // askUserTool lets the model pause for a concise typed answer without

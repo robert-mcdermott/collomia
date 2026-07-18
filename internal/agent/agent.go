@@ -89,6 +89,15 @@ func (a *Agent) appendMessage(message provider.Message) {
 	}
 }
 
+// SetHooks rebinds the persistence callbacks, used when switching durable
+// sessions at runtime.
+func (a *Agent) SetHooks(onMessage func(provider.Message), onCompaction func(provider.Message, int)) {
+	a.mu.Lock()
+	a.onMessage = onMessage
+	a.onCompaction = onCompaction
+	a.mu.Unlock()
+}
+
 // SetMessages replaces the active conversation, used when resuming a
 // durable session. The persistence hook is not notified (the messages are
 // already stored).
@@ -199,7 +208,12 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
 	send(start)
-	result, err := a.registry.Execute(ctx, call.Name, call.Arguments)
+	onOutput := func(chunk string) {
+		e := event.New(event.KindToolOutput)
+		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
+		send(e)
+	}
+	result, err := a.registry.ExecuteStream(ctx, call.Name, call.Arguments, onOutput)
 	a.permissions.RecordOutcome(call.Name, action, err)
 	if len(result) > a.maxToolOutput {
 		result = result[:a.maxToolOutput] + "\n… tool output truncated …"
@@ -326,6 +340,42 @@ func (a *Agent) ContextEstimate() (estimated int, window int) {
 		}
 	}
 	return base + chars/4, a.providerConfig.Context
+}
+
+// ContextBreakdown explains what occupies the model-visible context, for
+// the /context inspector.
+type ContextBreakdown struct {
+	SystemPromptChars  int
+	InstructionsChars  int
+	SkillsSummaryChars int
+	MessagesByRole     map[string]int
+	ToolResultChars    int
+	Summaries          int
+	Estimated, Window  int
+}
+
+func (a *Agent) ContextBreakdown() ContextBreakdown {
+	estimated, window := a.ContextEstimate()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	b := ContextBreakdown{
+		SystemPromptChars:  len(a.systemPrompt(a.planMode)),
+		InstructionsChars:  len(a.projectInstructions),
+		SkillsSummaryChars: len(a.catalog.Summary()),
+		MessagesByRole:     map[string]int{},
+		Estimated:          estimated,
+		Window:             window,
+	}
+	for _, m := range a.messages {
+		b.MessagesByRole[m.Role]++
+		if m.Role == "tool" {
+			b.ToolResultChars += len(m.Content)
+		}
+		if m.Role == "user" && strings.HasPrefix(m.Content, "[Context summary") {
+			b.Summaries++
+		}
+	}
+	return b
 }
 
 // compactKeepRecent is how many trailing messages stay verbatim through a

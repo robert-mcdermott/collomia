@@ -7,6 +7,7 @@ package policy
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -138,13 +139,16 @@ func glob(pattern, value string) bool {
 	return err == nil && ok
 }
 
-// pathGlob matches resolved paths. A pattern ending in "/**" matches the
-// directory and everything beneath it; otherwise filepath.Match semantics
-// apply to the whole path.
+// pathGlob matches resolved paths after normalizing native separators to
+// slashes. A pattern ending in "/**" matches the directory and everything
+// beneath it; otherwise path.Match semantics apply to the whole path.
 func pathGlob(pattern, value string) bool {
+	pattern = filepath.ToSlash(pattern)
+	value = filepath.ToSlash(value)
 	if strings.HasSuffix(pattern, "/**") {
 		root := strings.TrimSuffix(pattern, "/**")
-		return value == root || strings.HasPrefix(value, root+string(filepath.Separator))
+		return value == root || strings.HasPrefix(value, root+"/")
 	}
-	return glob(pattern, value)
+	ok, err := path.Match(pattern, value)
+	return err == nil && ok
 }

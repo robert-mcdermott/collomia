@@ -58,3 +58,15 @@ type Client interface {
 	Chat(ctx context.Context, req Request, onDelta func(Delta)) (Response, error)
 	Name() string
 }
+
+// ModelInfo describes one model a provider reports as available.
+type ModelInfo struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// ModelLister is an optional Client capability: providers whose APIs expose
+// a model catalog implement it so the UI can offer live discovery.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelInfo, error)
+}

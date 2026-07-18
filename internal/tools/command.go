@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -69,6 +70,16 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	}, nil
 }
 func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	return t.run(ctx, raw, nil)
+}
+
+// ExecuteStream runs the command while forwarding output chunks as they
+// arrive, so the UI can show long builds and test runs live.
+func (t RunCommandTool) ExecuteStream(ctx context.Context, raw json.RawMessage, onOutput func(string)) (string, error) {
+	return t.run(ctx, raw, onOutput)
+}
+
+func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput func(string)) (string, error) {
 	var a struct {
 		Command string `json:"command"`
 		Timeout int    `json:"timeout_seconds"`
@@ -116,7 +127,8 @@ func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	// The command runs in its own process group so cancellation and timeout
 	// terminate every descendant, not only the shell.
 	setProcessGroup(cmd)
-	buffer := &limitedBuffer{limit: t.MaxOutputBytes}
+	buffer := &limitedBuffer{limit: t.MaxOutputBytes, onChunk: onOutput}
+	// One writer instance serves both streams so os/exec serializes writes.
 	cmd.Stdout = buffer
 	cmd.Stderr = buffer
 	err := cmd.Run()
@@ -160,6 +172,29 @@ type limitedBuffer struct {
 	bytes.Buffer
 	limit     int
 	truncated bool
+	// onChunk, when set, observes every accepted chunk for live streaming.
+	onChunk func(string)
+}
+
+// ReadFrom overrides the embedded bytes.Buffer promotion: io.Copy (which
+// os/exec uses to drain pipes) prefers ReadFrom, and the embedded version
+// would bypass Write — defeating both the output cap and live streaming.
+func (b *limitedBuffer) ReadFrom(r io.Reader) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			total += int64(n)
+			_, _ = b.Write(buf[:n])
+		}
+		if err == io.EOF {
+			return total, nil
+		}
+		if err != nil {
+			return total, err
+		}
+	}
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
@@ -170,6 +205,9 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 			p = p[:remaining]
 		}
 		_, _ = b.Buffer.Write(p)
+		if b.onChunk != nil {
+			b.onChunk(string(p))
+		}
 	}
 	if original > remaining {
 		b.truncated = true

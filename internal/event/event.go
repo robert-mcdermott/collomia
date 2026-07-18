@@ -26,6 +26,7 @@ const (
 	KindTextDelta          Kind = "text.delta"
 	KindReasoningDelta     Kind = "reasoning.delta"
 	KindToolStart          Kind = "tool.start"
+	KindToolOutput         Kind = "tool.output"
 	KindToolResult         Kind = "tool.result"
 	KindPermissionRequest  Kind = "permission.request"
 	KindPermissionDecision Kind = "permission.decision"

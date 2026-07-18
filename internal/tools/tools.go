@@ -44,6 +44,13 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// Streamer is an optional Tool capability: tools that produce output
+// incrementally (long commands) implement it so the UI can show progress
+// live. The returned string is still the complete, bounded result.
+type Streamer interface {
+	ExecuteStream(ctx context.Context, args json.RawMessage, onOutput func(string)) (string, error)
+}
+
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
@@ -104,6 +111,19 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 	tool, ok := r.Get(name)
 	if !ok {
 		return "", fmt.Errorf("unknown tool %q", name)
+	}
+	return tool.Execute(ctx, args)
+}
+
+// ExecuteStream runs a tool, streaming incremental output through onOutput
+// when the tool supports it; otherwise it behaves exactly like Execute.
+func (r *Registry) ExecuteStream(ctx context.Context, name string, args json.RawMessage, onOutput func(string)) (string, error) {
+	tool, ok := r.Get(name)
+	if !ok {
+		return "", fmt.Errorf("unknown tool %q", name)
+	}
+	if streamer, can := tool.(Streamer); can && onOutput != nil {
+		return streamer.ExecuteStream(ctx, args, onOutput)
 	}
 	return tool.Execute(ctx, args)
 }

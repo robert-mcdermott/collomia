@@ -5,15 +5,28 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/robert-mcdermott/collomia/internal/app"
 )
 
-func (m *Model) slash(line string) bool {
+func (m *Model) slash(line string) (bool, tea.Cmd) {
 	parts := strings.Fields(line)
 	command := strings.ToLower(parts[0])
 	args := parts[1:]
 	switch command {
 	case "/quit", "/exit":
-		return true
+		return true, nil
+	case "/review":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
+			break
+		}
+		ref := ""
+		if len(args) > 0 {
+			ref = args[0]
+		}
+		return false, m.startTurn(app.ReviewPrompt(ref))
 	case "/help":
 		var lines []string
 		for _, cmd := range slashCommands {
@@ -35,8 +48,7 @@ func (m *Model) slash(line string) bool {
 		m.addSystem("Configured providers:\n" + strings.Join(lines, "\n"))
 	case "/model":
 		if len(args) == 0 {
-			provider, model := m.runtime.Agent.Selection()
-			m.addSystem(fmt.Sprintf("Current model: %s/%s\nUse /model provider/model to switch.", provider, model))
+			m.openModelPicker()
 			break
 		}
 		selection := strings.Join(args, " ")
@@ -77,7 +89,15 @@ func (m *Model) slash(line string) bool {
 		if m.runtime.Session != nil {
 			sessionID = "\nSession: " + m.runtime.Session.Meta.ID
 		}
-		m.addSystem(fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID))
+		breakdown := m.runtime.Agent.ContextBreakdown()
+		inspector := fmt.Sprintf("\n\nWhat the model sees each request (≈4 chars/token):\n  system prompt      ~%s tokens\n  project instructions ~%s tokens\n  skills summary     ~%s tokens\n  tool results       ~%s tokens across %d messages",
+			formatTokens(breakdown.SystemPromptChars/4), formatTokens(breakdown.InstructionsChars/4), formatTokens(breakdown.SkillsSummaryChars/4), formatTokens(breakdown.ToolResultChars/4), breakdown.MessagesByRole["tool"])
+		inspector += fmt.Sprintf("\n  conversation       %d user / %d assistant messages", breakdown.MessagesByRole["user"], breakdown.MessagesByRole["assistant"])
+		if breakdown.Summaries > 0 {
+			inspector += fmt.Sprintf("\n  compaction         %d summary block(s) replacing older history", breakdown.Summaries)
+		}
+		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
+		m.addSystem(fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
 		if len(args) > 0 {
@@ -130,15 +150,7 @@ func (m *Model) slash(line string) bool {
 		m.addSystem("Available tools: " + strings.Join(m.runtime.Registry.Names(), ", "))
 	case "/theme":
 		if len(args) == 0 {
-			var lines []string
-			for _, t := range themes {
-				marker := "  "
-				if t.Name == m.theme.Name {
-					marker = "▸ "
-				}
-				lines = append(lines, marker+t.Name)
-			}
-			m.addSystem("Available themes (current marked):\n" + strings.Join(lines, "\n") + "\n\nUse /theme <name> to switch. Set options.theme in " + "the configuration to persist it.")
+			m.openThemePicker()
 			break
 		}
 		t, ok := themeByName(args[0])
@@ -164,40 +176,19 @@ func (m *Model) slash(line string) bool {
 		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
 	case "/tasks":
 		m.addSystem(m.runtime.Plan.Current().Render())
-	case "/sessions":
-		if m.runtime.Sessions == nil {
-			m.addSystem("Session persistence is unavailable.")
+	case "/sessions", "/resume":
+		m.openSessionPicker()
+	case "/new":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
 			break
 		}
-		metas, err := m.runtime.Sessions.List()
-		if err != nil {
+		if err := m.runtime.NewSession(); err != nil {
 			m.addError(err)
 			break
 		}
-		var lines []string
-		current := ""
-		if m.runtime.Session != nil {
-			current = m.runtime.Session.Meta.ID
-		}
-		for i, meta := range metas {
-			if i >= 15 {
-				lines = append(lines, fmt.Sprintf("… and %d more (collo sessions list)", len(metas)-i))
-				break
-			}
-			marker := "  "
-			if meta.ID == current {
-				marker = "▸ "
-			}
-			title := meta.Title
-			if title == "" {
-				title = "(untitled)"
-			}
-			lines = append(lines, fmt.Sprintf("%s%s  %s  %d turns  %s", marker, meta.ID, title, meta.Turns, meta.UpdatedAt.Local().Format("01-02 15:04")))
-		}
-		if len(lines) == 0 {
-			lines = append(lines, "No saved sessions yet.")
-		}
-		m.addSystem("Sessions (current marked; resume with `collo --resume <id>`):\n" + strings.Join(lines, "\n"))
+		m.blocks = nil
+		m.addSystem("Started a fresh session (" + m.runtime.Session.Meta.ID + "). The previous conversation is saved — /sessions to return to it.")
 	case "/compact":
 		count, err := m.runtime.Agent.Compact(context.Background(), strings.Join(args, " "))
 		if err != nil {
@@ -215,7 +206,7 @@ func (m *Model) slash(line string) bool {
 	default:
 		m.addError(fmt.Errorf("unknown command %s; use /help", command))
 	}
-	return false
+	return false, nil
 }
 
 func (m *Model) addSystem(value string) {

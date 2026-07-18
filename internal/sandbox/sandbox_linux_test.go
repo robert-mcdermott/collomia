@@ -46,7 +46,16 @@ func TestLandlockConfinesWrites(t *testing.T) {
 		t.Skipf("landlock unavailable: %v", err)
 	}
 	workspace := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "escape.txt")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideDir, err := os.MkdirTemp(home, ".collomia-landlock-outside-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outsideDir) })
+	outside := filepath.Join(outsideDir, "escape.txt")
 	cmd := exec.Command(os.Args[0], "-test.run=IGNORED")
 	cmd.Env = append(os.Environ(), "LANDLOCK_HELPER=1", "LANDLOCK_WS="+workspace, "LANDLOCK_OUT="+outside)
 	out, err := cmd.CombinedOutput()

@@ -23,6 +23,51 @@ type OpenAIClient struct {
 
 func (c *OpenAIClient) Name() string { return c.Label }
 
+// ListModels queries GET /models, which OpenAI, Ollama, vLLM, LM Studio,
+// and most compatible gateways implement.
+func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	url := strings.TrimRight(c.BaseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.APIKey != "" && c.APIKeyHeader != "" {
+		req.Header.Set(c.APIKeyHeader, c.APIKey)
+	} else if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	applyHeaders(req, c.Headers)
+	client := c.HTTP
+	if client == nil {
+		client = httpClient()
+	}
+	resp, err := doWithRetry(client, req, c.Label)
+	if err != nil {
+		return nil, fmt.Errorf("%s models: %w", c.Label, err)
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp, c.Label); err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	models := make([]ModelInfo, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		if m.ID != "" {
+			models = append(models, ModelInfo{ID: m.ID})
+		}
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models, nil
+}
+
 func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
 	body := map[string]any{
 		"model": in.Model, "messages": openAIMessages(in), "stream": true,
@@ -67,7 +112,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req, c.Label)
 	if err != nil {
 		return Response{}, fmt.Errorf("%s request: %w", c.Label, err)
 	}

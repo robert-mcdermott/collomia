@@ -127,11 +127,11 @@ func TestPathScopedDenyRule(t *testing.T) {
 	m := New(appconfig.Permissions{Mode: "autopilot", Rules: []appconfig.Rule{
 		{Action: "deny", Path: "/workspace/secrets/**"},
 	}}, nil)
-	blocked := tools.Action{Risk: tools.RiskRead, Paths: []string{"/workspace/secrets/key.pem"}}
+	blocked := tools.Action{Risk: tools.RiskRead, Paths: []string{filepath.FromSlash("/workspace/secrets/key.pem")}}
 	if _, err := m.Authorize(t.Context(), "read_file", blocked); !errors.Is(err, ErrDenied) {
 		t.Fatalf("expected denial, got %v", err)
 	}
-	allowed := tools.Action{Risk: tools.RiskRead, Paths: []string{"/workspace/main.go"}}
+	allowed := tools.Action{Risk: tools.RiskRead, Paths: []string{filepath.FromSlash("/workspace/main.go")}}
 	if _, err := m.Authorize(t.Context(), "read_file", allowed); err != nil {
 		t.Fatal(err)
 	}

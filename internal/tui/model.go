@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,6 +52,7 @@ type Model struct {
 	cancel        context.CancelFunc
 	pending       *approvalEnvelope
 	question      *questionEnvelope
+	picker        *picker
 	started       time.Time
 	turnStarted   time.Time
 
@@ -59,6 +62,7 @@ type Model struct {
 
 	vpInit      bool
 	expandTools bool
+	streaming   bool
 
 	palette          []commandInfo
 	paletteSel       int
@@ -124,8 +128,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = &env
 		m.paletteOn = false
 		m.input.Blur()
+		ring()
 		m.layout()
 		m.refresh()
+	case modelListMsg:
+		// Only interrupt with the model catalog if the user isn't mid-task.
+		if !m.busy && m.pending == nil && m.question == nil && m.picker == nil && strings.TrimSpace(m.input.Value()) == "" {
+			m.openDiscoveredModels(msg)
+		}
 	case questionMsg:
 		env := msg.envelope
 		m.question = &env
@@ -138,6 +148,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.blocks = append(m.blocks, block{role: "system", content: text})
 		m.input.Reset()
 		m.input.Focus()
+		ring()
 		m.layout()
 		m.refresh()
 	case runMsg:
@@ -149,6 +160,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel = nil
 			m.input.Focus()
 			elapsed := time.Since(m.turnStarted).Round(time.Second / 10)
+			// Ding only after long turns — the user has likely tabbed away.
+			if elapsed > 10*time.Second {
+				ring()
+			}
 			if msg.err != nil {
 				m.blocks = append(m.blocks, block{role: "error", content: msg.err.Error()})
 			} else if strings.TrimSpace(msg.final) == "" {
@@ -172,6 +187,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled, model, cmd := m.handleQuestionKey(msg); handled {
 				return model, cmd
 			}
+		}
+		if m.picker != nil {
+			cmd, _ := m.handlePickerKey(msg)
+			return m, cmd
 		}
 		key := msg.String()
 		if key == "ctrl+c" {
@@ -210,7 +229,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.paletteSel = (m.paletteSel + 1) % len(m.palette)
 				return m, nil
 			case "tab":
-				m.input.SetValue(m.palette[m.paletteSel].name + " ")
+				chosen := m.palette[m.paletteSel]
+				m.input.SetValue(chosen.name + " ")
 				m.input.CursorEnd()
 				if m.updatePalette() {
 					m.layout()
@@ -226,21 +246,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "enter":
 				fields := strings.Fields(m.input.Value())
-				line := m.palette[m.paletteSel].name
-				if len(fields) > 1 {
+				chosen := m.palette[m.paletteSel]
+				line := chosen.name
+				// Argument completions are already full command lines; for
+				// bare commands, keep whatever arguments were typed.
+				if !chosen.complete && len(fields) > 1 {
 					line += " " + strings.Join(fields[1:], " ")
 				}
 				m.input.Reset()
 				m.paletteOn = false
 				m.tab = tabChat
-				quit := m.slash(line)
+				quit, cmd := m.slash(line)
 				m.updatePalette()
 				m.layout()
 				m.refresh()
 				if quit {
 					return m, tea.Quit
 				}
-				return m, nil
+				return m, cmd
 			}
 		}
 		if key == "enter" && !m.busy && !msg.Alt {
@@ -251,36 +274,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			m.tab = tabChat
 			if strings.HasPrefix(value, "/") {
-				quit := m.slash(value)
+				quit, cmd := m.slash(value)
 				m.updatePalette()
 				m.layout()
 				m.refresh()
 				if quit {
 					return m, tea.Quit
 				}
-				return m, nil
+				return m, cmd
 			}
-			m.blocks = append(m.blocks, block{role: "user", content: value})
-			m.busy = true
-			m.turnStarted = time.Now()
-			m.input.Blur()
-			ctx, cancel := context.WithCancel(context.Background())
-			m.cancel = cancel
-			m.runEvents = make(chan runMsg, 64)
-			events := m.runEvents
-			runtime := m.runtime
-			go func() {
-				final, err := runtime.Agent.Run(ctx, value, func(e runtimeevent.Event) {
-					runtime.LogEvent(e)
-					events <- runMsg{event: &e}
-				})
-				events <- runMsg{done: true, final: final, err: err}
-				close(events)
-			}()
+			cmd := m.startTurn(value)
 			m.updatePalette()
 			m.layout()
 			m.refresh()
-			return m, tea.Batch(waitRun(events), m.spinner.Tick)
+			return m, cmd
 		}
 	}
 	var cmd tea.Cmd
@@ -294,12 +301,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !m.busy && m.pending == nil {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
+		// Typing "@" at a word boundary opens the file-mention picker; the
+		// chosen path replaces the "@" in the prompt.
+		if key, isKey := msg.(tea.KeyMsg); isKey && key.Type == tea.KeyRunes && string(key.Runes) == "@" {
+			value := m.input.Value()
+			if strings.HasSuffix(value, "@") && (len(value) == 1 || isMentionBoundary(value[len(value)-2])) {
+				m.openFilePicker()
+			}
+		}
 		if m.updatePalette() {
 			m.layout()
 			m.refresh()
 		}
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// startTurn submits one prompt to the agent and begins streaming events.
+func (m *Model) startTurn(value string) tea.Cmd {
+	m.blocks = append(m.blocks, block{role: "user", content: value})
+	m.busy = true
+	m.turnStarted = time.Now()
+	m.input.Blur()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.runEvents = make(chan runMsg, 64)
+	events := m.runEvents
+	runtime := m.runtime
+	go func() {
+		final, err := runtime.Agent.Run(ctx, value, func(e runtimeevent.Event) {
+			runtime.LogEvent(e)
+			events <- runMsg{event: &e}
+		})
+		events <- runMsg{done: true, final: final, err: err}
+		close(events)
+	}()
+	return tea.Batch(waitRun(events), m.spinner.Tick)
+}
+
+func isMentionBoundary(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '(' || c == '"' || c == '\''
 }
 
 func waitRun(events <-chan runMsg) tea.Cmd {
@@ -321,7 +362,18 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 		m.blocks[len(m.blocks)-1].content += e.Text
 	case runtimeevent.KindToolStart:
 		if e.Tool != nil {
+			m.streaming = false
 			m.blocks = append(m.blocks, block{role: "tool", content: e.Tool.Name + "\x00" + e.Tool.Summary})
+		}
+	case runtimeevent.KindToolOutput:
+		// Live output from a running command: grow a tool-result block in
+		// place so the user watches builds and tests as they happen.
+		if e.Tool != nil && e.Tool.Output != "" {
+			if !m.streaming || len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "tool-result" {
+				m.blocks = append(m.blocks, block{role: "tool-result"})
+				m.streaming = true
+			}
+			m.blocks[len(m.blocks)-1].content += e.Tool.Output
 		}
 	case runtimeevent.KindToolResult:
 		if e.Tool != nil {
@@ -329,7 +381,14 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 			if len(summary) > 1200 {
 				summary = summary[:1200] + "\n…"
 			}
-			m.blocks = append(m.blocks, block{role: "tool-result", content: summary})
+			if m.streaming && len(m.blocks) > 0 && m.blocks[len(m.blocks)-1].role == "tool-result" {
+				// The final result replaces the streamed view (it may add
+				// error text and truncation markers).
+				m.blocks[len(m.blocks)-1].content = summary
+			} else {
+				m.blocks = append(m.blocks, block{role: "tool-result", content: summary})
+			}
+			m.streaming = false
 		}
 	case runtimeevent.KindWarning:
 		m.blocks = append(m.blocks, block{role: "system", content: e.Text})
@@ -400,7 +459,11 @@ func (m *Model) layout() {
 	if m.pending != nil {
 		inputArea = 7
 	}
-	inputArea += m.paletteHeight()
+	if m.picker != nil {
+		inputArea += m.pickerHeight()
+	} else {
+		inputArea += m.paletteHeight()
+	}
 	h := m.height - headerHeight - statusHeight - inputArea
 	if h < 3 {
 		h = 3
@@ -503,6 +566,13 @@ func (m *Model) sessionContent() string {
 	var b strings.Builder
 	b.WriteString(h("Session") + "\n")
 	b.WriteString(kv("workspace", m.runtime.Workspace) + "\n")
+	if m.runtime.Session != nil {
+		id := m.runtime.Session.Meta.ID
+		if title := m.runtime.Session.Meta.Title; title != "" {
+			id += "  (" + title + ")"
+		}
+		b.WriteString(kv("session", id) + "\n")
+	}
 	b.WriteString(kv("provider", provider+"/"+model) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
@@ -511,10 +581,42 @@ func (m *Model) sessionContent() string {
 	b.WriteString(kv("uptime", time.Since(m.started).Round(time.Second).String()) + "\n\n")
 
 	b.WriteString(h("Context") + "\n")
-	b.WriteString(kv("usage", fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)) + "\n")
+	usageText := fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)
+	if usage.CachedTokens > 0 {
+		usageText += fmt.Sprintf(" (%d cached)", usage.CachedTokens)
+	}
+	b.WriteString(kv("usage", usageText) + "\n")
 	b.WriteString(kv("prompt", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
 	b.WriteString(kv("messages", fmt.Sprintf("%d", m.runtime.Agent.MessageCount())) + "\n")
 	b.WriteString("  " + contextGauge(m.theme, estimate, window, 30) + "\n\n")
+
+	if current := m.runtime.Plan.Current(); current != nil && len(current.Steps) > 0 {
+		b.WriteString(h("Plan") + "\n")
+		marks := map[string]string{"pending": "○", "in_progress": "◐", "done": "●", "blocked": "✗", "skipped": "−"}
+		colors := map[string]string{"pending": m.theme.Muted, "in_progress": m.theme.Warning, "done": m.theme.Success, "blocked": m.theme.Error, "skipped": m.theme.Muted}
+		b.WriteString(kv("goal", current.Goal) + "\n")
+		for _, step := range current.Steps {
+			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(colors[step.Status])).Render(marks[step.Status])
+			line := fmt.Sprintf("  %s %d. %s", mark, step.ID, step.Title)
+			if step.Evidence != "" {
+				line += m.styles.muted.Render("  — " + step.Evidence)
+			}
+			b.WriteString(line + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if changed := m.runtime.Changes.Changed(); len(changed) > 0 {
+		b.WriteString(h("Changed files") + "\n")
+		for _, path := range changed {
+			display := path
+			if rel, err := filepath.Rel(m.runtime.Workspace, path); err == nil && !strings.HasPrefix(rel, "..") {
+				display = rel
+			}
+			b.WriteString("  " + m.styles.accent.Render(display) + "\n")
+		}
+		b.WriteString(m.styles.muted.Render("  /diff to review · /undo to revert the latest") + "\n\n")
+	}
 
 	b.WriteString(h("Providers") + "\n")
 	for _, name := range m.runtime.Config.ProviderNames() {
@@ -570,12 +672,13 @@ func (m *Model) helpContent() string {
 	keys := [][2]string{
 		{"enter", "send prompt / run selected command"},
 		{"alt+enter", "insert newline"},
-		{"/", "open the command palette"},
-		{"↑ ↓ (palette)", "select a command"},
+		{"/", "open the command palette (with argument completion)"},
+		{"@", "fuzzy-pick a workspace file into the prompt"},
+		{"↑ ↓ (palette)", "select a command or completion"},
 		{"tab (palette)", "complete the selected command"},
 		{"ctrl+t", "cycle Chat / Session / Help tabs"},
 		{"ctrl+o", "expand / collapse finished tool output"},
-		{"esc", "cancel turn · dismiss palette"},
+		{"esc", "cancel turn · dismiss palette or picker"},
 		{"pgup/pgdn", "scroll the transcript"},
 		{"ctrl+c", "cancel turn, again to quit"},
 	}
@@ -610,7 +713,9 @@ func (m Model) View() string {
 		return "Starting Collomia…"
 	}
 	sections := []string{m.renderHeader(), m.viewport.View()}
-	if m.paletteOn && m.pending == nil {
+	if m.picker != nil && m.pending == nil {
+		sections = append(sections, m.renderPicker())
+	} else if m.paletteOn && m.pending == nil {
 		sections = append(sections, m.renderPalette())
 	}
 	if m.pending != nil {
@@ -687,6 +792,15 @@ func (m Model) renderStatusBar() string {
 	if m.runtime.Agent.Plan() {
 		left += m.styles.statusBase.Render(" ") + badge("PLAN", m.theme.Accent)
 	}
+	if current := m.runtime.Plan.Current(); current != nil && len(current.Steps) > 0 {
+		done := 0
+		for _, step := range current.Steps {
+			if step.Status == "done" || step.Status == "skipped" {
+				done++
+			}
+		}
+		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("tasks %d/%d", done, len(current.Steps)), m.theme.Secondary)
+	}
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 
 	var right string
@@ -709,3 +823,8 @@ func (m Model) renderStatusBar() string {
 func indent(value, prefix string) string {
 	return prefix + strings.ReplaceAll(value, "\n", "\n"+prefix)
 }
+
+// ring sounds the terminal bell so an unattended approval, question, or
+// finished long turn gets the user's attention. Terminals map this to their
+// configured notification (sound, badge, or nothing) — never intrusive.
+func ring() { _, _ = os.Stderr.WriteString("\a") }

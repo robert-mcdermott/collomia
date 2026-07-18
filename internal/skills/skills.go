@@ -172,3 +172,28 @@ func ProjectInstructions(workspace string) (string, error) {
 	}
 	return strings.Join(sections, "\n\n"), nil
 }
+
+// GlobalInstructions reads the user-level AGENTS.md (or COLLOMIA.md) from
+// the collomia configuration directory. It applies to every workspace and
+// precedes project instructions, so a project can refine or override it.
+func GlobalInstructions() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", nil
+	}
+	for _, name := range []string{"AGENTS.md", "COLLOMIA.md"} {
+		path := filepath.Join(dir, "collomia", name)
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if len(data) > maxSkillBytes {
+			return "", fmt.Errorf("%s exceeds %d bytes", path, maxSkillBytes)
+		}
+		return fmt.Sprintf("# Global user instructions from %s\n(Project instructions, when present, take precedence over these.)\n%s", path, string(data)), nil
+	}
+	return "", nil
+}

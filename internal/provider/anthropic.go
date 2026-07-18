@@ -20,6 +20,54 @@ type AnthropicClient struct {
 
 func (c *AnthropicClient) Name() string { return c.Label }
 
+// ListModels queries GET /v1/models on the Anthropic API.
+func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	base := strings.TrimRight(c.BaseURL, "/")
+	if !strings.HasSuffix(base, "/v1") {
+		base += "/v1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models?limit=100", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.APIKey != "" && c.BearerAuth {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	} else if c.APIKey != "" {
+		req.Header.Set("x-api-key", c.APIKey)
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Accept", "application/json")
+	applyHeaders(req, c.Headers)
+	client := c.HTTP
+	if client == nil {
+		client = httpClient()
+	}
+	resp, err := doWithRetry(client, req, c.Label)
+	if err != nil {
+		return nil, fmt.Errorf("%s models: %w", c.Label, err)
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp, c.Label); err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	models := make([]ModelInfo, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		if m.ID != "" {
+			models = append(models, ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
+		}
+	}
+	return models, nil
+}
+
 func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
 	body := map[string]any{
 		"model": in.Model, "messages": anthropicMessages(in.Messages),
@@ -61,7 +109,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req, c.Label)
 	if err != nil {
 		return Response{}, fmt.Errorf("%s request: %w", c.Label, err)
 	}

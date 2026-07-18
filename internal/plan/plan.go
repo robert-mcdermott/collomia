@@ -52,6 +52,22 @@ func (b *Board) Current() *Plan {
 	return &clone
 }
 
+// Clear drops the current plan without notifying observers; used when
+// switching sessions.
+func (b *Board) Clear() {
+	b.mu.Lock()
+	b.current = nil
+	b.mu.Unlock()
+}
+
+// Restore installs a plan without notifying observers (it is already
+// persisted in the session being loaded).
+func (b *Board) Restore(p Plan) {
+	b.mu.Lock()
+	b.current = &p
+	b.mu.Unlock()
+}
+
 func (b *Board) Set(p Plan) error {
 	seen := map[int]bool{}
 	for i, step := range p.Steps {

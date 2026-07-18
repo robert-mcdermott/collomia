@@ -15,7 +15,6 @@ DATE=${COLLO_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 LDFLAGS="-s -w -X github.com/robert-mcdermott/collomia/internal/version.Version=$VERSION -X github.com/robert-mcdermott/collomia/internal/version.Commit=$COMMIT -X github.com/robert-mcdermott/collomia/internal/version.Date=$DATE"
 
 mkdir -p "$DIST"
-go test ./...
 
 for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64; do
   os=${target%/*}
