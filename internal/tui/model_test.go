@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 )
 
@@ -143,6 +144,56 @@ func TestTypingDoesNotScrollTranscript(t *testing.T) {
 	m = press(t, m, tea.KeyPgUp)
 	if m.viewport.YOffset >= offset {
 		t.Fatalf("pgup should still scroll the viewport, offset %d -> %d", offset, m.viewport.YOffset)
+	}
+}
+
+func TestBannerVisibleAtStartup(t *testing.T) {
+	m := newTestModel(t)
+	view := m.viewport.View()
+	if !strings.Contains(view, "╔") {
+		t.Fatalf("banner art should render on the first frame, got:\n%s", view)
+	}
+	if !strings.Contains(view, "theme") {
+		t.Fatalf("banner subtitle should render on the first frame, got:\n%s", view)
+	}
+}
+
+func TestToolOutputCollapses(t *testing.T) {
+	m := newTestModel(t)
+	long := strings.Repeat("output line\n", 20) + "final-marker"
+	m.busy = true
+	m.handleEvent(agent.Event{Kind: agent.EventToolStart, Tool: "list_files", Text: "list ."})
+	m.handleEvent(agent.Event{Kind: agent.EventToolResult, Tool: "list_files", Text: long})
+	if content := m.chatContent(); !strings.Contains(content, "final-marker") {
+		t.Fatal("the running tool's output should be shown in full")
+	}
+	m.handleEvent(agent.Event{Kind: agent.EventDelta, Text: "Here is what I found."})
+	content := m.chatContent()
+	if strings.Contains(content, "final-marker") {
+		t.Fatal("finished tool output should collapse once the agent moves on")
+	}
+	if !strings.Contains(content, "21 lines hidden") {
+		t.Fatalf("collapsed output should summarize its size, got:\n%s", content)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+	if content := m.chatContent(); !strings.Contains(content, "final-marker") {
+		t.Fatal("ctrl+o should expand collapsed tool output")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(Model)
+	if content := m.chatContent(); strings.Contains(content, "final-marker") {
+		t.Fatal("ctrl+o again should re-collapse tool output")
+	}
+}
+
+func TestShortToolOutputStaysVisible(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.handleEvent(agent.Event{Kind: agent.EventToolResult, Tool: "read_file", Text: "one\ntwo\nthree"})
+	m.handleEvent(agent.Event{Kind: agent.EventDelta, Text: "Done."})
+	if content := m.chatContent(); !strings.Contains(content, "three") {
+		t.Fatal("short tool output should never collapse")
 	}
 }
 

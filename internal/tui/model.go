@@ -55,6 +55,9 @@ type Model struct {
 	styles styles
 	tab    int
 
+	vpInit      bool
+	expandTools bool
+
 	palette          []commandInfo
 	paletteSel       int
 	paletteOn        bool
@@ -110,11 +113,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.renderer = nil
+		m.ready = true
 		m.layout()
 		m.refresh()
-		if !m.ready {
-			m.ready = true
-		}
 	case approvalMsg:
 		env := msg.envelope
 		m.pending = &env
@@ -162,6 +163,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if key == "ctrl+t" {
 			m.tab = (m.tab + 1) % tabCount
+			m.refresh()
+			return m, nil
+		}
+		if key == "ctrl+o" {
+			m.expandTools = !m.expandTools
 			m.refresh()
 			return m, nil
 		}
@@ -338,8 +344,9 @@ func (m *Model) layout() {
 	if h < 3 {
 		h = 3
 	}
-	if !m.ready {
+	if !m.vpInit {
 		m.viewport = viewport.New(max(10, m.width), h)
+		m.vpInit = true
 	}
 	m.viewport.Width = max(10, m.width)
 	m.viewport.Height = h
@@ -366,7 +373,7 @@ func (m *Model) refresh() {
 func (m *Model) chatContent() string {
 	var b strings.Builder
 	b.WriteString(m.banner() + "\n\n")
-	for _, block := range m.blocks {
+	for i, block := range m.blocks {
 		switch block.role {
 		case "user":
 			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + block.content + "\n\n")
@@ -376,7 +383,7 @@ func (m *Model) chatContent() string {
 			name, summary, _ := strings.Cut(block.content, "\x00")
 			b.WriteString(m.styles.tool.Render("⚙ ") + m.styles.toolName.Render(name) + m.styles.tool.Render("  "+summary) + "\n")
 		case "tool-result":
-			b.WriteString(m.styles.toolResult.Render(indent(block.content, "  │ ")) + "\n\n")
+			b.WriteString(m.renderToolResult(i) + "\n\n")
 		case "error":
 			b.WriteString(m.styles.errText.Render("✖ "+block.content) + "\n\n")
 		default:
@@ -384,6 +391,25 @@ func (m *Model) chatContent() string {
 		}
 	}
 	return b.String()
+}
+
+// Tool results at or below this line count are always shown in full;
+// collapsing them would not save meaningful space.
+const toolCollapseThreshold = 4
+
+// renderToolResult shows the newest tool output in full while the turn is
+// still running, then collapses it to a one-line summary once the agent moves
+// on. ctrl+o expands every collapsed result for inspection.
+func (m *Model) renderToolResult(i int) string {
+	content := m.blocks[i].content
+	lines := strings.Count(content, "\n") + 1
+	current := m.busy && i == len(m.blocks)-1
+	if m.expandTools || current || lines <= toolCollapseThreshold {
+		return m.styles.toolResult.Render(indent(content, "  │ "))
+	}
+	return m.styles.toolResult.Render("  ▸ ") +
+		m.styles.tool.Render(fmt.Sprintf("%d lines hidden · ", lines)) +
+		m.styles.toolName.Render("ctrl+o") + m.styles.tool.Render(" to expand")
 }
 
 const asciiBanner = `╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
@@ -397,7 +423,7 @@ func (m *Model) banner() string {
 	art := gradient(asciiBanner, m.theme.Primary, m.theme.Secondary)
 	provider, model := m.runtime.Agent.Selection()
 	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), provider, model, m.theme.Name))
-	tips := m.styles.system.Render("type a prompt, / for commands, ctrl+t for tabs")
+	tips := m.styles.system.Render("type a prompt · / commands · ctrl+t tabs · ctrl+o tool output")
 	return art + "\n" + sub + "\n" + tips
 }
 
@@ -487,6 +513,7 @@ func (m *Model) helpContent() string {
 		{"↑ ↓ (palette)", "select a command"},
 		{"tab (palette)", "complete the selected command"},
 		{"ctrl+t", "cycle Chat / Session / Help tabs"},
+		{"ctrl+o", "expand / collapse finished tool output"},
 		{"esc", "cancel turn · dismiss palette"},
 		{"pgup/pgdn", "scroll the transcript"},
 		{"ctrl+c", "cancel turn, again to quit"},
