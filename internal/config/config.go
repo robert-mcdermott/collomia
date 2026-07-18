@@ -67,6 +67,7 @@ type Options struct {
 	MaxToolOutputBytes  int      `json:"max_tool_output_bytes,omitempty"`
 	DisabledTools       []string `json:"disabled_tools,omitempty"`
 	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
+	Theme               string   `json:"theme,omitempty"`
 }
 
 func Defaults() Config {

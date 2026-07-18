@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	"github.com/robert-mcdermott/collomia/internal/permission"
+	"github.com/robert-mcdermott/collomia/internal/version"
 )
 
 type block struct{ role, content string }
@@ -24,6 +26,15 @@ type runMsg struct {
 	final string
 	err   error
 }
+
+const (
+	tabChat = iota
+	tabSession
+	tabHelp
+	tabCount
+)
+
+var tabNames = [tabCount]string{"Chat", "Session", "Help"}
 
 type Model struct {
 	runtime       *app.Runtime
@@ -38,34 +49,38 @@ type Model struct {
 	cancel        context.CancelFunc
 	pending       *approvalEnvelope
 	started       time.Time
+	turnStarted   time.Time
+
+	theme  Theme
+	styles styles
+	tab    int
+
+	palette          []commandInfo
+	paletteSel       int
+	paletteOn        bool
+	paletteDismissed bool
+	lastInput        string
+
+	renderer      *glamour.TermRenderer
+	rendererWidth int
 }
 
-var (
-	purple      = lipgloss.Color("99")
-	pink        = lipgloss.Color("205")
-	muted       = lipgloss.Color("243")
-	green       = lipgloss.Color("42")
-	red         = lipgloss.Color("203")
-	yellow      = lipgloss.Color("220")
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(pink)
-	userStyle   = lipgloss.NewStyle().Bold(true).Foreground(purple)
-	toolStyle   = lipgloss.NewStyle().Foreground(muted)
-	systemStyle = lipgloss.NewStyle().Foreground(muted).Italic(true)
-)
-
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
+	theme := defaultTheme()
+	if t, ok := themeByName(runtime.Config.Options.Theme); ok {
+		theme = t
+	}
 	in := textarea.New()
-	in.Placeholder = "Ask Collomia to build, debug, explain…"
+	in.Placeholder = "Ask Collomia to build, debug, explain…  (/ for commands)"
 	in.Prompt = "❯ "
 	in.ShowLineNumbers = false
 	in.SetHeight(3)
 	in.CharLimit = 0
 	in.Focus()
 	spin := spinner.New()
-	spin.Spinner = spinner.Dot
-	spin.Style = lipgloss.NewStyle().Foreground(pink)
+	spin.Spinner = spinner.Points
 	m := Model{runtime: runtime, broker: broker, input: in, spinner: spin, started: time.Now()}
-	m.blocks = append(m.blocks, block{role: "system", content: "Collomia is ready. Type /help for commands."})
+	m.applyTheme(theme)
 	for _, warning := range runtime.Warnings {
 		m.blocks = append(m.blocks, block{role: "error", content: warning.Error()})
 	}
@@ -75,6 +90,18 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	return m
 }
 
+// applyTheme installs a theme and restyles every themed component.
+func (m *Model) applyTheme(t Theme) {
+	m.theme = t
+	m.styles = newStyles(t)
+	m.spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Secondary))
+	m.input.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Secondary)).Bold(true)
+	m.input.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted))
+	m.input.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	m.input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted))
+	m.renderer = nil // force glamour rebuild with the new style
+}
+
 func (m Model) Init() tea.Cmd { return tea.Batch(textarea.Blink, m.spinner.Tick, m.broker.wait()) }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -82,6 +109,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.renderer = nil
 		m.layout()
 		m.refresh()
 		if !m.ready {
@@ -90,7 +118,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case approvalMsg:
 		env := msg.envelope
 		m.pending = &env
+		m.paletteOn = false
 		m.input.Blur()
+		m.layout()
 		m.refresh()
 	case runMsg:
 		if msg.event != nil {
@@ -100,10 +130,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = false
 			m.cancel = nil
 			m.input.Focus()
+			elapsed := time.Since(m.turnStarted).Round(time.Second / 10)
 			if msg.err != nil {
 				m.blocks = append(m.blocks, block{role: "error", content: msg.err.Error()})
 			} else if strings.TrimSpace(msg.final) == "" {
-				m.blocks = append(m.blocks, block{role: "system", content: "Turn complete."})
+				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}
 			m.refresh()
 		} else {
@@ -119,7 +150,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pending != nil {
 			return m.handleApprovalKey(msg)
 		}
-		if msg.String() == "ctrl+c" {
+		key := msg.String()
+		if key == "ctrl+c" {
 			if m.busy && m.cancel != nil {
 				m.cancel()
 				m.blocks = append(m.blocks, block{role: "system", content: "Cancelling current turn…"})
@@ -128,18 +160,72 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		}
-		if msg.String() == "esc" && m.busy && m.cancel != nil {
+		if key == "ctrl+t" {
+			m.tab = (m.tab + 1) % tabCount
+			m.refresh()
+			return m, nil
+		}
+		if key == "esc" && m.busy && m.cancel != nil {
 			m.cancel()
 			return m, nil
 		}
-		if msg.String() == "enter" && !m.busy && !msg.Alt {
+		if m.paletteOn {
+			switch key {
+			case "up", "ctrl+p":
+				if m.paletteSel > 0 {
+					m.paletteSel--
+				} else {
+					m.paletteSel = len(m.palette) - 1
+				}
+				return m, nil
+			case "down", "ctrl+n":
+				m.paletteSel = (m.paletteSel + 1) % len(m.palette)
+				return m, nil
+			case "tab":
+				m.input.SetValue(m.palette[m.paletteSel].name + " ")
+				m.input.CursorEnd()
+				if m.updatePalette() {
+					m.layout()
+				}
+				m.refresh()
+				return m, nil
+			case "esc":
+				m.paletteDismissed = true
+				if m.updatePalette() {
+					m.layout()
+					m.refresh()
+				}
+				return m, nil
+			case "enter":
+				fields := strings.Fields(m.input.Value())
+				line := m.palette[m.paletteSel].name
+				if len(fields) > 1 {
+					line += " " + strings.Join(fields[1:], " ")
+				}
+				m.input.Reset()
+				m.paletteOn = false
+				m.tab = tabChat
+				quit := m.slash(line)
+				m.updatePalette()
+				m.layout()
+				m.refresh()
+				if quit {
+					return m, tea.Quit
+				}
+				return m, nil
+			}
+		}
+		if key == "enter" && !m.busy && !msg.Alt {
 			value := strings.TrimSpace(m.input.Value())
 			if value == "" {
 				return m, nil
 			}
 			m.input.Reset()
+			m.tab = tabChat
 			if strings.HasPrefix(value, "/") {
 				quit := m.slash(value)
+				m.updatePalette()
+				m.layout()
 				m.refresh()
 				if quit {
 					return m, tea.Quit
@@ -148,6 +234,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.blocks = append(m.blocks, block{role: "user", content: value})
 			m.busy = true
+			m.turnStarted = time.Now()
 			m.input.Blur()
 			ctx, cancel := context.WithCancel(context.Background())
 			m.cancel = cancel
@@ -159,6 +246,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				events <- runMsg{done: true, final: final, err: err}
 				close(events)
 			}()
+			m.updatePalette()
+			m.layout()
 			m.refresh()
 			return m, tea.Batch(waitRun(events), m.spinner.Tick)
 		}
@@ -169,6 +258,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !m.busy && m.pending == nil {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
+		if m.updatePalette() {
+			m.layout()
+			m.refresh()
+		}
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -191,7 +284,7 @@ func (m *Model) handleEvent(event agent.Event) {
 		}
 		m.blocks[len(m.blocks)-1].content += event.Text
 	case agent.EventToolStart:
-		m.blocks = append(m.blocks, block{role: "tool", content: "◆ " + event.Tool + "  " + event.Text})
+		m.blocks = append(m.blocks, block{role: "tool", content: event.Tool + "\x00" + event.Text})
 	case agent.EventToolResult:
 		summary := event.Text
 		if len(summary) > 1200 {
@@ -222,15 +315,21 @@ func (m Model) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.pending.reply <- *decision
 	m.pending = nil
+	m.input.Focus()
+	m.layout()
 	m.refresh()
 	return m, m.broker.wait()
 }
 
 func (m *Model) layout() {
 	headerHeight := 2
-	footerHeight := 2
-	inputHeight := 5
-	h := m.height - headerHeight - footerHeight - inputHeight
+	statusHeight := 1
+	inputArea := 5
+	if m.pending != nil {
+		inputArea = 7
+	}
+	inputArea += m.paletteHeight()
+	h := m.height - headerHeight - statusHeight - inputArea
 	if h < 3 {
 		h = 3
 	}
@@ -246,36 +345,167 @@ func (m *Model) refresh() {
 	if !m.ready {
 		return
 	}
+	switch m.tab {
+	case tabSession:
+		m.viewport.SetContent(m.sessionContent())
+		m.viewport.GotoTop()
+	case tabHelp:
+		m.viewport.SetContent(m.helpContent())
+		m.viewport.GotoTop()
+	default:
+		m.viewport.SetContent(m.chatContent())
+		m.viewport.GotoBottom()
+	}
+}
+
+func (m *Model) chatContent() string {
 	var b strings.Builder
+	b.WriteString(m.banner() + "\n\n")
 	for _, block := range m.blocks {
 		switch block.role {
 		case "user":
-			b.WriteString(userStyle.Render("YOU") + "\n" + block.content + "\n\n")
+			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + block.content + "\n\n")
 		case "assistant":
-			b.WriteString(headerStyle.Render("COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n")
+			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
 		case "tool":
-			b.WriteString(toolStyle.Render(block.content) + "\n")
+			name, summary, _ := strings.Cut(block.content, "\x00")
+			b.WriteString(m.styles.tool.Render("⚙ ") + m.styles.toolName.Render(name) + m.styles.tool.Render("  "+summary) + "\n")
 		case "tool-result":
-			b.WriteString(toolStyle.Render(indent(block.content, "  ")) + "\n\n")
+			b.WriteString(m.styles.toolResult.Render(indent(block.content, "  │ ")) + "\n\n")
 		case "error":
-			b.WriteString(lipgloss.NewStyle().Foreground(red).Render("Error: "+block.content) + "\n\n")
+			b.WriteString(m.styles.errText.Render("✖ "+block.content) + "\n\n")
 		default:
-			b.WriteString(systemStyle.Render(block.content) + "\n\n")
+			b.WriteString(m.styles.system.Render("· "+block.content) + "\n\n")
 		}
 	}
-	m.viewport.SetContent(b.String())
-	m.viewport.GotoBottom()
+	return b.String()
+}
+
+const asciiBanner = `╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
+║  ║ ║║  ║  ║ ║║║║║╠═╣
+╚═╝╚═╝╩═╝╩═╝╚═╝╩ ╩╩╩ ╩`
+
+func (m *Model) banner() string {
+	if m.width < 30 {
+		return m.styles.brand.Render("✿ Collomia")
+	}
+	art := gradient(asciiBanner, m.theme.Primary, m.theme.Secondary)
+	provider, model := m.runtime.Agent.Selection()
+	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), provider, model, m.theme.Name))
+	tips := m.styles.system.Render("type a prompt, / for commands, ctrl+t for tabs")
+	return art + "\n" + sub + "\n" + tips
+}
+
+func (m *Model) sessionContent() string {
+	h := m.styles.heading.Render
+	kv := func(key, value string) string {
+		return m.styles.accent.Render(fmt.Sprintf("  %-12s", key)) + value
+	}
+	provider, model := m.runtime.Agent.Selection()
+	usage := m.runtime.Agent.Usage()
+	estimate, window := m.runtime.Agent.ContextEstimate()
+	windowText := "unknown"
+	if window > 0 {
+		windowText = formatTokens(window)
+	}
+	var b strings.Builder
+	b.WriteString(h("Session") + "\n")
+	b.WriteString(kv("workspace", m.runtime.Workspace) + "\n")
+	b.WriteString(kv("provider", provider+"/"+model) + "\n")
+	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
+	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
+	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
+	b.WriteString(kv("theme", m.theme.Name) + "\n")
+	b.WriteString(kv("uptime", time.Since(m.started).Round(time.Second).String()) + "\n\n")
+
+	b.WriteString(h("Context") + "\n")
+	b.WriteString(kv("usage", fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)) + "\n")
+	b.WriteString(kv("prompt", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
+	b.WriteString(kv("messages", fmt.Sprintf("%d", m.runtime.Agent.MessageCount())) + "\n")
+	b.WriteString("  " + contextGauge(m.theme, estimate, window, 30) + "\n\n")
+
+	b.WriteString(h("Providers") + "\n")
+	for _, name := range m.runtime.Config.ProviderNames() {
+		p := m.runtime.Config.Providers[name]
+		marker := "  "
+		if name == provider {
+			marker = m.styles.success.Render("▸ ")
+		}
+		b.WriteString(fmt.Sprintf("%s%s  [%s]  %s\n", marker, m.styles.accent.Render(name), p.Type, p.Model))
+	}
+	b.WriteString("\n" + h("Tools") + "\n  " + strings.Join(m.runtime.Registry.Names(), ", ") + "\n\n")
+
+	b.WriteString(h("Skills") + "\n")
+	if len(m.runtime.Skills.Skills) == 0 {
+		b.WriteString(m.styles.muted.Render("  none discovered") + "\n")
+	}
+	for _, skill := range m.runtime.Skills.Skills {
+		b.WriteString("  " + m.styles.accent.Render(skill.Name) + "  " + m.styles.muted.Render(skill.Description) + "\n")
+	}
+	b.WriteString("\n" + h("MCP servers") + "\n")
+	servers := m.runtime.MCP.Servers()
+	if len(servers) == 0 {
+		b.WriteString(m.styles.muted.Render("  none connected") + "\n")
+	} else {
+		sort.Strings(servers)
+		b.WriteString("  " + strings.Join(servers, ", ") + "\n")
+	}
+	b.WriteString("\n" + h("Themes") + "\n")
+	for _, t := range themes {
+		marker := "  "
+		if t.Name == m.theme.Name {
+			marker = m.styles.success.Render("▸ ")
+		}
+		swatch := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Primary)).Render("●") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color(t.Secondary)).Render("●") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color(t.Accent)).Render("●")
+		b.WriteString(fmt.Sprintf("%s%s %s\n", marker, swatch, t.Name))
+	}
+	return b.String()
+}
+
+func (m *Model) helpContent() string {
+	var b strings.Builder
+	b.WriteString(m.styles.heading.Render("Slash commands") + "\n")
+	for _, cmd := range slashCommands {
+		label := cmd.name
+		if cmd.args != "" {
+			label += " " + cmd.args
+		}
+		b.WriteString("  " + m.styles.accent.Render(fmt.Sprintf("%-26s", label)) + m.styles.muted.Render(cmd.desc) + "\n")
+	}
+	b.WriteString("\n" + m.styles.heading.Render("Keys") + "\n")
+	keys := [][2]string{
+		{"enter", "send prompt / run selected command"},
+		{"alt+enter", "insert newline"},
+		{"/", "open the command palette"},
+		{"↑ ↓ (palette)", "select a command"},
+		{"tab (palette)", "complete the selected command"},
+		{"ctrl+t", "cycle Chat / Session / Help tabs"},
+		{"esc", "cancel turn · dismiss palette"},
+		{"pgup/pgdn", "scroll the transcript"},
+		{"ctrl+c", "cancel turn, again to quit"},
+	}
+	for _, k := range keys {
+		b.WriteString("  " + m.styles.accent.Render(fmt.Sprintf("%-26s", k[0])) + m.styles.muted.Render(k[1]) + "\n")
+	}
+	return b.String()
 }
 
 func (m *Model) renderMarkdown(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return ""
 	}
-	renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(max(20, m.width-6)))
-	if err != nil {
-		return value
+	width := max(20, m.width-6)
+	if m.renderer == nil || m.rendererWidth != width {
+		renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle(m.theme.glamourStyle()), glamour.WithWordWrap(width))
+		if err != nil {
+			return value
+		}
+		m.renderer = renderer
+		m.rendererWidth = width
 	}
-	rendered, err := renderer.Render(value)
+	rendered, err := m.renderer.Render(value)
 	if err != nil {
 		return value
 	}
@@ -286,25 +516,79 @@ func (m Model) View() string {
 	if !m.ready {
 		return "Starting Collomia…"
 	}
-	p, model := m.runtime.Agent.Selection()
-	mode := m.runtime.Permissions.Mode()
-	plan := ""
-	if m.runtime.Agent.Plan() {
-		plan = "  PLAN"
+	sections := []string{m.renderHeader(), m.viewport.View()}
+	if m.paletteOn && m.pending == nil {
+		sections = append(sections, m.renderPalette())
 	}
-	header := headerStyle.Render("✿ COLLOMIA") + lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf("  %s/%s  %s%s", p, model, strings.ToUpper(mode), plan))
-	var input string
 	if m.pending != nil {
-		req := m.pending.request
-		input = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(yellow).Padding(0, 1).Width(max(1, m.width-4)).Render(fmt.Sprintf("Permission required: %s\n[y] once   [a] always for %s   [n] deny", req.Action.Summary, req.Tool))
+		sections = append(sections, m.renderApproval())
 	} else {
-		input = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(purple).Width(max(1, m.width-2)).Render(m.input.View())
+		sections = append(sections, m.styles.inputBox.Width(max(1, m.width-2)).Render(m.input.View()))
 	}
-	status := "enter send  •  / commands  •  ctrl+c quit"
+	sections = append(sections, m.renderStatusBar())
+	return strings.Join(sections, "\n")
+}
+
+func (m Model) renderHeader() string {
+	var tabs []string
+	for i, name := range tabNames {
+		if i == m.tab {
+			tabs = append(tabs, m.styles.tabActive.Render(name))
+		} else {
+			tabs = append(tabs, m.styles.tabInactive.Render(name))
+		}
+	}
+	left := m.styles.brand.Render(" ✿ collomia ")
+	row := left + strings.Join(tabs, "")
+	rule := m.styles.rule.Render(strings.Repeat("─", max(0, m.width)))
+	return row + "\n" + rule
+}
+
+func (m Model) renderApproval() string {
+	req := m.pending.request
+	title := m.styles.warning.Render("⚠ Permission required")
+	body := fmt.Sprintf("%s\n%s  %s\n\n%s  approve once   %s  always for %s   %s  deny",
+		title,
+		m.styles.accent.Render(req.Tool), req.Action.Summary,
+		badge("y", m.theme.Success), badge("a", m.theme.Warning), req.Tool, badge("n", m.theme.Error))
+	return m.styles.approvalBox.Width(max(1, m.width-2) - 2).Render(body)
+}
+
+func (m Model) renderStatusBar() string {
+	provider, model := m.runtime.Agent.Selection()
+	mode := m.runtime.Permissions.Mode()
+	modeColor := m.theme.Success
+	switch mode {
+	case "workspace":
+		modeColor = m.theme.Warning
+	case "autopilot":
+		modeColor = m.theme.Error
+	}
+	estimate, window := m.runtime.Agent.ContextEstimate()
+
+	left := badge("✿", m.theme.Primary)
+	left += m.styles.statusBase.Render(" ") + badge(provider+"/"+model, m.theme.Border)
+	left += m.styles.statusBase.Render(" ") + badge(strings.ToUpper(mode), modeColor)
+	if m.runtime.Agent.Plan() {
+		left += m.styles.statusBase.Render(" ") + badge("PLAN", m.theme.Accent)
+	}
+	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
+
+	var right string
 	if m.busy {
-		status = m.spinner.View() + " working  •  esc cancel"
+		elapsed := time.Since(m.turnStarted).Round(time.Second)
+		right = m.styles.statusKey.Render(m.spinner.View()) + m.styles.statusBase.Render(fmt.Sprintf(" working %s · esc cancel ", elapsed))
+	} else {
+		right = m.styles.statusBase.Render("enter send · ") +
+			m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +
+			m.styles.statusKey.Render("ctrl+t") + m.styles.statusBase.Render(" tabs · ") +
+			m.styles.statusKey.Render("ctrl+c") + m.styles.statusBase.Render(" quit ")
 	}
-	return header + "\n" + m.viewport.View() + "\n" + input + "\n" + lipgloss.NewStyle().Foreground(muted).Render(status)
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return left
+	}
+	return left + m.styles.statusBase.Render(strings.Repeat(" ", gap)) + right
 }
 
 func indent(value, prefix string) string {
