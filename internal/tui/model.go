@@ -253,8 +253,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
+	// The viewport's default keymap also binds letters (u/d, j/k, b/f), which
+	// would scroll the transcript while the user types a prompt. Only page
+	// keys reach the viewport; mouse wheel events pass through unaffected.
+	if key, isKey := msg.(tea.KeyMsg); !isKey || key.String() == "pgup" || key.String() == "pgdown" {
+		m.viewport, cmd = m.viewport.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	if !m.busy && m.pending == nil {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)

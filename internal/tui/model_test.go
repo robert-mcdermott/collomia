@@ -126,6 +126,26 @@ func TestThemeSlashCommand(t *testing.T) {
 	}
 }
 
+func TestTypingDoesNotScrollTranscript(t *testing.T) {
+	m := newTestModel(t)
+	for i := 0; i < 80; i++ {
+		m.blocks = append(m.blocks, block{role: "system", content: "history line"})
+	}
+	m.refresh()
+	if !m.viewport.AtBottom() {
+		t.Fatal("chat viewport should start at the bottom")
+	}
+	offset := m.viewport.YOffset
+	m = typeKeys(t, m, "up and down u d j k b f")
+	if m.viewport.YOffset != offset {
+		t.Fatalf("typing letters scrolled the viewport: offset %d -> %d", offset, m.viewport.YOffset)
+	}
+	m = press(t, m, tea.KeyPgUp)
+	if m.viewport.YOffset >= offset {
+		t.Fatalf("pgup should still scroll the viewport, offset %d -> %d", offset, m.viewport.YOffset)
+	}
+}
+
 func TestStatusBarShowsContextGauge(t *testing.T) {
 	m := newTestModel(t)
 	bar := m.renderStatusBar()
