@@ -370,3 +370,54 @@ func TestDelegateReportsSiblingConflicts(t *testing.T) {
 		}
 	}
 }
+
+// TestExecuteToolAppliesContentOverride verifies that a hunk-review
+// approval (permission.Decision.Content set) replaces write_file's
+// proposed content before execution, not just approves the original call.
+func TestExecuteToolAppliesContentOverride(t *testing.T) {
+	override := "overridden content"
+	var received string
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "write_file"},
+		Action: tools.Action{Risk: tools.RiskWrite, Summary: "write"},
+		Run: func(_ context.Context, raw json.RawMessage) (string, error) {
+			var a struct{ Content string }
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return "", err
+			}
+			received = a.Content
+			return "wrote", nil
+		},
+	})
+	approver := func(context.Context, permission.Request) (permission.Decision, error) {
+		return permission.Decision{Allow: true, Content: &override}, nil
+	}
+	a := New(Options{Client: &fakeClient{}, ProviderName: "fake", Model: "m", Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, approver)})
+	call := provider.ToolCall{ID: "1", Name: "write_file", Arguments: json.RawMessage(`{"path":"x.txt","content":"original content"}`)}
+	result := a.executeTool(t.Context(), call, false, func(event.Event) {})
+	if received != override {
+		t.Fatalf("tool received content=%q, want override %q (full result: %s)", received, override, result)
+	}
+}
+
+func TestWithOverriddenContentRejectsUnsupportedTool(t *testing.T) {
+	content := "x"
+	if _, err := withOverriddenContent("edit_file", json.RawMessage(`{}`), content); err == nil {
+		t.Fatal("expected an error for a tool that doesn't support content override")
+	}
+}
+
+func TestWithOverriddenContentReplacesField(t *testing.T) {
+	content := "new content"
+	args, err := withOverriddenContent("write_file", json.RawMessage(`{"path":"a.txt","content":"old"}`), content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct{ Path, Content string }
+	if err := json.Unmarshal(args, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Path != "a.txt" || decoded.Content != content {
+		t.Fatalf("decoded=%+v", decoded)
+	}
+}

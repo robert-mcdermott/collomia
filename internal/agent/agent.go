@@ -192,6 +192,21 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 	return "", err
 }
 
+// withOverriddenContent replaces a write_file call's proposed content with
+// a selectively-applied version (the user approved only some hunks). It is
+// the only tool hunk review currently supports.
+func withOverriddenContent(toolName string, args json.RawMessage, content string) (json.RawMessage, error) {
+	if toolName != "write_file" {
+		return nil, fmt.Errorf("hunk selection is not supported for %q", toolName)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(args, &decoded); err != nil {
+		return nil, err
+	}
+	decoded["content"] = content
+	return json.Marshal(decoded)
+}
+
 func errorEvent(err error) event.Event {
 	e := event.New(event.KindError)
 	e.Error = err.Error()
@@ -213,6 +228,14 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if err != nil {
 		return "Tool denied: " + err.Error()
 	}
+	args := call.Arguments
+	if grant.ContentOverride != nil {
+		var overridden error
+		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
+		if overridden != nil {
+			return "Tool error: " + overridden.Error()
+		}
+	}
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
 	send(start)
@@ -221,7 +244,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
 	}
-	result, err := a.registry.ExecuteStream(ctx, call.Name, call.Arguments, onOutput)
+	result, err := a.registry.ExecuteStream(ctx, call.Name, args, onOutput)
 	a.permissions.RecordOutcome(call.Name, action, err)
 	if len(result) > a.maxToolOutput {
 		result = result[:a.maxToolOutput] + "\n… tool output truncated …"
