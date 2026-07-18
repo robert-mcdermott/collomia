@@ -54,7 +54,7 @@ func capabilityMatrix() []capabilityRow {
 		{"mcp", "tools over stdio / streamable HTTP", "implemented", "trusted servers only"},
 		{"mcp", "resources / prompts / elicitation / oauth", "unsupported", "roadmap phase 5"},
 		{"skills", "discovery + on-demand load", "implemented", "simple front matter; project skills require trust"},
-		{"subagents", "bounded read-only delegate", "implemented", "synchronous, no recursion"},
+		{"subagents", "parallel delegate scheduler", "implemented", "up to 4 concurrent tasks; write tasks isolated in their own git worktree; no recursion, no auto-merge"},
 		{"interface", "TUI (themes, palette, tabs, status bar)", "implemented", ""},
 		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; schema v1"},
 		{"platform", "macOS / Linux / Windows builds", "implemented", "CI-tested; sandbox backend is macOS-only"},

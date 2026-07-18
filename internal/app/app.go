@@ -40,6 +40,7 @@ type Runtime struct {
 	Session     *session.Session
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
+	Team        *agent.Team
 	Warnings    []error
 }
 
@@ -198,7 +199,8 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		agentOptions.OnCompaction = sess.AppendCompaction
 	}
 	agentRuntime := agent.New(agentOptions)
-	agentRuntime.AddDelegationTool()
+	team := agent.NewTeam()
+	agentRuntime.AddDelegationTool(cfg, opts.Approver, team)
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
 		sess.FlushInterrupted()
@@ -206,7 +208,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	for _, warning := range warnings {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
-	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Warnings: warnings}, nil
+	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Team: team, Warnings: warnings}, nil
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:

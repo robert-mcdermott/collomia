@@ -618,6 +618,30 @@ func (m *Model) sessionContent() string {
 		b.WriteString(m.styles.muted.Render("  /diff to review · /undo to revert the latest") + "\n\n")
 	}
 
+	if agents := m.runtime.Team.Snapshot(); len(agents) > 0 {
+		b.WriteString(h("Agents") + "\n")
+		marks := map[string]string{"running": "◐", "done": "●", "error": "✗"}
+		colors := map[string]string{"running": m.theme.Warning, "done": m.theme.Success, "error": m.theme.Error}
+		for _, a := range agents {
+			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(colors[a.Status])).Render(marks[a.Status])
+			kind := "read"
+			if a.Write {
+				kind = "write"
+			}
+			line := fmt.Sprintf("  %s %s  %s", mark, m.styles.accent.Render(a.Name), m.styles.muted.Render("("+kind+")"))
+			b.WriteString(line + "\n")
+			if a.Status == "running" {
+				continue
+			}
+			if len(a.Changed) > 0 {
+				b.WriteString(m.styles.muted.Render(fmt.Sprintf("      changed %d file(s) — worktree %s (branch %s)", len(a.Changed), a.Worktree, a.Branch)) + "\n")
+			} else if a.Status == "error" {
+				b.WriteString(m.styles.muted.Render("      "+a.Summary) + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	b.WriteString(h("Providers") + "\n")
 	for _, name := range m.runtime.Config.ProviderNames() {
 		p := m.runtime.Config.Providers[name]
@@ -800,6 +824,9 @@ func (m Model) renderStatusBar() string {
 			}
 		}
 		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("tasks %d/%d", done, len(current.Steps)), m.theme.Secondary)
+	}
+	if active := m.runtime.Team.Active(); active > 0 {
+		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("agents %d", active), m.theme.Accent)
 	}
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 
