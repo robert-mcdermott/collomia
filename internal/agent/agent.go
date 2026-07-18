@@ -89,6 +89,15 @@ func (a *Agent) appendMessage(message provider.Message) {
 	}
 }
 
+// SetHooks rebinds the persistence callbacks, used when switching durable
+// sessions at runtime.
+func (a *Agent) SetHooks(onMessage func(provider.Message), onCompaction func(provider.Message, int)) {
+	a.mu.Lock()
+	a.onMessage = onMessage
+	a.onCompaction = onCompaction
+	a.mu.Unlock()
+}
+
 // SetMessages replaces the active conversation, used when resuming a
 // durable session. The persistence hook is not notified (the messages are
 // already stored).

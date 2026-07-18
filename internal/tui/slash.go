@@ -35,8 +35,7 @@ func (m *Model) slash(line string) bool {
 		m.addSystem("Configured providers:\n" + strings.Join(lines, "\n"))
 	case "/model":
 		if len(args) == 0 {
-			provider, model := m.runtime.Agent.Selection()
-			m.addSystem(fmt.Sprintf("Current model: %s/%s\nUse /model provider/model to switch.", provider, model))
+			m.openModelPicker()
 			break
 		}
 		selection := strings.Join(args, " ")
@@ -130,15 +129,7 @@ func (m *Model) slash(line string) bool {
 		m.addSystem("Available tools: " + strings.Join(m.runtime.Registry.Names(), ", "))
 	case "/theme":
 		if len(args) == 0 {
-			var lines []string
-			for _, t := range themes {
-				marker := "  "
-				if t.Name == m.theme.Name {
-					marker = "▸ "
-				}
-				lines = append(lines, marker+t.Name)
-			}
-			m.addSystem("Available themes (current marked):\n" + strings.Join(lines, "\n") + "\n\nUse /theme <name> to switch. Set options.theme in " + "the configuration to persist it.")
+			m.openThemePicker()
 			break
 		}
 		t, ok := themeByName(args[0])
@@ -164,40 +155,19 @@ func (m *Model) slash(line string) bool {
 		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
 	case "/tasks":
 		m.addSystem(m.runtime.Plan.Current().Render())
-	case "/sessions":
-		if m.runtime.Sessions == nil {
-			m.addSystem("Session persistence is unavailable.")
+	case "/sessions", "/resume":
+		m.openSessionPicker()
+	case "/new":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
 			break
 		}
-		metas, err := m.runtime.Sessions.List()
-		if err != nil {
+		if err := m.runtime.NewSession(); err != nil {
 			m.addError(err)
 			break
 		}
-		var lines []string
-		current := ""
-		if m.runtime.Session != nil {
-			current = m.runtime.Session.Meta.ID
-		}
-		for i, meta := range metas {
-			if i >= 15 {
-				lines = append(lines, fmt.Sprintf("… and %d more (collo sessions list)", len(metas)-i))
-				break
-			}
-			marker := "  "
-			if meta.ID == current {
-				marker = "▸ "
-			}
-			title := meta.Title
-			if title == "" {
-				title = "(untitled)"
-			}
-			lines = append(lines, fmt.Sprintf("%s%s  %s  %d turns  %s", marker, meta.ID, title, meta.Turns, meta.UpdatedAt.Local().Format("01-02 15:04")))
-		}
-		if len(lines) == 0 {
-			lines = append(lines, "No saved sessions yet.")
-		}
-		m.addSystem("Sessions (current marked; resume with `collo --resume <id>`):\n" + strings.Join(lines, "\n"))
+		m.blocks = nil
+		m.addSystem("Started a fresh session (" + m.runtime.Session.Meta.ID + "). The previous conversation is saved — /sessions to return to it.")
 	case "/compact":
 		count, err := m.runtime.Agent.Compact(context.Background(), strings.Join(args, " "))
 		if err != nil {

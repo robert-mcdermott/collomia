@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -117,14 +119,108 @@ func TestPaletteDismissAndTabComplete(t *testing.T) {
 	if m.input.Value() != "/theme " {
 		t.Fatalf("tab should complete the command, got %q", m.input.Value())
 	}
-	if m.paletteOn {
-		t.Fatal("palette should close once arguments begin")
+	if !m.paletteOn || len(m.palette) == 0 || !m.palette[0].complete {
+		t.Fatalf("palette should now suggest theme names, got %+v", m.palette)
 	}
-	m = typeKeys(t, m, "x")
+	m = typeKeys(t, m, "dra")
+	if !m.paletteOn || !strings.Contains(m.palette[0].name, "dracula") {
+		t.Fatalf("argument completion should narrow to dracula, got %+v", m.palette)
+	}
 	m = press(t, m, tea.KeyEsc)
 	m = typeKeys(t, m, "y")
 	if m.paletteOn {
-		t.Fatal("palette should stay closed while typing arguments")
+		t.Fatal("palette should stay dismissed after esc while typing arguments")
+	}
+}
+
+func TestArgumentCompletionRunsCommand(t *testing.T) {
+	m := newTestModel(t)
+	m = typeKeys(t, m, "/theme syn")
+	if !m.paletteOn || len(m.palette) == 0 || !strings.Contains(m.palette[0].name, "synthwave") {
+		t.Fatalf("expected synthwave suggestion, got %+v", m.palette)
+	}
+	m = press(t, m, tea.KeyEnter)
+	if m.theme.Name != "synthwave" {
+		t.Fatalf("enter on an argument suggestion should run it, theme=%q", m.theme.Name)
+	}
+}
+
+func TestModelPickerOpensAndFilters(t *testing.T) {
+	m := newTestModel(t)
+	m = typeKeys(t, m, "/model")
+	m = press(t, m, tea.KeyEnter)
+	if m.picker == nil {
+		t.Fatal("/model with no args should open the provider picker")
+	}
+	if len(m.picker.matches) == 0 || m.picker.matches[0].title != "ollama" {
+		t.Fatalf("picker should list providers, got %+v", m.picker.matches)
+	}
+	// Modal: typing filters the picker, not the input.
+	m = typeKeys(t, m, "zzz")
+	if len(m.picker.matches) != 0 {
+		t.Fatalf("no provider should match zzz, got %+v", m.picker.matches)
+	}
+	m = press(t, m, tea.KeyEsc)
+	if m.picker != nil {
+		t.Fatal("esc should dismiss the picker")
+	}
+}
+
+func TestFuzzyScoring(t *testing.T) {
+	if _, ok := fuzzyScore("mdl", "model.go"); !ok {
+		t.Fatal("subsequence should match")
+	}
+	if _, ok := fuzzyScore("xyz", "model.go"); ok {
+		t.Fatal("non-subsequence should not match")
+	}
+	exact, _ := fuzzyScore("model", "model.go")
+	scattered, _ := fuzzyScore("model", "m1o2d3e4l5.go")
+	if exact <= scattered {
+		t.Fatalf("consecutive match should outrank scattered: %d vs %d", exact, scattered)
+	}
+}
+
+func TestFileMentionPickerInsertsPath(t *testing.T) {
+	m := newTestModel(t)
+	if err := os.WriteFile(filepath.Join(m.runtime.Workspace, "notes.md"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m = typeKeys(t, m, "explain @")
+	if m.picker == nil {
+		t.Fatal("typing @ at a word boundary should open the file picker")
+	}
+	m = typeKeys(t, m, "notes")
+	if len(m.picker.matches) == 0 || m.picker.matches[0].id != "notes.md" {
+		t.Fatalf("picker should match notes.md, got %+v", m.picker.matches)
+	}
+	m = press(t, m, tea.KeyEnter)
+	if m.picker != nil {
+		t.Fatal("picker should close after selection")
+	}
+	if got := m.input.Value(); got != "explain notes.md " {
+		t.Fatalf("input=%q", got)
+	}
+	// An email-like @ must not open the picker.
+	m.input.Reset()
+	m = typeKeys(t, m, "mail user@")
+	if m.picker != nil {
+		t.Fatal("@ inside a word must not open the picker")
+	}
+}
+
+func TestNewSessionAndPickerSwitch(t *testing.T) {
+	m := newTestModel(t)
+	m.blocks = append(m.blocks, block{role: "user", content: "old talk"})
+	first := m.runtime.Session.Meta.ID
+	m = typeKeys(t, m, "/new")
+	m = press(t, m, tea.KeyEnter)
+	if m.runtime.Session.Meta.ID == first {
+		t.Fatal("/new should create a fresh session")
+	}
+	m = typeKeys(t, m, "/sessions")
+	m = press(t, m, tea.KeyEnter)
+	if m.picker == nil {
+		t.Fatal("/sessions should open the session picker")
 	}
 }
 

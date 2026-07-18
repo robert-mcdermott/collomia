@@ -177,17 +177,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	board := plan.NewBoard()
 	registry.Add(plan.Tool(board))
 	if sess != nil {
-		board.OnUpdate = func(p plan.Plan) {
-			if data, err := json.Marshal(p); err == nil {
-				sess.AppendPlan(data)
-			}
-		}
-		if len(sess.PlanRaw) > 0 {
-			var restored plan.Plan
-			if json.Unmarshal(sess.PlanRaw, &restored) == nil {
-				_ = board.Set(restored)
-			}
-		}
+		attachBoard(board, sess)
 	}
 	if opts.Asker != nil {
 		registry.Add(askUserTool(opts.Asker))
@@ -207,6 +197,66 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
 	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Warnings: warnings}, nil
+}
+
+// attachBoard wires plan persistence to a session and restores its last
+// recorded plan.
+func attachBoard(board *plan.Board, sess *session.Session) {
+	board.OnUpdate = func(p plan.Plan) {
+		if data, err := json.Marshal(p); err == nil {
+			sess.AppendPlan(data)
+		}
+	}
+	if len(sess.PlanRaw) > 0 {
+		var restored plan.Plan
+		if json.Unmarshal(sess.PlanRaw, &restored) == nil {
+			board.Restore(restored)
+			return
+		}
+	}
+	board.Clear()
+}
+
+// SwitchSession loads another saved session into the running agent:
+// conversation, plan, and persistence hooks all move over. The previous
+// session file is closed; nothing about it is lost.
+func (r *Runtime) SwitchSession(id string) error {
+	if r.Sessions == nil {
+		return fmt.Errorf("session persistence is unavailable")
+	}
+	sess, err := r.Sessions.Load(id)
+	if err != nil {
+		return err
+	}
+	if r.Session != nil {
+		r.Session.Close()
+	}
+	r.Session = sess
+	r.Agent.SetMessages(sess.Active())
+	sess.FlushInterrupted()
+	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	attachBoard(r.Plan, sess)
+	return nil
+}
+
+// NewSession starts a fresh session, leaving the previous one saved.
+func (r *Runtime) NewSession() error {
+	if r.Sessions == nil {
+		return fmt.Errorf("session persistence is unavailable")
+	}
+	providerName, model := r.Agent.Selection()
+	sess, err := r.Sessions.New(providerName, model)
+	if err != nil {
+		return err
+	}
+	if r.Session != nil {
+		r.Session.Close()
+	}
+	r.Session = sess
+	r.Agent.Clear()
+	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	attachBoard(r.Plan, sess)
+	return nil
 }
 
 // askUserTool lets the model pause for a concise typed answer without

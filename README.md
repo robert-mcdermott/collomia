@@ -6,7 +6,7 @@ It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-awa
 
 ## Highlights
 
-- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette, collapsible tool output, and a status bar with a live context gauge.
+- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, and a status bar with live context and task-progress gauges.
 - Ten switchable color themes (including Fred Hutch dark/light) that also set the terminal background to match.
 - Streaming OpenAI-compatible and Anthropic-compatible conversations with native tool calling.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
@@ -111,7 +111,8 @@ Inside the TUI:
 | `/tasks` | Show the structured task plan the agent maintains. |
 | `/diff` | Show every file change the agent made this session. |
 | `/undo` | Revert the agent's most recent file change. |
-| `/sessions` | List saved sessions (resume with `collo --resume <id>`). |
+| `/sessions` | Fuzzy-pick a saved session and resume it in place. |
+| `/new` | Start a fresh session; the current one stays saved. |
 | `/compact [focus]` | Summarize older context to free the model window. |
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one. |
@@ -122,7 +123,7 @@ Inside the TUI:
 | `/clear` | Clear conversation history and usage. |
 | `/help` | Show command help. |
 
-Typing `/` opens a command palette that filters as you type: ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. `ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output.
+Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. `ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan and every file the agent has changed, and the terminal bell rings when an approval or question is waiting.
 
 ## Themes
 

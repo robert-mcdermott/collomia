@@ -4,28 +4,34 @@ import (
 	"strings"
 )
 
-type commandInfo struct{ name, args, desc string }
+type commandInfo struct {
+	name, args, desc string
+	// complete marks palette entries whose name is a full command line
+	// (argument completion) rather than a command awaiting arguments.
+	complete bool
+}
 
 var slashCommands = []commandInfo{
-	{"/help", "", "show slash commands and keybindings"},
-	{"/status", "", "workspace, provider, model, and autonomy"},
-	{"/model", "[provider[/model]]", "show or switch the active provider/model"},
-	{"/models", "", "list configured providers and default models"},
-	{"/context", "", "token usage and estimated context size"},
-	{"/plan", "[on|off]", "toggle read-only planning mode"},
-	{"/autonomy", "[mode]", "set ask, workspace, or autopilot"},
-	{"/theme", "[name]", "list or switch color themes"},
-	{"/skills", "", "list discovered SKILL.md / skills.md instructions"},
-	{"/mcp", "", "list connected MCP servers"},
-	{"/tools", "", "list tools visible to the agent"},
-	{"/diff", "", "show all agent file changes this session"},
-	{"/undo", "", "revert the agent's most recent file change"},
-	{"/tasks", "", "show the structured task plan"},
-	{"/sessions", "", "list saved sessions for this workspace"},
-	{"/compact", "[focus]", "summarize older context to free the window"},
-	{"/config", "", "show the active configuration path"},
-	{"/clear", "", "clear conversation context"},
-	{"/quit", "", "exit Collomia"},
+	{name: "/help", args: "", desc: "show slash commands and keybindings"},
+	{name: "/status", args: "", desc: "workspace, provider, model, and autonomy"},
+	{name: "/model", args: "[provider[/model]]", desc: "show or switch the active provider/model"},
+	{name: "/models", args: "", desc: "list configured providers and default models"},
+	{name: "/context", args: "", desc: "token usage and estimated context size"},
+	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
+	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
+	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
+	{name: "/skills", args: "", desc: "list discovered SKILL.md / skills.md instructions"},
+	{name: "/mcp", args: "", desc: "list connected MCP servers"},
+	{name: "/tools", args: "", desc: "list tools visible to the agent"},
+	{name: "/diff", args: "", desc: "show all agent file changes this session"},
+	{name: "/undo", args: "", desc: "revert the agent's most recent file change"},
+	{name: "/tasks", args: "", desc: "show the structured task plan"},
+	{name: "/sessions", args: "", desc: "pick a saved session to resume"},
+	{name: "/new", args: "", desc: "start a fresh session (current one stays saved)"},
+	{name: "/compact", args: "[focus]", desc: "summarize older context to free the window"},
+	{name: "/config", args: "", desc: "show the active configuration path"},
+	{name: "/clear", args: "", desc: "clear conversation context"},
+	{name: "/quit", args: "", desc: "exit Collomia"},
 }
 
 // matchCommands returns slash commands matching the typed token, prefix
@@ -48,6 +54,49 @@ func matchCommands(token string) []commandInfo {
 	return append(prefix, substr...)
 }
 
+// argumentMatches suggests completion values for a slash command's first
+// argument, filtered by the fuzzy matcher.
+func (m *Model) argumentMatches(command, partial string) []commandInfo {
+	type candidate struct{ value, desc string }
+	var candidates []candidate
+	switch command {
+	case "/theme":
+		for _, t := range themes {
+			desc := "color theme"
+			if t.Name == m.theme.Name {
+				desc = "current theme"
+			}
+			candidates = append(candidates, candidate{t.Name, desc})
+		}
+	case "/autonomy":
+		candidates = []candidate{
+			{"ask", "confirm every write, command, and MCP call"},
+			{"workspace", "auto-approve workspace writes; commands still ask"},
+			{"autopilot", "auto-approve workspace actions (hard denials remain)"},
+		}
+	case "/plan":
+		candidates = []candidate{{"on", "read-only planning mode"}, {"off", "execution mode"}}
+	case "/model":
+		for _, name := range m.runtime.Config.ProviderNames() {
+			p := m.runtime.Config.Providers[name]
+			desc := p.Type
+			if p.Model != "" {
+				desc += " · " + p.Model
+			}
+			candidates = append(candidates, candidate{name, desc})
+		}
+	default:
+		return nil
+	}
+	var out []commandInfo
+	for _, c := range candidates {
+		if _, ok := fuzzyScore(partial, c.value); ok {
+			out = append(out, commandInfo{name: command + " " + c.value, desc: c.desc, complete: true})
+		}
+	}
+	return out
+}
+
 const paletteMaxRows = 7
 
 // updatePalette recomputes the command palette from the current input value.
@@ -68,10 +117,20 @@ func (m *Model) updatePalette() bool {
 		if len(fields) > 0 {
 			token = fields[0]
 		}
-		// Once the user is typing arguments, stop filtering on them.
-		if len(fields) <= 1 && !strings.HasSuffix(value, " ") {
+		switch {
+		case len(fields) <= 1 && !strings.HasSuffix(value, " "):
 			matches = matchCommands(token)
 			open = len(matches) > 0
+		case len(fields) >= 1:
+			// Argument completion: suggest known values for the command.
+			partial := ""
+			if len(fields) > 1 {
+				partial = fields[1]
+			}
+			if len(fields) <= 2 && !strings.HasSuffix(value, " ") || (len(fields) == 1 && strings.HasSuffix(value, " ")) {
+				matches = m.argumentMatches(fields[0], partial)
+				open = len(matches) > 0
+			}
 		}
 	}
 	prevOpen, prevRows := m.paletteOn, len(m.palette)
