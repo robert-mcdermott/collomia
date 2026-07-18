@@ -517,7 +517,7 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 			return fmt.Sprintf("[%s] error: %s", name, err), name, nil
 		}
 		childWorkspace = wt.path
-		reg, _, buildErr := tools.Builtins(wt.path, cfg)
+		reg, _, childProcs, buildErr := tools.Builtins(wt.path, cfg)
 		if buildErr != nil {
 			wt.remove(childCtx)
 			if team != nil {
@@ -525,6 +525,8 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 			}
 			return fmt.Sprintf("[%s] error: %s", name, buildErr), name, nil
 		}
+		// Background processes a child starts must not outlive the child.
+		defer childProcs.StopAll()
 		childRegistry = reg
 		childManager := permission.New(cfg.Permissions, approver)
 		if ledger, lErr := audit.Open(wt.path); lErr == nil {

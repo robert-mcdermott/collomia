@@ -629,6 +629,18 @@ func (m *Model) sessionContent() string {
 		b.WriteString(m.styles.muted.Render("  /diff to review · /undo to revert the latest") + "\n\n")
 	}
 
+	if procs := m.runtime.Processes.Snapshot(); len(procs) > 0 {
+		b.WriteString(h("Background processes") + "\n")
+		for _, p := range procs {
+			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Success)).Render("●")
+			if !p.Running {
+				mark = m.styles.muted.Render("○")
+			}
+			b.WriteString(fmt.Sprintf("  %s [%d] %s  %s\n", mark, p.ID, m.styles.accent.Render(p.Command), m.styles.muted.Render(p.Status)))
+		}
+		b.WriteString(m.styles.muted.Render("  /ps to manage · all stopped at exit") + "\n\n")
+	}
+
 	if agents := m.runtime.Team.Snapshot(); len(agents) > 0 {
 		b.WriteString(h("Agents") + "\n")
 		marks := map[string]string{"running": "◐", "done": "●", "error": "✗"}
@@ -847,6 +859,9 @@ func (m Model) renderStatusBar() string {
 	}
 	if active := m.runtime.Team.Active(); active > 0 {
 		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("agents %d", active), m.theme.Accent)
+	}
+	if running := m.runtime.Processes.Running(); running > 0 {
+		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("procs %d", running), m.theme.Secondary)
 	}
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 

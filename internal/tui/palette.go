@@ -28,6 +28,7 @@ var slashCommands = []commandInfo{
 	{name: "/diff", args: "", desc: "show all agent file changes this session"},
 	{name: "/undo", args: "", desc: "revert the agent's most recent file change"},
 	{name: "/tasks", args: "", desc: "show the structured task plan"},
+	{name: "/ps", args: "", desc: "list background processes (stop with /ps stop <id>)"},
 	{name: "/sessions", args: "", desc: "pick a saved session to resume"},
 	{name: "/new", args: "", desc: "start a fresh session (current one stays saved)"},
 	{name: "/compact", args: "[focus]", desc: "summarize older context to free the window"},

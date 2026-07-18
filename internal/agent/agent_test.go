@@ -237,7 +237,7 @@ func TestDelegateWriteTaskUsesIsolatedWorktree(t *testing.T) {
 		}
 		return provider.Response{Content: "wrote the file"}, nil
 	}}
-	registry, _, err := tools.Builtins(workspace, appconfig.Config{})
+	registry, _, _, err := tools.Builtins(workspace, appconfig.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestDelegateReportsSiblingConflicts(t *testing.T) {
 		}
 		return provider.Response{Content: "done"}, nil
 	}}
-	registry, _, err := tools.Builtins(workspace, appconfig.Config{})
+	registry, _, _, err := tools.Builtins(workspace, appconfig.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

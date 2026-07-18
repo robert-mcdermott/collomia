@@ -41,6 +41,7 @@ type Runtime struct {
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
 	Team        *agent.Team
+	Processes   *tools.ProcessManager
 	Warnings    []error
 }
 
@@ -114,7 +115,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	registry, tracker, err := tools.Builtins(workspace, cfg)
+	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +209,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	for _, warning := range warnings {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
-	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Team: team, Warnings: warnings}, nil
+	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings}, nil
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -360,6 +361,10 @@ func askUserTool(ask func(ctx context.Context, question string, options []string
 }
 
 func (r *Runtime) Close() {
+	if r.Processes != nil {
+		// Background processes never outlive the session.
+		r.Processes.StopAll()
+	}
 	if r.MCP != nil {
 		r.MCP.Close()
 	}

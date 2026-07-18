@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
@@ -182,6 +184,31 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
 	case "/tasks":
 		m.addSystem(m.runtime.Plan.Current().Render())
+	case "/ps":
+		if len(args) == 2 && args[0] == "stop" {
+			id, convErr := strconv.Atoi(args[1])
+			if convErr != nil {
+				m.addError(fmt.Errorf("usage: /ps stop <id>"))
+				break
+			}
+			out, err := m.runtime.Registry.Execute(context.Background(), "stop_process", []byte(fmt.Sprintf(`{"id":%d}`, id)))
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.addSystem(out)
+			break
+		}
+		procs := m.runtime.Processes.Snapshot()
+		if len(procs) == 0 {
+			m.addSystem("No background processes have been started this session.")
+			break
+		}
+		var lines []string
+		for _, p := range procs {
+			lines = append(lines, fmt.Sprintf("[%d] %s — %s (started %s ago)", p.ID, p.Command, p.Status, time.Since(p.Started).Round(time.Second)))
+		}
+		m.addSystem("Background processes:\n" + strings.Join(lines, "\n") + "\n\n/ps stop <id> stops one; all are stopped at exit.")
 	case "/sessions", "/resume":
 		m.openSessionPicker()
 	case "/new":
