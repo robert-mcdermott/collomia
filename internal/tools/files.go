@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
@@ -35,7 +36,7 @@ func (t ReadFileTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, err
 	}
 	p, o, e := t.Guard.Resolve(a.Path)
-	return Action{Risk: RiskRead, Summary: "read " + p, Outside: o}, e
+	return Action{Risk: RiskRead, Summary: "read " + p, Outside: o, Paths: []string{p}}, e
 }
 func (t ReadFileTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
 	var a struct {
@@ -102,7 +103,7 @@ func (t ListFilesTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, err
 	}
 	p, o, e := t.Guard.Resolve(a.Path)
-	return Action{Risk: RiskRead, Summary: "list " + p, Outside: o}, e
+	return Action{Risk: RiskRead, Summary: "list " + p, Outside: o, Paths: []string{p}}, e
 }
 func (t ListFilesTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
 	var a struct {
@@ -168,7 +169,7 @@ func (t SearchFilesTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, err
 	}
 	p, o, e := t.Guard.Resolve(a.Path)
-	return Action{Risk: RiskRead, Summary: "search " + p, Outside: o}, e
+	return Action{Risk: RiskRead, Summary: "search " + p, Outside: o, Paths: []string{p}}, e
 }
 func (t SearchFilesTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a struct {
@@ -253,20 +254,29 @@ func (t SearchFilesTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 	return strings.Join(matches, "\n"), nil
 }
 
-type WriteFileTool struct{ Guard *PathGuard }
+type WriteFileTool struct {
+	Guard   *PathGuard
+	Tracker *diffmodel.Tracker
+}
 
 func (t WriteFileTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{Name: "write_file", Description: "Create or replace a text file. Parent directories are created. Prefer edit_file for focused changes to an existing file.", InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`)}
 }
 func (t WriteFileTool) Assess(raw json.RawMessage) (Action, error) {
-	var a struct {
-		Path string `json:"path"`
-	}
+	var a struct{ Path, Content string }
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return Action{}, err
 	}
 	p, o, e := t.Guard.Resolve(a.Path)
-	return Action{Risk: RiskWrite, Summary: "write " + p, Outside: o}, e
+	action := Action{Risk: RiskWrite, Summary: "write " + p, Outside: o, Paths: []string{p}}
+	if e == nil {
+		before := ""
+		if data, readErr := os.ReadFile(p); readErr == nil {
+			before = string(data)
+		}
+		action.Preview = diffmodel.Unified(displayName(t.Guard.Workspace, p), before, a.Content)
+	}
+	return action, e
 }
 func (t WriteFileTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
 	var a struct{ Path, Content string }
@@ -281,16 +291,35 @@ func (t WriteFileTool) Execute(_ context.Context, raw json.RawMessage) (string, 
 		return "", err
 	}
 	mode := os.FileMode(0o644)
+	var before *string
 	if info, e := os.Stat(p); e == nil {
 		mode = info.Mode().Perm()
+		if data, readErr := os.ReadFile(p); readErr == nil {
+			text := string(data)
+			before = &text
+		}
 	}
 	if err = os.WriteFile(p, []byte(a.Content), mode); err != nil {
 		return "", err
 	}
+	if t.Tracker != nil {
+		after := a.Content
+		t.Tracker.Record(p, "write", before, &after)
+	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p), nil
 }
 
-type EditFileTool struct{ Guard *PathGuard }
+func displayName(workspace, path string) string {
+	if rel, err := filepath.Rel(workspace, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.ToSlash(rel)
+	}
+	return path
+}
+
+type EditFileTool struct {
+	Guard   *PathGuard
+	Tracker *diffmodel.Tracker
+}
 
 func (t EditFileTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{Name: "edit_file", Description: "Replace one exact, unique text fragment in a file. The operation fails if old_text is missing or appears more than once, preventing ambiguous edits.", InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"],"additionalProperties":false}`)}
@@ -298,12 +327,21 @@ func (t EditFileTool) Definition() provider.ToolDefinition {
 func (t EditFileTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
 		Path string `json:"path"`
+		Old  string `json:"old_text"`
+		New  string `json:"new_text"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return Action{}, err
 	}
 	p, o, e := t.Guard.Resolve(a.Path)
-	return Action{Risk: RiskWrite, Summary: "edit " + p, Outside: o}, e
+	action := Action{Risk: RiskWrite, Summary: "edit " + p, Outside: o, Paths: []string{p}}
+	if e == nil && a.Old != "" {
+		if data, readErr := os.ReadFile(p); readErr == nil && strings.Count(string(data), a.Old) == 1 {
+			updated := strings.Replace(string(data), a.Old, a.New, 1)
+			action.Preview = diffmodel.Unified(displayName(t.Guard.Workspace, p), string(data), updated)
+		}
+	}
+	return action, e
 }
 func (t EditFileTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
 	var a struct {
@@ -336,6 +374,10 @@ func (t EditFileTool) Execute(_ context.Context, raw json.RawMessage) (string, e
 	}
 	if err = os.WriteFile(p, []byte(updated), info.Mode().Perm()); err != nil {
 		return "", err
+	}
+	if t.Tracker != nil {
+		before := string(data)
+		t.Tracker.Record(p, "edit", &before, &updated)
 	}
 	return fmt.Sprintf("edited %s", p), nil
 }

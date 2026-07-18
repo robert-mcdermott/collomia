@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,18 +12,48 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/robert-mcdermott/collomia/internal/trust"
 )
 
 const ProjectFile = ".collomia.json"
 
+// CurrentSchemaVersion is the configuration schema this build reads and
+// writes. Older files without schema_version are treated as version 1.
+const CurrentSchemaVersion = 1
+
 type Config struct {
+	SchemaVersion   int                  `json:"schema_version,omitempty"`
 	DefaultProvider string               `json:"default_provider"`
 	DefaultModel    string               `json:"default_model"`
 	Providers       map[string]Provider  `json:"providers"`
 	Permissions     Permissions          `json:"permissions"`
 	MCP             map[string]MCPServer `json:"mcp,omitempty"`
 	Options         Options              `json:"options,omitempty"`
-	Source          string               `json:"-"`
+
+	// Source names the highest-precedence file layer for display.
+	Source string `json:"-"`
+	// Layers records every configuration layer in application order.
+	Layers []Layer `json:"-"`
+	// Origins maps dotted key paths to the layer that last set them.
+	Origins map[string]string `json:"-"`
+	// ProjectTrusted is false when a project configuration exists but was
+	// quarantined because the workspace is not trusted.
+	ProjectTrusted bool `json:"-"`
+	// Quarantined lists project-provided capabilities that were ignored.
+	Quarantined []string `json:"-"`
+	// EnvProvider/EnvModel hold COLLO_PROVIDER / COLLO_MODEL overrides.
+	EnvProvider string `json:"-"`
+	EnvModel    string `json:"-"`
+}
+
+// Layer describes one source of configuration and what it contributed.
+type Layer struct {
+	Name    string // defaults, user, project, env
+	Path    string // backing file, when there is one
+	Applied bool
+	Note    string
+	Keys    []string // dotted key paths this layer set
 }
 
 type Provider struct {
@@ -48,6 +79,34 @@ type Permissions struct {
 	AllowedTools          []string `json:"allowed_tools,omitempty"`
 	DeniedTools           []string `json:"denied_tools,omitempty"`
 	DeniedCommands        []string `json:"denied_commands,omitempty"`
+	// Rules are ordered allow/prompt/deny decisions matched before the
+	// autonomy mode's defaults. See internal/policy.
+	Rules []Rule `json:"rules,omitempty"`
+	// Sandbox selects OS sandbox enforcement for commands: off, auto, require.
+	Sandbox string `json:"sandbox,omitempty"`
+	// SandboxAllowNetwork permits network egress inside the sandbox.
+	SandboxAllowNetwork bool `json:"sandbox_allow_network,omitempty"`
+	// CommandEnv controls the environment passed to agent commands: "full"
+	// (inherit everything, the default) or "minimal" (PATH, HOME, and other
+	// basics only, keeping parent secrets out of child processes).
+	CommandEnv string `json:"command_env,omitempty"`
+	// ReviewerCommand, when set, runs before any non-read action is
+	// auto-approved. It receives the request as JSON on stdin; replying
+	// {"decision":"deny"} (or exiting non-zero) escalates the action to an
+	// interactive prompt instead of silently allowing it.
+	ReviewerCommand string `json:"reviewer_command,omitempty"`
+}
+
+// Rule is one scoped approval rule. Empty match fields match anything; all
+// populated fields must match. Patterns use filepath.Match globs.
+type Rule struct {
+	Action  string `json:"action"`            // allow, prompt, deny
+	Tool    string `json:"tool,omitempty"`    // tool name glob, e.g. run_command or mcp_*
+	Path    string `json:"path,omitempty"`    // resolved path glob
+	Command string `json:"command,omitempty"` // command executable glob, e.g. go or git
+	Host    string `json:"host,omitempty"`    // host/domain glob for network-bearing tools
+	Server  string `json:"server,omitempty"`  // MCP server name glob
+	Reason  string `json:"reason,omitempty"`  // shown to the user when the rule fires
 }
 
 type MCPServer struct {
@@ -68,17 +127,18 @@ type Options struct {
 	DisabledTools       []string `json:"disabled_tools,omitempty"`
 	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
 	Theme               string   `json:"theme,omitempty"`
+	Debug               bool     `json:"debug,omitempty"`
 }
 
 func Defaults() Config {
-	model := envOr("COLLO_MODEL", "qwen3-coder")
 	return Config{
+		SchemaVersion:   CurrentSchemaVersion,
 		DefaultProvider: "ollama",
-		DefaultModel:    model,
+		DefaultModel:    "qwen3-coder",
 		Providers: map[string]Provider{
 			"ollama": {
 				Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1",
-				Model: model, Context: 32768, MaxTokens: 8192,
+				Model: "qwen3-coder", Context: 32768, MaxTokens: 8192,
 			},
 		},
 		Permissions: Permissions{
@@ -103,40 +163,125 @@ func GlobalPath() (string, error) {
 	return filepath.Join(dir, "collomia", "config.json"), nil
 }
 
-// Load checks the project configuration first, then the user configuration.
-// Environment references are expanded only in credential-bearing string fields;
-// shell expressions are deliberately never evaluated.
-func Load(workspace string) (Config, error) {
-	candidates := []string{filepath.Join(workspace, ProjectFile)}
-	if global, err := GlobalPath(); err == nil {
-		candidates = append(candidates, global)
-	}
-	for _, path := range candidates {
-		data, err := os.ReadFile(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return Config{}, fmt.Errorf("read config %s: %w", path, err)
-		}
-		cfg := Defaults()
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return Config{}, fmt.Errorf("parse config %s: %w", path, err)
-		}
-		cfg.Source = path
-		cfg.normalize()
-		if err := cfg.Validate(); err != nil {
-			return Config{}, fmt.Errorf("config %s: %w", path, err)
-		}
-		return cfg, nil
-	}
+type LoadOptions struct {
+	// Strict rejects unknown fields and treats warnings as errors.
+	Strict bool
+	// TrustStatus overrides the trust lookup for the project layer; used by
+	// tests. nil consults the default trust store.
+	TrustStatus func(workspace string, configData []byte) trust.Status
+}
+
+// Load merges defaults, the user configuration, the (trusted) project
+// configuration, and environment overrides, in that precedence order.
+func Load(workspace string) (Config, error) { return LoadWithOptions(workspace, LoadOptions{}) }
+
+func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 	cfg := Defaults()
+	cfg.Origins = map[string]string{}
+	for _, key := range flattenJSON(mustJSON(cfg)) {
+		cfg.Origins[key] = "defaults"
+	}
+	cfg.Layers = []Layer{{Name: "defaults", Applied: true}}
 	cfg.Source = "defaults"
+	cfg.ProjectTrusted = true
+
+	if global, err := GlobalPath(); err == nil {
+		if err := cfg.applyFile(global, "user", opts.Strict); err != nil {
+			return cfg, err
+		}
+	}
+
+	projectPath := filepath.Join(workspace, ProjectFile)
+	data, err := os.ReadFile(projectPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// no project layer
+	case err != nil:
+		return cfg, fmt.Errorf("read config %s: %w", projectPath, err)
+	default:
+		status := trust.StatusTrusted
+		if opts.TrustStatus != nil {
+			status = opts.TrustStatus(workspace, data)
+		} else if store, storeErr := trust.Load(); storeErr == nil {
+			status = store.Check(workspace, data)
+		}
+		if status == trust.StatusTrusted {
+			if err := cfg.applyFile(projectPath, "project", opts.Strict); err != nil {
+				return cfg, err
+			}
+		} else {
+			cfg.ProjectTrusted = false
+			note := "workspace is not trusted"
+			if status == trust.StatusChanged {
+				note = "project configuration changed since it was trusted"
+			}
+			cfg.Layers = append(cfg.Layers, Layer{Name: "project", Path: projectPath, Applied: false, Note: note + "; run `collo trust` to approve it"})
+			cfg.Quarantined = append(cfg.Quarantined, "project configuration "+projectPath)
+		}
+	}
+
+	cfg.applyEnv()
 	cfg.normalize()
+	if errs := cfg.ValidateFields(); len(errs) > 0 {
+		return cfg, ValidationError{Errors: errs}
+	}
 	return cfg, nil
 }
 
+func (c *Config) applyFile(path, layer string, strict bool) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+	var probe struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if probe.SchemaVersion > CurrentSchemaVersion {
+		return fmt.Errorf("config %s: schema_version %d is newer than this build supports (%d); upgrade collo", path, probe.SchemaVersion, CurrentSchemaVersion)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(c); err != nil {
+		return fmt.Errorf("parse config %s: %w", path, err)
+	}
+	keys := flattenJSON(data)
+	for _, key := range keys {
+		c.Origins[key] = layer
+	}
+	c.Layers = append(c.Layers, Layer{Name: layer, Path: path, Applied: true, Keys: keys})
+	c.Source = path
+	return nil
+}
+
+func (c *Config) applyEnv() {
+	var keys []string
+	if v := os.Getenv("COLLO_PROVIDER"); v != "" {
+		c.EnvProvider = v
+		c.Origins["default_provider"] = "env"
+		keys = append(keys, "default_provider (COLLO_PROVIDER)")
+	}
+	if v := os.Getenv("COLLO_MODEL"); v != "" {
+		c.EnvModel = v
+		c.Origins["default_model"] = "env"
+		keys = append(keys, "default_model (COLLO_MODEL)")
+	}
+	if len(keys) > 0 {
+		c.Layers = append(c.Layers, Layer{Name: "env", Applied: true, Keys: keys})
+	}
+}
+
 func (c *Config) normalize() {
+	if c.SchemaVersion == 0 {
+		c.SchemaVersion = CurrentSchemaVersion
+	}
 	if c.Providers == nil {
 		c.Providers = map[string]Provider{}
 	}
@@ -145,6 +290,9 @@ func (c *Config) normalize() {
 	}
 	if c.Permissions.Mode == "" {
 		c.Permissions.Mode = "ask"
+	}
+	if c.Permissions.Sandbox == "" {
+		c.Permissions.Sandbox = "off"
 	}
 	if c.Options.MaxIterations <= 0 {
 		c.Options.MaxIterations = 24
@@ -182,41 +330,106 @@ func (c *Config) normalize() {
 	}
 }
 
-func (c Config) Validate() error {
+// FieldError ties a validation failure to the configuration key that caused it.
+type FieldError struct {
+	Field   string
+	Message string
+}
+
+func (e FieldError) Error() string { return e.Field + ": " + e.Message }
+
+type ValidationError struct{ Errors []FieldError }
+
+func (e ValidationError) Error() string {
+	parts := make([]string, len(e.Errors))
+	for i, fe := range e.Errors {
+		parts[i] = fe.Error()
+	}
+	return "invalid configuration:\n  - " + strings.Join(parts, "\n  - ")
+}
+
+// ValidateFields returns every problem found, each tied to its field path.
+func (c Config) ValidateFields() []FieldError {
+	var errs []FieldError
 	if len(c.Providers) == 0 {
-		return errors.New("at least one provider is required")
+		errs = append(errs, FieldError{"providers", "at least one provider is required"})
+		return errs
 	}
-	provider, ok := c.Providers[c.DefaultProvider]
+	providerName := c.DefaultProvider
+	if c.EnvProvider != "" {
+		providerName = c.EnvProvider
+	}
+	provider, ok := c.Providers[providerName]
 	if !ok {
-		return fmt.Errorf("default provider %q is not configured", c.DefaultProvider)
-	}
-	if c.DefaultModel == "" && provider.Model == "" {
-		return errors.New("default_model or provider.model is required")
+		errs = append(errs, FieldError{"default_provider", fmt.Sprintf("provider %q is not configured (configured: %s)", providerName, strings.Join(c.ProviderNames(), ", "))})
+	} else if c.DefaultModel == "" && c.EnvModel == "" && provider.Model == "" {
+		errs = append(errs, FieldError{"default_model", "default_model or provider.model is required"})
 	}
 	switch c.Permissions.Mode {
 	case "ask", "workspace", "autopilot":
 	default:
-		return fmt.Errorf("permission mode must be ask, workspace, or autopilot (got %q)", c.Permissions.Mode)
+		errs = append(errs, FieldError{"permissions.mode", fmt.Sprintf("must be ask, workspace, or autopilot (got %q)", c.Permissions.Mode)})
+	}
+	switch c.Permissions.Sandbox {
+	case "", "off", "auto", "require":
+	default:
+		errs = append(errs, FieldError{"permissions.sandbox", fmt.Sprintf("must be off, auto, or require (got %q)", c.Permissions.Sandbox)})
+	}
+	switch c.Permissions.CommandEnv {
+	case "", "full", "minimal":
+	default:
+		errs = append(errs, FieldError{"permissions.command_env", fmt.Sprintf("must be full or minimal (got %q)", c.Permissions.CommandEnv)})
 	}
 	for name, provider := range c.Providers {
+		field := "providers." + name
 		switch provider.Type {
 		case "openai", "openai-compatible", "anthropic", "anthropic-compatible", "bedrock", "bedrock-mantle", "azure-openai", "azure-foundry", "azure-foundry-anthropic":
 		default:
-			return fmt.Errorf("provider %q has unsupported type %q", name, provider.Type)
+			errs = append(errs, FieldError{field + ".type", fmt.Sprintf("unsupported type %q", provider.Type)})
 		}
 		if provider.Type != "bedrock" && provider.BaseURL == "" {
-			return fmt.Errorf("provider %q requires base_url", name)
+			errs = append(errs, FieldError{field + ".base_url", "required for this provider type"})
 		}
 	}
-	for _, pattern := range c.Permissions.DeniedCommands {
+	for i, pattern := range c.Permissions.DeniedCommands {
 		if _, err := regexp.Compile(pattern); err != nil {
-			return fmt.Errorf("invalid denied_commands pattern %q: %w", pattern, err)
+			errs = append(errs, FieldError{fmt.Sprintf("permissions.denied_commands[%d]", i), err.Error()})
 		}
+	}
+	for i, rule := range c.Permissions.Rules {
+		field := fmt.Sprintf("permissions.rules[%d]", i)
+		switch rule.Action {
+		case "allow", "prompt", "deny":
+		default:
+			errs = append(errs, FieldError{field + ".action", fmt.Sprintf("must be allow, prompt, or deny (got %q)", rule.Action)})
+		}
+		if rule.Tool == "" && rule.Path == "" && rule.Command == "" && rule.Host == "" && rule.Server == "" {
+			errs = append(errs, FieldError{field, "must match on at least one of tool, path, command, host, or server"})
+		}
+		for _, glob := range []string{rule.Tool, rule.Path, rule.Command, rule.Host, rule.Server} {
+			if glob == "" {
+				continue
+			}
+			if _, err := filepath.Match(glob, ""); err != nil {
+				errs = append(errs, FieldError{field, fmt.Sprintf("invalid pattern %q: %v", glob, err)})
+			}
+		}
+	}
+	return errs
+}
+
+// Validate keeps the aggregate error form used by callers.
+func (c Config) Validate() error {
+	if errs := c.ValidateFields(); len(errs) > 0 {
+		return ValidationError{Errors: errs}
 	}
 	return nil
 }
 
 func (c Config) Selected(providerName, modelOverride string) (string, Provider, string, error) {
+	if providerName == "" {
+		providerName = c.EnvProvider
+	}
 	if providerName == "" {
 		providerName = c.DefaultProvider
 	}
@@ -225,6 +438,9 @@ func (c Config) Selected(providerName, modelOverride string) (string, Provider, 
 		return "", Provider{}, "", fmt.Errorf("unknown provider %q", providerName)
 	}
 	model := modelOverride
+	if model == "" {
+		model = c.EnvModel
+	}
 	if model == "" {
 		model = p.Model
 	}
@@ -244,6 +460,29 @@ func (c Config) ProviderNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// LayerReport renders the applied layers and key origins for inspection.
+func (c Config) LayerReport() string {
+	var b strings.Builder
+	b.WriteString("Configuration layers (later layers override earlier ones):\n")
+	for _, layer := range c.Layers {
+		status := "applied"
+		if !layer.Applied {
+			status = "IGNORED"
+		}
+		fmt.Fprintf(&b, "  %-8s  %-7s  %s", layer.Name, status, layer.Path)
+		if layer.Note != "" {
+			fmt.Fprintf(&b, "  (%s)", layer.Note)
+		}
+		b.WriteString("\n")
+		if layer.Applied && layer.Name != "defaults" {
+			for _, key := range layer.Keys {
+				fmt.Fprintf(&b, "            sets %s\n", key)
+			}
+		}
+	}
+	return b.String()
 }
 
 func WriteExample(path string) error {
@@ -296,11 +535,40 @@ func expandEnv(value string) string {
 	return os.Expand(value, func(key string) string { return os.Getenv(key) })
 }
 
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+// flattenJSON lists the dotted key paths present in a JSON object, so layer
+// precedence can be reported per key.
+func flattenJSON(data []byte) []string {
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
 	}
-	return fallback
+	var keys []string
+	var walk func(prefix string, value any)
+	walk = func(prefix string, value any) {
+		object, ok := value.(map[string]any)
+		if !ok || len(object) == 0 {
+			keys = append(keys, prefix)
+			return
+		}
+		for key, child := range object {
+			path := key
+			if prefix != "" {
+				path = prefix + "." + key
+			}
+			walk(path, child)
+		}
+	}
+	walk("", root)
+	sort.Strings(keys)
+	return keys
+}
+
+func mustJSON(v any) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 func RuntimeSummary() string {

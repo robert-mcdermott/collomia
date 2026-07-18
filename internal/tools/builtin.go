@@ -4,20 +4,34 @@ import (
 	"fmt"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/diffmodel"
+	"github.com/robert-mcdermott/collomia/internal/sandbox"
 )
 
-func Builtins(workspace string, cfg appconfig.Config) (*Registry, error) {
+func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tracker, error) {
 	guard, err := NewPathGuard(workspace, cfg.Permissions.AllowOutsideWorkspace)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	command, err := NewRunCommandTool(guard.Workspace, cfg.Permissions.DeniedCommands, cfg.Options.MaxToolOutputBytes)
 	if err != nil {
-		return nil, fmt.Errorf("command policy: %w", err)
+		return nil, nil, fmt.Errorf("command policy: %w", err)
 	}
+	if cfg.Permissions.Sandbox != "" {
+		command.SandboxMode = sandbox.Mode(cfg.Permissions.Sandbox)
+	}
+	command.AllowNetwork = cfg.Permissions.SandboxAllowNetwork
+	// Sandboxed configurations default to the minimal environment; an
+	// explicit command_env setting always wins.
+	sandboxed := command.SandboxMode == sandbox.ModeAuto || command.SandboxMode == sandbox.ModeRequire
+	command.MinimalEnv = cfg.Permissions.CommandEnv == "minimal" || (cfg.Permissions.CommandEnv == "" && sandboxed)
+	tracker := diffmodel.NewTracker()
 	registry := NewRegistry(
 		ReadFileTool{Guard: guard}, ListFilesTool{Guard: guard}, SearchFilesTool{Guard: guard},
-		WriteFileTool{Guard: guard}, EditFileTool{Guard: guard}, *command,
+		WriteFileTool{Guard: guard, Tracker: tracker}, EditFileTool{Guard: guard, Tracker: tracker},
+		ApplyPatchTool{Guard: guard, Tracker: tracker}, *command,
+		GitStatusTool{Workspace: guard.Workspace}, GitDiffTool{Workspace: guard.Workspace},
+		GitLogTool{Workspace: guard.Workspace}, GitBlameTool{Workspace: guard.Workspace},
 	)
-	return registry, nil
+	return registry, tracker, nil
 }

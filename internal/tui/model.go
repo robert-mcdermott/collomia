@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,15 +14,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
+	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/version"
 )
 
 type block struct{ role, content string }
 type runMsg struct {
-	event *agent.Event
+	event *runtimeevent.Event
 	done  bool
 	final string
 	err   error
@@ -48,6 +49,7 @@ type Model struct {
 	runEvents     chan runMsg
 	cancel        context.CancelFunc
 	pending       *approvalEnvelope
+	question      *questionEnvelope
 	started       time.Time
 	turnStarted   time.Time
 
@@ -124,6 +126,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		m.layout()
 		m.refresh()
+	case questionMsg:
+		env := msg.envelope
+		m.question = &env
+		m.paletteOn = false
+		text := "❓ " + env.question.Text
+		for i, option := range env.question.Options {
+			text += fmt.Sprintf("\n  %d. %s", i+1, option)
+		}
+		text += "\n\nType an answer (or an option number) and press enter; esc declines."
+		m.blocks = append(m.blocks, block{role: "system", content: text})
+		m.input.Reset()
+		m.input.Focus()
+		m.layout()
+		m.refresh()
 	case runMsg:
 		if msg.event != nil {
 			m.handleEvent(*msg.event)
@@ -151,6 +167,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.pending != nil {
 			return m.handleApprovalKey(msg)
+		}
+		if m.question != nil {
+			if handled, model, cmd := m.handleQuestionKey(msg); handled {
+				return model, cmd
+			}
 		}
 		key := msg.String()
 		if key == "ctrl+c" {
@@ -249,7 +270,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			events := m.runEvents
 			runtime := m.runtime
 			go func() {
-				final, err := runtime.Agent.Run(ctx, value, func(event agent.Event) { events <- runMsg{event: &event} })
+				final, err := runtime.Agent.Run(ctx, value, func(e runtimeevent.Event) {
+					runtime.LogEvent(e)
+					events <- runMsg{event: &e}
+				})
 				events <- runMsg{done: true, final: final, err: err}
 				close(events)
 			}()
@@ -288,25 +312,61 @@ func waitRun(events <-chan runMsg) tea.Cmd {
 	}
 }
 
-func (m *Model) handleEvent(event agent.Event) {
-	switch event.Kind {
-	case agent.EventDelta:
+func (m *Model) handleEvent(e runtimeevent.Event) {
+	switch e.Kind {
+	case runtimeevent.KindTextDelta:
 		if len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "assistant" {
 			m.blocks = append(m.blocks, block{role: "assistant"})
 		}
-		m.blocks[len(m.blocks)-1].content += event.Text
-	case agent.EventToolStart:
-		m.blocks = append(m.blocks, block{role: "tool", content: event.Tool + "\x00" + event.Text})
-	case agent.EventToolResult:
-		summary := event.Text
-		if len(summary) > 1200 {
-			summary = summary[:1200] + "\n…"
+		m.blocks[len(m.blocks)-1].content += e.Text
+	case runtimeevent.KindToolStart:
+		if e.Tool != nil {
+			m.blocks = append(m.blocks, block{role: "tool", content: e.Tool.Name + "\x00" + e.Tool.Summary})
 		}
-		m.blocks = append(m.blocks, block{role: "tool-result", content: summary})
-	case agent.EventNotice:
-		m.blocks = append(m.blocks, block{role: "system", content: event.Text})
+	case runtimeevent.KindToolResult:
+		if e.Tool != nil {
+			summary := e.Tool.Output
+			if len(summary) > 1200 {
+				summary = summary[:1200] + "\n…"
+			}
+			m.blocks = append(m.blocks, block{role: "tool-result", content: summary})
+		}
+	case runtimeevent.KindWarning:
+		m.blocks = append(m.blocks, block{role: "system", content: e.Text})
 	}
 	m.refresh()
+}
+
+// handleQuestionKey routes input while an ask_user question is pending:
+// enter submits the typed answer (a bare option number selects that
+// option), esc declines. Other keys fall through to normal input editing.
+func (m Model) handleQuestionKey(key tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "enter":
+		answer := strings.TrimSpace(m.input.Value())
+		options := m.question.question.Options
+		if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(options) {
+			answer = options[n-1]
+		}
+		m.question.reply <- answer
+		m.question = nil
+		m.blocks = append(m.blocks, block{role: "user", content: answer})
+		m.input.Reset()
+		m.layout()
+		m.refresh()
+		return true, m, m.broker.wait()
+	case "esc":
+		m.question.reply <- ""
+		m.question = nil
+		m.blocks = append(m.blocks, block{role: "system", content: "Question declined."})
+		m.input.Reset()
+		m.layout()
+		m.refresh()
+		return true, m, m.broker.wait()
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(key)
+	return true, m, cmd
 }
 
 func (m Model) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -580,9 +640,31 @@ func (m Model) renderHeader() string {
 func (m Model) renderApproval() string {
 	req := m.pending.request
 	title := m.styles.warning.Render("⚠ Permission required")
-	body := fmt.Sprintf("%s\n%s  %s\n\n%s  approve once   %s  always for %s   %s  deny",
-		title,
-		m.styles.accent.Render(req.Tool), req.Action.Summary,
+	body := fmt.Sprintf("%s\n%s  %s", title, m.styles.accent.Render(req.Tool), req.Action.Summary)
+	if req.Reason != "" {
+		body += "\n" + m.styles.warning.Render(req.Reason)
+	}
+	if req.Action.Preview != "" {
+		preview := req.Action.Preview
+		lines := strings.Split(strings.TrimRight(preview, "\n"), "\n")
+		const maxPreview = 14
+		if len(lines) > maxPreview {
+			lines = append(lines[:maxPreview], fmt.Sprintf("… %d more diff lines (ctrl+o after approval shows full output)", len(lines)-maxPreview))
+		}
+		var colored []string
+		for _, line := range lines {
+			switch {
+			case strings.HasPrefix(line, "+"):
+				colored = append(colored, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Success)).Render(line))
+			case strings.HasPrefix(line, "-"):
+				colored = append(colored, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Error)).Render(line))
+			default:
+				colored = append(colored, m.styles.statusBase.Render(line))
+			}
+		}
+		body += "\n" + strings.Join(colored, "\n")
+	}
+	body += fmt.Sprintf("\n\n%s  approve once   %s  always for %s   %s  deny",
 		badge("y", m.theme.Success), badge("a", m.theme.Warning), req.Tool, badge("n", m.theme.Error))
 	return m.styles.approvalBox.Width(max(1, m.width-2) - 2).Render(body)
 }

@@ -141,6 +141,12 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 			Usage *struct {
 				PromptTokens     int `json:"prompt_tokens"`
 				CompletionTokens int `json:"completion_tokens"`
+				PromptDetails    struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+				CompletionDetails struct {
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -150,7 +156,7 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 			return fmt.Errorf("OpenAI stream: %s", chunk.Error.Message)
 		}
 		if chunk.Usage != nil {
-			out.Usage = Usage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens}
+			out.Usage = Usage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, CachedTokens: chunk.Usage.PromptDetails.CachedTokens, ReasoningTokens: chunk.Usage.CompletionDetails.ReasoningTokens}
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
