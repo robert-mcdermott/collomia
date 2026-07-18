@@ -14,19 +14,15 @@ func (m *Model) slash(line string) bool {
 	case "/quit", "/exit":
 		return true
 	case "/help":
-		m.addSystem(`Slash commands:
-/status                 workspace, provider, model, and autonomy
-/model [provider/model] list or switch provider/model
-/models                 list configured providers and default models
-/context                token usage and estimated context size
-/plan [on|off]          toggle read-only planning mode
-/autonomy <mode>        ask, workspace, or autopilot
-/skills                 list discovered SKILL.md / skills.md instructions
-/mcp                    list connected MCP servers
-/tools                  list tools visible to the agent
-/config                 show the active configuration path
-/clear                  clear conversation context
-/quit                   exit Collomia`)
+		var lines []string
+		for _, cmd := range slashCommands {
+			label := cmd.name
+			if cmd.args != "" {
+				label += " " + cmd.args
+			}
+			lines = append(lines, fmt.Sprintf("%-26s %s", label, cmd.desc))
+		}
+		m.addSystem("Slash commands:\n" + strings.Join(lines, "\n") + "\n\nPress ctrl+t for the Session and Help tabs.")
 	case "/status":
 		m.addSystem(m.runtime.Summary())
 	case "/models":
@@ -119,6 +115,26 @@ func (m *Model) slash(line string) bool {
 		m.addSystem("Connected MCP servers: " + strings.Join(servers, ", "))
 	case "/tools":
 		m.addSystem("Available tools: " + strings.Join(m.runtime.Registry.Names(), ", "))
+	case "/theme":
+		if len(args) == 0 {
+			var lines []string
+			for _, t := range themes {
+				marker := "  "
+				if t.Name == m.theme.Name {
+					marker = "▸ "
+				}
+				lines = append(lines, marker+t.Name)
+			}
+			m.addSystem("Available themes (current marked):\n" + strings.Join(lines, "\n") + "\n\nUse /theme <name> to switch. Set options.theme in " + "the configuration to persist it.")
+			break
+		}
+		t, ok := themeByName(args[0])
+		if !ok {
+			m.addError(fmt.Errorf("unknown theme %q; use /theme to list themes", args[0]))
+			break
+		}
+		m.applyTheme(t)
+		m.addSystem("Theme switched to " + t.Name + ".")
 	case "/config":
 		m.addSystem("Active configuration: " + m.runtime.Config.Source + "\nProject configuration takes precedence over the user configuration. Run `collo init` to create " + m.runtime.Workspace + "/.collomia.json.")
 	case "/clear":
