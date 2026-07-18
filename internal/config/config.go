@@ -30,6 +30,10 @@ type Config struct {
 	Permissions     Permissions          `json:"permissions"`
 	MCP             map[string]MCPServer `json:"mcp,omitempty"`
 	Options         Options              `json:"options,omitempty"`
+	// Agents defines named sub-agent profiles the delegate tool can select
+	// by name, each with its own model, role instructions, tool allowlist,
+	// and iteration budget.
+	Agents map[string]AgentDefinition `json:"agents,omitempty"`
 
 	// Source names the highest-precedence file layer for display.
 	Source string `json:"-"`
@@ -119,6 +123,22 @@ type MCPServer struct {
 	Headers   map[string]string `json:"headers,omitempty"`
 	Disabled  bool              `json:"disabled,omitempty"`
 	Timeout   int               `json:"timeout_seconds,omitempty"`
+}
+
+// AgentDefinition names a reusable sub-agent profile. Any field left empty
+// falls back to the parent agent's own setting.
+type AgentDefinition struct {
+	// Model overrides the model used for this agent, on the same provider
+	// as the parent (a different reasoning tier or a cheaper/faster model).
+	Model string `json:"model,omitempty"`
+	// Instructions is prepended to the sub-agent's system prompt to give it
+	// a fixed role (e.g. "You are a security reviewer. Focus only on...").
+	Instructions string `json:"instructions,omitempty"`
+	// Tools restricts the sub-agent to this allowlist of tool names. Empty
+	// means it may use every tool the parent has enabled.
+	Tools []string `json:"tools,omitempty"`
+	// MaxIterations overrides the default sub-agent iteration budget.
+	MaxIterations int `json:"max_iterations,omitempty"`
 }
 
 type Options struct {
@@ -288,6 +308,9 @@ func (c *Config) normalize() {
 	if c.MCP == nil {
 		c.MCP = map[string]MCPServer{}
 	}
+	if c.Agents == nil {
+		c.Agents = map[string]AgentDefinition{}
+	}
 	if c.Permissions.Mode == "" {
 		c.Permissions.Mode = "ask"
 	}
@@ -413,6 +436,11 @@ func (c Config) ValidateFields() []FieldError {
 			if _, err := filepath.Match(glob, ""); err != nil {
 				errs = append(errs, FieldError{field, fmt.Sprintf("invalid pattern %q: %v", glob, err)})
 			}
+		}
+	}
+	for name, a := range c.Agents {
+		if a.MaxIterations < 0 {
+			errs = append(errs, FieldError{"agents." + name + ".max_iterations", "must not be negative"})
 		}
 	}
 	return errs

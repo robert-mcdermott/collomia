@@ -303,6 +303,10 @@ type DelegateTask struct {
 	// When false (the default) the sub-agent is read-only and shares the
 	// parent workspace, which is cheaper for pure investigation.
 	Write bool `json:"write,omitempty"`
+	// Agent selects a named profile from configuration (model, fixed role
+	// instructions, tool allowlist, iteration budget). Empty uses the
+	// parent's own model and full tool set.
+	Agent string `json:"agent,omitempty"`
 }
 
 // AddDelegationTool registers the delegate tool: a concurrency-limited
@@ -312,7 +316,15 @@ type DelegateTask struct {
 // "parent inbox") rather than raw child transcripts.
 func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Approver, team *Team) {
 	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents that run concurrently (up to %d at once). Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Sub-agents cannot recursively delegate.", maxDelegateTasks, maxDelegateConcurrency)
-	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
+	if len(cfg.Agents) > 0 {
+		names := make([]string, 0, len(cfg.Agents))
+		for name := range cfg.Agents {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		desc += " Named agent profiles available via \"agent\": " + strings.Join(names, ", ") + "."
+	}
+	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"agent":{"type":"string","description":"optional named agent profile from configuration"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
 	assess := func(raw json.RawMessage) (tools.Action, error) {
 		var input struct {
 			Tasks []DelegateTask `json:"tasks"`
@@ -345,6 +357,8 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		}
 		sem := make(chan struct{}, maxDelegateConcurrency)
 		results := make([]string, len(input.Tasks))
+		names := make([]string, len(input.Tasks))
+		changed := make([][]string, len(input.Tasks))
 		var wg sync.WaitGroup
 		for i, t := range input.Tasks {
 			wg.Add(1)
@@ -352,21 +366,56 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 			go func(i int, t DelegateTask) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				results[i] = a.runDelegate(ctx, i, t, cfg, approver, team)
+				results[i], names[i], changed[i] = a.runDelegate(ctx, i, t, cfg, approver, team)
 			}(i, t)
 		}
 		wg.Wait()
+		if warning := conflictWarning(names, changed); warning != "" {
+			results = append(results, warning)
+		}
 		return strings.Join(results, "\n\n---\n\n"), nil
 	}})
 }
 
+// conflictWarning reports files touched by more than one sibling task in
+// the same delegate batch — the isolation model prevents them from racing
+// while running, but the user still has to reconcile the worktrees by hand.
+func conflictWarning(names []string, changed [][]string) string {
+	owners := map[string][]string{}
+	for i, files := range changed {
+		for _, f := range files {
+			owners[f] = append(owners[f], names[i])
+		}
+	}
+	var lines []string
+	for _, f := range sortedKeys(owners) {
+		if who := owners[f]; len(who) > 1 {
+			lines = append(lines, fmt.Sprintf("  %s: %s", f, strings.Join(who, ", ")))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "⚠ conflicting changes — these files were modified by more than one sub-agent in separate worktrees; review and reconcile before merging either:\n" + strings.Join(lines, "\n")
+}
+
+func sortedKeys(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // runDelegate runs one delegated task to completion (read-only in the
 // shared workspace, or write-capable in its own git worktree) and returns
-// a structured summary line. It never returns an error itself: failures
-// are reported in the summary text so a batch of tasks always yields a
-// result per task.
-func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, cfg appconfig.Config, approver permission.Approver, team *Team) string {
-	name := strings.TrimSpace(t.Name)
+// a structured summary line, the task's display name, and (for write tasks
+// with changes) the files it touched, so the caller can detect sibling
+// conflicts. It never returns an error itself: failures are reported in the
+// summary text so a batch of tasks always yields a result per task.
+func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, cfg appconfig.Config, approver permission.Approver, team *Team) (summary, name string, changedFiles []string) {
+	name = strings.TrimSpace(t.Name)
 	if name == "" {
 		name = fmt.Sprintf("task-%d", index+1)
 	}
@@ -379,7 +428,19 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 		if team != nil {
 			team.Finish(id, "", nil, "", "", err)
 		}
-		return fmt.Sprintf("[%s] error: %s", name, err)
+		return fmt.Sprintf("[%s] error: %s", name, err), name, nil
+	}
+	var profile appconfig.AgentDefinition
+	if t.Agent != "" {
+		found, ok := cfg.Agents[t.Agent]
+		if !ok {
+			err := fmt.Errorf("unknown agent profile %q", t.Agent)
+			if team != nil {
+				team.Finish(id, "", nil, "", "", err)
+			}
+			return fmt.Sprintf("[%s] error: %s", name, err), name, nil
+		}
+		profile = found
 	}
 
 	a.mu.RLock()
@@ -388,6 +449,27 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 	catalog, instructions, maxOut, maxIter := a.catalog, a.projectInstructions, a.maxToolOutput, a.maxIterations
 	disabled := keys(a.disabled)
 	a.mu.RUnlock()
+
+	if profile.Model != "" {
+		model = profile.Model
+	}
+	if profile.Instructions != "" {
+		instructions = "Agent role: " + profile.Instructions + "\n\n" + instructions
+	}
+	if profile.MaxIterations > 0 {
+		maxIter = profile.MaxIterations
+	}
+	if len(profile.Tools) > 0 {
+		allowed := map[string]bool{}
+		for _, toolName := range profile.Tools {
+			allowed[toolName] = true
+		}
+		for _, toolName := range registry.Names() {
+			if !allowed[toolName] {
+				disabled = append(disabled, toolName)
+			}
+		}
+	}
 
 	childCtx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
@@ -401,7 +483,7 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 			if team != nil {
 				team.Finish(id, "", nil, "", "", err)
 			}
-			return fmt.Sprintf("[%s] error: %s", name, err)
+			return fmt.Sprintf("[%s] error: %s", name, err), name, nil
 		}
 		var err error
 		wt, err = newWorktree(childCtx, workspace, name)
@@ -409,7 +491,7 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 			if team != nil {
 				team.Finish(id, "", nil, "", "", err)
 			}
-			return fmt.Sprintf("[%s] error: %s", name, err)
+			return fmt.Sprintf("[%s] error: %s", name, err), name, nil
 		}
 		childWorkspace = wt.path
 		reg, _, buildErr := tools.Builtins(wt.path, cfg)
@@ -418,7 +500,7 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 			if team != nil {
 				team.Finish(id, "", nil, "", "", buildErr)
 			}
-			return fmt.Sprintf("[%s] error: %s", name, buildErr)
+			return fmt.Sprintf("[%s] error: %s", name, buildErr), name, nil
 		}
 		childRegistry = reg
 		childManager := permission.New(cfg.Permissions, approver)
@@ -451,13 +533,13 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 		team.Finish(id, output, changed, worktreePath, branch, err)
 	}
 	if err != nil {
-		return fmt.Sprintf("[%s] error: %s", name, err)
+		return fmt.Sprintf("[%s] error: %s", name, err), name, nil
 	}
 	header := "[" + name + "]"
 	if len(changed) > 0 {
 		header += fmt.Sprintf(" changed %d file(s): %s\nWorktree: %s (branch %s) — left in place for review; nothing merged or committed.", len(changed), strings.Join(changed, ", "), worktreePath, branch)
 	}
-	return header + "\n" + output
+	return header + "\n" + output, name, changed
 }
 
 func (a *Agent) Clear()               { a.mu.Lock(); a.messages = nil; a.usage = provider.Usage{}; a.mu.Unlock() }

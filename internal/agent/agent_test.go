@@ -269,3 +269,104 @@ func TestDelegateWriteTaskUsesIsolatedWorktree(t *testing.T) {
 	exec.Command("git", "-C", workspace, "worktree", "remove", "--force", snapshot[0].Worktree).Run()
 	exec.Command("git", "-C", workspace, "branch", "-D", snapshot[0].Branch).Run()
 }
+
+func TestDelegateAgentProfileOverridesModelAndRole(t *testing.T) {
+	var sawModel, sawSystem string
+	client := &concurrentClient{chat: func(request provider.Request) (provider.Response, error) {
+		sawModel = request.Model
+		sawSystem = request.System
+		return provider.Response{Content: "reviewed"}, nil
+	}}
+	registry := tools.NewRegistry()
+	cfg := appconfig.Config{Agents: map[string]appconfig.AgentDefinition{
+		"reviewer": {Model: "model-b", Instructions: "You review code for security issues.", MaxIterations: 3},
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model-a", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 4})
+	team := NewTeam()
+	a.AddDelegationTool(cfg, nil, team)
+	args := json.RawMessage(`{"tasks":[{"name":"r1","task":"review the diff","agent":"reviewer"}]}`)
+	result, err := registry.Execute(t.Context(), "delegate", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "[r1]") {
+		t.Fatalf("result=%s", result)
+	}
+	if sawModel != "model-b" {
+		t.Fatalf("expected profile model override, got %q", sawModel)
+	}
+	if !strings.Contains(sawSystem, "You review code for security issues.") {
+		t.Fatalf("expected role instructions in system prompt: %s", sawSystem)
+	}
+}
+
+func TestDelegateUnknownAgentProfileErrors(t *testing.T) {
+	client := &concurrentClient{chat: func(provider.Request) (provider.Response, error) {
+		t.Fatal("chat should not be called for an unknown profile")
+		return provider.Response{}, nil
+	}}
+	registry := tools.NewRegistry()
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 4})
+	team := NewTeam()
+	a.AddDelegationTool(appconfig.Config{}, nil, team)
+	args := json.RawMessage(`{"tasks":[{"name":"x","task":"do it","agent":"missing"}]}`)
+	result, err := registry.Execute(t.Context(), "delegate", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `unknown agent profile "missing"`) {
+		t.Fatalf("result=%s", result)
+	}
+}
+
+func TestDelegateReportsSiblingConflicts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	workspace := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", workspace}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "initial")
+
+	client := &concurrentClient{chat: func(request provider.Request) (provider.Response, error) {
+		if len(request.Messages) == 1 {
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "1", Name: "write_file", Arguments: json.RawMessage(`{"path":"shared.txt","content":"x"}`)}}}, nil
+		}
+		return provider.Response{Content: "done"}, nil
+	}}
+	registry, _, err := tools.Builtins(workspace, appconfig.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := appconfig.Config{Permissions: appconfig.Permissions{Mode: "autopilot"}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: workspace, Registry: registry, Permissions: permission.New(cfg.Permissions, nil), MaxIterations: 4})
+	team := NewTeam()
+	a.AddDelegationTool(cfg, nil, team)
+	args := json.RawMessage(`{"tasks":[{"name":"t1","task":"add shared file","write":true},{"name":"t2","task":"also add shared file","write":true}]}`)
+	result, err := registry.Execute(t.Context(), "delegate", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "conflicting changes") || !strings.Contains(result, "shared.txt") {
+		t.Fatalf("expected a conflict warning naming shared.txt: %s", result)
+	}
+	if !strings.Contains(result, "t1") || !strings.Contains(result, "t2") {
+		t.Fatalf("expected both task names in the conflict warning: %s", result)
+	}
+	for _, s := range team.Snapshot() {
+		if s.Worktree != "" {
+			exec.Command("git", "-C", workspace, "worktree", "remove", "--force", s.Worktree).Run()
+			exec.Command("git", "-C", workspace, "branch", "-D", s.Branch).Run()
+		}
+	}
+}
