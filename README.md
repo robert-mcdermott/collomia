@@ -29,6 +29,7 @@ It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-awa
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), and diff previews in approval prompts.
 - Read-only git inspection tools (status, diff, log, blame) that never commit or push.
 - The agent can pause and ask you a typed question (`ask_user`) instead of guessing.
+- Command output streams into the transcript live; `/model` discovers each provider's available models from its API; transient provider failures retry automatically with backoff.
 - Interactive and non-interactive operation from the same binary.
 
 ## Build and run
@@ -71,6 +72,7 @@ collo trust [--status|--revoke]     review and trust this workspace's project co
 collo doctor                        diagnose config, terminal, git, providers, MCP, sandbox
 collo capabilities [--markdown]     print the product capability matrix
 collo policy check <command…>       evaluate a command against permission rules, without running it
+collo review [ref]                  review pending changes (or changes vs a ref) headlessly
 collo version                       print build information
 ```
 
@@ -111,6 +113,7 @@ Inside the TUI:
 | `/tasks` | Show the structured task plan the agent maintains. |
 | `/diff` | Show every file change the agent made this session. |
 | `/undo` | Revert the agent's most recent file change. |
+| `/review [ref]` | Read-only code review of uncommitted changes (or vs a ref). |
 | `/sessions` | Fuzzy-pick a saved session and resume it in place. |
 | `/new` | Start a fresh session; the current one stays saved. |
 | `/compact [focus]` | Summarize older context to free the model window. |

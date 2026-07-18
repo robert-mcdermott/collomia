@@ -97,6 +97,11 @@ func run(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if opts.command == "review" {
+		ref := strings.Join(opts.args, " ")
+		opts.args = []string{app.ReviewPrompt(strings.TrimSpace(ref))}
+		return runNonInteractive(ctx, opts)
+	}
 	if opts.command == "run" {
 		return runNonInteractive(ctx, opts)
 	}
@@ -150,9 +155,13 @@ func runNonInteractive(ctx context.Context, opts options) error {
 			if e.Tool != nil {
 				fmt.Fprintf(os.Stderr, "\n◆ %s  %s\n", e.Tool.Name, e.Tool.Summary)
 			}
+		case event.KindToolOutput:
+			if e.Tool != nil {
+				fmt.Fprint(os.Stderr, e.Tool.Output)
+			}
 		case event.KindToolResult:
 			if e.Tool != nil && e.Tool.IsError {
-				fmt.Fprintf(os.Stderr, "  %s\n", e.Tool.Output)
+				fmt.Fprintf(os.Stderr, "  ✗ %s failed\n", e.Tool.Name)
 			}
 		}
 	})
@@ -166,7 +175,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review") {
 			opts.command = arg
 			continue
 		}
@@ -255,6 +264,7 @@ Usage:
   collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
   collo capabilities [--markdown]     print the product capability matrix
   collo policy check <command…>       evaluate a command against permission rules without running it
+  collo review [ref]                  review pending changes (or changes vs a ref) headlessly
   collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
   collo version                       print build information
 

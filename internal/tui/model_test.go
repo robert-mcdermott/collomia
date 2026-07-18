@@ -133,6 +133,29 @@ func TestPaletteDismissAndTabComplete(t *testing.T) {
 	}
 }
 
+func TestStreamedToolOutputGrowsThenFinalizes(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.handleEvent(toolStartEvent("run_command", "run: go test"))
+	chunk := runtimeevent.New(runtimeevent.KindToolOutput)
+	chunk.Tool = &runtimeevent.Tool{Name: "run_command", Output: "line one\n"}
+	m.handleEvent(chunk)
+	chunk2 := runtimeevent.New(runtimeevent.KindToolOutput)
+	chunk2.Tool = &runtimeevent.Tool{Name: "run_command", Output: "line two\n"}
+	m.handleEvent(chunk2)
+	if got := m.blocks[len(m.blocks)-1].content; got != "line one\nline two\n" {
+		t.Fatalf("streamed block=%q", got)
+	}
+	streamedBlocks := len(m.blocks)
+	m.handleEvent(toolResultEvent("run_command", "line one\nline two\nok"))
+	if len(m.blocks) != streamedBlocks {
+		t.Fatalf("final result should replace the streamed block, blocks went %d → %d", streamedBlocks, len(m.blocks))
+	}
+	if got := m.blocks[len(m.blocks)-1].content; got != "line one\nline two\nok" {
+		t.Fatalf("final block=%q", got)
+	}
+}
+
 func TestArgumentCompletionRunsCommand(t *testing.T) {
 	m := newTestModel(t)
 	m = typeKeys(t, m, "/theme syn")

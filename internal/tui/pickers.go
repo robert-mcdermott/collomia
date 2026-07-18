@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 // openModelPicker lists every configured provider (and its default model)
@@ -31,7 +33,49 @@ func (m *Model) openModelPicker() {
 			return nil
 		}
 		providerName, model := m.runtime.Agent.Selection()
-		m.addSystem(fmt.Sprintf("Switched to %s/%s. Use /model %s/<id> for a different model on this provider.", providerName, model, providerName))
+		m.addSystem(fmt.Sprintf("Switched to %s/%s. Checking which models %s offers…", providerName, model, providerName))
+		runtime := m.runtime
+		return func() tea.Msg {
+			models, err := runtime.ListModels(context.Background(), item.id)
+			return modelListMsg{provider: item.id, models: models, err: err}
+		}
+	})
+	m.layout()
+	m.refresh()
+}
+
+// modelListMsg carries a provider's discovered model catalog.
+type modelListMsg struct {
+	provider string
+	models   []provider.ModelInfo
+	err      error
+}
+
+// openDiscoveredModels shows the live model catalog for a provider.
+func (m *Model) openDiscoveredModels(msg modelListMsg) {
+	currentProvider, currentModel := m.runtime.Agent.Selection()
+	if msg.err != nil || len(msg.models) == 0 || msg.provider != currentProvider {
+		// Discovery is best-effort; the provider default is already active.
+		return
+	}
+	var items []pickerItem
+	for _, info := range msg.models {
+		desc := info.DisplayName
+		if info.ID == currentModel {
+			if desc != "" {
+				desc += " · "
+			}
+			desc += "current"
+		}
+		items = append(items, pickerItem{id: info.ID, title: info.ID, desc: desc})
+	}
+	m.picker = newPicker("Pick a model on "+msg.provider, items, func(m *Model, item pickerItem) tea.Cmd {
+		if err := m.runtime.Select(msg.provider, item.id); err != nil {
+			m.addError(err)
+			return nil
+		}
+		providerName, model := m.runtime.Agent.Selection()
+		m.addSystem(fmt.Sprintf("Switched to %s/%s.", providerName, model))
 		return nil
 	})
 	m.layout()

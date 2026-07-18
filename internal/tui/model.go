@@ -62,6 +62,7 @@ type Model struct {
 
 	vpInit      bool
 	expandTools bool
+	streaming   bool
 
 	palette          []commandInfo
 	paletteSel       int
@@ -130,6 +131,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ring()
 		m.layout()
 		m.refresh()
+	case modelListMsg:
+		// Only interrupt with the model catalog if the user isn't mid-task.
+		if !m.busy && m.pending == nil && m.question == nil && m.picker == nil && strings.TrimSpace(m.input.Value()) == "" {
+			m.openDiscoveredModels(msg)
+		}
 	case questionMsg:
 		env := msg.envelope
 		m.question = &env
@@ -250,14 +256,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.Reset()
 				m.paletteOn = false
 				m.tab = tabChat
-				quit := m.slash(line)
+				quit, cmd := m.slash(line)
 				m.updatePalette()
 				m.layout()
 				m.refresh()
 				if quit {
 					return m, tea.Quit
 				}
-				return m, nil
+				return m, cmd
 			}
 		}
 		if key == "enter" && !m.busy && !msg.Alt {
@@ -268,36 +274,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			m.tab = tabChat
 			if strings.HasPrefix(value, "/") {
-				quit := m.slash(value)
+				quit, cmd := m.slash(value)
 				m.updatePalette()
 				m.layout()
 				m.refresh()
 				if quit {
 					return m, tea.Quit
 				}
-				return m, nil
+				return m, cmd
 			}
-			m.blocks = append(m.blocks, block{role: "user", content: value})
-			m.busy = true
-			m.turnStarted = time.Now()
-			m.input.Blur()
-			ctx, cancel := context.WithCancel(context.Background())
-			m.cancel = cancel
-			m.runEvents = make(chan runMsg, 64)
-			events := m.runEvents
-			runtime := m.runtime
-			go func() {
-				final, err := runtime.Agent.Run(ctx, value, func(e runtimeevent.Event) {
-					runtime.LogEvent(e)
-					events <- runMsg{event: &e}
-				})
-				events <- runMsg{done: true, final: final, err: err}
-				close(events)
-			}()
+			cmd := m.startTurn(value)
 			m.updatePalette()
 			m.layout()
 			m.refresh()
-			return m, tea.Batch(waitRun(events), m.spinner.Tick)
+			return m, cmd
 		}
 	}
 	var cmd tea.Cmd
@@ -327,6 +317,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// startTurn submits one prompt to the agent and begins streaming events.
+func (m *Model) startTurn(value string) tea.Cmd {
+	m.blocks = append(m.blocks, block{role: "user", content: value})
+	m.busy = true
+	m.turnStarted = time.Now()
+	m.input.Blur()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.runEvents = make(chan runMsg, 64)
+	events := m.runEvents
+	runtime := m.runtime
+	go func() {
+		final, err := runtime.Agent.Run(ctx, value, func(e runtimeevent.Event) {
+			runtime.LogEvent(e)
+			events <- runMsg{event: &e}
+		})
+		events <- runMsg{done: true, final: final, err: err}
+		close(events)
+	}()
+	return tea.Batch(waitRun(events), m.spinner.Tick)
+}
+
 func isMentionBoundary(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '(' || c == '"' || c == '\''
 }
@@ -350,7 +362,18 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 		m.blocks[len(m.blocks)-1].content += e.Text
 	case runtimeevent.KindToolStart:
 		if e.Tool != nil {
+			m.streaming = false
 			m.blocks = append(m.blocks, block{role: "tool", content: e.Tool.Name + "\x00" + e.Tool.Summary})
+		}
+	case runtimeevent.KindToolOutput:
+		// Live output from a running command: grow a tool-result block in
+		// place so the user watches builds and tests as they happen.
+		if e.Tool != nil && e.Tool.Output != "" {
+			if !m.streaming || len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "tool-result" {
+				m.blocks = append(m.blocks, block{role: "tool-result"})
+				m.streaming = true
+			}
+			m.blocks[len(m.blocks)-1].content += e.Tool.Output
 		}
 	case runtimeevent.KindToolResult:
 		if e.Tool != nil {
@@ -358,7 +381,14 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 			if len(summary) > 1200 {
 				summary = summary[:1200] + "\n…"
 			}
-			m.blocks = append(m.blocks, block{role: "tool-result", content: summary})
+			if m.streaming && len(m.blocks) > 0 && m.blocks[len(m.blocks)-1].role == "tool-result" {
+				// The final result replaces the streamed view (it may add
+				// error text and truncation markers).
+				m.blocks[len(m.blocks)-1].content = summary
+			} else {
+				m.blocks = append(m.blocks, block{role: "tool-result", content: summary})
+			}
+			m.streaming = false
 		}
 	case runtimeevent.KindWarning:
 		m.blocks = append(m.blocks, block{role: "system", content: e.Text})

@@ -124,6 +124,30 @@ func TestSandboxRequireFailsClosedWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestExecuteStreamDeliversLiveChunks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix shell test")
+	}
+	tool, err := NewRunCommandTool(t.TempDir(), nil, 64*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chunks []string
+	out, err := tool.ExecuteStream(t.Context(), []byte(`{"command":"echo first; echo second"}`), func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(chunks, "")
+	if !strings.Contains(joined, "first") || !strings.Contains(joined, "second") {
+		t.Fatalf("streamed chunks missing output: %q", joined)
+	}
+	if !strings.Contains(out, "first") {
+		t.Fatalf("final result missing output: %q", out)
+	}
+}
+
 func TestMinimalEnvStripsSecrets(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix env test")

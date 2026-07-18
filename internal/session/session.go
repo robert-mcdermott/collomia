@@ -347,8 +347,8 @@ func (sess *Session) AppendCompaction(summary provider.Message, replaced int) {
 
 // AppendEvent persists a runtime event for replay/audit.
 func (sess *Session) AppendEvent(e event.Event) {
-	if e.Kind == event.KindTextDelta {
-		return // deltas are reconstructable from the assistant message
+	if e.Kind == event.KindTextDelta || e.Kind == event.KindToolOutput {
+		return // deltas and streamed chunks are reconstructable from results
 	}
 	if e.Kind == event.KindTurnEnd {
 		sess.mu.Lock()

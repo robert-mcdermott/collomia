@@ -23,6 +23,7 @@ var slashCommands = []commandInfo{
 	{name: "/skills", args: "", desc: "list discovered SKILL.md / skills.md instructions"},
 	{name: "/mcp", args: "", desc: "list connected MCP servers"},
 	{name: "/tools", args: "", desc: "list tools visible to the agent"},
+	{name: "/review", args: "[ref]", desc: "review uncommitted changes (or changes vs a ref)"},
 	{name: "/diff", args: "", desc: "show all agent file changes this session"},
 	{name: "/undo", args: "", desc: "revert the agent's most recent file change"},
 	{name: "/tasks", args: "", desc: "show the structured task plan"},
