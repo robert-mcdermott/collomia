@@ -6,7 +6,8 @@ It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-awa
 
 ## Highlights
 
-- Interactive TUI with Markdown and syntax-highlighted code rendering.
+- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette, collapsible tool output, and a status bar with a live context gauge.
+- Ten switchable color themes (including Fred Hutch dark/light) that also set the terminal background to match.
 - Streaming OpenAI-compatible and Anthropic-compatible conversations with native tool calling.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
 - Azure OpenAI, Microsoft Foundry OpenAI/v1, and Microsoft Foundry Anthropic endpoint support.
@@ -87,12 +88,38 @@ Inside the TUI:
 | `/context` | Show provider token usage and estimated current context. |
 | `/plan [on\|off]` | Toggle read-only planning mode. |
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
+| `/theme [name]` | List color themes or switch to one. |
 | `/skills` | List discovered skills. |
 | `/mcp` | List connected MCP servers. |
 | `/tools` | List the complete tool surface. |
 | `/config` | Show the active configuration source. |
 | `/clear` | Clear conversation history and usage. |
 | `/help` | Show command help. |
+
+Typing `/` opens a command palette that filters as you type: ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. `ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output.
+
+## Themes
+
+Collomia ships ten color themes: `collomia` (default), `synthwave`, `outrun`, `matrix`, `monokai`, `dracula`, `nord`, `tokyo-night`, `fredhutch-dark`, and `fredhutch-light`. Switch at runtime with `/theme <name>`, or persist a choice in the configuration:
+
+```json
+{
+  "options": { "theme": "fredhutch-dark" }
+}
+```
+
+Each theme also asks the terminal to adopt a matching background color (the standard OSC 11 sequence) so themed text never collides with the host terminal's background, and restores the terminal's default background on exit.
+
+Terminal compatibility notes:
+
+- iTerm2, Ghostty, Kitty, WezTerm, Alacritty, and Windows Terminal support OSC 11. Terminals that do not (for example, stock Apple Terminal) silently ignore it; Collomia still renders correctly against your existing background.
+- Inside tmux, Collomia automatically wraps the sequence in tmux's passthrough envelope. On tmux 3.3 and later, passthrough is disabled by default, so also add this to `~/.tmux.conf` if the background does not change:
+
+  ```
+  set -g allow-passthrough on
+  ```
+
+  Note that tmux applies the background to the whole outer terminal, not per pane, and Collomia restores the default when it exits.
 
 ## Providers
 

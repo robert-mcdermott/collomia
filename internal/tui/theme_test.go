@@ -20,6 +20,17 @@ func TestThemeByName(t *testing.T) {
 	}
 }
 
+func TestThemeBackgrounds(t *testing.T) {
+	for _, theme := range themes {
+		if len(theme.Background) != 7 || !strings.HasPrefix(theme.Background, "#") {
+			t.Fatalf("theme %s has invalid background %q", theme.Name, theme.Background)
+		}
+		if theme.Background == theme.StatusBG {
+			t.Fatalf("theme %s: background should differ from the status bar color so the bar stays visible", theme.Name)
+		}
+	}
+}
+
 func TestMatchCommands(t *testing.T) {
 	all := matchCommands("/")
 	if len(all) != len(slashCommands) {

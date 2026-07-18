@@ -89,6 +89,7 @@ func run(args []string) error {
 	initial := strings.Join(opts.args, " ")
 	program := tea.NewProgram(tui.New(runtime, broker, initial), tea.WithAltScreen())
 	_, err = program.Run()
+	tui.ResetTerminalBackground()
 	return err
 }
 

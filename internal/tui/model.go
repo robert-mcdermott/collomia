@@ -103,6 +103,7 @@ func (m *Model) applyTheme(t Theme) {
 	m.input.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	m.input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted))
 	m.renderer = nil // force glamour rebuild with the new style
+	setTerminalBackground(t.Background)
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(textarea.Blink, m.spinner.Tick, m.broker.wait()) }

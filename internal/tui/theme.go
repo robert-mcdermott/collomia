@@ -2,41 +2,44 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
+	"golang.org/x/term"
 )
 
 // Theme is a named terminal color palette. All values are hex colors so they
 // render consistently on truecolor terminals and degrade via lipgloss on others.
 type Theme struct {
-	Name      string
-	Dark      bool
-	Primary   string
-	Secondary string
-	Accent    string
-	Success   string
-	Warning   string
-	Error     string
-	Muted     string
-	Border    string
-	StatusBG  string
+	Name       string
+	Dark       bool
+	Primary    string
+	Secondary  string
+	Accent     string
+	Success    string
+	Warning    string
+	Error      string
+	Muted      string
+	Border     string
+	StatusBG   string
+	Background string
 }
 
 const defaultThemeName = "collomia"
 
 var themes = []Theme{
-	{Name: "collomia", Dark: true, Primary: "#AF5FFF", Secondary: "#FF5FAF", Accent: "#5FD7FF", Success: "#42D77D", Warning: "#F1C40F", Error: "#FF6B6B", Muted: "#8A8A9E", Border: "#5F5F87", StatusBG: "#1A1A2E"},
-	{Name: "synthwave", Dark: true, Primary: "#FF2E97", Secondary: "#00F0FF", Accent: "#B967FF", Success: "#72F1B8", Warning: "#FEDE5D", Error: "#FE4450", Muted: "#848BBD", Border: "#495495", StatusBG: "#241B2F"},
-	{Name: "outrun", Dark: true, Primary: "#FF6C11", Secondary: "#FF3864", Accent: "#2DE2E6", Success: "#61E786", Warning: "#F9C80E", Error: "#FF3864", Muted: "#8B7F9E", Border: "#552E85", StatusBG: "#261447"},
-	{Name: "matrix", Dark: true, Primary: "#00FF41", Secondary: "#008F11", Accent: "#7FFF9E", Success: "#00FF41", Warning: "#ADFF2F", Error: "#FF5555", Muted: "#4E9A63", Border: "#003B00", StatusBG: "#081C0D"},
-	{Name: "monokai", Dark: true, Primary: "#F92672", Secondary: "#A6E22E", Accent: "#66D9EF", Success: "#A6E22E", Warning: "#E6DB74", Error: "#F92672", Muted: "#75715E", Border: "#49483E", StatusBG: "#272822"},
-	{Name: "dracula", Dark: true, Primary: "#BD93F9", Secondary: "#FF79C6", Accent: "#8BE9FD", Success: "#50FA7B", Warning: "#F1FA8C", Error: "#FF5555", Muted: "#6272A4", Border: "#44475A", StatusBG: "#282A36"},
-	{Name: "nord", Dark: true, Primary: "#88C0D0", Secondary: "#81A1C1", Accent: "#B48EAD", Success: "#A3BE8C", Warning: "#EBCB8B", Error: "#BF616A", Muted: "#616E88", Border: "#4C566A", StatusBG: "#2E3440"},
-	{Name: "tokyo-night", Dark: true, Primary: "#7AA2F7", Secondary: "#BB9AF7", Accent: "#7DCFFF", Success: "#9ECE6A", Warning: "#E0AF68", Error: "#F7768E", Muted: "#565F89", Border: "#3B4261", StatusBG: "#1A1B26"},
-	{Name: "fredhutch-dark", Dark: true, Primary: "#AA4AC4", Secondary: "#00ABC8", Accent: "#7FD7E8", Success: "#4CC38A", Warning: "#FFB500", Error: "#E5484D", Muted: "#64748B", Border: "#24324A", StatusBG: "#10192B"},
-	{Name: "fredhutch-light", Dark: false, Primary: "#1B365D", Secondary: "#00ABC8", Accent: "#FFB500", Success: "#2E7D32", Warning: "#B45309", Error: "#C62828", Muted: "#64748B", Border: "#94A3B8", StatusBG: "#E2E8F0"},
+	{Name: "collomia", Dark: true, Primary: "#AF5FFF", Secondary: "#FF5FAF", Accent: "#5FD7FF", Success: "#42D77D", Warning: "#F1C40F", Error: "#FF6B6B", Muted: "#8A8A9E", Border: "#5F5F87", StatusBG: "#1A1A2E", Background: "#101018"},
+	{Name: "synthwave", Dark: true, Primary: "#FF2E97", Secondary: "#00F0FF", Accent: "#B967FF", Success: "#72F1B8", Warning: "#FEDE5D", Error: "#FE4450", Muted: "#848BBD", Border: "#495495", StatusBG: "#241B2F", Background: "#191325"},
+	{Name: "outrun", Dark: true, Primary: "#FF6C11", Secondary: "#FF3864", Accent: "#2DE2E6", Success: "#61E786", Warning: "#F9C80E", Error: "#FF3864", Muted: "#8B7F9E", Border: "#552E85", StatusBG: "#261447", Background: "#1A0E31"},
+	{Name: "matrix", Dark: true, Primary: "#00FF41", Secondary: "#008F11", Accent: "#7FFF9E", Success: "#00FF41", Warning: "#ADFF2F", Error: "#FF5555", Muted: "#4E9A63", Border: "#003B00", StatusBG: "#081C0D", Background: "#04120A"},
+	{Name: "monokai", Dark: true, Primary: "#F92672", Secondary: "#A6E22E", Accent: "#66D9EF", Success: "#A6E22E", Warning: "#E6DB74", Error: "#F92672", Muted: "#75715E", Border: "#49483E", StatusBG: "#272822", Background: "#1D1E19"},
+	{Name: "dracula", Dark: true, Primary: "#BD93F9", Secondary: "#FF79C6", Accent: "#8BE9FD", Success: "#50FA7B", Warning: "#F1FA8C", Error: "#FF5555", Muted: "#6272A4", Border: "#44475A", StatusBG: "#282A36", Background: "#1D1F27"},
+	{Name: "nord", Dark: true, Primary: "#88C0D0", Secondary: "#81A1C1", Accent: "#B48EAD", Success: "#A3BE8C", Warning: "#EBCB8B", Error: "#BF616A", Muted: "#616E88", Border: "#4C566A", StatusBG: "#2E3440", Background: "#242933"},
+	{Name: "tokyo-night", Dark: true, Primary: "#7AA2F7", Secondary: "#BB9AF7", Accent: "#7DCFFF", Success: "#9ECE6A", Warning: "#E0AF68", Error: "#F7768E", Muted: "#565F89", Border: "#3B4261", StatusBG: "#1A1B26", Background: "#16161E"},
+	{Name: "fredhutch-dark", Dark: true, Primary: "#AA4AC4", Secondary: "#00ABC8", Accent: "#7FD7E8", Success: "#4CC38A", Warning: "#FFB500", Error: "#E5484D", Muted: "#64748B", Border: "#24324A", StatusBG: "#10192B", Background: "#0B1220"},
+	{Name: "fredhutch-light", Dark: false, Primary: "#1B365D", Secondary: "#00ABC8", Accent: "#FFB500", Success: "#2E7D32", Warning: "#B45309", Error: "#C62828", Muted: "#64748B", Border: "#94A3B8", StatusBG: "#E2E8F0", Background: "#F8FAFC"},
 }
 
 func themeByName(name string) (Theme, bool) {
@@ -191,6 +194,36 @@ func contextGauge(t Theme, used, window, width int) string {
 	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("▰", filled)) +
 		lipgloss.NewStyle().Foreground(lipgloss.Color(t.Border)).Render(strings.Repeat("▱", width-filled))
 	return fmt.Sprintf("ctx %s %d%%", bar, int(frac*100+0.5))
+}
+
+// setTerminalBackground asks the hosting terminal to adopt the theme
+// background via OSC 11 so unpainted cells match the theme. Terminals
+// without OSC 11 support ignore the sequence. No-op when stdout is not a
+// terminal (tests, pipes).
+func setTerminalBackground(hex string) {
+	if hex == "" {
+		return
+	}
+	emitOSC(fmt.Sprintf("\x1b]11;%s\x07", hex))
+}
+
+// ResetTerminalBackground restores the terminal's default background color
+// (OSC 111). Call it after the Bubble Tea program exits.
+func ResetTerminalBackground() {
+	emitOSC("\x1b]111\x07")
+}
+
+// emitOSC writes an OSC sequence to the terminal. Inside tmux the sequence is
+// wrapped in tmux's DCS passthrough envelope (each ESC doubled) so it reaches
+// the outer terminal; tmux 3.3+ additionally requires `allow-passthrough on`.
+func emitOSC(seq string) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return
+	}
+	if os.Getenv("TMUX") != "" {
+		seq = "\x1bPtmux;" + strings.ReplaceAll(seq, "\x1b", "\x1b\x1b") + "\x1b\\"
+	}
+	fmt.Fprint(os.Stdout, seq)
 }
 
 func formatTokens(n int) string {
