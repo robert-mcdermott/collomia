@@ -23,12 +23,18 @@ type Catalog struct {
 	Skills []Skill
 }
 
-func Discover(workspace string) (Catalog, error) {
-	paths := []string{
-		filepath.Join(workspace, "SKILLS.md"), filepath.Join(workspace, "skills.md"),
-		filepath.Join(workspace, ".collomia", "SKILLS.md"), filepath.Join(workspace, ".collomia", "skills.md"),
+// Discover finds skills. Project-provided skills are only included when the
+// workspace is trusted (includeProject); user-level skills always load.
+func Discover(workspace string, includeProject bool) (Catalog, error) {
+	var paths []string
+	var roots []string
+	if includeProject {
+		paths = []string{
+			filepath.Join(workspace, "SKILLS.md"), filepath.Join(workspace, "skills.md"),
+			filepath.Join(workspace, ".collomia", "SKILLS.md"), filepath.Join(workspace, ".collomia", "skills.md"),
+		}
+		roots = []string{filepath.Join(workspace, ".collomia", "skills"), filepath.Join(workspace, ".agents", "skills")}
 	}
-	roots := []string{filepath.Join(workspace, ".collomia", "skills"), filepath.Join(workspace, ".agents", "skills")}
 	if dir, err := os.UserConfigDir(); err == nil {
 		roots = append(roots, filepath.Join(dir, "collomia", "skills"))
 	}

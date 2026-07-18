@@ -6,12 +6,31 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
+	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 )
+
+func deltaEvent(text string) runtimeevent.Event {
+	e := runtimeevent.New(runtimeevent.KindTextDelta)
+	e.Text = text
+	return e
+}
+
+func toolStartEvent(name, summary string) runtimeevent.Event {
+	e := runtimeevent.New(runtimeevent.KindToolStart)
+	e.Tool = &runtimeevent.Tool{Name: name, Summary: summary}
+	return e
+}
+
+func toolResultEvent(name, output string) runtimeevent.Event {
+	e := runtimeevent.New(runtimeevent.KindToolResult)
+	e.Tool = &runtimeevent.Tool{Name: name, Output: output}
+	return e
+}
 
 func newTestModel(t *testing.T) Model {
 	t.Helper()
+	t.Setenv("COLLO_STATE_DIR", t.TempDir())
 	runtime, err := app.New(context.Background(), app.Options{Workspace: t.TempDir()})
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
@@ -162,12 +181,12 @@ func TestToolOutputCollapses(t *testing.T) {
 	m := newTestModel(t)
 	long := strings.Repeat("output line\n", 20) + "final-marker"
 	m.busy = true
-	m.handleEvent(agent.Event{Kind: agent.EventToolStart, Tool: "list_files", Text: "list ."})
-	m.handleEvent(agent.Event{Kind: agent.EventToolResult, Tool: "list_files", Text: long})
+	m.handleEvent(toolStartEvent("list_files", "list ."))
+	m.handleEvent(toolResultEvent("list_files", long))
 	if content := m.chatContent(); !strings.Contains(content, "final-marker") {
 		t.Fatal("the running tool's output should be shown in full")
 	}
-	m.handleEvent(agent.Event{Kind: agent.EventDelta, Text: "Here is what I found."})
+	m.handleEvent(deltaEvent("Here is what I found."))
 	content := m.chatContent()
 	if strings.Contains(content, "final-marker") {
 		t.Fatal("finished tool output should collapse once the agent moves on")
@@ -190,8 +209,8 @@ func TestToolOutputCollapses(t *testing.T) {
 func TestShortToolOutputStaysVisible(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
-	m.handleEvent(agent.Event{Kind: agent.EventToolResult, Tool: "read_file", Text: "one\ntwo\nthree"})
-	m.handleEvent(agent.Event{Kind: agent.EventDelta, Text: "Done."})
+	m.handleEvent(toolResultEvent("read_file", "one\ntwo\nthree"))
+	m.handleEvent(deltaEvent("Done."))
 	if content := m.chatContent(); !strings.Contains(content, "three") {
 		t.Fatal("short tool output should never collapse")
 	}

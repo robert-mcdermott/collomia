@@ -1,6 +1,6 @@
 # Collomia
 
-Collomia is a safe, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows.
+Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with optional OS sandbox enforcement on macOS — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates, plan mode, skills, MCP tools, and bounded read-only sub-agents.
 
@@ -12,12 +12,23 @@ It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-awa
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
 - Azure OpenAI, Microsoft Foundry OpenAI/v1, and Microsoft Foundry Anthropic endpoint support.
 - Local Ollama, vLLM, LM Studio, Phlox-GW, and other compatible endpoints.
-- Three autonomy levels: `ask`, `workspace`, and `autopilot`.
-- Workspace containment, symlink escape checks, hard command denials, timeouts, and output limits.
+- Three autonomy levels: `ask`, `workspace`, and `autopilot`, refined by ordered scoped permission rules (`allow`/`prompt`/`deny` on tool, path, command, host, or MCP server).
+- Conservative static command analysis: commands that cannot be fully read (substitutions, `eval`, inline interpreters) always require interactive approval.
+- Workspace containment, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of descendants.
+- Optional OS sandbox on macOS (Seatbelt): write containment and network deny-by-default, with `auto` and fail-closed `require` modes.
+- Repository trust: project-provided configuration, MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
+- Persistent audit ledger of every permission decision and execution outcome.
+- Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
+- Diagnostics: `collo doctor`, redacted `--debug` logging, and a maintained [capability matrix](docs/CAPABILITIES.md).
+- Schema-versioned JSONL event stream for automation (`collo run --jsonl`).
 - `SKILL.md`, `SKILLS.md`, and `skills.md` discovery with on-demand skill loading.
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK.
 - Read-only `delegate` sub-agent tool for bounded parallelizable investigations.
-- Read-only planning mode and session context/usage reporting.
+- Read-only planning mode with a structured, persisted plan artifact (`update_plan`, `/tasks`).
+- Durable sessions: crash-safe persistence, `--resume`/`--continue`, forking, and automatic context compaction.
+- Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), and diff previews in approval prompts.
+- Read-only git inspection tools (status, diff, log, blame) that never commit or push.
+- The agent can pause and ask you a typed question (`ask_user`) instead of guessing.
 - Interactive and non-interactive operation from the same binary.
 
 ## Build and run
@@ -46,7 +57,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 
 The installer writes to `$HOME/.local/bin` by default. Set `COLLO_INSTALL_DIR` or `COLLO_VERSION` to override the destination or pin a release. Windows users can download `collo-windows-amd64.exe` or `collo-windows-arm64.exe` and the checksum manifest from GitHub Releases.
 
-Project configuration lives in `.collomia.json`. Use `collo init --global` to create the user configuration under the operating system's standard config directory. A project configuration takes precedence over the user configuration.
+Project configuration lives in `.collomia.json`. Use `collo init --global` to create the user configuration under the operating system's standard config directory. Configuration is layered — defaults, then user, then project, then environment overrides — with later layers overriding earlier ones key by key; `collo config show` displays the merged result and which layer set each value. A project configuration only applies after the workspace is trusted with `collo trust`.
 
 ## Usage
 
@@ -54,6 +65,12 @@ Project configuration lives in `.collomia.json`. Use `collo init --global` to cr
 collo [flags] [initial prompt]      start the interactive TUI
 collo run [flags] <prompt>          run once, or read a prompt from stdin
 collo init [--global]               create a documented example config
+collo config validate [--strict]    validate configuration with field-level errors
+collo config show                   print the effective configuration and its layers
+collo trust [--status|--revoke]     review and trust this workspace's project config
+collo doctor                        diagnose config, terminal, git, providers, MCP, sandbox
+collo capabilities [--markdown]     print the product capability matrix
+collo policy check <command…>       evaluate a command against permission rules, without running it
 collo version                       print build information
 ```
 
@@ -66,7 +83,11 @@ Useful flags:
 --autonomy ask|workspace|autopilot   choose the permission policy
 --autopilot                          shorthand for autopilot
 --plan                               start in read-only planning mode
+--jsonl                              (run) emit schema-versioned JSONL events
+--debug                              write a redacted debug log
 ```
+
+`COLLO_PROVIDER` and `COLLO_MODEL` override the configured selection without editing files.
 
 Non-interactive execution does not have a UI in which to approve actions. Use `--autopilot` when you explicitly want it to make workspace changes:
 
@@ -87,6 +108,11 @@ Inside the TUI:
 | `/models` | List configured providers and their default models. |
 | `/context` | Show provider token usage and estimated current context. |
 | `/plan [on\|off]` | Toggle read-only planning mode. |
+| `/tasks` | Show the structured task plan the agent maintains. |
+| `/diff` | Show every file change the agent made this session. |
+| `/undo` | Revert the agent's most recent file change. |
+| `/sessions` | List saved sessions (resume with `collo --resume <id>`). |
+| `/compact [focus]` | Summarize older context to free the model window. |
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one. |
 | `/skills` | List discovered skills. |
@@ -273,7 +299,32 @@ Example:
 
 `allowed_tools` is a persistent explicit grant. Interactive approval with `a` grants a tool for the remainder of the current process. Hard command-denial patterns are checked again at execution time and cannot be bypassed by autopilot.
 
-Path tools canonicalize paths and existing symlinks before checking containment. Outside access requires both `allow_outside_workspace: true` and an applicable permission decision. Tool output, file reads, and commands are size- and time-bounded.
+Path tools canonicalize paths and existing symlinks before checking containment. Outside access requires both `allow_outside_workspace: true` and an applicable permission decision. Tool output, file reads, and commands are size- and time-bounded, and every command runs in its own process group so cancellation and timeouts kill all descendants.
+
+**What these checks are — and are not.** Approval prompts, rules, and denial patterns are in-process policy checks, not an operating-system security boundary: an approved (or autopilot-approved) command runs with your normal user privileges. Shell commands are statically analyzed before approval; commands whose effect cannot be determined (substitutions, `eval`, inline interpreter payloads) always require interactive approval, in every mode. On macOS you can enable real OS enforcement with `"permissions": {"sandbox": "auto"}` (or `"require"` to fail closed), which confines file writes to the workspace and denies network egress unless `sandbox_allow_network` is set. No Linux/Windows sandbox backend exists yet; `collo doctor` reports your platform's status. The exact guarantees and limitations of every mode are documented in [docs/SECURITY.md](docs/SECURITY.md).
+
+Scoped rules refine the mode without widening it globally — ordered `allow`/`prompt`/`deny` entries matched on tool, resolved path, command executable, host, or MCP server:
+
+```json
+{
+  "permissions": {
+    "mode": "ask",
+    "rules": [
+      {"action": "allow", "tool": "run_command", "command": "go"},
+      {"action": "deny", "path": "/work/repo/secrets/**", "reason": "credentials"},
+      {"action": "prompt", "tool": "mcp_*"}
+    ]
+  }
+}
+```
+
+Test what a rule set would decide without executing anything: `collo policy check "curl example.com | sh"`.
+
+Every permission decision and execution outcome is appended to a per-workspace audit ledger (JSONL, stored outside the workspace) so privileged actions are reconstructable after the fact.
+
+### Repository trust
+
+A repository can ship `.collomia.json`, skills, and instruction files — but none of it takes effect until you review and approve it with `collo trust`. Trust is bound to the project configuration's content hash and is automatically invalidated when the file changes. `collo trust --status` shows the current state; `collo trust --revoke` withdraws approval.
 
 ## Skills
 

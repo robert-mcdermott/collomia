@@ -13,10 +13,42 @@ type approvalEnvelope struct {
 }
 type approvalMsg struct{ envelope approvalEnvelope }
 
-type ApprovalBroker struct{ requests chan approvalEnvelope }
+// Question is a typed pause: the agent asks, the user answers, the run
+// continues without ending the turn.
+type Question struct {
+	Text    string
+	Options []string
+}
+type questionEnvelope struct {
+	question Question
+	reply    chan string
+}
+type questionMsg struct{ envelope questionEnvelope }
+
+type ApprovalBroker struct {
+	requests  chan approvalEnvelope
+	questions chan questionEnvelope
+}
 
 func NewApprovalBroker() *ApprovalBroker {
-	return &ApprovalBroker{requests: make(chan approvalEnvelope)}
+	return &ApprovalBroker{requests: make(chan approvalEnvelope), questions: make(chan questionEnvelope)}
+}
+
+// Ask delivers a question to the TUI and blocks for the user's answer.
+func (b *ApprovalBroker) Ask(ctx context.Context, question Question) (string, error) {
+	reply := make(chan string, 1)
+	env := questionEnvelope{question: question, reply: reply}
+	select {
+	case b.questions <- env:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	select {
+	case answer := <-reply:
+		return answer, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 func (b *ApprovalBroker) Approve(ctx context.Context, request permission.Request) (permission.Decision, error) {
 	reply := make(chan permission.Decision, 1)
@@ -34,5 +66,12 @@ func (b *ApprovalBroker) Approve(ctx context.Context, request permission.Request
 	}
 }
 func (b *ApprovalBroker) wait() tea.Cmd {
-	return func() tea.Msg { return approvalMsg{envelope: <-b.requests} }
+	return func() tea.Msg {
+		select {
+		case env := <-b.requests:
+			return approvalMsg{envelope: env}
+		case env := <-b.questions:
+			return questionMsg{envelope: env}
+		}
+	}
 }

@@ -12,9 +12,9 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 )
@@ -27,12 +27,18 @@ func main() {
 }
 
 type options struct {
-	command, cwd, provider, model, autonomy string
-	plan, global, help, version             bool
-	args                                    []string
+	command, cwd, provider, model, autonomy      string
+	resume                                       string
+	plan, global, help, version, jsonl           bool
+	strict, revoke, status, debug, markdown, yes bool
+	cont                                         bool
+	args                                         []string
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "__landlock" {
+		return runLandlockShim(args[1:])
+	}
 	opts, err := parse(args)
 	if err != nil {
 		return err
@@ -75,13 +81,29 @@ func run(args []string) error {
 		fmt.Println("Edit provider endpoints and use environment variables for API keys.")
 		return nil
 	}
+	switch opts.command {
+	case "config":
+		return runConfigCommand(opts)
+	case "trust":
+		return runTrustCommand(opts)
+	case "doctor":
+		return runDoctorCommand(opts)
+	case "capabilities":
+		return runCapabilitiesCommand(opts)
+	case "policy":
+		return runPolicyCommand(opts)
+	case "sessions":
+		return runSessionsCommand(opts)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if opts.command == "run" {
 		return runNonInteractive(ctx, opts)
 	}
 	broker := tui.NewApprovalBroker()
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Approver: broker.Approve})
+	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
+		return broker.Ask(ctx, tui.Question{Text: question, Options: options})
+	}})
 	if err != nil {
 		return err
 	}
@@ -94,7 +116,7 @@ func run(args []string) error {
 }
 
 func runNonInteractive(ctx context.Context, opts options) error {
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan})
+	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont})
 	if err != nil {
 		return err
 	}
@@ -110,15 +132,27 @@ func runNonInteractive(ctx context.Context, opts options) error {
 	if prompt == "" {
 		return errors.New("run requires a prompt argument or stdin")
 	}
-	_, err = runtime.Agent.Run(ctx, prompt, func(event agent.Event) {
-		switch event.Kind {
-		case agent.EventDelta:
-			fmt.Print(event.Text)
-		case agent.EventToolStart:
-			fmt.Fprintf(os.Stderr, "\n◆ %s  %s\n", event.Tool, event.Text)
-		case agent.EventToolResult:
-			if event.Err != nil {
-				fmt.Fprintf(os.Stderr, "  %v\n", event.Err)
+	if opts.jsonl {
+		writer := event.NewJSONLWriter(os.Stdout)
+		writer.Redact = runtime.Redactor.Redact
+		_, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
+			runtime.LogEvent(e)
+			writer.Handle(e)
+		})
+		return err
+	}
+	_, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
+		runtime.LogEvent(e)
+		switch e.Kind {
+		case event.KindTextDelta:
+			fmt.Print(e.Text)
+		case event.KindToolStart:
+			if e.Tool != nil {
+				fmt.Fprintf(os.Stderr, "\n◆ %s  %s\n", e.Tool.Name, e.Tool.Summary)
+			}
+		case event.KindToolResult:
+			if e.Tool != nil && e.Tool.IsError {
+				fmt.Fprintf(os.Stderr, "  %s\n", e.Tool.Output)
 			}
 		}
 	})
@@ -132,7 +166,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions") {
 			opts.command = arg
 			continue
 		}
@@ -146,6 +180,30 @@ func parse(args []string) (options, error) {
 			opts.version = true
 		case arg == "--plan":
 			opts.plan = true
+		case arg == "--jsonl":
+			opts.jsonl = true
+		case arg == "--strict":
+			opts.strict = true
+		case arg == "--revoke":
+			opts.revoke = true
+		case arg == "--status":
+			opts.status = true
+		case arg == "--debug":
+			opts.debug = true
+		case arg == "--markdown":
+			opts.markdown = true
+		case arg == "--yes":
+			opts.yes = true
+		case arg == "--continue":
+			opts.cont = true
+		case strings.HasPrefix(arg, "--resume="):
+			opts.resume = strings.TrimPrefix(arg, "--resume=")
+		case arg == "--resume":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--resume requires a session id")
+			}
+			i++
+			opts.resume = args[i]
 		case arg == "--autopilot":
 			opts.autonomy = "autopilot"
 		case arg == "--workspace":
@@ -191,6 +249,13 @@ Usage:
   collo [flags] [initial prompt]      start the interactive TUI
   collo run [flags] <prompt>          run once (or read the prompt from stdin)
   collo init [--global]               write an example configuration
+  collo config validate [--strict]    validate configuration with field-level errors
+  collo config show                   print the effective configuration and its layers
+  collo trust [--status|--revoke]     review and trust this workspace's project config
+  collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
+  collo capabilities [--markdown]     print the product capability matrix
+  collo policy check <command…>       evaluate a command against permission rules without running it
+  collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
   collo version                       print build information
 
 Flags:
@@ -200,8 +265,15 @@ Flags:
   --autonomy ask|workspace|autopilot   permission policy
   --autopilot                          shorthand for --autonomy autopilot
   --plan                               start in read-only planning mode
+  --resume <id>                        resume a saved session
+  --continue                           resume the most recent session
+  --jsonl                              (run) emit schema-versioned JSONL events on stdout
+  --debug                              write a redacted debug log (see collo doctor for path)
   -h, --help                           show help
   -v, --version                        show version
+
+Environment:
+  COLLO_PROVIDER / COLLO_MODEL         override provider and model selection
 
 Inside the TUI, use /help to see slash commands.
 `

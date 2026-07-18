@@ -98,7 +98,7 @@ func registerTools(ctx context.Context, server string, cfg appconfig.MCPServer, 
 			if string(schema) == "null" {
 				schema = []byte(`{"type":"object"}`)
 			}
-			registry.Add(tools.Function{Def: provider.ToolDefinition{Name: publicName, Description: fmt.Sprintf("MCP server %s tool %s. %s", server, remote.Name, remote.Description), InputSchema: schema}, Action: tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name}, Run: func(callCtx context.Context, raw json.RawMessage) (string, error) {
+			registry.Add(tools.Function{Def: provider.ToolDefinition{Name: publicName, Description: fmt.Sprintf("MCP server %s tool %s. %s", server, remote.Name, remote.Description), InputSchema: schema}, Action: tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server}, Run: func(callCtx context.Context, raw json.RawMessage) (string, error) {
 				var args map[string]any
 				if err := json.Unmarshal(raw, &args); err != nil {
 					return "", err

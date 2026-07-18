@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -13,16 +14,26 @@ import (
 	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/sandbox"
+	"github.com/robert-mcdermott/collomia/internal/shell"
 )
 
 type RunCommandTool struct {
 	Workspace      string
 	DeniedPatterns []*regexp.Regexp
 	MaxOutputBytes int
+	// SandboxMode selects OS enforcement: off, auto, or require.
+	SandboxMode sandbox.Mode
+	// AllowNetwork permits network egress inside the sandbox.
+	AllowNetwork bool
+	// MinimalEnv strips the parent environment down to basics so parent
+	// secrets are not inherited by agent commands.
+	MinimalEnv bool
+	Backend    sandbox.Backend
 }
 
 func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*RunCommandTool, error) {
-	t := &RunCommandTool{Workspace: workspace, MaxOutputBytes: maxOutput}
+	t := &RunCommandTool{Workspace: workspace, MaxOutputBytes: maxOutput, SandboxMode: sandbox.ModeOff, Backend: sandbox.ForPlatform()}
 	if t.MaxOutputBytes <= 0 {
 		t.MaxOutputBytes = 64 * 1024
 	}
@@ -49,7 +60,13 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	if strings.TrimSpace(a.Command) == "" {
 		return Action{}, errors.New("command must not be empty")
 	}
-	return Action{Risk: RiskExecute, Summary: "run: " + a.Command}, nil
+	analysis := shell.Analyze(a.Command)
+	return Action{
+		Risk: RiskExecute, Summary: "run: " + a.Command,
+		Executables:     analysis.Executables,
+		Uninspectable:   !analysis.Inspectable,
+		AnalysisReasons: analysis.Reasons,
+	}, nil
 }
 func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a struct {
@@ -70,22 +87,45 @@ func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	if a.Timeout > 1800 {
 		a.Timeout = 1800
 	}
+	argv := shellArgv(a.Command)
+	sandboxed := false
+	if t.SandboxMode == sandbox.ModeAuto || t.SandboxMode == sandbox.ModeRequire {
+		if err := t.Backend.Available(); err != nil {
+			if t.SandboxMode == sandbox.ModeRequire {
+				return "", fmt.Errorf("sandbox required but unavailable: %w", err)
+			}
+		} else {
+			wrapped, err := t.Backend.Wrap(argv, sandbox.Policy{WorkspaceRoot: t.Workspace, AllowNetwork: t.AllowNetwork})
+			if err != nil {
+				if t.SandboxMode == sandbox.ModeRequire {
+					return "", fmt.Errorf("sandbox required: %w", err)
+				}
+			} else {
+				argv = wrapped
+				sandboxed = true
+			}
+		}
+	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
 	defer cancel()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(runCtx, "cmd.exe", "/d", "/s", "/c", a.Command)
-	} else {
-		cmd = exec.CommandContext(runCtx, "/bin/sh", "-lc", a.Command)
-	}
+	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	cmd.Dir = t.Workspace
+	if t.MinimalEnv {
+		cmd.Env = minimalEnv()
+	}
+	// The command runs in its own process group so cancellation and timeout
+	// terminate every descendant, not only the shell.
+	setProcessGroup(cmd)
 	buffer := &limitedBuffer{limit: t.MaxOutputBytes}
 	cmd.Stdout = buffer
 	cmd.Stderr = buffer
 	err := cmd.Run()
 	out := buffer.String()
+	if sandboxed && err != nil {
+		out += "\n(command ran inside the OS sandbox; denied file or network access can cause failures — see docs/SECURITY.md)"
+	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return out, fmt.Errorf("command timed out after %d seconds", a.Timeout)
+		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
 	}
 	if err != nil {
 		return out, fmt.Errorf("command failed: %w", err)
@@ -94,6 +134,26 @@ func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		out = "(command completed with no output)"
 	}
 	return out, nil
+}
+
+// minimalEnv keeps only the variables a build needs, so credentials in the
+// parent environment never reach agent commands.
+func minimalEnv() []string {
+	keep := []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "COLUMNS", "LINES", "SYSTEMROOT", "COMSPEC", "PATHEXT"}
+	var env []string
+	for _, key := range keep {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
+func shellArgv(command string) []string {
+	if runtime.GOOS == "windows" {
+		return []string{"cmd.exe", "/d", "/s", "/c", command}
+	}
+	return []string{"/bin/sh", "-lc", command}
 }
 
 type limitedBuffer struct {

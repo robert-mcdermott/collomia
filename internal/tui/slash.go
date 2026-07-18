@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -64,7 +65,19 @@ func (m *Model) slash(line string) bool {
 		if window > 0 {
 			windowText = fmt.Sprintf("%d", window)
 		}
-		m.addSystem(fmt.Sprintf("Provider usage this session: %d input / %d output tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d", usage.InputTokens, usage.OutputTokens, estimate, windowText, m.runtime.Agent.MessageCount()))
+		cached := ""
+		if usage.CachedTokens > 0 {
+			cached = fmt.Sprintf(" (%d cached)", usage.CachedTokens)
+		}
+		reasoning := ""
+		if usage.ReasoningTokens > 0 {
+			reasoning = fmt.Sprintf(" (%d reasoning)", usage.ReasoningTokens)
+		}
+		sessionID := ""
+		if m.runtime.Session != nil {
+			sessionID = "\nSession: " + m.runtime.Session.Meta.ID
+		}
+		m.addSystem(fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
 		if len(args) > 0 {
@@ -135,6 +148,64 @@ func (m *Model) slash(line string) bool {
 		}
 		m.applyTheme(t)
 		m.addSystem("Theme switched to " + t.Name + ".")
+	case "/diff":
+		diff := m.runtime.Changes.Diff(m.runtime.Workspace)
+		if strings.TrimSpace(diff) == "" {
+			m.addSystem("No agent file changes this session.")
+			break
+		}
+		m.blocks = append(m.blocks, block{role: "tool-result", content: "```diff\n" + diff + "```"})
+	case "/undo":
+		snapshot, err := m.runtime.Changes.Undo()
+		if err != nil {
+			m.addError(err)
+			break
+		}
+		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
+	case "/tasks":
+		m.addSystem(m.runtime.Plan.Current().Render())
+	case "/sessions":
+		if m.runtime.Sessions == nil {
+			m.addSystem("Session persistence is unavailable.")
+			break
+		}
+		metas, err := m.runtime.Sessions.List()
+		if err != nil {
+			m.addError(err)
+			break
+		}
+		var lines []string
+		current := ""
+		if m.runtime.Session != nil {
+			current = m.runtime.Session.Meta.ID
+		}
+		for i, meta := range metas {
+			if i >= 15 {
+				lines = append(lines, fmt.Sprintf("… and %d more (collo sessions list)", len(metas)-i))
+				break
+			}
+			marker := "  "
+			if meta.ID == current {
+				marker = "▸ "
+			}
+			title := meta.Title
+			if title == "" {
+				title = "(untitled)"
+			}
+			lines = append(lines, fmt.Sprintf("%s%s  %s  %d turns  %s", marker, meta.ID, title, meta.Turns, meta.UpdatedAt.Local().Format("01-02 15:04")))
+		}
+		if len(lines) == 0 {
+			lines = append(lines, "No saved sessions yet.")
+		}
+		m.addSystem("Sessions (current marked; resume with `collo --resume <id>`):\n" + strings.Join(lines, "\n"))
+	case "/compact":
+		count, err := m.runtime.Agent.Compact(context.Background(), strings.Join(args, " "))
+		if err != nil {
+			m.addError(err)
+			break
+		}
+		estimate, window := m.runtime.Agent.ContextEstimate()
+		m.addSystem(fmt.Sprintf("Compacted %d messages into a summary. Estimated context is now ~%d tokens (window %d). The full transcript remains in the session log.", count, estimate, window))
 	case "/config":
 		m.addSystem("Active configuration: " + m.runtime.Config.Source + "\nProject configuration takes precedence over the user configuration. Run `collo init` to create " + m.runtime.Workspace + "/.collomia.json.")
 	case "/clear":

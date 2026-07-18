@@ -23,6 +23,19 @@ type Action struct {
 	Risk    Risk
 	Summary string
 	Outside bool
+	// Normalized resources for scoped policy rules and the audit ledger.
+	Paths       []string
+	Executables []string
+	Hosts       []string
+	Server      string
+	// Uninspectable marks actions (typically shell commands) whose full
+	// effect could not be statically determined; they always require
+	// interactive approval.
+	Uninspectable   bool
+	AnalysisReasons []string
+	// Preview carries a human-reviewable rendering of the proposed change
+	// (typically a unified diff) for approval prompts.
+	Preview string
 }
 
 type Tool interface {

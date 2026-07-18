@@ -1,0 +1,222 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/provider"
+)
+
+// scriptedClient replays a fixed provider conversation so a full runtime can
+// be exercised end to end without a network.
+type scriptedClient struct {
+	calls int
+	steps []provider.Response
+}
+
+func (s *scriptedClient) Name() string { return "scripted" }
+func (s *scriptedClient) Chat(_ context.Context, _ provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
+	step := s.steps[min(s.calls, len(s.steps)-1)]
+	s.calls++
+	if step.Content != "" && onDelta != nil {
+		onDelta(provider.Delta{Text: step.Content})
+	}
+	return step, nil
+}
+
+// TestEndToEndRunIsFullyRepresentedByEventSchema drives a real Runtime —
+// registry, permission pipeline, audit, agent loop — through a tool-using
+// turn and verifies the emitted JSONL event stream carries the whole run in
+// schema v1.
+func TestEndToEndRunIsFullyRepresentedByEventSchema(t *testing.T) {
+	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "hello.txt"), []byte("hello fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(context.Background(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	client := &scriptedClient{steps: []provider.Response{
+		{ToolCalls: []provider.ToolCall{{ID: "1", Name: "read_file", Arguments: json.RawMessage(`{"path":"hello.txt"}`)}}},
+		{Content: "The file says hello.", Usage: provider.Usage{InputTokens: 10, OutputTokens: 5}},
+	}}
+	runtime.Agent.SetProvider("scripted", "fixture-model", appconfig.Provider{MaxTokens: 100}, client)
+
+	var out strings.Builder
+	writer := event.NewJSONLWriter(&out)
+	final, err := runtime.Agent.Run(context.Background(), "what does hello.txt say?", writer.Handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final != "The file says hello." {
+		t.Fatalf("final=%q", final)
+	}
+
+	var kinds []event.Kind
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var e event.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("event line is not valid JSON: %q: %v", line, err)
+		}
+		if e.Schema != event.SchemaVersion {
+			t.Fatalf("event missing schema version: %q", line)
+		}
+		if e.Time.IsZero() {
+			t.Fatalf("event missing timestamp: %q", line)
+		}
+		kinds = append(kinds, e.Kind)
+	}
+	wantOrder := []event.Kind{event.KindTurnStart, event.KindPermissionDecision, event.KindToolStart, event.KindToolResult, event.KindTextDelta, event.KindUsage, event.KindTurnEnd}
+	pos := 0
+	for _, kind := range kinds {
+		if pos < len(wantOrder) && kind == wantOrder[pos] {
+			pos++
+		}
+	}
+	if pos != len(wantOrder) {
+		t.Fatalf("event stream missing %v (in order); got %v", wantOrder[pos], kinds)
+	}
+}
+
+// TestSessionResumeAcrossRestart kills a runtime after a completed turn and
+// verifies a new runtime resumes the same conversation from disk.
+func TestSessionResumeAcrossRestart(t *testing.T) {
+	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	workspace := t.TempDir()
+	first, err := New(context.Background(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{steps: []provider.Response{{Content: "the answer is 42"}}}
+	first.Agent.SetProvider("scripted", "fixture", appconfig.Provider{MaxTokens: 100}, client)
+	if _, err := first.Agent.Run(context.Background(), "what is the answer?", nil); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	resumed, err := New(context.Background(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if resumed.Agent.MessageCount() != 2 {
+		t.Fatalf("resumed messages=%d", resumed.Agent.MessageCount())
+	}
+	// The resumed conversation is live: a follow-up turn sees the history.
+	follow := &scriptedClient{steps: []provider.Response{{Content: "still 42"}}}
+	resumed.Agent.SetProvider("scripted", "fixture", appconfig.Provider{MaxTokens: 100}, follow)
+	if _, err := resumed.Agent.Run(context.Background(), "and again?", nil); err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Agent.MessageCount() != 4 {
+		t.Fatalf("post-follow-up messages=%d", resumed.Agent.MessageCount())
+	}
+
+	// --continue picks the same session.
+	resumed.Close()
+	continued, err := New(context.Background(), Options{Workspace: workspace, Continue: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer continued.Close()
+	if continued.Session.Meta.ID != id {
+		t.Fatalf("continue resumed %s, want %s", continued.Session.Meta.ID, id)
+	}
+}
+
+// TestAskUserToolPausesForAnswer verifies the user-question primitive: the
+// run pauses for a typed answer and continues without corrupting the turn.
+func TestAskUserToolPausesForAnswer(t *testing.T) {
+	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	asked := ""
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Asker: func(_ context.Context, question string, options []string) (string, error) {
+		asked = question
+		return "use PostgreSQL", nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	client := &scriptedClient{steps: []provider.Response{
+		{ToolCalls: []provider.ToolCall{{ID: "q1", Name: "ask_user", Arguments: json.RawMessage(`{"question":"Which database?","options":["PostgreSQL","SQLite"]}`)}}},
+		{Content: "Using PostgreSQL."},
+	}}
+	runtime.Agent.SetProvider("scripted", "fixture", appconfig.Provider{MaxTokens: 100}, client)
+	final, err := runtime.Agent.Run(context.Background(), "set up the db layer", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked != "Which database?" || final != "Using PostgreSQL." {
+		t.Fatalf("asked=%q final=%q", asked, final)
+	}
+}
+
+// TestPlanPersistsAcrossResume verifies the structured plan artifact
+// survives a restart with the session.
+func TestPlanPersistsAcrossResume(t *testing.T) {
+	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	workspace := t.TempDir()
+	first, err := New(context.Background(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{steps: []provider.Response{
+		{ToolCalls: []provider.ToolCall{{ID: "p1", Name: "update_plan", Arguments: json.RawMessage(`{"goal":"ship it","steps":[{"id":1,"title":"build","status":"done","evidence":"go build"}]}`)}}},
+		{Content: "planned"},
+	}}
+	first.Agent.SetProvider("scripted", "fixture", appconfig.Provider{MaxTokens: 100}, client)
+	if _, err := first.Agent.Run(context.Background(), "plan the work", nil); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	resumed, err := New(context.Background(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	current := resumed.Plan.Current()
+	if current == nil || current.Goal != "ship it" || len(current.Steps) != 1 {
+		t.Fatalf("plan not restored: %+v", current)
+	}
+}
+
+// TestRuntimeQuarantinesUntrustedProject verifies the wiring end to end:
+// an untrusted workspace's project config must not reach the runtime.
+func TestRuntimeQuarantinesUntrustedProject(t *testing.T) {
+	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	workspace := t.TempDir()
+	project := `{"permissions":{"mode":"autopilot"}}`
+	if err := os.WriteFile(filepath.Join(workspace, appconfig.ProjectFile), []byte(project), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(context.Background(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if runtime.Permissions.Mode() == "autopilot" {
+		t.Fatal("untrusted project config must not set the autonomy mode")
+	}
+	warned := false
+	for _, w := range runtime.Warnings {
+		if strings.Contains(w.Error(), "not trusted") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("quarantine warning missing: %v", runtime.Warnings)
+	}
+}

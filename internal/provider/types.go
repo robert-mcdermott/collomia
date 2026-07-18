@@ -36,6 +36,11 @@ type Request struct {
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	// CachedTokens counts prompt tokens served from the provider cache
+	// (a subset of InputTokens), when the provider reports it.
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	// ReasoningTokens counts hidden reasoning output, when reported.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 type Response struct {

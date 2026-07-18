@@ -86,14 +86,15 @@ func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta f
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens          int `json:"input_tokens"`
+			OutputTokens         int `json:"output_tokens"`
+			CacheReadInputTokens int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.NewDecoder(r).Decode(&payload); err != nil {
 		return Response{}, err
 	}
-	out := Response{Stop: payload.StopReason, Usage: Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens}}
+	out := Response{Stop: payload.StopReason, Usage: Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens, CachedTokens: payload.Usage.CacheReadInputTokens}}
 	for _, part := range payload.Content {
 		switch part.Type {
 		case "text":
@@ -144,8 +145,9 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 			Index   int    `json:"index"`
 			Message *struct {
 				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
+					InputTokens          int `json:"input_tokens"`
+					OutputTokens         int `json:"output_tokens"`
+					CacheReadInputTokens int `json:"cache_read_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock *struct {
@@ -177,6 +179,7 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 		if envelope.Message != nil {
 			out.Usage.InputTokens = envelope.Message.Usage.InputTokens
 			out.Usage.OutputTokens = envelope.Message.Usage.OutputTokens
+			out.Usage.CachedTokens = envelope.Message.Usage.CacheReadInputTokens
 		}
 		if envelope.Usage != nil {
 			out.Usage.OutputTokens = envelope.Usage.OutputTokens
