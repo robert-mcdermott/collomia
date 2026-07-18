@@ -27,6 +27,12 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			ref = args[0]
 		}
 		return false, m.startTurn(app.ReviewPrompt(ref))
+	case "/verify":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
+			break
+		}
+		return false, m.startTurn(app.VerifyPrompt(strings.Join(args, " ")))
 	case "/help":
 		var lines []string
 		for _, cmd := range slashCommands {

@@ -102,6 +102,11 @@ func run(args []string) error {
 		opts.args = []string{app.ReviewPrompt(strings.TrimSpace(ref))}
 		return runNonInteractive(ctx, opts)
 	}
+	if opts.command == "verify" {
+		focus := strings.Join(opts.args, " ")
+		opts.args = []string{app.VerifyPrompt(strings.TrimSpace(focus))}
+		return runNonInteractive(ctx, opts)
+	}
 	if opts.command == "run" {
 		return runNonInteractive(ctx, opts)
 	}
@@ -175,7 +180,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review" || arg == "verify") {
 			opts.command = arg
 			continue
 		}
@@ -265,6 +270,7 @@ Usage:
   collo capabilities [--markdown]     print the product capability matrix
   collo policy check <command…>       evaluate a command against permission rules without running it
   collo review [ref]                  review pending changes (or changes vs a ref) headlessly
+  collo verify [focus]                detect and run this project's build/lint/test commands headlessly
   collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
   collo version                       print build information
 

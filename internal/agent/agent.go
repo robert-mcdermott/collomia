@@ -253,7 +253,7 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 func planTool(name string) bool {
 	switch name {
 	case "read_file", "list_files", "search_files", "load_skill", "delegate",
-		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user":
+		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
 		return true
 	}
 	return false
@@ -283,7 +283,7 @@ Operating rules:
 - Use apply_patch for multi-file changes that must land together; use edit_file for single focused edits.
 - For multi-step work, maintain the plan with update_plan (statuses and evidence) so the user can follow progress.
 - If a genuine decision or missing value blocks you and ask_user is available, ask one concise question instead of guessing.
-- When implementation is complete, run proportionate verification and summarize the outcome clearly.
+- When implementation is complete, use detect_verification to find this project's real build/lint/test commands, run proportionate verification with run_command, and summarize the outcome clearly.
 - Tool errors are recoverable: diagnose them and try a safer approach.
 
 %s

@@ -32,6 +32,7 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		ApplyPatchTool{Guard: guard, Tracker: tracker}, *command,
 		GitStatusTool{Workspace: guard.Workspace}, GitDiffTool{Workspace: guard.Workspace},
 		GitLogTool{Workspace: guard.Workspace}, GitBlameTool{Workspace: guard.Workspace},
+		DetectVerificationTool{Workspace: guard.Workspace},
 	)
 	return registry, tracker, nil
 }

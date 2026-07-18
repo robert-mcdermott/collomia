@@ -230,6 +230,25 @@ Report:
 If there are no changes to review, say so plainly.`, scope)
 }
 
+// VerifyPrompt is the canned prompt behind `collo verify` and `/verify`: it
+// detects the project's real build/lint/test commands, runs them, and ties
+// each outcome to a plan step instead of the model guessing at commands or
+// asserting success it never observed.
+func VerifyPrompt(focus string) string {
+	scope := "this project's standard build, lint, and test commands"
+	if focus != "" {
+		scope = fmt.Sprintf("this project, focused on: %s", focus)
+	}
+	return fmt.Sprintf(`Verify %s.
+
+1. Call detect_verification to find the commands this project conventionally uses. If it finds nothing, inspect the repository (list_files, read_file) or ask the user how it is built and tested — do not guess.
+2. Record each command as a step with update_plan before running it.
+3. Run each command with run_command and watch its live output. Mark the step done with the command's outcome as evidence, or blocked with the exact failing output if it fails. Never mark a step done unless the command's own result says it passed.
+4. Finish with a one-paragraph summary: what passed, what failed, and the exact failing output for anything still broken.
+
+Verify the current working tree, not a stale build. Do not modify any files — report failures for the user to address.`, scope)
+}
+
 // ListModels queries a provider's live model catalog when its API supports
 // discovery (OpenAI-compatible and Anthropic endpoints do).
 func (r *Runtime) ListModels(ctx context.Context, providerName string) ([]provider.ModelInfo, error) {

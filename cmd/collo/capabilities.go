@@ -36,6 +36,7 @@ func capabilityMatrix() []capabilityRow {
 		{"tools", "write_file / edit_file", "implemented", "unique-match edits; diff preview shown at approval; /diff and /undo"},
 		{"tools", "run_command", "implemented", "live streamed output, process-group kill, timeout, output caps, conservative command analysis"},
 		{"workflow", "code review (collo review, /review)", "implemented", "read-only review of uncommitted changes or vs a ref"},
+		{"workflow", "verification loop (collo verify, /verify)", "implemented", "detect_verification finds real build/lint/test commands from project files; run_command executes them; outcomes tied to update_plan evidence"},
 		{"tools", "apply_patch", "implemented", "atomic multi-file change sets with validation, rollback, and machine-readable changesets"},
 		{"tools", "git_status / git_diff / git_log / git_blame", "implemented", "read-only, bounded, flag-injection safe; never commits or pushes"},
 		{"tools", "hunk-level review", "unsupported", "file-level diff approval today; hunk granularity is roadmap work"},
