@@ -281,6 +281,27 @@ const configReferenceJSONC = `
     "go": ["gopls"],
     "python": ["pyright-langserver", "--stdio"],
     "typescript": ["typescript-language-server", "--stdio"]
+  },
+
+  // Lifecycle hooks: trusted commands run at session events, receiving a
+  // JSON payload on stdin. Events: session_start, user_prompt,
+  // permission_decision, tool_start, tool_end, file_change, compaction,
+  // subagent_start, subagent_end, stop, session_end. The gating events
+  // (user_prompt, tool_start) may block by exiting 2 or printing
+  // {"decision":"block","reason":"..."}; hooks only ever tighten — they
+  // cannot approve what the permission engine denies. "matcher" is a
+  // regular expression tested against the tool name (tool events) or event
+  // name; "timeout_seconds" defaults to 10. Hook failures are logged
+  // warnings, never fatal. Project-configured hooks require collo trust.
+  "hooks": {
+    "tool_end": [
+      {
+        "command": "/path/to/notify-script",
+        "args": ["--quiet"],
+        "matcher": "run_command|apply_patch",
+        "timeout_seconds": 10
+      }
+    ]
   }
 }
 `

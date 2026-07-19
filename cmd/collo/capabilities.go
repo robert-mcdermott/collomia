@@ -66,6 +66,7 @@ func capabilityMatrix() []capabilityRow {
 		{"mcp", "subscriptions / oauth", "unsupported", "roadmap phase 5"},
 		{"skills", "discovery + on-demand load", "implemented", "YAML front matter (folded blocks, metadata, allowed-tools), bundled scripts/references/assets surfaced by load_skill, project-over-global precedence with shadow reporting, validation warnings; project skills require trust"},
 		{"skills", "lifecycle management", "implemented", "`collo skills list|show|new|install|update|remove|enable|disable`; sha256 inspection, .disabled marker, symlink-refusing installs"},
+		{"hooks", "lifecycle hooks", "implemented", "11 events (session, prompt, permission, tool, file change, compaction, subagent, stop) run configured commands with JSON stdin, matchers, and timeouts; user_prompt/tool_start may block (exit 2 or decision JSON) — hooks only tighten, never bypass permissions or the sandbox"},
 		{"subagents", "parallel delegate scheduler", "implemented", "up to 4 concurrent tasks; write tasks isolated in their own git worktree; no recursion, no auto-merge"},
 		{"subagents", "named agent profiles", "implemented", "config `agents.<name>` sets model/role instructions/tool allowlist/iteration budget; selected per task via delegate's `agent` field"},
 		{"subagents", "sibling conflict detection", "implemented", "a delegate batch flags files touched by more than one sub-agent's worktree; nothing is auto-reconciled"},

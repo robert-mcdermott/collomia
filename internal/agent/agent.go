@@ -14,6 +14,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/audit"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/skills"
@@ -52,6 +53,7 @@ type Agent struct {
 	subagent            bool
 	onMessage           func(provider.Message)
 	onCompaction        func(summary provider.Message, replaced int)
+	lifecycle           *hooks.Runner
 }
 
 type Options struct {
@@ -70,6 +72,8 @@ type Options struct {
 	OnMessage func(provider.Message)
 	// OnCompaction observes context compactions (summary + replaced count).
 	OnCompaction func(summary provider.Message, replaced int)
+	// Hooks runs configured lifecycle-hook commands; nil disables hooks.
+	Hooks *hooks.Runner
 }
 
 func New(opts Options) *Agent {
@@ -83,7 +87,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, lifecycle: opts.Hooks}
 }
 
 // appendMessage adds to the conversation and notifies the persistence hook.
@@ -127,6 +131,11 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		}
 	}
 	send(event.New(event.KindTurnStart))
+	if err := a.lifecycle.Gate(ctx, hooks.Payload{Event: "user_prompt", Workspace: a.workspace, Subject: "user_prompt", Prompt: prompt}); err != nil {
+		blocked := fmt.Errorf("prompt blocked by hook: %w", err)
+		send(errorEvent(blocked))
+		return "", blocked
+	}
 	a.appendMessage(provider.Message{Role: "user", Content: prompt})
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
 		if a.shouldCompact() {
@@ -180,6 +189,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		}
 		if len(response.ToolCalls) == 0 {
 			send(event.New(event.KindTurnEnd))
+			a.lifecycle.Fire(ctx, hooks.Payload{Event: "stop", Workspace: a.workspace, Subject: "stop", Detail: map[string]any{"iterations": iteration}})
 			return response.Content, nil
 		}
 		for _, call := range response.ToolCalls {
@@ -225,8 +235,13 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	decided := event.New(event.KindPermissionDecision)
 	decided.Permission = &event.Permission{Tool: call.Name, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
 	send(decided)
+	allowed := err == nil
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
 	if err != nil {
 		return "Tool denied: " + err.Error()
+	}
+	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
+		return "Tool blocked by hook: " + hookErr.Error()
 	}
 	args := call.Arguments
 	if grant.ContentOverride != nil {
@@ -258,6 +273,14 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	done := event.New(event.KindToolResult)
 	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result, IsError: err != nil}
 	send(done)
+	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result)}}
+	if err != nil {
+		endPayload.Error = err.Error()
+	}
+	a.lifecycle.Fire(ctx, endPayload)
+	if err == nil && action.Risk == tools.RiskWrite && len(action.Paths) > 0 {
+		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
+	}
 	return result
 }
 
@@ -446,6 +469,11 @@ func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, c
 	if team != nil {
 		team.Start(id, name, t.Task, t.Write)
 	}
+	a.lifecycle.Fire(parent, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"task": t.Task, "write": t.Write, "agent": t.Agent}})
+	defer func() {
+		payload := hooks.Payload{Event: "subagent_end", Workspace: a.workspace, Subject: name, Paths: changedFiles}
+		a.lifecycle.Fire(parent, payload)
+	}()
 	if strings.TrimSpace(t.Task) == "" {
 		err := errors.New("empty task")
 		if team != nil {
@@ -718,6 +746,7 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 		e.Text = fmt.Sprintf("compacted %d messages into a summary", cut)
 		send(e)
 	}
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "compaction", Workspace: a.workspace, Subject: "compaction", Detail: map[string]any{"replaced_messages": cut}})
 	return cut, nil
 }
 func (a *Agent) MessageCount() int { a.mu.RLock(); defer a.mu.RUnlock(); return len(a.messages) }

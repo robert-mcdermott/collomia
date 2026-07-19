@@ -648,6 +648,29 @@ Three more protocol features are supported end to end:
 
 MCP configuration can launch processes or contact remote services. Servers are not started unless their entry explicitly sets `"trusted": true`; review a project-provided `.collomia.json` before granting that trust — this is exactly what `collo trust` gates.
 
+## Hooks
+
+Hooks run your own commands at lifecycle points, receiving a structured JSON payload on stdin — the raw material for custom notifications, audit pipelines, metrics, or policy tripwires that live outside Collomia:
+
+```json
+{
+  "hooks": {
+    "file_change": [
+      { "command": "/usr/local/bin/my-audit", "args": ["--log"] }
+    ],
+    "tool_start": [
+      { "command": "./scripts/guard.sh", "matcher": "run_command|apply_patch", "timeout_seconds": 5 }
+    ]
+  }
+}
+```
+
+Eleven events cover the session lifecycle: `session_start`, `user_prompt`, `permission_decision`, `tool_start`, `tool_end`, `file_change`, `compaction`, `subagent_start`, `subagent_end`, `stop` (turn finished), and `session_end`. The payload always carries the event, workspace, and subject; tool events add the tool name, summary, arguments, and touched paths; permission events add the decision and its source.
+
+Two events can gate: a `user_prompt` or `tool_start` hook blocks the action by exiting with status `2` or printing `{"decision":"block","reason":"…"}` — the reason is shown to the model (or the user) in place of the result. Hooks can only tighten: a hook cannot approve anything the permission engine would deny, and it cannot bypass the sandbox. Everything else about them is bounded — `matcher` (a regex on the tool or event name) scopes when they run, timeouts default to 10 seconds, output is capped, and a failing or timed-out hook becomes a logged warning rather than a broken session.
+
+Hooks are trusted code, executed as ordinary subprocesses. Project-configured hooks are quarantined until `collo trust`, exactly like project MCP servers and skills.
+
 ## Sub-agents and multi-agent delegation
 
 The `delegate` tool lets the agent fan out bounded work to sub-agents instead of doing everything serially in one context:

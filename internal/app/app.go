@@ -14,6 +14,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/logging"
 	mcpclient "github.com/robert-mcdermott/collomia/internal/mcp"
 	"github.com/robert-mcdermott/collomia/internal/permission"
@@ -43,6 +44,7 @@ type Runtime struct {
 	Team        *agent.Team
 	Processes   *tools.ProcessManager
 	Warnings    []error
+	Hooks       *hooks.Runner
 }
 
 // LogEvent records a runtime event in the debug log and the durable
@@ -197,7 +199,10 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if opts.Asker != nil {
 		registry.Add(askUserTool(opts.Asker))
 	}
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan}
+	lifecycle := hooks.NewRunner(workspace, cfg.Hooks, func(note hooks.Note) {
+		logger.Warn("hook", "event", note.Event, "command", note.Command, "note", note.Text)
+	})
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle}
 	if sess != nil {
 		agentOptions.OnMessage = sess.AppendMessage
 		agentOptions.OnCompaction = sess.AppendCompaction
@@ -212,7 +217,12 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	for _, warning := range warnings {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
-	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings}, nil
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.Meta.ID
+	}
+	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
+	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle}, nil
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -370,6 +380,11 @@ func askUserTool(ask func(ctx context.Context, question string, options []string
 }
 
 func (r *Runtime) Close() {
+	sessionID := ""
+	if r.Session != nil {
+		sessionID = r.Session.Meta.ID
+	}
+	r.Hooks.Fire(context.Background(), hooks.Payload{Event: "session_end", Workspace: r.Workspace, Subject: "session_end", Detail: map[string]any{"session_id": sessionID}})
 	if r.Processes != nil {
 		// Background processes never outlive the session.
 		r.Processes.StopAll()

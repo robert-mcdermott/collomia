@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -419,5 +421,61 @@ func TestWithOverriddenContentReplacesField(t *testing.T) {
 	}
 	if decoded.Path != "a.txt" || decoded.Content != content {
 		t.Fatalf("decoded=%+v", decoded)
+	}
+}
+
+func TestToolStartHookBlocksExecution(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("hook test script uses /bin/sh")
+	}
+	hookScript := filepath.Join(t.TempDir(), "gate.sh")
+	if err := os.WriteFile(hookScript, []byte("#!/bin/sh\necho 'no destructive tools during the demo'\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executed := false
+	registry := tools.NewRegistry(tools.Function{Def: provider.ToolDefinition{Name: "danger", Description: "d", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "danger"}, Run: func(context.Context, json.RawMessage) (string, error) {
+		executed = true
+		return "ran", nil
+	}})
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "1", Name: "danger", Arguments: json.RawMessage(`{}`)}}}, nil
+		}
+		last := request.Messages[len(request.Messages)-1]
+		if !strings.Contains(last.Content, "Tool blocked by hook") || !strings.Contains(last.Content, "no destructive tools") {
+			t.Fatalf("model should see the block reason, got %q", last.Content)
+		}
+		return provider.Response{Content: "understood"}, nil
+	}}
+	lifecycle := hooks.NewRunner(t.TempDir(), map[string][]appconfig.Hook{"tool_start": {{Command: hookScript, Matcher: "^danger$"}}}, nil)
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 4, Hooks: lifecycle})
+	if _, err := a.Run(t.Context(), "try it", nil); err != nil {
+		t.Fatal(err)
+	}
+	if executed {
+		t.Fatal("blocked tool must not execute")
+	}
+}
+
+func TestUserPromptHookBlocksTurn(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("hook test script uses /bin/sh")
+	}
+	hookScript := filepath.Join(t.TempDir(), "gate.sh")
+	if err := os.WriteFile(hookScript, []byte("#!/bin/sh\necho '{\"decision\":\"block\",\"reason\":\"prompts are frozen\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		t.Fatal("provider must not be called for a blocked prompt")
+		return provider.Response{}, nil
+	}}
+	lifecycle := hooks.NewRunner(t.TempDir(), map[string][]appconfig.Hook{"user_prompt": {{Command: hookScript}}}, nil)
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), Hooks: lifecycle})
+	_, err := a.Run(t.Context(), "hello", nil)
+	if err == nil || !strings.Contains(err.Error(), "prompts are frozen") {
+		t.Fatalf("expected prompt block, got %v", err)
+	}
+	if a.MessageCount() != 0 {
+		t.Fatalf("blocked prompt must not enter the conversation, got %d messages", a.MessageCount())
 	}
 }
