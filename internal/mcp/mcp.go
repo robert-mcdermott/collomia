@@ -453,9 +453,15 @@ func (m *Manager) trackProgress(emit func(string)) (string, func()) {
 	token := fmt.Sprintf("collo-%d", m.progressSeq)
 	m.progress[token] = emit
 	return token, func() {
-		m.progressMu.Lock()
-		defer m.progressMu.Unlock()
-		delete(m.progress, token)
+		// The SDK dispatches notifications on their own goroutines, so a
+		// progress update sent during the call can be processed just after
+		// CallTool returns. Keep the token alive briefly so that tail
+		// notification still reaches the sink instead of being dropped.
+		time.AfterFunc(2*time.Second, func() {
+			m.progressMu.Lock()
+			defer m.progressMu.Unlock()
+			delete(m.progress, token)
+		})
 	}
 }
 

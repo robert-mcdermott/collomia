@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
@@ -111,18 +113,39 @@ func TestProgressNotificationsStream(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("errs=%v", errs)
 	}
+	// Progress notifications arrive on the SDK's handler goroutine and may
+	// land after CallTool returns, so the sink must be synchronized and the
+	// assertions must wait for delivery instead of reading immediately.
+	var mu sync.Mutex
 	var streamed []string
 	out, err := registry.ExecuteStream(t.Context(), "mcp_docs_long", []byte(`{}`), func(chunk string) {
+		mu.Lock()
 		streamed = append(streamed, chunk)
+		mu.Unlock()
 	})
 	if err != nil || out != "done" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
-	joined := strings.Join(streamed, "")
-	for _, want := range []string{"progress: 1/2 — step 1", "progress: 2/2 — step 2"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("streamed output missing %q:\n%s", want, joined)
+	wanted := []string{"progress: 1/2 — step 1", "progress: 2/2 — step 2"}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		joined := strings.Join(streamed, "")
+		mu.Unlock()
+		missing := ""
+		for _, want := range wanted {
+			if !strings.Contains(joined, want) {
+				missing = want
+				break
+			}
 		}
+		if missing == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("streamed output missing %q:\n%s", missing, joined)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	// Plain Execute (no stream sink) still works and stays silent.
 	if out, err := registry.Execute(t.Context(), "mcp_docs_long", []byte(`{}`)); err != nil || out != "done" {
