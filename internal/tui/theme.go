@@ -74,6 +74,30 @@ func (t Theme) glamourStyle() string {
 // (the `plain` theme, also auto-selected under NO_COLOR).
 func (t Theme) plain() bool { return t.Primary == "" }
 
+// panelText is the color for text inside a titled output panel: a lighter
+// (dark themes) or darker (light themes) tint of Muted, so panel bodies read
+// as part of the themed box rather than the terminal's raw default
+// foreground, while staying easy on the eyes for paragraph-length output.
+// Plain theme stays uncolored.
+func (t Theme) panelText() string {
+	if t.plain() {
+		return ""
+	}
+	target := "#FFFFFF"
+	if !t.Dark {
+		target = "#000000"
+	}
+	muted, err := colorful.Hex(t.Muted)
+	if err != nil {
+		return t.Muted
+	}
+	edge, err := colorful.Hex(target)
+	if err != nil {
+		return t.Muted
+	}
+	return muted.BlendLuv(edge, 0.45).Clamped().Hex()
+}
+
 // styles holds every lipgloss style derived from the active theme so they are
 // computed once per theme switch instead of on every render.
 type styles struct {
@@ -101,6 +125,8 @@ type styles struct {
 	success     lipgloss.Style
 	warning     lipgloss.Style
 	heading     lipgloss.Style
+	panelTitle  lipgloss.Style
+	panelBody   lipgloss.Style
 }
 
 func newStyles(t Theme) styles {
@@ -130,6 +156,8 @@ func newStyles(t Theme) styles {
 		success:     lipgloss.NewStyle().Foreground(c(t.Success)),
 		warning:     lipgloss.NewStyle().Foreground(c(t.Warning)),
 		heading:     lipgloss.NewStyle().Bold(true).Foreground(c(t.Secondary)),
+		panelTitle:  lipgloss.NewStyle().Bold(true).Foreground(c(t.Accent)),
+		panelBody:   lipgloss.NewStyle().Foreground(c(t.panelText())),
 	}
 	if t.plain() {
 		// Empty colors already render as uncolored text; the styles that rely

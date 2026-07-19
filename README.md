@@ -271,6 +271,8 @@ Inside the TUI:
 | `/clear` | Clear conversation history and usage. |
 | `/help` | Show command help and keybindings. |
 
+Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/tools`, `/skills list`, `/mcp list`, `/config`, `/help`) render their output in a titled, theme-colored panel — the command's subject sits in the box border, body text is tinted with a readable shade derived from the theme (not the terminal's raw default color), and content wraps cleanly to the terminal width. Quick acknowledgements ("Theme switched…") stay as subtle one-line notes.
+
 Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. `ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:

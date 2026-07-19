@@ -45,16 +45,16 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			}
 			lines = append(lines, fmt.Sprintf("%-26s %s", label, cmd.desc))
 		}
-		m.addSystem("Slash commands:\n" + strings.Join(lines, "\n") + "\n\nPress ctrl+t for the Session and Help tabs.")
+		m.addPanel("Slash commands", strings.Join(lines, "\n")+"\n\nPress ctrl+t for the Session and Help tabs.")
 	case "/status":
-		m.addSystem(m.runtime.Summary())
+		m.addPanel("Status", m.runtime.Summary())
 	case "/models":
 		var lines []string
 		for _, name := range m.runtime.Config.ProviderNames() {
 			p := m.runtime.Config.Providers[name]
 			lines = append(lines, fmt.Sprintf("- %s  [%s]  %s", name, p.Type, p.Model))
 		}
-		m.addSystem("Configured providers:\n" + strings.Join(lines, "\n"))
+		m.addPanel("Configured providers", strings.Join(lines, "\n"))
 	case "/model":
 		if len(args) == 0 {
 			m.openModelPicker()
@@ -106,7 +106,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			inspector += fmt.Sprintf("\n  compaction         %d summary block(s) replacing older history", breakdown.Summaries)
 		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
-		m.addSystem(fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
+		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
 		if len(args) > 0 {
@@ -140,14 +140,14 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 	case "/skills":
 		if len(args) > 0 && args[0] == "list" {
 			if len(m.runtime.Skills.Skills) == 0 {
-				m.addSystem("No skills discovered.")
+				m.addPanel("Skills", "No skills discovered.")
 				break
 			}
 			var lines []string
 			for _, skill := range m.runtime.Skills.Skills {
 				lines = append(lines, fmt.Sprintf("- %s: %s", skill.Name, skill.Description))
 			}
-			m.addSystem("Discovered skills:\n" + strings.Join(lines, "\n"))
+			m.addPanel("Skills", strings.Join(lines, "\n"))
 			break
 		}
 		m.openSkillPicker()
@@ -155,16 +155,16 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if len(args) > 0 && args[0] == "list" {
 			servers := m.runtime.MCP.Servers()
 			if len(servers) == 0 {
-				m.addSystem("No MCP servers connected.")
+				m.addPanel("MCP servers", "No MCP servers connected.")
 				break
 			}
 			sort.Strings(servers)
-			m.addSystem("Connected MCP servers: " + strings.Join(servers, ", "))
+			m.addPanel("MCP servers", strings.Join(servers, "\n"))
 			break
 		}
 		m.openMCPPicker()
 	case "/tools":
-		m.addSystem("Available tools: " + strings.Join(m.runtime.Registry.Names(), ", "))
+		m.addPanel("Tools", strings.Join(m.runtime.Registry.Names(), ", "))
 	case "/theme":
 		if len(args) == 0 {
 			m.openThemePicker()
@@ -192,7 +192,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
 	case "/tasks":
-		m.addSystem(m.runtime.Plan.Current().Render())
+		m.addPanel("Task plan", m.runtime.Plan.Current().Render())
 	case "/ps":
 		if len(args) == 2 && args[0] == "stop" {
 			id, convErr := strconv.Atoi(args[1])
@@ -210,14 +210,14 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		procs := m.runtime.Processes.Snapshot()
 		if len(procs) == 0 {
-			m.addSystem("No background processes have been started this session.")
+			m.addPanel("Background processes", "No background processes have been started this session.")
 			break
 		}
 		var lines []string
 		for _, p := range procs {
 			lines = append(lines, fmt.Sprintf("[%d] %s — %s (started %s ago)", p.ID, p.Command, p.Status, time.Since(p.Started).Round(time.Second)))
 		}
-		m.addSystem("Background processes:\n" + strings.Join(lines, "\n") + "\n\n/ps stop <id> stops one; all are stopped at exit.")
+		m.addPanel("Background processes", strings.Join(lines, "\n")+"\n\n/ps stop <id> stops one; all are stopped at exit.")
 	case "/sessions", "/resume":
 		m.openSessionPicker()
 	case "/new":
@@ -240,7 +240,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		estimate, window := m.runtime.Agent.ContextEstimate()
 		m.addSystem(fmt.Sprintf("Compacted %d messages into a summary. Estimated context is now ~%d tokens (window %d). The full transcript remains in the session log.", count, estimate, window))
 	case "/config":
-		m.addSystem("Active configuration: " + m.runtime.Config.Source + "\nProject configuration takes precedence over the user configuration. Run `collo init` to create " + m.runtime.Workspace + "/.collomia.json.")
+		m.addPanel("Configuration", "Active configuration: "+m.runtime.Config.Source+"\nProject configuration takes precedence over the user configuration. Run `collo init` to create "+m.runtime.Workspace+"/.collomia.json.")
 	case "/clear":
 		m.runtime.Agent.Clear()
 		m.blocks = nil

@@ -165,7 +165,7 @@ func (m *Model) openSessionPicker() {
 // with a prompt that applies the skill, so the user only adds the task.
 func (m *Model) openSkillPicker() {
 	if len(m.runtime.Skills.Skills) == 0 {
-		m.addSystem("No skills discovered. Add SKILL.md files under .collomia/skills/ in the workspace (requires `collo trust`) or in the user configuration directory.")
+		m.addPanel("Skills", "No skills discovered. Add SKILL.md files under .collomia/skills/ in the workspace (requires `collo trust`) or in the user configuration directory.")
 		return
 	}
 	var items []pickerItem
@@ -187,7 +187,7 @@ func (m *Model) openSkillPicker() {
 func (m *Model) openMCPPicker() {
 	servers := m.runtime.MCP.Servers()
 	if len(servers) == 0 {
-		m.addSystem("No MCP servers connected. Configure mcp.<name> in the configuration file (project servers require `collo trust`).")
+		m.addPanel("MCP servers", "No MCP servers connected. Configure mcp.<name> in the configuration file (project servers require `collo trust`).")
 		return
 	}
 	sort.Strings(servers)
@@ -199,7 +199,7 @@ func (m *Model) openMCPPicker() {
 	m.picker = newPicker("MCP servers", items, func(m *Model, item pickerItem) tea.Cmd {
 		defs := m.serverTools(item.id)
 		if len(defs) == 0 {
-			m.addSystem("MCP server " + item.id + " exposes no tools.")
+			m.addPanel("MCP · "+item.id, "This server exposes no tools.")
 			return nil
 		}
 		prefix := "MCP server " + item.id + " tool "
@@ -207,7 +207,7 @@ func (m *Model) openMCPPicker() {
 		for _, def := range defs {
 			lines = append(lines, "- "+def.Name+" — "+strings.TrimPrefix(def.Description, prefix))
 		}
-		m.addSystem("Tools from MCP server " + item.id + ":\n" + strings.Join(lines, "\n"))
+		m.addPanel("MCP · "+item.id, strings.Join(lines, "\n"))
 		return nil
 	})
 	m.layout()

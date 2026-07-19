@@ -23,7 +23,9 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/version"
 )
 
-type block struct{ role, content string }
+// block is one transcript entry. title is only set for role "panel", the
+// titled card used for informational slash-command output.
+type block struct{ role, title, content string }
 type runMsg struct {
 	event *runtimeevent.Event
 	done  bool
@@ -532,6 +534,8 @@ func (m *Model) chatContent() string {
 			b.WriteString(m.renderToolResult(i) + "\n\n")
 		case "error":
 			b.WriteString(m.styles.errText.Render("✖ "+block.content) + "\n\n")
+		case "panel":
+			b.WriteString(m.renderPanel(block.title, block.content) + "\n\n")
 		default:
 			b.WriteString(m.styles.system.Render("· "+block.content) + "\n\n")
 		}
