@@ -20,9 +20,6 @@ func TestPlainThemeExists(t *testing.T) {
 	if !plain.plain() {
 		t.Fatal("plain theme should report plain()")
 	}
-	if got := plain.glamourStyle(); got != "notty" {
-		t.Fatalf("plain glamour style = %q, want notty", got)
-	}
 	if colored := defaultTheme(); colored.plain() {
 		t.Fatal("default theme must not be plain")
 	}
@@ -93,6 +90,7 @@ func TestPanelTextIsThemedNotDefault(t *testing.T) {
 }
 
 func TestPanelBodyRendersInThemeColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
 	// The test harness's stdout isn't a terminal, so lipgloss normally
 	// strips all color; force truecolor so the ANSI sequence is observable.
 	prior := lipgloss.ColorProfile()

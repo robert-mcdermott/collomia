@@ -33,6 +33,14 @@ var themes = []Theme{
 	{Name: "collomia", Dark: true, Primary: "#AF5FFF", Secondary: "#FF5FAF", Accent: "#5FD7FF", Success: "#42D77D", Warning: "#F1C40F", Error: "#FF6B6B", Muted: "#8A8A9E", Border: "#5F5F87", StatusBG: "#1A1A2E", Background: "#101018"},
 	{Name: "synthwave", Dark: true, Primary: "#FF2E97", Secondary: "#00F0FF", Accent: "#B967FF", Success: "#72F1B8", Warning: "#FEDE5D", Error: "#FE4450", Muted: "#848BBD", Border: "#495495", StatusBG: "#241B2F", Background: "#191325"},
 	{Name: "outrun", Dark: true, Primary: "#FF6C11", Secondary: "#FF3864", Accent: "#2DE2E6", Success: "#61E786", Warning: "#F9C80E", Error: "#FF3864", Muted: "#8B7F9E", Border: "#552E85", StatusBG: "#261447", Background: "#1A0E31"},
+	{Name: "blade-runner-2049", Dark: true, Primary: "#00FFE5", Secondary: "#1AFFA3", Accent: "#FFB74D", Success: "#79E96D", Warning: "#E6E373", Error: "#FF6E6E", Muted: "#6FB7AE", Border: "#087A6B", StatusBG: "#001A1A", Background: "#001F1F"},
+	{Name: "chaos-theory", Dark: true, Primary: "#61F21D", Secondary: "#EDF25E", Accent: "#0FC9F2", Success: "#61F21D", Warning: "#EDF25E", Error: "#F2594B", Muted: "#818C69", Border: "#495945", StatusBG: "#20261D", Background: "#0D0D0D"},
+	{Name: "cyberpunk-2077-blue", Dark: true, Primary: "#0EF3FF", Secondary: "#FF2E97", Accent: "#FFD400", Success: "#3DD69C", Warning: "#FFD400", Error: "#EE1682", Muted: "#3E8EFD", Border: "#034685", StatusBG: "#060144", Background: "#03102C"},
+	{Name: "cyberpunk-2077-violet", Dark: true, Primary: "#FF2CF1", Secondary: "#FF2E97", Accent: "#C832FF", Success: "#55F0B5", Warning: "#FFEA61", Error: "#EE1682", Muted: "#D46AA0", Border: "#7A0044", StatusBG: "#24002F", Background: "#120018"},
+	{Name: "catppuccin-mocha", Dark: true, Primary: "#CBA6F7", Secondary: "#89B4FA", Accent: "#89DCEB", Success: "#A6E3A1", Warning: "#F9E2AF", Error: "#F38BA8", Muted: "#6C7086", Border: "#585B70", StatusBG: "#181825", Background: "#1E1E2E"},
+	{Name: "gruvbox-dark", Dark: true, Primary: "#FABD2F", Secondary: "#FE8019", Accent: "#83A598", Success: "#B8BB26", Warning: "#FABD2F", Error: "#FB4934", Muted: "#928374", Border: "#504945", StatusBG: "#1D2021", Background: "#282828"},
+	{Name: "rose-pine-moon", Dark: true, Primary: "#C4A7E7", Secondary: "#EB6F92", Accent: "#9CCFD8", Success: "#3E8FB0", Warning: "#F6C177", Error: "#EB6F92", Muted: "#908CAA", Border: "#393552", StatusBG: "#2A273F", Background: "#232136"},
+	{Name: "kanagawa-wave", Dark: true, Primary: "#7E9CD8", Secondary: "#957FB8", Accent: "#E6C384", Success: "#98BB6C", Warning: "#FF9E3B", Error: "#E46876", Muted: "#727169", Border: "#54546D", StatusBG: "#16161D", Background: "#1F1F28"},
 	{Name: "matrix", Dark: true, Primary: "#00FF41", Secondary: "#008F11", Accent: "#7FFF9E", Success: "#00FF41", Warning: "#ADFF2F", Error: "#FF5555", Muted: "#4E9A63", Border: "#003B00", StatusBG: "#081C0D", Background: "#04120A"},
 	{Name: "monokai", Dark: true, Primary: "#F92672", Secondary: "#A6E22E", Accent: "#66D9EF", Success: "#A6E22E", Warning: "#E6DB74", Error: "#F92672", Muted: "#75715E", Border: "#49483E", StatusBG: "#272822", Background: "#1D1E19"},
 	{Name: "dracula", Dark: true, Primary: "#BD93F9", Secondary: "#FF79C6", Accent: "#8BE9FD", Success: "#50FA7B", Warning: "#F1FA8C", Error: "#FF5555", Muted: "#6272A4", Border: "#44475A", StatusBG: "#282A36", Background: "#1D1F27"},
@@ -58,16 +66,6 @@ func themeByName(name string) (Theme, bool) {
 func defaultTheme() Theme {
 	t, _ := themeByName(defaultThemeName)
 	return t
-}
-
-func (t Theme) glamourStyle() string {
-	if t.plain() {
-		return "notty"
-	}
-	if t.Dark {
-		return "dark"
-	}
-	return "light"
 }
 
 // plain reports whether the theme intentionally renders without color
@@ -117,7 +115,6 @@ type styles struct {
 	paletteSel  lipgloss.Style
 	paletteCmd  lipgloss.Style
 	paletteDesc lipgloss.Style
-	approvalBox lipgloss.Style
 	statusBase  lipgloss.Style
 	statusKey   lipgloss.Style
 	muted       lipgloss.Style
@@ -148,7 +145,6 @@ func newStyles(t Theme) styles {
 		paletteSel:  lipgloss.NewStyle().Bold(true).Foreground(c(onColor(t.Primary))).Background(c(t.Primary)),
 		paletteCmd:  lipgloss.NewStyle().Bold(true).Foreground(c(t.Accent)),
 		paletteDesc: lipgloss.NewStyle().Foreground(c(t.Muted)),
-		approvalBox: lipgloss.NewStyle().Border(lipgloss.ThickBorder()).BorderForeground(c(t.Warning)).Padding(0, 1),
 		statusBase:  lipgloss.NewStyle().Background(c(t.StatusBG)).Foreground(c(t.Muted)),
 		statusKey:   lipgloss.NewStyle().Background(c(t.StatusBG)).Foreground(c(t.Accent)).Bold(true),
 		muted:       lipgloss.NewStyle().Foreground(c(t.Muted)),

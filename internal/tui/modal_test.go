@@ -1,0 +1,128 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/robert-mcdermott/collomia/internal/permission"
+	"github.com/robert-mcdermott/collomia/internal/tools"
+)
+
+func TestApprovalIsCenteredOverlayAndClearsAfterDecision(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan permission.Decision, 1)
+	m.pending = &approvalEnvelope{
+		request: permission.Request{
+			Tool: "run_command",
+			Action: tools.Action{
+				Risk:    tools.RiskExecute,
+				Summary: "run go test ./...",
+			},
+			Reason: "Commands require approval in ask mode.",
+		},
+		reply: reply,
+	}
+
+	view := m.View()
+	plain := ansi.Strip(view)
+	lines := strings.Split(plain, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("modal view height = %d, want terminal height %d", len(lines), m.height)
+	}
+	var titleRow, titleColumn = -1, -1
+	for row, line := range lines {
+		if column := strings.Index(line, "Permission required"); column >= 0 {
+			titleRow, titleColumn = row, column
+			break
+		}
+	}
+	if titleRow <= 1 || titleRow >= m.height-5 {
+		t.Fatalf("approval title row = %d, want a floating center row", titleRow)
+	}
+	if titleColumn <= 0 {
+		t.Fatalf("approval title column = %d, want space on its left", titleColumn)
+	}
+	if !strings.Contains(plain, "Y  Approve") || !strings.Contains(plain, "N  Deny") {
+		t.Fatalf("approval actions missing from modal:\n%s", plain)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(Model)
+	if m.pending != nil {
+		t.Fatal("approval modal should close after a decision")
+	}
+	if decision := <-reply; !decision.Allow || decision.Always {
+		t.Fatalf("decision = %+v, want approve once", decision)
+	}
+	if strings.Contains(ansi.Strip(m.View()), "Permission required") {
+		t.Fatal("resolved approval remained visible")
+	}
+}
+
+func TestQuestionUsesTransientOverlay(t *testing.T) {
+	m := newTestModel(t)
+	before := len(m.blocks)
+	reply := make(chan string, 1)
+	updated, _ := m.Update(questionMsg{envelope: questionEnvelope{
+		question: Question{Text: "Which database should this service use?", Options: []string{"PostgreSQL", "SQLite"}},
+		reply:    reply,
+	}})
+	m = updated.(Model)
+	if len(m.blocks) != before {
+		t.Fatal("opening a transient question should not append the dialog to the transcript")
+	}
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Collomia is asking") || !strings.Contains(view, "Which database") {
+		t.Fatalf("question modal missing:\n%s", view)
+	}
+
+	m = typeKeys(t, m, "2")
+	m = press(t, m, tea.KeyEnter)
+	if m.question != nil {
+		t.Fatal("question modal should close after submit")
+	}
+	if answer := <-reply; answer != "SQLite" {
+		t.Fatalf("answer = %q, want selected option", answer)
+	}
+	if strings.Contains(ansi.Strip(m.View()), "Which database") {
+		t.Fatal("resolved question remained visible")
+	}
+	if got := m.blocks[len(m.blocks)-1]; got.role != "user" || got.content != "SQLite" {
+		t.Fatalf("answer transcript block = %+v", got)
+	}
+}
+
+func TestModalUsesActiveThemeBorder(t *testing.T) {
+	m := newTestModel(t)
+	theme, _ := themeByName("matrix")
+	m.applyTheme(theme)
+	m.pending = &approvalEnvelope{
+		request: permission.Request{Tool: "run_command", Action: tools.Action{Summary: "run tests"}},
+		reply:   make(chan permission.Decision, 1),
+	}
+	// The style's configured border color is the active theme's warning,
+	// independent of the default theme.
+	if got := m.modalStyle(m.theme.Warning).GetBorderTopForeground(); got != lipgloss.Color(m.theme.Warning) {
+		t.Fatalf("modal border = %v, want active theme warning %s", got, m.theme.Warning)
+	}
+}
+
+func TestPlaceOverlayPreservesScreenDimensions(t *testing.T) {
+	base := strings.Repeat("underlying transcript line\n", 9) + "status"
+	overlay := "╭────╮\n│ hi │\n╰────╯"
+	got := placeOverlay(base, overlay, 40, 10)
+	lines := strings.Split(got, "\n")
+	if len(lines) != 10 {
+		t.Fatalf("height = %d, want 10", len(lines))
+	}
+	for i, line := range lines {
+		if width := lipgloss.Width(line); width != 40 {
+			t.Fatalf("line %d width = %d, want 40", i, width)
+		}
+	}
+	if !strings.Contains(got, "underlying") || !strings.Contains(got, "hi") {
+		t.Fatalf("overlay should retain surrounding content:\n%s", got)
+	}
+}
