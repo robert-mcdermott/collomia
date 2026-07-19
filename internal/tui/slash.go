@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -139,27 +138,32 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.addSystem(note)
 	case "/skills":
 		if len(args) > 0 && args[0] == "list" {
-			if len(m.runtime.Skills.Skills) == 0 {
-				m.addPanel("Skills", "No skills discovered.")
+			if len(m.runtime.Skills.Skills) == 0 && len(m.runtime.Skills.Disabled) == 0 {
+				m.addPanel("Skills", "No skills installed. Create one with `collo skills new <name>` (project) or `collo skills new <name> --global`.")
 				break
 			}
 			var lines []string
 			for _, skill := range m.runtime.Skills.Skills {
-				lines = append(lines, fmt.Sprintf("- %s: %s", skill.Name, skill.Description))
+				line := fmt.Sprintf("- %s (%s", skill.Name, skill.Source)
+				if skill.Version != "" {
+					line += " v" + skill.Version
+				}
+				line += "): " + skill.Description
+				if n := skill.BundleCount(); n > 0 {
+					line += fmt.Sprintf("  [%d bundled files]", n)
+				}
+				lines = append(lines, line)
+			}
+			for _, skill := range m.runtime.Skills.Disabled {
+				lines = append(lines, fmt.Sprintf("- %s (%s, disabled): %s", skill.Name, skill.Source, skill.Description))
 			}
 			m.addPanel("Skills", strings.Join(lines, "\n"))
 			break
 		}
 		m.openSkillPicker()
 	case "/mcp":
-		if len(args) > 0 && args[0] == "list" {
-			servers := m.runtime.MCP.Servers()
-			if len(servers) == 0 {
-				m.addPanel("MCP servers", "No MCP servers connected.")
-				break
-			}
-			sort.Strings(servers)
-			m.addPanel("MCP servers", strings.Join(servers, "\n"))
+		if len(args) > 0 {
+			m.mcpCommand(args)
 			break
 		}
 		m.openMCPPicker()

@@ -11,7 +11,7 @@ func TestUntrustedServerIsNotStarted(t *testing.T) {
 	registry := tools.NewRegistry()
 	manager, warnings := ConnectAll(t.Context(), map[string]appconfig.MCPServer{
 		"untrusted": {Transport: "stdio", Command: "command-that-must-not-run"},
-	}, registry)
+	}, registry, testOpts(t))
 	defer manager.Close()
 	if len(warnings) != 1 {
 		t.Fatalf("warnings=%v", warnings)

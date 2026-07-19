@@ -1,137 +1,297 @@
 package skills
 
 import (
-	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
-const maxSkillBytes = 512 * 1024
+const (
+	maxSkillBytes = 512 * 1024
+	// DisabledMarker is the file whose presence in a skill directory keeps
+	// the skill out of the model-visible catalog without deleting it.
+	DisabledMarker = ".disabled"
+	maxBundleFiles = 200
+	maxNameLength  = 64
+	maxDescription = 1024
+)
 
+// Skill is one discovered skill: the SKILL.md instructions plus any bundled
+// scripts, references, and assets in its directory.
 type Skill struct {
 	Name        string
 	Description string
-	Path        string
+	// Path is the SKILL.md (or legacy SKILLS.md) file.
+	Path string
+	// Dir is the skill's directory; empty for legacy single-file skills.
+	Dir string
+	// Source is "project" or "user".
+	Source string
+	// Version, License, and Metadata come from the YAML front matter
+	// (version may live at the top level or under metadata.version).
+	Version  string
+	License  string
+	Metadata map[string]string
+	// AllowedTools is the skill author's declared tool expectation
+	// (advisory: surfaced to the model, enforced by the permission engine
+	// like any other tool use).
+	AllowedTools []string
+	// Scripts, References, and Assets are slash-separated paths relative to
+	// Dir, discovered from the standard bundle directories.
+	Scripts    []string
+	References []string
+	Assets     []string
+	// Hash is the SHA-256 of SKILL.md, for change detection and inspection.
+	Hash string
+	// Disabled marks a skill excluded from the catalog by its marker file.
+	Disabled bool
+	// Issues lists validation problems; the skill still loads, but list and
+	// show surface them.
+	Issues []string
+
+	frontmatterSeen bool
 }
+
+// HasFrontmatter reports whether SKILL.md carried YAML front matter.
+func (s Skill) HasFrontmatter() bool { return s.frontmatterSeen }
 
 type Catalog struct {
+	// Skills are the active skills in deterministic name order.
 	Skills []Skill
+	// Disabled are skills present on disk but switched off.
+	Disabled []Skill
+	// Issues are catalog-level problems: shadowed duplicates and skills that
+	// could not be inspected at all.
+	Issues []string
 }
 
-// Discover finds skills. Project-provided skills are only included when the
-// workspace is trusted (includeProject); user-level skills always load.
+var nameRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// Discover finds skills with deterministic precedence: trusted project skills
+// (.collomia/skills, .agents/skills, then legacy SKILLS.md files) shadow
+// user-level skills (~/.collomia/skills, then the legacy config directory)
+// of the same name. Results are sorted by name.
 func Discover(workspace string, includeProject bool) (Catalog, error) {
-	var paths []string
-	var roots []string
-	if includeProject {
-		paths = []string{
-			filepath.Join(workspace, "SKILLS.md"), filepath.Join(workspace, "skills.md"),
-			filepath.Join(workspace, ".collomia", "SKILLS.md"), filepath.Join(workspace, ".collomia", "skills.md"),
-		}
-		roots = []string{filepath.Join(workspace, ".collomia", "skills"), filepath.Join(workspace, ".agents", "skills")}
+	type candidate struct {
+		path, dir, source string
 	}
-	for _, dir := range userconfig.SearchDirs() {
-		roots = append(roots, filepath.Join(dir, "skills"))
-	}
-	for _, root := range roots {
+	var candidates []candidate
+	var issues []string
+	addRoot := func(root, source string) {
 		entries, err := os.ReadDir(root)
 		if errors.Is(err, os.ErrNotExist) {
-			continue
+			return
 		}
 		if err != nil {
-			return Catalog{}, err
+			issues = append(issues, fmt.Sprintf("skills directory %s: %v", root, err))
+			return
 		}
 		for _, entry := range entries {
 			if entry.IsDir() {
-				paths = append(paths, filepath.Join(root, entry.Name(), "SKILL.md"))
+				dir := filepath.Join(root, entry.Name())
+				candidates = append(candidates, candidate{path: filepath.Join(dir, "SKILL.md"), dir: dir, source: source})
 			}
 		}
 	}
-	seen := map[string]bool{}
-	var found []Skill
-	for _, path := range paths {
-		abs, _ := filepath.Abs(path)
-		if seen[abs] {
+	if includeProject {
+		addRoot(filepath.Join(workspace, ".collomia", "skills"), "project")
+		addRoot(filepath.Join(workspace, ".agents", "skills"), "project")
+		for _, name := range []string{"SKILLS.md", "skills.md"} {
+			candidates = append(candidates, candidate{path: filepath.Join(workspace, name), source: "project"})
+			candidates = append(candidates, candidate{path: filepath.Join(workspace, ".collomia", name), source: "project"})
+		}
+	}
+	for _, dir := range userconfig.SearchDirs() {
+		addRoot(filepath.Join(dir, "skills"), "user")
+	}
+	seenPath := map[string]bool{}
+	byName := map[string]string{}
+	var cat Catalog
+	cat.Issues = issues
+	for _, c := range candidates {
+		abs, _ := filepath.Abs(c.path)
+		if seenPath[abs] {
 			continue
 		}
-		seen[abs] = true
-		skill, err := inspect(path)
+		seenPath[abs] = true
+		skill, err := inspect(c.path, c.dir, c.source)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return Catalog{}, fmt.Errorf("inspect skill %s: %w", path, err)
+			cat.Issues = append(cat.Issues, fmt.Sprintf("skill %s: %v", c.path, err))
+			continue
 		}
-		found = append(found, skill)
+		if prior, taken := byName[skill.Name]; taken {
+			cat.Issues = append(cat.Issues, fmt.Sprintf("skill %q from %s is shadowed by %s", skill.Name, skill.Path, prior))
+			continue
+		}
+		byName[skill.Name] = skill.Path
+		if skill.Disabled {
+			cat.Disabled = append(cat.Disabled, skill)
+			continue
+		}
+		cat.Skills = append(cat.Skills, skill)
 	}
-	sort.Slice(found, func(i, j int) bool { return found[i].Name < found[j].Name })
-	return Catalog{Skills: found}, nil
+	sort.Slice(cat.Skills, func(i, j int) bool { return cat.Skills[i].Name < cat.Skills[j].Name })
+	sort.Slice(cat.Disabled, func(i, j int) bool { return cat.Disabled[i].Name < cat.Disabled[j].Name })
+	return cat, nil
 }
 
-func inspect(path string) (Skill, error) {
-	f, err := os.Open(path)
+// Inspect parses one skill file for lifecycle commands and installs; dir may
+// be empty for legacy single-file skills.
+func Inspect(path, dir, source string) (Skill, error) { return inspect(path, dir, source) }
+
+func inspect(path, dir, source string) (Skill, error) {
+	info, err := os.Stat(path)
 	if err != nil {
 		return Skill{}, err
 	}
-	defer f.Close()
-	reader := bufio.NewReader(io.LimitReader(f, 16*1024))
-	name := strings.TrimSuffix(filepath.Base(filepath.Dir(path)), filepath.Ext(filepath.Base(filepath.Dir(path))))
-	if strings.EqualFold(filepath.Base(path), "skills.md") {
-		name = "workspace"
+	if info.Size() > maxSkillBytes {
+		return Skill{}, fmt.Errorf("SKILL.md is %d bytes; the limit is %d", info.Size(), maxSkillBytes)
 	}
-	description := ""
-	first, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return Skill{}, err
 	}
-	if strings.TrimSpace(first) == "---" {
-		for {
-			line, e := reader.ReadString('\n')
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "---" || e == io.EOF {
-				break
-			}
-			key, value, ok := strings.Cut(trimmed, ":")
-			if ok {
-				switch strings.TrimSpace(strings.ToLower(key)) {
-				case "name":
-					name = strings.Trim(strings.TrimSpace(value), `"'`)
-				case "description":
-					description = strings.Trim(strings.TrimSpace(value), `"'`)
-				}
+	skill := Skill{Path: path, Dir: dir, Source: source}
+	if abs, absErr := filepath.Abs(path); absErr == nil {
+		skill.Path = abs
+	}
+	if dir != "" {
+		if abs, absErr := filepath.Abs(dir); absErr == nil {
+			skill.Dir = abs
+		}
+	}
+	sum := sha256.Sum256(data)
+	skill.Hash = hex.EncodeToString(sum[:])
+	dirName := ""
+	if dir != "" {
+		dirName = filepath.Base(dir)
+	}
+	fmLines, body, hasFM := splitFrontmatter(string(data))
+	skill.frontmatterSeen = hasFM
+	if hasFM {
+		fm := parseFrontmatter(fmLines)
+		skill.Name = fm.scalars["name"]
+		skill.Description = fm.scalars["description"]
+		skill.License = fm.scalars["license"]
+		skill.Version = fm.scalars["version"]
+		skill.Metadata = fm.maps["metadata"]
+		if skill.Version == "" && skill.Metadata != nil {
+			skill.Version = skill.Metadata["version"]
+		}
+		skill.AllowedTools = fm.lists["allowed-tools"]
+		if len(skill.AllowedTools) == 0 {
+			if raw := fm.scalars["allowed-tools"]; raw != "" {
+				skill.AllowedTools = strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' })
 			}
 		}
 	} else {
-		description = strings.TrimSpace(strings.TrimLeft(first, "# "))
+		skill.Issues = append(skill.Issues, "SKILL.md has no YAML front matter; add a `name` and `description` block")
+		skill.Description = firstHeading(body)
 	}
-	if name == "" {
-		name = filepath.Base(filepath.Dir(path))
+	if skill.Name == "" {
+		switch {
+		case strings.EqualFold(filepath.Base(path), "skills.md"):
+			skill.Name = "workspace"
+		case dirName != "":
+			skill.Name = dirName
+		default:
+			skill.Name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		}
+		if hasFM {
+			skill.Issues = append(skill.Issues, "front matter is missing `name`; using "+skill.Name)
+		}
 	}
-	if description == "" {
-		description = "Reusable instructions from " + filepath.Base(path)
+	if skill.Description == "" {
+		if hasFM {
+			skill.Issues = append(skill.Issues, "front matter is missing `description`; the model cannot judge when to use this skill")
+		}
+		skill.Description = "Reusable instructions from " + filepath.Base(path)
 	}
-	abs, _ := filepath.Abs(path)
-	return Skill{Name: name, Description: description, Path: abs}, nil
+	if !nameRE.MatchString(skill.Name) {
+		skill.Issues = append(skill.Issues, fmt.Sprintf("name %q should be lowercase letters, digits, and hyphens", skill.Name))
+	}
+	if len(skill.Name) > maxNameLength {
+		skill.Issues = append(skill.Issues, fmt.Sprintf("name is %d characters; the limit is %d", len(skill.Name), maxNameLength))
+	}
+	if len(skill.Description) > maxDescription {
+		skill.Issues = append(skill.Issues, fmt.Sprintf("description is %d characters; the limit is %d — long descriptions bloat every system prompt", len(skill.Description), maxDescription))
+	}
+	if dirName != "" && hasFM && skill.Name != dirName {
+		skill.Issues = append(skill.Issues, fmt.Sprintf("name %q does not match its directory %q", skill.Name, dirName))
+	}
+	if dir != "" {
+		if _, statErr := os.Stat(filepath.Join(dir, DisabledMarker)); statErr == nil {
+			skill.Disabled = true
+		}
+		skill.Scripts = bundleFiles(dir, "scripts")
+		skill.References = bundleFiles(dir, "references")
+		skill.Assets = bundleFiles(dir, "assets")
+	}
+	return skill, nil
 }
+
+func firstHeading(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return strings.TrimSpace(strings.TrimLeft(trimmed, "# "))
+		}
+	}
+	return ""
+}
+
+// bundleFiles lists the files under one standard bundle directory, as
+// slash-separated paths relative to the skill directory, capped for safety.
+func bundleFiles(dir, sub string) []string {
+	root := filepath.Join(dir, sub)
+	var out []string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return nil
+		}
+		out = append(out, filepath.ToSlash(rel))
+		if len(out) >= maxBundleFiles {
+			return errors.New("capped")
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+// BundleCount is the total number of bundled supporting files.
+func (s Skill) BundleCount() int { return len(s.Scripts) + len(s.References) + len(s.Assets) }
 
 func (c Catalog) Summary() string {
 	if len(c.Skills) == 0 {
 		return "No skills discovered."
 	}
 	var b strings.Builder
-	b.WriteString("Available skills (load only when relevant):\n")
+	b.WriteString("Available skills (use load_skill only when a description matches the task; loaded skills may bundle scripts and reference files):\n")
 	for _, s := range c.Skills {
 		fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
 	}
 	return b.String()
 }
+
 func (c Catalog) Names() []string {
 	names := make([]string, len(c.Skills))
 	for i, s := range c.Skills {
@@ -139,20 +299,36 @@ func (c Catalog) Names() []string {
 	}
 	return names
 }
-func (c Catalog) Load(name string) (string, error) {
+
+// Find returns an active skill by name.
+func (c Catalog) Find(name string) (Skill, bool) {
 	for _, s := range c.Skills {
 		if s.Name == name {
-			data, err := os.ReadFile(s.Path)
-			if err != nil {
-				return "", err
-			}
-			if len(data) > maxSkillBytes {
-				return "", fmt.Errorf("skill %s exceeds %d bytes", name, maxSkillBytes)
-			}
-			return string(data), nil
+			return s, true
 		}
 	}
-	return "", fmt.Errorf("unknown skill %q", name)
+	return Skill{}, false
+}
+
+// Load returns a skill and its full SKILL.md content.
+func (c Catalog) Load(name string) (Skill, string, error) {
+	skill, ok := c.Find(name)
+	if !ok {
+		for _, s := range c.Disabled {
+			if s.Name == name {
+				return Skill{}, "", fmt.Errorf("skill %q is disabled; enable it with `collo skills enable %s`", name, name)
+			}
+		}
+		return Skill{}, "", fmt.Errorf("unknown skill %q", name)
+	}
+	data, err := os.ReadFile(skill.Path)
+	if err != nil {
+		return Skill{}, "", err
+	}
+	if len(data) > maxSkillBytes {
+		return Skill{}, "", fmt.Errorf("skill %s exceeds %d bytes", name, maxSkillBytes)
+	}
+	return skill, string(data), nil
 }
 
 func ProjectInstructions(workspace string) (string, error) {

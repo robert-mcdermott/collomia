@@ -165,12 +165,13 @@ func (m *Model) openSessionPicker() {
 // with a prompt that applies the skill, so the user only adds the task.
 func (m *Model) openSkillPicker() {
 	if len(m.runtime.Skills.Skills) == 0 {
-		m.addPanel("Skills", "No skills discovered. Add SKILL.md files under .collomia/skills/ in the workspace (requires `collo trust`) or in the user configuration directory.")
+		m.addPanel("Skills", "No skills installed. Scaffold one with `collo skills new <name>` (project scope; requires `collo trust`) or `collo skills new <name> --global` for every workspace.")
 		return
 	}
 	var items []pickerItem
 	for _, skill := range m.runtime.Skills.Skills {
-		items = append(items, pickerItem{id: skill.Name, title: skill.Name, desc: skill.Description})
+		desc := skill.Description + "  · " + skill.Source
+		items = append(items, pickerItem{id: skill.Name, title: skill.Name, desc: desc})
 	}
 	m.picker = newPicker("Use a skill", items, func(m *Model, item pickerItem) tea.Cmd {
 		m.input.SetValue(`Use the "` + item.id + `" skill: `)
@@ -187,7 +188,7 @@ func (m *Model) openSkillPicker() {
 func (m *Model) openMCPPicker() {
 	servers := m.runtime.MCP.Servers()
 	if len(servers) == 0 {
-		m.addPanel("MCP servers", "No MCP servers connected. Configure mcp.<name> in the configuration file (project servers require `collo trust`).")
+		m.addPanel("MCP servers", "No MCP servers connected. Configure mcp.<name> in the configuration file (project servers require `collo trust`), connect one now with /mcp add <name> <command…>, or check /mcp status for connection errors.")
 		return
 	}
 	sort.Strings(servers)
@@ -206,6 +207,23 @@ func (m *Model) openMCPPicker() {
 		var lines []string
 		for _, def := range defs {
 			lines = append(lines, "- "+def.Name+" — "+strings.TrimPrefix(def.Description, prefix))
+		}
+		for _, status := range m.runtime.MCP.Statuses() {
+			if status.Name != item.id {
+				continue
+			}
+			var extras []string
+			for _, capability := range status.Capabilities {
+				switch capability {
+				case "prompts":
+					extras = append(extras, "/mcp prompts "+item.id)
+				case "resources":
+					extras = append(extras, "/mcp resources "+item.id)
+				}
+			}
+			if len(extras) > 0 {
+				lines = append(lines, "\nThis server also offers: "+strings.Join(extras, " · "))
+			}
 		}
 		m.addPanel("MCP · "+item.id, strings.Join(lines, "\n"))
 		return nil

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -39,6 +40,10 @@ type Config struct {
 	// command that starts its language server (e.g. ["gopls"]). Common
 	// servers found on PATH are auto-detected when unset.
 	LSP map[string][]string `json:"lsp,omitempty"`
+	// Hooks maps a lifecycle event name to the commands that observe it.
+	// Hooks are trusted code: project-configured hooks require `collo trust`
+	// like every other project capability.
+	Hooks map[string][]Hook `json:"hooks,omitempty"`
 
 	// Source names the highest-precedence file layer for display.
 	Source string `json:"-"`
@@ -145,6 +150,26 @@ type AgentDefinition struct {
 	// MaxIterations overrides the default sub-agent iteration budget.
 	MaxIterations int `json:"max_iterations,omitempty"`
 }
+
+// Hook is one lifecycle-hook command. The event it observes is the key of
+// Config.Hooks. Gating events (user_prompt, tool_start) may block the action
+// by exiting 2 or printing {"decision":"block"}; hooks can only tighten —
+// they never bypass the permission engine or sandbox.
+type Hook struct {
+	// Command and Args form the argv; no shell is involved.
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+	// Matcher is an optional regular expression tested against the event's
+	// subject (the tool name for tool events, the event name otherwise).
+	// Empty matches everything.
+	Matcher string `json:"matcher,omitempty"`
+	// TimeoutSeconds bounds the hook run (default 10).
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
+// HookEvents are the recognized lifecycle events, in firing order across a
+// session.
+var HookEvents = []string{"session_start", "user_prompt", "permission_decision", "tool_start", "tool_end", "file_change", "compaction", "subagent_start", "subagent_end", "stop", "session_end"}
 
 type Options struct {
 	MaxIterations       int      `json:"max_iterations,omitempty"`
@@ -484,6 +509,25 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "on", "bell", "off":
 	default:
 		errs = append(errs, FieldError{"options.notifications", fmt.Sprintf("must be on, bell, or off (got %q)", c.Options.Notifications)})
+	}
+	for eventName, hooksForEvent := range c.Hooks {
+		if !slices.Contains(HookEvents, eventName) {
+			errs = append(errs, FieldError{"hooks." + eventName, fmt.Sprintf("unknown event (known: %s)", strings.Join(HookEvents, ", "))})
+		}
+		for i, hook := range hooksForEvent {
+			field := fmt.Sprintf("hooks.%s[%d]", eventName, i)
+			if hook.Command == "" {
+				errs = append(errs, FieldError{field + ".command", "required"})
+			}
+			if hook.TimeoutSeconds < 0 {
+				errs = append(errs, FieldError{field + ".timeout_seconds", "must not be negative"})
+			}
+			if hook.Matcher != "" {
+				if _, err := regexp.Compile(hook.Matcher); err != nil {
+					errs = append(errs, FieldError{field + ".matcher", err.Error()})
+				}
+			}
+		}
 	}
 	return errs
 }

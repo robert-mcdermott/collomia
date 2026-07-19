@@ -70,6 +70,15 @@ func (r *Registry) Add(tool Tool) {
 	r.tools[tool.Definition().Name] = tool
 }
 
+// Remove deletes a tool by name. It exists for MCP lifecycle management:
+// when a server is disabled, removed, or reconnected, its stale tool entries
+// must leave the registry so the model cannot call dead sessions.
+func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -133,6 +142,10 @@ type Function struct {
 	Action   Action
 	AssessFn func(json.RawMessage) (Action, error)
 	Run      func(context.Context, json.RawMessage) (string, error)
+	// RunStream, when set, is preferred by ExecuteStream so the tool can
+	// surface incremental progress (MCP progress notifications, long
+	// commands) while still returning the complete result.
+	RunStream func(context.Context, json.RawMessage, func(string)) (string, error)
 }
 
 func (f Function) Definition() provider.ToolDefinition { return f.Def }
@@ -143,6 +156,12 @@ func (f Function) Assess(args json.RawMessage) (Action, error) {
 	return f.Action, nil
 }
 func (f Function) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	return f.Run(ctx, args)
+}
+func (f Function) ExecuteStream(ctx context.Context, args json.RawMessage, onOutput func(string)) (string, error) {
+	if f.RunStream != nil {
+		return f.RunStream(ctx, args, onOutput)
+	}
 	return f.Run(ctx, args)
 }
 

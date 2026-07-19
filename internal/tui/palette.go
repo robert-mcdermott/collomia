@@ -21,7 +21,7 @@ var slashCommands = []commandInfo{
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
-	{name: "/mcp", args: "[list]", desc: "browse MCP servers and their tools"},
+	{name: "/mcp", args: "[list|prompts|resources|ping|reconnect|enable|disable|add|remove]", desc: "browse and manage MCP servers, prompts, and resources"},
 	{name: "/tools", args: "", desc: "list tools visible to the agent"},
 	{name: "/review", args: "[ref] [instructions…]", desc: "review changes; '-' = uncommitted; extra words focus the review"},
 	{name: "/verify", args: "[focus]", desc: "detect and run build/lint/test commands"},
