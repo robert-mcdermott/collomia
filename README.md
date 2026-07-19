@@ -462,7 +462,8 @@ Example:
     "allowed_tools": ["mcp_context7_query-docs"],
     "denied_tools": [],
     "denied_commands": [
-      "(?i)(^|[;&|]\\s*)rm\\s+-[^\\n]*r[^\\n]*f\\s+[/~]($|\\s)"
+      "(?i)(^|[;\u0026|]\\s*)rm\\s+-[^\\n]*r[^\\n]*f\\s+[/~]($|\\s)",
+      "(?i)(^|[;\u0026|]\\s*)(shutdown|reboot|mkfs|diskpart)(\\s|$)"
     ],
     "sandbox": "auto",
     "sandbox_allow_network": false,
