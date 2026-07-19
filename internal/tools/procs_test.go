@@ -142,11 +142,11 @@ func TestStartProcessAssessUsesShellAnalysis(t *testing.T) {
 
 func TestProcessOutputTailLines(t *testing.T) {
 	manager, start, output, _, _ := newProcFixture(t)
-	var script strings.Builder
+	commands := make([]string, 5)
 	for i := 1; i <= 5; i++ {
-		fmt.Fprintf(&script, "echo line%d; ", i)
+		commands[i-1] = fmt.Sprintf("echo line%d", i)
 	}
-	if _, err := start.Execute(t.Context(), startArgs(script.String())); err != nil {
+	if _, err := start.Execute(t.Context(), startArgs(strings.Join(commands, " && "))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 5*time.Second, func() bool { return manager.Running() == 0 })
