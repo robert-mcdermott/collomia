@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/robert-mcdermott/collomia/internal/app"
+	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/version"
@@ -51,6 +52,7 @@ type Model struct {
 	runEvents     chan runMsg
 	cancel        context.CancelFunc
 	pending       *approvalEnvelope
+	hunkReview    *hunkReviewState
 	question      *questionEnvelope
 	picker        *picker
 	started       time.Time
@@ -180,6 +182,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case tea.KeyMsg:
+		if m.hunkReview != nil {
+			return m.handleHunkReviewKey(msg)
+		}
 		if m.pending != nil {
 			return m.handleApprovalKey(msg)
 		}
@@ -429,6 +434,9 @@ func (m Model) handleQuestionKey(key tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if strings.ToLower(key.String()) == "h" {
+		return m.tryEnterHunkReview(), nil
+	}
 	var decision *permission.Decision
 	switch strings.ToLower(key.String()) {
 	case "y", "enter":
@@ -458,6 +466,9 @@ func (m *Model) layout() {
 	inputArea := 5
 	if m.pending != nil {
 		inputArea = 7
+	}
+	if m.hunkReview != nil {
+		inputArea = 20
 	}
 	if m.picker != nil {
 		inputArea += m.pickerHeight()
@@ -618,6 +629,42 @@ func (m *Model) sessionContent() string {
 		b.WriteString(m.styles.muted.Render("  /diff to review · /undo to revert the latest") + "\n\n")
 	}
 
+	if procs := m.runtime.Processes.Snapshot(); len(procs) > 0 {
+		b.WriteString(h("Background processes") + "\n")
+		for _, p := range procs {
+			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Success)).Render("●")
+			if !p.Running {
+				mark = m.styles.muted.Render("○")
+			}
+			b.WriteString(fmt.Sprintf("  %s [%d] %s  %s\n", mark, p.ID, m.styles.accent.Render(p.Command), m.styles.muted.Render(p.Status)))
+		}
+		b.WriteString(m.styles.muted.Render("  /ps to manage · all stopped at exit") + "\n\n")
+	}
+
+	if agents := m.runtime.Team.Snapshot(); len(agents) > 0 {
+		b.WriteString(h("Agents") + "\n")
+		marks := map[string]string{"running": "◐", "done": "●", "error": "✗"}
+		colors := map[string]string{"running": m.theme.Warning, "done": m.theme.Success, "error": m.theme.Error}
+		for _, a := range agents {
+			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(colors[a.Status])).Render(marks[a.Status])
+			kind := "read"
+			if a.Write {
+				kind = "write"
+			}
+			line := fmt.Sprintf("  %s %s  %s", mark, m.styles.accent.Render(a.Name), m.styles.muted.Render("("+kind+")"))
+			b.WriteString(line + "\n")
+			if a.Status == "running" {
+				continue
+			}
+			if len(a.Changed) > 0 {
+				b.WriteString(m.styles.muted.Render(fmt.Sprintf("      changed %d file(s) — worktree %s (branch %s)", len(a.Changed), a.Worktree, a.Branch)) + "\n")
+			} else if a.Status == "error" {
+				b.WriteString(m.styles.muted.Render("      "+a.Summary) + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	b.WriteString(h("Providers") + "\n")
 	for _, name := range m.runtime.Config.ProviderNames() {
 		p := m.runtime.Config.Providers[name]
@@ -678,6 +725,8 @@ func (m *Model) helpContent() string {
 		{"tab (palette)", "complete the selected command"},
 		{"ctrl+t", "cycle Chat / Session / Help tabs"},
 		{"ctrl+o", "expand / collapse finished tool output"},
+		{"y / a / n (approval)", "approve once / always for this tool / deny"},
+		{"h (approval)", "review a multi-hunk file write and approve only some hunks"},
 		{"esc", "cancel turn · dismiss palette or picker"},
 		{"pgup/pgdn", "scroll the transcript"},
 		{"ctrl+c", "cancel turn, again to quit"},
@@ -718,7 +767,9 @@ func (m Model) View() string {
 	} else if m.paletteOn && m.pending == nil {
 		sections = append(sections, m.renderPalette())
 	}
-	if m.pending != nil {
+	if m.hunkReview != nil {
+		sections = append(sections, m.renderHunkReview())
+	} else if m.pending != nil {
 		sections = append(sections, m.renderApproval())
 	} else {
 		sections = append(sections, m.styles.inputBox.Width(max(1, m.width-2)).Render(m.input.View()))
@@ -771,6 +822,11 @@ func (m Model) renderApproval() string {
 	}
 	body += fmt.Sprintf("\n\n%s  approve once   %s  always for %s   %s  deny",
 		badge("y", m.theme.Success), badge("a", m.theme.Warning), req.Tool, badge("n", m.theme.Error))
+	if req.Tool == "write_file" && req.Action.Preview != "" {
+		if hunks, err := diffmodel.ParseHunks(req.Action.Preview); err == nil && len(hunks) >= 2 {
+			body += fmt.Sprintf("   %s  review %d hunks", badge("h", m.theme.Accent), len(hunks))
+		}
+	}
 	return m.styles.approvalBox.Width(max(1, m.width-2) - 2).Render(body)
 }
 
@@ -800,6 +856,12 @@ func (m Model) renderStatusBar() string {
 			}
 		}
 		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("tasks %d/%d", done, len(current.Steps)), m.theme.Secondary)
+	}
+	if active := m.runtime.Team.Active(); active > 0 {
+		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("agents %d", active), m.theme.Accent)
+	}
+	if running := m.runtime.Processes.Running(); running > 0 {
+		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("procs %d", running), m.theme.Secondary)
 	}
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 

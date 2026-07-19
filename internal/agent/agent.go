@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/audit"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
@@ -18,6 +19,13 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/skills"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
+
+// maxDelegateConcurrency bounds how many delegated tasks run at once,
+// regardless of how many the model requests in one call.
+const maxDelegateConcurrency = 4
+
+// maxDelegateTasks bounds how many tasks a single delegate call may spawn.
+const maxDelegateTasks = 6
 
 // Emit receives the typed runtime events defined in internal/event.
 type Emit = event.Emit
@@ -184,6 +192,21 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 	return "", err
 }
 
+// withOverriddenContent replaces a write_file call's proposed content with
+// a selectively-applied version (the user approved only some hunks). It is
+// the only tool hunk review currently supports.
+func withOverriddenContent(toolName string, args json.RawMessage, content string) (json.RawMessage, error) {
+	if toolName != "write_file" {
+		return nil, fmt.Errorf("hunk selection is not supported for %q", toolName)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(args, &decoded); err != nil {
+		return nil, err
+	}
+	decoded["content"] = content
+	return json.Marshal(decoded)
+}
+
 func errorEvent(err error) event.Event {
 	e := event.New(event.KindError)
 	e.Error = err.Error()
@@ -205,6 +228,14 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if err != nil {
 		return "Tool denied: " + err.Error()
 	}
+	args := call.Arguments
+	if grant.ContentOverride != nil {
+		var overridden error
+		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
+		if overridden != nil {
+			return "Tool error: " + overridden.Error()
+		}
+	}
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
 	send(start)
@@ -213,7 +244,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
 	}
-	result, err := a.registry.ExecuteStream(ctx, call.Name, call.Arguments, onOutput)
+	result, err := a.registry.ExecuteStream(ctx, call.Name, args, onOutput)
 	a.permissions.RecordOutcome(call.Name, action, err)
 	if len(result) > a.maxToolOutput {
 		result = result[:a.maxToolOutput] + "\n… tool output truncated …"
@@ -244,8 +275,8 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "load_skill", "delegate",
-		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user":
+	case "read_file", "list_files", "search_files", "search_symbols", "diagnostics", "load_skill", "delegate",
+		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
 		return true
 	}
 	return false
@@ -275,7 +306,7 @@ Operating rules:
 - Use apply_patch for multi-file changes that must land together; use edit_file for single focused edits.
 - For multi-step work, maintain the plan with update_plan (statuses and evidence) so the user can follow progress.
 - If a genuine decision or missing value blocks you and ask_user is available, ask one concise question instead of guessing.
-- When implementation is complete, run proportionate verification and summarize the outcome clearly.
+- When implementation is complete, use detect_verification to find this project's real build/lint/test commands, run proportionate verification with run_command, and summarize the outcome clearly.
 - Tool errors are recoverable: diagnose them and try a safer approach.
 
 %s
@@ -283,21 +314,257 @@ Operating rules:
 %s`, a.workspace, runtime.GOOS, runtime.GOARCH, mode, sub, a.projectInstructions, a.catalog.Summary())
 }
 
-func (a *Agent) AddDelegationTool() {
-	a.registry.Add(tools.Function{Def: provider.ToolDefinition{Name: "delegate", Description: "Delegate one bounded investigation to a read-only sub-agent. Use it for an independent codebase question whose concise report will help the main task. The sub-agent cannot edit files, run commands, or recursively delegate.", InputSchema: json.RawMessage(`{"type":"object","properties":{"task":{"type":"string"}},"required":["task"],"additionalProperties":false}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "delegate a read-only investigation"}, Run: func(ctx context.Context, raw json.RawMessage) (string, error) {
+// DelegateTask is one unit of work requested through the delegate tool.
+type DelegateTask struct {
+	// Name is a short label used in status displays and results; the tool
+	// invents one from the task text when omitted.
+	Name string `json:"name,omitempty"`
+	Task string `json:"task"`
+	// Write allows the sub-agent to edit files and run commands. It runs in
+	// its own isolated git worktree so parallel writers never race on the
+	// same files; nothing is merged, committed, or pushed automatically.
+	// When false (the default) the sub-agent is read-only and shares the
+	// parent workspace, which is cheaper for pure investigation.
+	Write bool `json:"write,omitempty"`
+	// Agent selects a named profile from configuration (model, fixed role
+	// instructions, tool allowlist, iteration budget). Empty uses the
+	// parent's own model and full tool set.
+	Agent string `json:"agent,omitempty"`
+}
+
+// AddDelegationTool registers the delegate tool: a concurrency-limited
+// scheduler that fans a batch of bounded tasks out to sub-agents, each
+// read-only in the shared workspace or write-capable in its own isolated
+// git worktree, and reports back one structured summary per task (the
+// "parent inbox") rather than raw child transcripts.
+func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Approver, team *Team) {
+	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents that run concurrently (up to %d at once). Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Sub-agents cannot recursively delegate.", maxDelegateTasks, maxDelegateConcurrency)
+	if len(cfg.Agents) > 0 {
+		names := make([]string, 0, len(cfg.Agents))
+		for name := range cfg.Agents {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		desc += " Named agent profiles available via \"agent\": " + strings.Join(names, ", ") + "."
+	}
+	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"agent":{"type":"string","description":"optional named agent profile from configuration"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
+	assess := func(raw json.RawMessage) (tools.Action, error) {
 		var input struct {
-			Task string `json:"task"`
+			Tasks []DelegateTask `json:"tasks"`
+		}
+		risk := tools.RiskRead
+		summary := "delegate one or more read-only investigations"
+		if json.Unmarshal(raw, &input) == nil {
+			for _, t := range input.Tasks {
+				if t.Write {
+					risk = tools.RiskWrite
+					summary = "delegate one or more sub-agent tasks, including write-capable agents in isolated worktrees"
+					break
+				}
+			}
+		}
+		return tools.Action{Risk: risk, Summary: summary}, nil
+	}
+	a.registry.Add(tools.Function{Def: provider.ToolDefinition{Name: "delegate", Description: desc, InputSchema: schema}, Action: tools.Action{Risk: tools.RiskRead, Summary: "delegate one or more sub-agent tasks"}, AssessFn: assess, Run: func(ctx context.Context, raw json.RawMessage) (string, error) {
+		var input struct {
+			Tasks []DelegateTask `json:"tasks"`
 		}
 		if err := json.Unmarshal(raw, &input); err != nil {
 			return "", err
 		}
-		a.mu.RLock()
-		child := New(Options{Client: a.client, ProviderName: a.providerName, Model: a.model, Workspace: a.workspace, ProviderConfig: a.providerConfig, Registry: a.registry, Permissions: a.permissions, Catalog: a.catalog, ProjectInstructions: a.projectInstructions, MaxIterations: min(a.maxIterations, 8), MaxToolOutput: a.maxToolOutput, DisabledTools: keys(a.disabled), PlanMode: true, Subagent: true})
-		a.mu.RUnlock()
-		childCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		defer cancel()
-		return child.Run(childCtx, input.Task, nil)
+		if len(input.Tasks) == 0 {
+			return "", errors.New("tasks must include at least one item")
+		}
+		if len(input.Tasks) > maxDelegateTasks {
+			input.Tasks = input.Tasks[:maxDelegateTasks]
+		}
+		sem := make(chan struct{}, maxDelegateConcurrency)
+		results := make([]string, len(input.Tasks))
+		names := make([]string, len(input.Tasks))
+		changed := make([][]string, len(input.Tasks))
+		var wg sync.WaitGroup
+		for i, t := range input.Tasks {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, t DelegateTask) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				results[i], names[i], changed[i] = a.runDelegate(ctx, i, t, cfg, approver, team)
+			}(i, t)
+		}
+		wg.Wait()
+		if warning := conflictWarning(names, changed); warning != "" {
+			results = append(results, warning)
+		}
+		return strings.Join(results, "\n\n---\n\n"), nil
 	}})
+}
+
+// conflictWarning reports files touched by more than one sibling task in
+// the same delegate batch — the isolation model prevents them from racing
+// while running, but the user still has to reconcile the worktrees by hand.
+func conflictWarning(names []string, changed [][]string) string {
+	owners := map[string][]string{}
+	for i, files := range changed {
+		for _, f := range files {
+			owners[f] = append(owners[f], names[i])
+		}
+	}
+	var lines []string
+	for _, f := range sortedKeys(owners) {
+		if who := owners[f]; len(who) > 1 {
+			lines = append(lines, fmt.Sprintf("  %s: %s", f, strings.Join(who, ", ")))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "⚠ conflicting changes — these files were modified by more than one sub-agent in separate worktrees; review and reconcile before merging either:\n" + strings.Join(lines, "\n")
+}
+
+func sortedKeys(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// runDelegate runs one delegated task to completion (read-only in the
+// shared workspace, or write-capable in its own git worktree) and returns
+// a structured summary line, the task's display name, and (for write tasks
+// with changes) the files it touched, so the caller can detect sibling
+// conflicts. It never returns an error itself: failures are reported in the
+// summary text so a batch of tasks always yields a result per task.
+func (a *Agent) runDelegate(parent context.Context, index int, t DelegateTask, cfg appconfig.Config, approver permission.Approver, team *Team) (summary, name string, changedFiles []string) {
+	name = strings.TrimSpace(t.Name)
+	if name == "" {
+		name = fmt.Sprintf("task-%d", index+1)
+	}
+	id := fmt.Sprintf("d%d-%d", time.Now().UnixNano(), index)
+	if team != nil {
+		team.Start(id, name, t.Task, t.Write)
+	}
+	if strings.TrimSpace(t.Task) == "" {
+		err := errors.New("empty task")
+		if team != nil {
+			team.Finish(id, "", nil, "", "", err)
+		}
+		return fmt.Sprintf("[%s] error: %s", name, err), name, nil
+	}
+	var profile appconfig.AgentDefinition
+	if t.Agent != "" {
+		found, ok := cfg.Agents[t.Agent]
+		if !ok {
+			err := fmt.Errorf("unknown agent profile %q", t.Agent)
+			if team != nil {
+				team.Finish(id, "", nil, "", "", err)
+			}
+			return fmt.Sprintf("[%s] error: %s", name, err), name, nil
+		}
+		profile = found
+	}
+
+	a.mu.RLock()
+	client, providerName, model, providerConfig := a.client, a.providerName, a.model, a.providerConfig
+	workspace, registry, permissions := a.workspace, a.registry, a.permissions
+	catalog, instructions, maxOut, maxIter := a.catalog, a.projectInstructions, a.maxToolOutput, a.maxIterations
+	disabled := keys(a.disabled)
+	a.mu.RUnlock()
+
+	if profile.Model != "" {
+		model = profile.Model
+	}
+	if profile.Instructions != "" {
+		instructions = "Agent role: " + profile.Instructions + "\n\n" + instructions
+	}
+	if profile.MaxIterations > 0 {
+		maxIter = profile.MaxIterations
+	}
+	if len(profile.Tools) > 0 {
+		allowed := map[string]bool{}
+		for _, toolName := range profile.Tools {
+			allowed[toolName] = true
+		}
+		for _, toolName := range registry.Names() {
+			if !allowed[toolName] {
+				disabled = append(disabled, toolName)
+			}
+		}
+	}
+
+	childCtx, cancel := context.WithTimeout(parent, 10*time.Minute)
+	defer cancel()
+
+	childWorkspace, childRegistry, childPermissions, childPlan, childSubagent := workspace, registry, permissions, true, true
+	var wt *worktree
+	if t.Write {
+		childPlan, childSubagent = false, false
+		if !isGitRepo(childCtx, workspace) {
+			err := errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
+			if team != nil {
+				team.Finish(id, "", nil, "", "", err)
+			}
+			return fmt.Sprintf("[%s] error: %s", name, err), name, nil
+		}
+		var err error
+		wt, err = newWorktree(childCtx, workspace, name)
+		if err != nil {
+			if team != nil {
+				team.Finish(id, "", nil, "", "", err)
+			}
+			return fmt.Sprintf("[%s] error: %s", name, err), name, nil
+		}
+		childWorkspace = wt.path
+		reg, _, childProcs, buildErr := tools.Builtins(wt.path, cfg)
+		if buildErr != nil {
+			wt.remove(childCtx)
+			if team != nil {
+				team.Finish(id, "", nil, "", "", buildErr)
+			}
+			return fmt.Sprintf("[%s] error: %s", name, buildErr), name, nil
+		}
+		// Background processes a child starts must not outlive the child.
+		defer childProcs.StopAll()
+		childRegistry = reg
+		childManager := permission.New(cfg.Permissions, approver)
+		if ledger, lErr := audit.Open(wt.path); lErr == nil {
+			childManager.SetLedger(ledger)
+		}
+		childPermissions = childManager
+	}
+
+	child := New(Options{
+		Client: client, ProviderName: providerName, Model: model, Workspace: childWorkspace,
+		ProviderConfig: providerConfig, Registry: childRegistry, Permissions: childPermissions,
+		Catalog: catalog, ProjectInstructions: instructions,
+		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, DisabledTools: disabled,
+		PlanMode: childPlan, Subagent: childSubagent,
+	})
+	output, err := child.Run(childCtx, t.Task, nil)
+
+	var changed []string
+	branch, worktreePath := "", ""
+	if wt != nil {
+		changed = wt.changedFiles(childCtx)
+		if len(changed) == 0 {
+			wt.remove(childCtx)
+		} else {
+			branch, worktreePath = wt.branch, wt.path
+		}
+	}
+	if team != nil {
+		team.Finish(id, output, changed, worktreePath, branch, err)
+	}
+	if err != nil {
+		return fmt.Sprintf("[%s] error: %s", name, err), name, nil
+	}
+	header := "[" + name + "]"
+	if len(changed) > 0 {
+		header += fmt.Sprintf(" changed %d file(s): %s\nWorktree: %s (branch %s) — left in place for review; nothing merged or committed.", len(changed), strings.Join(changed, ", "), worktreePath, branch)
+	}
+	return header + "\n" + output, name, changed
 }
 
 func (a *Agent) Clear()               { a.mu.Lock(); a.messages = nil; a.usage = provider.Usage{}; a.mu.Unlock() }

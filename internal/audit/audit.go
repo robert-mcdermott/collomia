@@ -37,7 +37,7 @@ type Ledger struct {
 	Redact func(string) string
 }
 
-// Dir returns the ledger directory in the user configuration location.
+// Dir returns the ledger directory in the per-user application-state location.
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {

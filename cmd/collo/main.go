@@ -31,7 +31,7 @@ type options struct {
 	resume                                       string
 	plan, global, help, version, jsonl           bool
 	strict, revoke, status, debug, markdown, yes bool
-	cont                                         bool
+	cont, withReference                          bool
 	args                                         []string
 }
 
@@ -68,17 +68,46 @@ func run(args []string) error {
 			if err != nil {
 				return err
 			}
+			if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+				legacy, legacyErr := appconfig.LegacyGlobalPath()
+				if legacyErr == nil && filepath.Clean(legacy) != filepath.Clean(path) {
+					if _, legacyStatErr := os.Stat(legacy); legacyStatErr == nil {
+						return fmt.Errorf("global configuration exists at the former location %s; move it to %s", legacy, path)
+					} else if !errors.Is(legacyStatErr, os.ErrNotExist) {
+						return legacyStatErr
+					}
+				}
+			}
 		}
-		if _, statErr := os.Stat(path); statErr == nil {
-			return fmt.Errorf("configuration already exists: %s", path)
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return statErr
+		paths := []string{path}
+		if opts.withReference {
+			paths = append(paths, appconfig.ReferencePath(path))
 		}
-		if err = appconfig.WriteExample(path); err != nil {
+		for _, candidate := range paths {
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				return fmt.Errorf("file already exists: %s", candidate)
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return statErr
+			}
+		}
+		if err = appconfig.WriteStarter(path, opts.global); err != nil {
 			return err
 		}
 		fmt.Println("Created", path)
-		fmt.Println("Edit provider endpoints and use environment variables for API keys.")
+		if opts.withReference {
+			referencePath := appconfig.ReferencePath(path)
+			if err = appconfig.WriteReference(referencePath); err != nil {
+				return err
+			}
+			fmt.Println("Created", referencePath, "(reference only; not loaded)")
+		}
+		fmt.Println("Review every setting with `collo config reference`.")
+		fmt.Println("Validate changes with `collo config validate --strict`.")
+		if opts.global {
+			fmt.Println("Set provider API keys through the environment; the starter includes Ollama and OpenRouter examples.")
+		} else {
+			fmt.Println("After reviewing project settings, run `collo trust` to enable them.")
+		}
 		return nil
 	}
 	switch opts.command {
@@ -98,8 +127,17 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if opts.command == "review" {
-		ref := strings.Join(opts.args, " ")
-		opts.args = []string{app.ReviewPrompt(strings.TrimSpace(ref))}
+		ref, instructions := "", ""
+		if len(opts.args) > 0 {
+			ref = opts.args[0]
+			instructions = strings.Join(opts.args[1:], " ")
+		}
+		opts.args = []string{app.ReviewPrompt(ref, instructions)}
+		return runNonInteractive(ctx, opts)
+	}
+	if opts.command == "verify" {
+		focus := strings.Join(opts.args, " ")
+		opts.args = []string{app.VerifyPrompt(strings.TrimSpace(focus))}
 		return runNonInteractive(ctx, opts)
 	}
 	if opts.command == "run" {
@@ -175,7 +213,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review" || arg == "verify") {
 			opts.command = arg
 			continue
 		}
@@ -219,6 +257,8 @@ func parse(args []string) (options, error) {
 			opts.autonomy = "workspace"
 		case arg == "--global":
 			opts.global = true
+		case arg == "--with-reference":
+			opts.withReference = true
 		case strings.HasPrefix(arg, "--cwd="):
 			opts.cwd = strings.TrimPrefix(arg, "--cwd=")
 		case strings.HasPrefix(arg, "--provider="):
@@ -257,14 +297,17 @@ const helpText = `Collomia — a safe, multi-provider terminal coding agent
 Usage:
   collo [flags] [initial prompt]      start the interactive TUI
   collo run [flags] <prompt>          run once (or read the prompt from stdin)
-  collo init [--global]               write an example configuration
+  collo init [--with-reference]       write project .collomia.json
+  collo init --global [--with-reference]  write the user-wide .collomia/config.json
   collo config validate [--strict]    validate configuration with field-level errors
   collo config show                   print the effective configuration and its layers
+  collo config reference              print the exhaustive annotated configuration reference
   collo trust [--status|--revoke]     review and trust this workspace's project config
   collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
   collo capabilities [--markdown]     print the product capability matrix
   collo policy check <command…>       evaluate a command against permission rules without running it
-  collo review [ref]                  review pending changes (or changes vs a ref) headlessly
+  collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
+  collo verify [focus]                detect and run this project's build/lint/test commands headlessly
   collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
   collo version                       print build information
 
@@ -279,6 +322,8 @@ Flags:
   --continue                           resume the most recent session
   --jsonl                              (run) emit schema-versioned JSONL events on stdout
   --debug                              write a redacted debug log (see collo doctor for path)
+  --global                             (init) write the home-directory config instead of project configuration
+  --with-reference                     (init) also write the non-loaded annotated JSONC reference
   -h, --help                           show help
   -v, --version                        show version
 

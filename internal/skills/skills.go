@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
 const maxSkillBytes = 512 * 1024
@@ -35,8 +37,8 @@ func Discover(workspace string, includeProject bool) (Catalog, error) {
 		}
 		roots = []string{filepath.Join(workspace, ".collomia", "skills"), filepath.Join(workspace, ".agents", "skills")}
 	}
-	if dir, err := os.UserConfigDir(); err == nil {
-		roots = append(roots, filepath.Join(dir, "collomia", "skills"))
+	for _, dir := range userconfig.SearchDirs() {
+		roots = append(roots, filepath.Join(dir, "skills"))
 	}
 	for _, root := range roots {
 		entries, err := os.ReadDir(root)
@@ -177,23 +179,21 @@ func ProjectInstructions(workspace string) (string, error) {
 // the collomia configuration directory. It applies to every workspace and
 // precedes project instructions, so a project can refine or override it.
 func GlobalInstructions() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", nil
-	}
-	for _, name := range []string{"AGENTS.md", "COLLOMIA.md"} {
-		path := filepath.Join(dir, "collomia", name)
-		data, err := os.ReadFile(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
+	for _, dir := range userconfig.SearchDirs() {
+		for _, name := range []string{"AGENTS.md", "COLLOMIA.md"} {
+			path := filepath.Join(dir, name)
+			data, err := os.ReadFile(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return "", err
+			}
+			if len(data) > maxSkillBytes {
+				return "", fmt.Errorf("%s exceeds %d bytes", path, maxSkillBytes)
+			}
+			return fmt.Sprintf("# Global user instructions from %s\n(Project instructions, when present, take precedence over these.)\n%s", path, string(data)), nil
 		}
-		if err != nil {
-			return "", err
-		}
-		if len(data) > maxSkillBytes {
-			return "", fmt.Errorf("%s exceeds %d bytes", path, maxSkillBytes)
-		}
-		return fmt.Sprintf("# Global user instructions from %s\n(Project instructions, when present, take precedence over these.)\n%s", path, string(data)), nil
 	}
 	return "", nil
 }

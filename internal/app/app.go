@@ -40,6 +40,8 @@ type Runtime struct {
 	Session     *session.Session
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
+	Team        *agent.Team
+	Processes   *tools.ProcessManager
 	Warnings    []error
 }
 
@@ -113,7 +115,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	registry, tracker, err := tools.Builtins(workspace, cfg)
+	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +200,8 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		agentOptions.OnCompaction = sess.AppendCompaction
 	}
 	agentRuntime := agent.New(agentOptions)
-	agentRuntime.AddDelegationTool()
+	team := agent.NewTeam()
+	agentRuntime.AddDelegationTool(cfg, opts.Approver, team)
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
 		sess.FlushInterrupted()
@@ -206,18 +209,24 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	for _, warning := range warnings {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
-	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Warnings: warnings}, nil
+	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings}, nil
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
 // a read-only pass over pending changes with findings tied to files/lines.
-func ReviewPrompt(ref string) string {
+// A ref of "-" (or "") reviews uncommitted changes; instructions, when
+// non-empty, focus the review.
+func ReviewPrompt(ref, instructions string) string {
 	scope := "the uncommitted changes in this repository (use git_status, then git_diff; add staged=true for the index)"
-	if ref != "" {
+	if ref != "" && ref != "-" {
 		scope = fmt.Sprintf("the changes relative to %s (use git_diff with ref %q, and git_log to understand the history)", ref, ref)
 	}
+	focus := ""
+	if strings.TrimSpace(instructions) != "" {
+		focus = "\nReviewer instructions (follow these in addition to the standard checks): " + strings.TrimSpace(instructions) + "\n"
+	}
 	return fmt.Sprintf(`Review %s.
-
+%s
 Read enough surrounding code (read_file) to judge each change in context. Do not modify any files.
 
 Report:
@@ -225,7 +234,26 @@ Report:
 2. Anything the diff forgot: missing tests, stale docs, unhandled errors.
 3. A one-paragraph verdict: is this safe to merge as-is?
 
-If there are no changes to review, say so plainly.`, scope)
+If there are no changes to review, say so plainly.`, scope, focus)
+}
+
+// VerifyPrompt is the canned prompt behind `collo verify` and `/verify`: it
+// detects the project's real build/lint/test commands, runs them, and ties
+// each outcome to a plan step instead of the model guessing at commands or
+// asserting success it never observed.
+func VerifyPrompt(focus string) string {
+	scope := "this project's standard build, lint, and test commands"
+	if focus != "" {
+		scope = fmt.Sprintf("this project, focused on: %s", focus)
+	}
+	return fmt.Sprintf(`Verify %s.
+
+1. Call detect_verification to find the commands this project conventionally uses. If it finds nothing, inspect the repository (list_files, read_file) or ask the user how it is built and tested — do not guess.
+2. Record each command as a step with update_plan before running it.
+3. Run each command with run_command and watch its live output. Mark the step done with the command's outcome as evidence, or blocked with the exact failing output if it fails. Never mark a step done unless the command's own result says it passed.
+4. Finish with a one-paragraph summary: what passed, what failed, and the exact failing output for anything still broken.
+
+Verify the current working tree, not a stale build. Do not modify any files — report failures for the user to address.`, scope)
 }
 
 // ListModels queries a provider's live model catalog when its API supports
@@ -339,6 +367,10 @@ func askUserTool(ask func(ctx context.Context, question string, options []string
 }
 
 func (r *Runtime) Close() {
+	if r.Processes != nil {
+		// Background processes never outlive the session.
+		r.Processes.StopAll()
+	}
 	if r.MCP != nil {
 		r.MCP.Close()
 	}

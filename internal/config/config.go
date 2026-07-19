@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/trust"
+	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
 const ProjectFile = ".collomia.json"
@@ -30,6 +31,14 @@ type Config struct {
 	Permissions     Permissions          `json:"permissions"`
 	MCP             map[string]MCPServer `json:"mcp,omitempty"`
 	Options         Options              `json:"options,omitempty"`
+	// Agents defines named sub-agent profiles the delegate tool can select
+	// by name, each with its own model, role instructions, tool allowlist,
+	// and iteration budget.
+	Agents map[string]AgentDefinition `json:"agents,omitempty"`
+	// LSP maps a language id (e.g. "go", "python", "typescript") to the
+	// command that starts its language server (e.g. ["gopls"]). Common
+	// servers found on PATH are auto-detected when unset.
+	LSP map[string][]string `json:"lsp,omitempty"`
 
 	// Source names the highest-precedence file layer for display.
 	Source string `json:"-"`
@@ -121,6 +130,22 @@ type MCPServer struct {
 	Timeout   int               `json:"timeout_seconds,omitempty"`
 }
 
+// AgentDefinition names a reusable sub-agent profile. Any field left empty
+// falls back to the parent agent's own setting.
+type AgentDefinition struct {
+	// Model overrides the model used for this agent, on the same provider
+	// as the parent (a different reasoning tier or a cheaper/faster model).
+	Model string `json:"model,omitempty"`
+	// Instructions is prepended to the sub-agent's system prompt to give it
+	// a fixed role (e.g. "You are a security reviewer. Focus only on...").
+	Instructions string `json:"instructions,omitempty"`
+	// Tools restricts the sub-agent to this allowlist of tool names. Empty
+	// means it may use every tool the parent has enabled.
+	Tools []string `json:"tools,omitempty"`
+	// MaxIterations overrides the default sub-agent iteration budget.
+	MaxIterations int `json:"max_iterations,omitempty"`
+}
+
 type Options struct {
 	MaxIterations       int      `json:"max_iterations,omitempty"`
 	MaxToolOutputBytes  int      `json:"max_tool_output_bytes,omitempty"`
@@ -156,11 +181,13 @@ func Defaults() Config {
 }
 
 func GlobalPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "collomia", "config.json"), nil
+	return userconfig.ConfigPath()
+}
+
+// LegacyGlobalPath returns the pre-~/.collomia location. New files must use
+// GlobalPath; the legacy path is retained only for migration compatibility.
+func LegacyGlobalPath() (string, error) {
+	return userconfig.LegacyConfigPath()
 }
 
 type LoadOptions struct {
@@ -185,9 +212,13 @@ func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 	cfg.Source = "defaults"
 	cfg.ProjectTrusted = true
 
-	if global, err := GlobalPath(); err == nil {
+	if global, note, err := globalPathForLoad(); err == nil {
+		before := len(cfg.Layers)
 		if err := cfg.applyFile(global, "user", opts.Strict); err != nil {
 			return cfg, err
+		}
+		if note != "" && len(cfg.Layers) > before {
+			cfg.Layers[len(cfg.Layers)-1].Note = note
 		}
 	}
 
@@ -226,6 +257,28 @@ func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 		return cfg, ValidationError{Errors: errs}
 	}
 	return cfg, nil
+}
+
+// globalPathForLoad prefers ~/.collomia/config.json and falls back to the
+// former OS-specific location only when the new file does not exist.
+func globalPathForLoad() (path, note string, err error) {
+	path, err = GlobalPath()
+	if err != nil {
+		return "", "", err
+	}
+	if _, statErr := os.Stat(path); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+		return path, "", nil
+	}
+	legacy, legacyErr := LegacyGlobalPath()
+	if legacyErr != nil || filepath.Clean(legacy) == filepath.Clean(path) {
+		return path, "", nil
+	}
+	if _, statErr := os.Stat(legacy); statErr == nil {
+		return legacy, "former global config location; move this file to " + path, nil
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return legacy, "", nil
+	}
+	return path, "", nil
 }
 
 func (c *Config) applyFile(path, layer string, strict bool) error {
@@ -287,6 +340,9 @@ func (c *Config) normalize() {
 	}
 	if c.MCP == nil {
 		c.MCP = map[string]MCPServer{}
+	}
+	if c.Agents == nil {
+		c.Agents = map[string]AgentDefinition{}
 	}
 	if c.Permissions.Mode == "" {
 		c.Permissions.Mode = "ask"
@@ -415,6 +471,11 @@ func (c Config) ValidateFields() []FieldError {
 			}
 		}
 	}
+	for name, a := range c.Agents {
+		if a.MaxIterations < 0 {
+			errs = append(errs, FieldError{"agents." + name + ".max_iterations", "must not be negative"})
+		}
+	}
 	return errs
 }
 
@@ -483,49 +544,6 @@ func (c Config) LayerReport() string {
 		}
 	}
 	return b.String()
-}
-
-func WriteExample(path string) error {
-	cfg := Defaults()
-	cfg.Providers["openai"] = Provider{
-		Type: "openai", BaseURL: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY",
-		Model: "gpt-5.1-codex-mini", Context: 200000, MaxTokens: 8192,
-	}
-	cfg.Providers["anthropic"] = Provider{
-		Type: "anthropic", BaseURL: "https://api.anthropic.com", APIKeyEnv: "ANTHROPIC_API_KEY",
-		Model: "claude-sonnet-4-6", Context: 200000, MaxTokens: 8192,
-	}
-	cfg.Providers["phlox"] = Provider{
-		Type: "openai-compatible", BaseURL: "http://127.0.0.1:8080/v1", APIKeyEnv: "PHLOX_API_KEY",
-		Model: "your-route-id", Context: 128000, MaxTokens: 8192,
-	}
-	cfg.Providers["bedrock"] = Provider{
-		Type: "bedrock", Region: "us-west-2", Model: "your-bedrock-model-id", MaxTokens: 8192,
-	}
-	cfg.Providers["bedrock-mantle"] = Provider{
-		Type: "bedrock-mantle", BaseURL: "https://bedrock-mantle.us-west-2.api.aws/v1",
-		APIKeyEnv: "AWS_BEDROCK_API_KEY", Model: "openai.gpt-oss-120b", MaxTokens: 8192,
-	}
-	cfg.Providers["azure-openai"] = Provider{
-		Type: "azure-openai", BaseURL: "https://your-resource.openai.azure.com", APIKeyEnv: "AZURE_OPENAI_API_KEY",
-		Deployment: "your-deployment", APIVersion: "2024-10-21", Model: "your-deployment", MaxTokens: 8192,
-	}
-	cfg.Providers["azure-foundry"] = Provider{
-		Type: "azure-foundry", BaseURL: "https://your-resource.services.ai.azure.com/openai/v1",
-		APIKeyEnv: "AZURE_FOUNDRY_API_KEY", Model: "your-deployment", MaxTokens: 8192,
-	}
-	cfg.Providers["azure-foundry-claude"] = Provider{
-		Type: "azure-foundry-anthropic", BaseURL: "https://your-resource.services.ai.azure.com/anthropic",
-		APIKeyEnv: "AZURE_FOUNDRY_API_KEY", Model: "your-claude-deployment", MaxTokens: 8192,
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
 func expandEnv(value string) string {

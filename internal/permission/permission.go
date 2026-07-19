@@ -32,12 +32,19 @@ type Request struct {
 type Decision struct {
 	Allow  bool
 	Always bool
+	// Content, when set, replaces the write's proposed content before
+	// execution — used when the user approved only some hunks of a
+	// write_file diff rather than the whole file.
+	Content *string
 }
 
 // Grant reports how an authorization was decided, for events and audit.
 type Grant struct {
 	Source string // rule, mode, session, interactive, implicit-read, denied-tool, analysis
 	Rule   string
+	// ContentOverride carries a selectively-approved write, when the user
+	// picked hunks instead of accepting the whole proposed change.
+	ContentOverride *string
 }
 
 type Approver func(context.Context, Request) (Decision, error)
@@ -188,7 +195,7 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 		record(false)
 		return grant, err
 	}
-	grant = Grant{Source: "interactive", Rule: grant.Rule}
+	grant = Grant{Source: "interactive", Rule: grant.Rule, ContentOverride: decision.Content}
 	if !decision.Allow {
 		record(false)
 		return grant, fmt.Errorf("%w: %s", ErrDenied, action.Summary)
