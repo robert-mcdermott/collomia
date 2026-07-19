@@ -17,7 +17,7 @@ func stubDial(t *testing.T, toolNames ...string) {
 	t.Helper()
 	prior := dial
 	t.Cleanup(func() { dial = prior })
-	dial = func(ctx context.Context, name string, cfg appconfig.MCPServer) (*mcp.ClientSession, error) {
+	dial = func(ctx context.Context, name string, cfg appconfig.MCPServer, clientOpts *mcp.ClientOptions) (*mcp.ClientSession, error) {
 		server := mcp.NewServer(&mcp.Implementation{Name: "fake-" + name, Version: "9.9.9"}, nil)
 		for _, toolName := range toolNames {
 			toolName := toolName
@@ -29,7 +29,7 @@ func stubDial(t *testing.T, toolNames ...string) {
 		if _, err := server.Connect(ctx, serverTransport, nil); err != nil {
 			return nil, err
 		}
-		client := mcp.NewClient(&mcp.Implementation{Name: "collomia", Version: "test"}, nil)
+		client := mcp.NewClient(&mcp.Implementation{Name: "collomia", Version: "test"}, clientOpts)
 		return client.Connect(ctx, clientTransport, nil)
 	}
 }
@@ -45,7 +45,7 @@ func TestConnectAllReportsStatusAndCapabilities(t *testing.T) {
 		"docs":     trustedServer(),
 		"off":      {Transport: "stdio", Command: "fake", Trusted: true, Disabled: true, Timeout: 5},
 		"unvetted": {Transport: "stdio", Command: "fake", Timeout: 5},
-	}, registry)
+	}, registry, testOpts(t))
 	defer manager.Close()
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "trusted") {
 		t.Fatalf("errs=%v", errs)
@@ -82,7 +82,7 @@ func TestConnectAllReportsStatusAndCapabilities(t *testing.T) {
 func TestDisableWithdrawsToolsAndEnableRestores(t *testing.T) {
 	stubDial(t, "search")
 	registry := tools.NewRegistry()
-	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry)
+	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry, testOpts(t))
 	defer manager.Close()
 	if err := manager.SetEnabled(t.Context(), "docs", false); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestDisableWithdrawsToolsAndEnableRestores(t *testing.T) {
 func TestEnableCannotOverrideMissingTrust(t *testing.T) {
 	stubDial(t, "search")
 	registry := tools.NewRegistry()
-	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"unvetted": {Transport: "stdio", Command: "fake", Timeout: 5}}, registry)
+	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"unvetted": {Transport: "stdio", Command: "fake", Timeout: 5}}, registry, testOpts(t))
 	defer manager.Close()
 	if err := manager.SetEnabled(t.Context(), "unvetted", true); err == nil || !strings.Contains(err.Error(), "untrusted") {
 		t.Fatalf("expected trust refusal, got %v", err)
@@ -114,7 +114,7 @@ func TestEnableCannotOverrideMissingTrust(t *testing.T) {
 func TestReconnectRefreshesToolCatalog(t *testing.T) {
 	stubDial(t, "search")
 	registry := tools.NewRegistry()
-	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry)
+	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry, testOpts(t))
 	defer manager.Close()
 	// The server's catalog changes between connections.
 	stubDial(t, "search", "fetch")
@@ -137,7 +137,7 @@ func TestReconnectRefreshesToolCatalog(t *testing.T) {
 func TestRuntimeAddAndRemove(t *testing.T) {
 	stubDial(t, "lookup")
 	registry := tools.NewRegistry()
-	manager, _ := ConnectAll(t.Context(), nil, registry)
+	manager, _ := ConnectAll(t.Context(), nil, registry, testOpts(t))
 	defer manager.Close()
 	if err := manager.Add(t.Context(), "adhoc", appconfig.MCPServer{Transport: "stdio", Command: "fake"}); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestRuntimeAddAndRemove(t *testing.T) {
 func TestPingHealthCheck(t *testing.T) {
 	stubDial(t, "search")
 	registry := tools.NewRegistry()
-	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry)
+	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry, testOpts(t))
 	defer manager.Close()
 	if err := manager.Ping(t.Context(), "docs"); err != nil {
 		t.Fatalf("ping healthy server: %v", err)
@@ -200,11 +200,11 @@ func TestPingHealthCheck(t *testing.T) {
 func TestFailedConnectIsRetainedAsError(t *testing.T) {
 	prior := dial
 	t.Cleanup(func() { dial = prior })
-	dial = func(context.Context, string, appconfig.MCPServer) (*mcp.ClientSession, error) {
+	dial = func(context.Context, string, appconfig.MCPServer, *mcp.ClientOptions) (*mcp.ClientSession, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
 	registry := tools.NewRegistry()
-	manager, errs := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"down": trustedServer()}, registry)
+	manager, errs := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"down": trustedServer()}, registry, testOpts(t))
 	defer manager.Close()
 	if len(errs) != 1 {
 		t.Fatalf("errs=%v", errs)

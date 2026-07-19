@@ -15,7 +15,7 @@ func stubRichDial(t *testing.T) {
 	t.Helper()
 	prior := dial
 	t.Cleanup(func() { dial = prior })
-	dial = func(ctx context.Context, name string, cfg appconfig.MCPServer) (*mcp.ClientSession, error) {
+	dial = func(ctx context.Context, name string, cfg appconfig.MCPServer, clientOpts *mcp.ClientOptions) (*mcp.ClientSession, error) {
 		server := mcp.NewServer(&mcp.Implementation{Name: "fake-" + name, Version: "9.9.9"}, nil)
 		mcp.AddTool(server, &mcp.Tool{Name: "media", Description: "returns mixed content"}, func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, map[string]any, error) {
 			return &mcp.CallToolResult{Content: []mcp.Content{
@@ -38,7 +38,7 @@ func stubRichDial(t *testing.T) {
 		if _, err := server.Connect(ctx, serverTransport, nil); err != nil {
 			return nil, err
 		}
-		client := mcp.NewClient(&mcp.Implementation{Name: "collomia", Version: "test"}, nil)
+		client := mcp.NewClient(&mcp.Implementation{Name: "collomia", Version: "test"}, clientOpts)
 		return client.Connect(ctx, clientTransport, nil)
 	}
 }
@@ -47,7 +47,7 @@ func richManager(t *testing.T) (*Manager, *tools.Registry) {
 	t.Helper()
 	stubRichDial(t)
 	registry := tools.NewRegistry()
-	manager, errs := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry)
+	manager, errs := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry, testOpts(t))
 	t.Cleanup(manager.Close)
 	if len(errs) != 0 {
 		t.Fatalf("errs=%v", errs)
@@ -102,7 +102,7 @@ func TestCapabilityErrorsAreActionable(t *testing.T) {
 	// The plain stub (tools only) negotiates neither resources nor prompts.
 	stubDial(t, "search")
 	registry := tools.NewRegistry()
-	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry)
+	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, registry, testOpts(t))
 	defer manager.Close()
 	if _, err := manager.Resources(t.Context(), "docs"); err == nil || !strings.Contains(err.Error(), "capability") {
 		t.Fatalf("expected capability error, got %v", err)

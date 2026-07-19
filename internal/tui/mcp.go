@@ -46,6 +46,7 @@ func (m *Model) mcpCommand(args []string) {
 			return
 		}
 		m.addSystem("Reconnected " + name + " and refreshed its tool catalog.")
+		m.drainMCPNotes()
 	case "enable", "disable":
 		name, ok := need("server")
 		if !ok {
@@ -57,6 +58,7 @@ func (m *Model) mcpCommand(args []string) {
 		}
 		if sub == "enable" {
 			m.addSystem("Enabled " + name + "; its tools are available again.")
+			m.drainMCPNotes()
 		} else {
 			m.addSystem("Disabled " + name + " for this session; its tools were withdrawn. /mcp enable " + name + " restores it.")
 		}
@@ -177,6 +179,14 @@ func (m *Model) mcpCommand(args []string) {
 		m.addSystem("Removed " + name + ". Servers from the configuration file return on the next start; runtime-added servers are gone.")
 	default:
 		m.addError(fmt.Errorf("unknown /mcp subcommand %q (list, ping, reconnect, enable, disable, add, remove)", sub))
+	}
+}
+
+// drainMCPNotes surfaces pin observations (definition or remote-identity
+// changes) produced by a lifecycle operation.
+func (m *Model) drainMCPNotes() {
+	for _, note := range m.runtime.MCP.TakeNotes() {
+		m.addSystem("⚠ MCP " + note)
 	}
 }
 

@@ -58,6 +58,17 @@ type serverState struct {
 	toolNames   []string
 }
 
+// Options configures manager behavior beyond the server map.
+type Options struct {
+	// Workspace keys the server pin records (definition fingerprints and
+	// remote identities are tracked per workspace).
+	Workspace string
+	// Asker, when set, answers MCP elicitation requests by putting typed
+	// questions to the user. When nil (headless), elicitation is not
+	// advertised and servers requesting it receive a decline.
+	Asker func(ctx context.Context, question string, options []string) (string, error)
+}
+
 // Manager owns every MCP server session for the process lifetime and
 // supports runtime lifecycle operations: list with health and negotiated
 // capabilities, reconnect, enable/disable, and session-scoped add/remove.
@@ -65,13 +76,25 @@ type Manager struct {
 	mu       sync.Mutex
 	registry *tools.Registry
 	servers  map[string]*serverState
+	opts     Options
+	pins     *pinStore
+	// notes are user-facing observations (pin mismatches, identity changes)
+	// produced by lifecycle operations, drained with TakeNotes.
+	notes []string
+
+	progressMu  sync.Mutex
+	progressSeq int64
+	progress    map[string]func(string)
 }
 
 // ConnectAll starts every trusted, enabled configured server. Untrusted,
 // disabled, and failed servers are retained with their status so the runtime
 // can report and repair them instead of forgetting they exist.
-func ConnectAll(ctx context.Context, configured map[string]appconfig.MCPServer, registry *tools.Registry) (*Manager, []error) {
-	manager := &Manager{registry: registry, servers: map[string]*serverState{}}
+func ConnectAll(ctx context.Context, configured map[string]appconfig.MCPServer, registry *tools.Registry, opts Options) (*Manager, []error) {
+	manager := &Manager{registry: registry, servers: map[string]*serverState{}, opts: opts, progress: map[string]func(string){}}
+	if pins, err := loadPins(); err == nil {
+		manager.pins = pins
+	}
 	var errs []error
 	for name, cfg := range configured {
 		state := &serverState{name: name, cfg: cfg}
@@ -92,19 +115,32 @@ func ConnectAll(ctx context.Context, configured map[string]appconfig.MCPServer, 
 	if len(configured) > 0 {
 		manager.registerResourceTools()
 	}
+	for _, note := range manager.TakeNotes() {
+		errs = append(errs, fmt.Errorf("MCP: %s", note))
+	}
 	return manager, errs
+}
+
+// TakeNotes drains pending user-facing observations (definition fingerprint
+// mismatches, remote identity changes).
+func (m *Manager) TakeNotes() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	notes := m.notes
+	m.notes = nil
+	return notes
 }
 
 // startLocked connects a server and registers its tools; the caller must
 // hold no expectation of partial success — on any failure the session is
 // closed and the state records the error.
 func (m *Manager) startLocked(ctx context.Context, state *serverState) error {
-	session, err := dial(ctx, state.name, state.cfg)
+	session, err := dial(ctx, state.name, state.cfg, m.clientOptions(state.name))
 	if err != nil {
 		state.status, state.err = StatusError, err
 		return err
 	}
-	toolNames, err := registerTools(ctx, state.name, state.cfg, session, m.registry)
+	toolNames, err := m.registerTools(ctx, state.name, state.cfg, session)
 	if err != nil {
 		_ = session.Close()
 		state.status, state.err = StatusError, fmt.Errorf("tools: %w", err)
@@ -114,7 +150,41 @@ func (m *Manager) startLocked(ctx context.Context, state *serverState) error {
 	state.status, state.err = StatusConnected, nil
 	state.connectedAt = time.Now()
 	state.toolNames = toolNames
+	m.checkPinLocked(state)
 	return nil
+}
+
+// checkPinLocked compares a freshly connected server against its pinned
+// definition fingerprint and remote identity, records observations for the
+// user, and updates the pin. Runtime-added servers are session-scoped and
+// not pinned.
+func (m *Manager) checkPinLocked(state *serverState) {
+	if m.pins == nil || state.runtime {
+		return
+	}
+	key := pinKey(m.opts.Workspace, state.name)
+	fingerprint := definitionFingerprint(state.cfg)
+	remoteName, remoteVersion := "", ""
+	if init := state.session.InitializeResult(); init != nil && init.ServerInfo != nil {
+		remoteName, remoteVersion = init.ServerInfo.Name, init.ServerInfo.Version
+	}
+	record, seen := m.pins.Servers[key]
+	if seen {
+		if record.DefinitionSHA256 != fingerprint {
+			m.notes = append(m.notes, fmt.Sprintf("server %s: its definition (command/args/url/env keys) changed since it was last used in this workspace — review the configuration if you did not make this change", state.name))
+		}
+		if record.ServerName != "" && remoteName != "" && (record.ServerName != remoteName || record.ServerVersion != remoteVersion) {
+			m.notes = append(m.notes, fmt.Sprintf("server %s: the remote implementation changed from %s %s to %s %s", state.name, record.ServerName, record.ServerVersion, remoteName, remoteVersion))
+		}
+	}
+	updated := pinRecord{DefinitionSHA256: fingerprint, ServerName: remoteName, ServerVersion: remoteVersion, FirstSeen: record.FirstSeen, UpdatedAt: time.Now().UTC()}
+	if !seen {
+		updated.FirstSeen = updated.UpdatedAt
+	}
+	if !seen || updated.DefinitionSHA256 != record.DefinitionSHA256 || updated.ServerName != record.ServerName || updated.ServerVersion != record.ServerVersion {
+		m.pins.Servers[key] = updated
+		_ = m.pins.save()
+	}
 }
 
 // stopLocked closes the session (if any) and removes the server's tools
@@ -340,8 +410,57 @@ func capabilityNames(caps *mcp.ServerCapabilities) []string {
 // dial is the connection seam; tests replace it with an in-memory server.
 var dial = connect
 
-func connect(ctx context.Context, name string, cfg appconfig.MCPServer) (*mcp.ClientSession, error) {
-	client := mcp.NewClient(&mcp.Implementation{Name: "collomia", Version: "0.1.0"}, nil)
+// clientOptions builds the per-server client callbacks: progress
+// notifications route to the callback registered for their token, and
+// elicitation requests (when an asker exists) become typed user questions.
+func (m *Manager) clientOptions(server string) *mcp.ClientOptions {
+	opts := &mcp.ClientOptions{
+		ProgressNotificationHandler: func(_ context.Context, req *mcp.ProgressNotificationClientRequest) {
+			if req == nil || req.Params == nil {
+				return
+			}
+			token := fmt.Sprint(req.Params.ProgressToken)
+			m.progressMu.Lock()
+			emit := m.progress[token]
+			m.progressMu.Unlock()
+			if emit == nil {
+				return
+			}
+			line := fmt.Sprintf("progress: %g", req.Params.Progress)
+			if req.Params.Total > 0 {
+				line = fmt.Sprintf("progress: %g/%g", req.Params.Progress, req.Params.Total)
+			}
+			if req.Params.Message != "" {
+				line += " — " + req.Params.Message
+			}
+			emit(line + "\n")
+		},
+	}
+	if m.opts.Asker != nil {
+		opts.ElicitationHandler = func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			return m.elicit(ctx, server, req)
+		}
+	}
+	return opts
+}
+
+// trackProgress registers a per-call progress callback and returns the token
+// to stamp on the request plus a cleanup function.
+func (m *Manager) trackProgress(emit func(string)) (string, func()) {
+	m.progressMu.Lock()
+	defer m.progressMu.Unlock()
+	m.progressSeq++
+	token := fmt.Sprintf("collo-%d", m.progressSeq)
+	m.progress[token] = emit
+	return token, func() {
+		m.progressMu.Lock()
+		defer m.progressMu.Unlock()
+		delete(m.progress, token)
+	}
+}
+
+func connect(ctx context.Context, name string, cfg appconfig.MCPServer, clientOpts *mcp.ClientOptions) (*mcp.ClientSession, error) {
+	client := mcp.NewClient(&mcp.Implementation{Name: "collomia", Version: "0.1.0"}, clientOpts)
 	timeout := time.Duration(cfg.Timeout) * time.Second
 	connectCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -367,7 +486,7 @@ func connect(ctx context.Context, name string, cfg appconfig.MCPServer) (*mcp.Cl
 	}
 }
 
-func registerTools(ctx context.Context, server string, cfg appconfig.MCPServer, session *mcp.ClientSession, registry *tools.Registry) ([]string, error) {
+func (m *Manager) registerTools(ctx context.Context, server string, cfg appconfig.MCPServer, session *mcp.ClientSession) ([]string, error) {
 	listCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Timeout)*time.Second)
 	defer cancel()
 	var registered []string
@@ -388,14 +507,22 @@ func registerTools(ctx context.Context, server string, cfg appconfig.MCPServer, 
 				schema = []byte(`{"type":"object"}`)
 			}
 			registered = append(registered, publicName)
-			registry.Add(tools.Function{Def: provider.ToolDefinition{Name: publicName, Description: fmt.Sprintf("MCP server %s tool %s. %s", server, remote.Name, remote.Description), InputSchema: schema}, Action: tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server}, Run: func(callCtx context.Context, raw json.RawMessage) (string, error) {
+			// call runs the tool; when onOutput is set, server progress
+			// notifications stream through it live.
+			call := func(callCtx context.Context, raw json.RawMessage, onOutput func(string)) (string, error) {
 				var args map[string]any
 				if err := json.Unmarshal(raw, &args); err != nil {
 					return "", err
 				}
 				timeoutCtx, cancel := context.WithTimeout(callCtx, time.Duration(cfg.Timeout)*time.Second)
 				defer cancel()
-				response, err := session.CallTool(timeoutCtx, &mcp.CallToolParams{Name: remote.Name, Arguments: args})
+				params := &mcp.CallToolParams{Name: remote.Name, Arguments: args}
+				if onOutput != nil {
+					token, done := m.trackProgress(onOutput)
+					defer done()
+					params.SetProgressToken(token)
+				}
+				response, err := session.CallTool(timeoutCtx, params)
 				if err != nil {
 					return "", err
 				}
@@ -404,7 +531,15 @@ func registerTools(ctx context.Context, server string, cfg appconfig.MCPServer, 
 					return output, fmt.Errorf("MCP tool returned an error")
 				}
 				return output, nil
-			}})
+			}
+			m.registry.Add(tools.Function{
+				Def:    provider.ToolDefinition{Name: publicName, Description: fmt.Sprintf("MCP server %s tool %s. %s", server, remote.Name, remote.Description), InputSchema: schema},
+				Action: tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server},
+				Run: func(callCtx context.Context, raw json.RawMessage) (string, error) {
+					return call(callCtx, raw, nil)
+				},
+				RunStream: call,
+			})
 		}
 		cursor = result.NextCursor
 		if cursor == "" {

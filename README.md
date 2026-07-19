@@ -640,6 +640,12 @@ Beyond tools, Collomia uses two more MCP capabilities when a server negotiates t
 
 Tool results keep their typed content instead of being flattened: text and structured output come through as-is, embedded resources contribute their text, images and audio become explicit `[image image/png, N bytes]` markers, and resource links keep their URI along with a hint that `read_mcp_resource` can follow them.
 
+Three more protocol features are supported end to end:
+
+- **Progress** — when an MCP tool reports progress during a long call, the updates stream live into the transcript exactly like command output (`progress: 3/10 — indexing…`).
+- **Elicitation** — a server can pause a tool call to ask the user for input. Form-mode requests become typed questions in the TUI (enum fields offer their options, booleans offer true/false, esc declines the whole request — sensitive input never defaults to acceptance). URL-mode elicitation is declined outright, and headless runs never advertise the capability, so servers cannot fish for input when nobody is there.
+- **Server pinning** — Collomia fingerprints each configured server's definition (transport, command, arguments, URL, and the *names* of env vars and headers — values are excluded so rotating a token is not a false alarm) and records the remote implementation's identity, per workspace, in the per-user state directory outside any repository. If a server's definition or its remote identity changes since last use, the session starts with an explicit warning naming the change — a tripwire for a swapped binary or a quietly edited server entry, layered on top of workspace trust (which already invalidates on any project-config change).
+
 MCP configuration can launch processes or contact remote services. Servers are not started unless their entry explicitly sets `"trusted": true`; review a project-provided `.collomia.json` before granting that trust — this is exactly what `collo trust` gates.
 
 ## Sub-agents and multi-agent delegation

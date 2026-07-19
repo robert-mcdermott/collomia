@@ -156,7 +156,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		ledger.Redact = redactor.Redact
 		permissions.SetLedger(ledger)
 	}
-	mcpManager, warnings := mcpclient.ConnectAll(ctx, cfg.MCP, registry)
+	mcpManager, warnings := mcpclient.ConnectAll(ctx, cfg.MCP, registry, mcpclient.Options{Workspace: workspace, Asker: opts.Asker})
 	for _, issue := range catalog.Issues {
 		warnings = append(warnings, fmt.Errorf("skills: %s", issue))
 	}
