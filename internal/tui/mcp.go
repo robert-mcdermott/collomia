@@ -60,6 +60,109 @@ func (m *Model) mcpCommand(args []string) {
 		} else {
 			m.addSystem("Disabled " + name + " for this session; its tools were withdrawn. /mcp enable " + name + " restores it.")
 		}
+	case "prompts":
+		name, ok := need("server")
+		if !ok {
+			return
+		}
+		prompts, err := m.runtime.MCP.Prompts(context.Background(), name)
+		if err != nil {
+			m.addError(err)
+			return
+		}
+		if len(prompts) == 0 {
+			m.addPanel("MCP prompts · "+name, "This server exposes no prompts.")
+			return
+		}
+		var lines []string
+		for _, p := range prompts {
+			line := "- " + p.Name
+			if p.Title != "" && p.Title != p.Name {
+				line += " (" + p.Title + ")"
+			}
+			if p.Description != "" {
+				line += ": " + p.Description
+			}
+			for _, arg := range p.Arguments {
+				req := ""
+				if arg.Required {
+					req = " (required)"
+				}
+				line += fmt.Sprintf("\n    %s%s — %s", arg.Name, req, arg.Description)
+			}
+			lines = append(lines, line)
+		}
+		lines = append(lines, "\n/mcp prompt "+name+" <name> key=value …  expands a template into the input box for review before sending.")
+		m.addPanel("MCP prompts · "+name, strings.Join(lines, "\n"))
+	case "prompt":
+		if len(rest) < 2 {
+			m.addError(fmt.Errorf("usage: /mcp prompt <server> <name> [key=value …]"))
+			return
+		}
+		server, promptName := rest[0], rest[1]
+		promptArgs := map[string]string{}
+		for _, pair := range rest[2:] {
+			key, value, ok := strings.Cut(pair, "=")
+			if !ok {
+				m.addError(fmt.Errorf("prompt arguments are key=value pairs, got %q", pair))
+				return
+			}
+			promptArgs[key] = value
+		}
+		text, err := m.runtime.MCP.GetPrompt(context.Background(), server, promptName, promptArgs)
+		if err != nil {
+			m.addError(err)
+			return
+		}
+		m.input.SetValue(text)
+		m.input.CursorEnd()
+		m.input.Focus()
+		m.addSystem(fmt.Sprintf("Prompt %s/%s expanded into the input box — review or edit it, then press enter to send.", server, promptName))
+	case "resources":
+		name, ok := need("server")
+		if !ok {
+			return
+		}
+		resources, err := m.runtime.MCP.Resources(context.Background(), name)
+		if err != nil {
+			m.addError(err)
+			return
+		}
+		if len(resources) == 0 {
+			m.addPanel("MCP resources · "+name, "This server exposes no resources.")
+			return
+		}
+		var lines []string
+		for _, r := range resources {
+			line := "- " + r.URI
+			if r.Name != "" && r.Name != r.URI {
+				line += " (" + r.Name + ")"
+			}
+			if r.MIMEType != "" {
+				line += " [" + r.MIMEType + "]"
+			}
+			if r.Description != "" {
+				line += ": " + r.Description
+			}
+			lines = append(lines, line)
+		}
+		lines = append(lines, "\n/mcp resource "+name+" <uri>  previews one here; the agent reads them itself with read_mcp_resource.")
+		m.addPanel("MCP resources · "+name, strings.Join(lines, "\n"))
+	case "resource":
+		if len(rest) < 2 {
+			m.addError(fmt.Errorf("usage: /mcp resource <server> <uri>"))
+			return
+		}
+		content, err := m.runtime.MCP.ReadResource(context.Background(), rest[0], rest[1])
+		if err != nil {
+			m.addError(err)
+			return
+		}
+		const previewCap = 4000
+		if len(content) > previewCap {
+			content = content[:previewCap] + fmt.Sprintf("\n… (%d more bytes; the agent can read the full resource with read_mcp_resource)", len(content)-previewCap)
+		}
+		m.addPanel("MCP resource · "+rest[1], content)
 	case "add":
 		m.mcpAdd(rest)
 	case "remove":
@@ -149,6 +252,6 @@ func (m *Model) mcpStatusReport() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "\n/mcp ping|reconnect|enable|disable|remove <name> · /mcp add <name> <command…>")
+	lines = append(lines, "\n/mcp ping|reconnect|enable|disable|remove <name> · /mcp add <name> <command…> · /mcp prompts|resources <name>")
 	return strings.Join(lines, "\n")
 }

@@ -208,6 +208,23 @@ func (m *Model) openMCPPicker() {
 		for _, def := range defs {
 			lines = append(lines, "- "+def.Name+" — "+strings.TrimPrefix(def.Description, prefix))
 		}
+		for _, status := range m.runtime.MCP.Statuses() {
+			if status.Name != item.id {
+				continue
+			}
+			var extras []string
+			for _, capability := range status.Capabilities {
+				switch capability {
+				case "prompts":
+					extras = append(extras, "/mcp prompts "+item.id)
+				case "resources":
+					extras = append(extras, "/mcp resources "+item.id)
+				}
+			}
+			if len(extras) > 0 {
+				lines = append(lines, "\nThis server also offers: "+strings.Join(extras, " · "))
+			}
+		}
 		m.addPanel("MCP · "+item.id, strings.Join(lines, "\n"))
 		return nil
 	})

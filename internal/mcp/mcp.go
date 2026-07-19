@@ -89,6 +89,9 @@ func ConnectAll(ctx context.Context, configured map[string]appconfig.MCPServer, 
 			}
 		}
 	}
+	if len(configured) > 0 {
+		manager.registerResourceTools()
+	}
 	return manager, errs
 }
 
@@ -272,6 +275,7 @@ func (m *Manager) Add(ctx context.Context, name string, cfg appconfig.MCPServer)
 		delete(m.servers, name)
 		return err
 	}
+	m.registerResourceTools()
 	return nil
 }
 
@@ -395,36 +399,8 @@ func registerTools(ctx context.Context, server string, cfg appconfig.MCPServer, 
 				if err != nil {
 					return "", err
 				}
-				data, err := json.Marshal(response)
-				if err != nil {
-					return "", err
-				}
-				var wire struct {
-					Content []struct {
-						Type string `json:"type"`
-						Text string `json:"text"`
-					} `json:"content"`
-					Structured any  `json:"structuredContent"`
-					IsError    bool `json:"isError"`
-				}
-				if err = json.Unmarshal(data, &wire); err != nil {
-					return "", err
-				}
-				var parts []string
-				for _, part := range wire.Content {
-					if part.Type == "text" && part.Text != "" {
-						parts = append(parts, part.Text)
-					}
-				}
-				if wire.Structured != nil {
-					value, _ := json.MarshalIndent(wire.Structured, "", "  ")
-					parts = append(parts, string(value))
-				}
-				output := strings.Join(parts, "\n")
-				if output == "" {
-					output = string(data)
-				}
-				if wire.IsError {
+				output := renderToolResult(response)
+				if response.IsError {
 					return output, fmt.Errorf("MCP tool returned an error")
 				}
 				return output, nil

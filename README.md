@@ -633,6 +633,13 @@ Servers are managed at runtime without restarting:
 
 Untrusted, disabled, and failed servers stay visible in `/mcp status` with their exact initialization errors instead of silently disappearing, so a misconfigured server is diagnosable from inside the session. Servers added with `/mcp add` are session-scoped and user-initiated (the trust gate quarantines *repository-supplied* configuration, not your own commands); add them to the configuration file to keep them.
 
+Beyond tools, Collomia uses two more MCP capabilities when a server negotiates them:
+
+- **Resources** — `/mcp resources <server>` browses what the server publishes (URI, type, size, description) and `/mcp resource <server> <uri>` previews one in the transcript. The agent has matching tools, `list_mcp_resources` and `read_mcp_resource`, classified as external calls scoped to the named server so permission rules keep matching.
+- **Prompts** — `/mcp prompts <server>` lists a server's prompt templates with their arguments; `/mcp prompt <server> <name> key=value …` expands one and places the result in the input box, so you review and edit the template output before anything is sent to the model.
+
+Tool results keep their typed content instead of being flattened: text and structured output come through as-is, embedded resources contribute their text, images and audio become explicit `[image image/png, N bytes]` markers, and resource links keep their URI along with a hint that `read_mcp_resource` can follow them.
+
 MCP configuration can launch processes or contact remote services. Servers are not started unless their entry explicitly sets `"trusted": true`; review a project-provided `.collomia.json` before granting that trust — this is exactly what `collo trust` gates.
 
 ## Sub-agents and multi-agent delegation
