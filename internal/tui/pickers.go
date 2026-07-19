@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/robert-mcdermott/collomia/internal/app"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
@@ -23,6 +24,9 @@ func (m *Model) openModelPicker() {
 		desc := p.Type
 		if p.Model != "" {
 			desc += " · " + p.Model
+		}
+		if capabilities, err := provider.CapabilitiesFor(p.Type, p.Model, p.Context); err == nil {
+			desc += " · " + capabilities.CompactSummary()
 		}
 		if name == currentProvider {
 			desc += "  (current: " + currentModel + ")"
@@ -63,6 +67,12 @@ func (m *Model) openDiscoveredModels(msg modelListMsg) {
 	var items []pickerItem
 	for _, info := range msg.models {
 		desc := info.DisplayName
+		if summary := info.Capabilities.CompactSummary(); summary != "capabilities unknown" {
+			if desc != "" {
+				desc += " · "
+			}
+			desc += summary
+		}
 		if info.ID == currentModel {
 			if desc != "" {
 				desc += " · "
@@ -82,6 +92,57 @@ func (m *Model) openDiscoveredModels(msg modelListMsg) {
 	})
 	m.layout()
 	m.refresh()
+}
+
+// providerStatusMsg carries the asynchronous live-catalog checks behind
+// /models. The static capability declaration is rendered immediately.
+type providerStatusMsg struct {
+	statuses []app.ProviderStatus
+}
+
+func renderProviderStatuses(statuses []app.ProviderStatus) string {
+	if len(statuses) == 0 {
+		return "No providers are configured."
+	}
+	var lines []string
+	for _, status := range statuses {
+		model := status.DefaultModel
+		if model == "" {
+			model = "(no default model)"
+		}
+		lines = append(lines, fmt.Sprintf("- %s [%s] %s", status.Name, status.Type, model))
+		availability := "checking live catalog…"
+		switch status.Availability {
+		case app.ProviderAvailable:
+			availability = fmt.Sprintf("available · %d model(s) in live catalog", len(status.Models))
+		case app.ProviderUnavailable:
+			availability = "unavailable"
+			if status.Error != "" {
+				availability += " · " + status.Error
+			}
+		case app.ProviderUnverified:
+			availability = "availability unverified · this adapter has no model catalog"
+		}
+		lines = append(lines, "    "+availability)
+		lines = append(lines, "    "+status.Capabilities.DetailSummary())
+		if len(status.Capabilities.Constraints) > 0 {
+			lines = append(lines, "    note: "+strings.Join(status.Capabilities.Constraints, "; "))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *Model) replaceProviderStatusPanel(statuses []app.ProviderStatus) {
+	content := renderProviderStatuses(statuses)
+	for i := len(m.blocks) - 1; i >= 0; i-- {
+		if m.blocks[i].role == "panel" && m.blocks[i].title == "Provider models" {
+			m.blocks[i].content = content
+			m.layout()
+			m.refresh()
+			return
+		}
+	}
+	m.addPanel("Provider models", content)
 }
 
 // openThemePicker lists themes; choosing one applies it immediately.

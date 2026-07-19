@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/agent"
@@ -280,13 +281,135 @@ func (r *Runtime) ListModels(ctx context.Context, providerName string) ([]provid
 	if err != nil {
 		return nil, err
 	}
+	capabilities, err := provider.CapabilitiesFor(p.Type, model, p.Context)
+	if err != nil {
+		return nil, err
+	}
+	if capabilities.ModelDiscovery == provider.CapabilityUnsupported {
+		return nil, fmt.Errorf("provider %s does not expose model discovery through its %s adapter", name, p.Type)
+	}
 	lister, ok := client.(provider.ModelLister)
 	if !ok {
 		return nil, fmt.Errorf("provider %s does not support model discovery", name)
 	}
 	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return lister.ListModels(listCtx)
+	models, err := lister.ListModels(listCtx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range models {
+		models[i].Capabilities, err = provider.CapabilitiesFor(p.Type, models[i].ID, p.Context)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return models, nil
+}
+
+// ProviderAvailability is deliberately four-state. A provider without a
+// catalog/health endpoint is unverified, not unavailable; configured is the
+// immediate state rendered while a supported live probe runs.
+type ProviderAvailability string
+
+const (
+	ProviderConfigured  ProviderAvailability = "configured"
+	ProviderAvailable   ProviderAvailability = "available"
+	ProviderUnavailable ProviderAvailability = "unavailable"
+	ProviderUnverified  ProviderAvailability = "unverified"
+)
+
+// ProviderStatus combines static adapter capabilities with a best-effort live
+// model-catalog probe for TUI inspection.
+type ProviderStatus struct {
+	Name         string
+	Type         string
+	DefaultModel string
+	Availability ProviderAvailability
+	Models       []provider.ModelInfo
+	Capabilities provider.Capabilities
+	Error        string
+}
+
+// ConfiguredProviders returns a network-free snapshot suitable for immediate
+// rendering while live catalog checks run in the background.
+func (r *Runtime) ConfiguredProviders() []ProviderStatus {
+	names := r.Config.ProviderNames()
+	statuses := make([]ProviderStatus, 0, len(names))
+	for _, name := range names {
+		p := r.Config.Providers[name]
+		model := p.Model
+		if model == "" {
+			model = r.Config.DefaultModel
+		}
+		capabilities, err := provider.CapabilitiesFor(p.Type, model, p.Context)
+		status := ProviderStatus{Name: name, Type: p.Type, DefaultModel: model, Availability: ProviderConfigured, Capabilities: capabilities}
+		if err != nil {
+			status.Error = r.providerStatusError(err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+// InspectProviders probes model catalogs concurrently with a small bound so a
+// slow endpoint does not make /models wait serially for every configured
+// provider. Unsupported discovery remains explicitly unverified.
+func (r *Runtime) InspectProviders(ctx context.Context) []ProviderStatus {
+	statuses := r.ConfiguredProviders()
+	var wg sync.WaitGroup
+	limit := make(chan struct{}, 4)
+	for i := range statuses {
+		if statuses[i].Capabilities.ModelDiscovery == provider.CapabilityUnsupported {
+			statuses[i].Availability = ProviderUnverified
+			continue
+		}
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			select {
+			case limit <- struct{}{}:
+				defer func() { <-limit }()
+			case <-ctx.Done():
+				statuses[index].Availability = ProviderUnavailable
+				statuses[index].Error = ctx.Err().Error()
+				return
+			}
+			models, err := r.ListModels(ctx, statuses[index].Name)
+			if err != nil {
+				statuses[index].Availability = ProviderUnavailable
+				statuses[index].Error = r.providerStatusError(err)
+				return
+			}
+			statuses[index].Availability = ProviderAvailable
+			statuses[index].Models = models
+		}(i)
+	}
+	wg.Wait()
+	return statuses
+}
+
+func (r *Runtime) providerStatusError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	if r.Redactor != nil {
+		message = r.Redactor.Redact(message)
+	}
+	message = strings.Map(func(char rune) rune {
+		if char < 0x20 || char == 0x7f {
+			return -1
+		}
+		return char
+	}, message)
+	message = strings.Join(strings.Fields(message), " ")
+	const limit = 512
+	runes := []rune(message)
+	if len(runes) > limit {
+		message = string(runes[:limit]) + "…"
+	}
+	return message
 }
 
 // attachBoard wires plan persistence to a session and restores its last
@@ -411,5 +534,5 @@ func (r *Runtime) Select(providerName, model string) error {
 }
 func (r *Runtime) Summary() string {
 	p, m := r.Agent.Selection()
-	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\nautonomy: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Permissions.Mode(), r.Agent.Plan(), r.Config.Source)
+	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\ncapabilities: %s\nautonomy: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.Agent.Plan(), r.Config.Source)
 }

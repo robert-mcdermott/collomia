@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 func deltaEvent(text string) runtimeevent.Event {
@@ -104,7 +105,7 @@ func TestPaletteFiltersAndRuns(t *testing.T) {
 		t.Fatalf("input should reset after running a command, got %q", m.input.Value())
 	}
 	last := m.blocks[len(m.blocks)-1]
-	if last.role != "panel" || last.title != "Configured providers" {
+	if last.role != "panel" || last.title != "Provider models" || !strings.Contains(last.content, "supported: tools") {
 		t.Fatalf("expected /models panel, got %+v", last)
 	}
 }
@@ -178,6 +179,9 @@ func TestModelPickerOpensAndFilters(t *testing.T) {
 	if len(m.picker.matches) == 0 || m.picker.matches[0].title != "ollama" {
 		t.Fatalf("picker should list providers, got %+v", m.picker.matches)
 	}
+	if !strings.Contains(m.picker.matches[0].desc, "tools") || !strings.Contains(m.picker.matches[0].desc, "context") {
+		t.Fatalf("picker should expose compact capabilities, got %+v", m.picker.matches[0])
+	}
 	// Modal: typing filters the picker, not the input.
 	m = typeKeys(t, m, "zzz")
 	if len(m.picker.matches) != 0 {
@@ -186,6 +190,24 @@ func TestModelPickerOpensAndFilters(t *testing.T) {
 	m = press(t, m, tea.KeyEsc)
 	if m.picker != nil {
 		t.Fatal("esc should dismiss the picker")
+	}
+}
+
+func TestProviderStatusProbeReplacesCheckingPanel(t *testing.T) {
+	m := newTestModel(t)
+	m.addPanel("Provider models", renderProviderStatuses(m.runtime.ConfiguredProviders()))
+	before := len(m.blocks)
+	status := m.runtime.ConfiguredProviders()[0]
+	status.Availability = app.ProviderAvailable
+	status.Models = []provider.ModelInfo{{ID: status.DefaultModel, Capabilities: status.Capabilities}}
+	updated, _ := m.Update(providerStatusMsg{statuses: []app.ProviderStatus{status}})
+	m = updated.(Model)
+	if len(m.blocks) != before {
+		t.Fatalf("live result should replace the checking panel, blocks %d -> %d", before, len(m.blocks))
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if !strings.Contains(last.content, "available · 1 model(s)") || strings.Contains(last.content, "checking live catalog") {
+		t.Fatalf("panel=%+v", last)
 	}
 }
 

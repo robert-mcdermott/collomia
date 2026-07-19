@@ -13,14 +13,23 @@ import (
 // Mantle may run long-lived asynchronous inference while the agent loop still
 // receives the exact same tool-call representation as streaming adapters.
 type ResponsesClient struct {
-	Label   string
-	BaseURL string
-	APIKey  string
-	Headers map[string]string
-	HTTP    *http.Client
+	Label    string
+	BaseURL  string
+	APIKey   string
+	Headers  map[string]string
+	HTTP     *http.Client
+	Declared Capabilities
 }
 
 func (c *ResponsesClient) Name() string { return c.Label }
+
+func (c *ResponsesClient) Capabilities() Capabilities {
+	if c.Declared.ProviderType != "" {
+		return c.Declared
+	}
+	capabilities, _ := CapabilitiesFor("bedrock-mantle", "", 0)
+	return capabilities
+}
 
 func (c *ResponsesClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
 	input := make([]any, 0, len(in.Messages)+1)

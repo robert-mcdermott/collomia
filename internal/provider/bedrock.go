@@ -17,13 +17,22 @@ import (
 )
 
 type BedrockClient struct {
-	Label   string
-	Region  string
-	Profile string
-	HTTP    *http.Client
+	Label    string
+	Region   string
+	Profile  string
+	HTTP     *http.Client
+	Declared Capabilities
 }
 
 func (c *BedrockClient) Name() string { return c.Label }
+
+func (c *BedrockClient) Capabilities() Capabilities {
+	if c.Declared.ProviderType != "" {
+		return c.Declared
+	}
+	capabilities, _ := CapabilitiesFor("bedrock", "", 0)
+	return capabilities
+}
 
 func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
 	region := c.Region

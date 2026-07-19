@@ -160,6 +160,13 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		}
 		defs := a.toolDefinitions(plan)
 		req := provider.Request{Model: model, System: a.systemPrompt(plan), Messages: messages, Tools: defs, MaxTokens: a.providerConfig.MaxTokens, Temperature: a.providerConfig.Temperature}
+		if reporter, ok := client.(provider.CapabilityReporter); ok {
+			if err := provider.ValidateRequest(reporter.Capabilities(), req); err != nil {
+				wrapped := fmt.Errorf("provider capability preflight: %w", err)
+				send(errorEvent(wrapped))
+				return "", wrapped
+			}
+		}
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" {
 				e := event.New(event.KindTextDelta)
@@ -611,6 +618,19 @@ func (a *Agent) Selection() (string, string) {
 	defer a.mu.RUnlock()
 	return a.providerName, a.model
 }
+
+// Capabilities returns the active client's declared feature support. Custom
+// clients that do not implement CapabilityReporter remain usable and report
+// unknown model-dependent features rather than inheriting a false claim.
+func (a *Agent) Capabilities() provider.Capabilities {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if reporter, ok := a.client.(provider.CapabilityReporter); ok {
+		return reporter.Capabilities()
+	}
+	return provider.Capabilities{Model: a.model, ContextWindow: a.providerConfig.Context}
+}
+
 func (a *Agent) Usage() provider.Usage { a.mu.RLock(); defer a.mu.RUnlock(); return a.usage }
 
 // ContextEstimate combines the provider-reported input size of the last

@@ -11,34 +11,38 @@ import (
 
 func New(name string, p appconfig.Provider, model string) (Client, error) {
 	label := name + "/" + model
+	capabilities, err := CapabilitiesFor(p.Type, model, p.Context)
+	if err != nil {
+		return nil, err
+	}
 	switch p.Type {
 	case "openai", "openai-compatible":
-		return &OpenAIClient{Label: label, BaseURL: p.BaseURL, APIKey: p.APIKey, Headers: p.Headers}, nil
+		return &OpenAIClient{Label: label, BaseURL: p.BaseURL, APIKey: p.APIKey, Headers: p.Headers, Declared: capabilities}, nil
 	case "anthropic", "anthropic-compatible":
-		return &AnthropicClient{Label: label, BaseURL: p.BaseURL, APIKey: p.APIKey, Headers: p.Headers, BearerAuth: p.Auth == "bearer"}, nil
+		return &AnthropicClient{Label: label, BaseURL: p.BaseURL, APIKey: p.APIKey, Headers: p.Headers, BearerAuth: p.Auth == "bearer", Declared: capabilities}, nil
 	case "bedrock-mantle":
-		return &ResponsesClient{Label: label, BaseURL: p.BaseURL, APIKey: p.APIKey, Headers: p.Headers}, nil
+		return &ResponsesClient{Label: label, BaseURL: p.BaseURL, APIKey: p.APIKey, Headers: p.Headers, Declared: capabilities}, nil
 	case "bedrock":
-		return &BedrockClient{Label: label, Region: p.Region, Profile: p.Profile}, nil
+		return &BedrockClient{Label: label, Region: p.Region, Profile: p.Profile, Declared: capabilities}, nil
 	case "azure-openai":
 		endpoint, err := azureOpenAIChatURL(p, model)
 		if err != nil {
 			return nil, err
 		}
-		return &OpenAIClient{Label: label, APIKey: p.APIKey, Headers: p.Headers, ChatURL: endpoint, APIKeyHeader: azureKeyHeader(p)}, nil
+		return &OpenAIClient{Label: label, APIKey: p.APIKey, Headers: p.Headers, ChatURL: endpoint, APIKeyHeader: azureKeyHeader(p), Declared: capabilities}, nil
 	case "azure-foundry":
 		base := strings.TrimRight(p.BaseURL, "/")
 		if !strings.Contains(base, "/openai/v1") {
 			base += "/openai/v1"
 		}
 		keyHeader := azureKeyHeader(p)
-		return &OpenAIClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, APIKeyHeader: keyHeader}, nil
+		return &OpenAIClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, APIKeyHeader: keyHeader, Declared: capabilities}, nil
 	case "azure-foundry-anthropic":
 		base := strings.TrimRight(p.BaseURL, "/")
 		if !strings.HasSuffix(base, "/anthropic") {
 			base += "/anthropic"
 		}
-		return &AnthropicClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, BearerAuth: p.Auth == "bearer"}, nil
+		return &AnthropicClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, BearerAuth: p.Auth == "bearer", Declared: capabilities}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", p.Type)
 	}
