@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 )
@@ -91,48 +92,58 @@ func (m Model) handleHunkReviewKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) renderHunkReview() string {
 	hr := m.hunkReview
-	title := m.styles.warning.Render("⚠ Review hunks — " + displayHunkPath(hr.path))
+	inner := m.modalInnerWidth(hunkModalMaxWidth)
 	var b strings.Builder
-	b.WriteString(title + "\n")
-	for i, h := range hr.hunks {
-		mark := "☐"
-		markColor := m.theme.Muted
-		if hr.keep[i] {
-			mark = "☑"
-			markColor = m.theme.Success
-		}
-		cursor := "  "
-		if i == hr.cursor {
-			cursor = m.styles.accent.Render("▸ ")
-		}
-		header := fmt.Sprintf("%s%s hunk %d/%d  @@ -%d,%d +%d,%d @@", cursor, lipgloss.NewStyle().Foreground(lipgloss.Color(markColor)).Render(mark), i+1, len(hr.hunks), h.AStart, h.ACount, h.BStart, h.BCount)
-		b.WriteString(header + "\n")
-		if i == hr.cursor {
-			const maxLines = 10
-			lines := h.Lines
-			truncated := false
-			if len(lines) > maxLines {
-				lines = lines[:maxLines]
-				truncated = true
-			}
-			for _, line := range lines {
-				switch {
-				case strings.HasPrefix(line, "+"):
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Success)).Render(line) + "\n")
-				case strings.HasPrefix(line, "-"):
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Error)).Render(line) + "\n")
-				default:
-					b.WriteString(m.styles.statusBase.Render(line) + "\n")
-				}
-			}
-			if truncated {
-				b.WriteString(m.styles.muted.Render(fmt.Sprintf("… %d more lines in this hunk", len(h.Lines)-maxLines)) + "\n")
-			}
+	b.WriteString(m.modalHeader("✎", "Review hunks", m.theme.Warning, inner))
+	b.WriteString("\n\n" + m.styles.muted.Render(ansi.Truncate(displayHunkPath(hr.path), inner, "…")))
+	kept := 0
+	for _, keep := range hr.keep {
+		if keep {
+			kept++
 		}
 	}
-	b.WriteString(fmt.Sprintf("\n%s move   %s toggle   %s keep all   %s apply selected   %s cancel",
-		badge("↑↓", m.theme.Border), badge("space", m.theme.Warning), badge("a", m.theme.Success), badge("enter", m.theme.Success), badge("esc", m.theme.Error)))
-	return m.styles.approvalBox.Width(max(1, m.width-2) - 2).Render(b.String())
+	h := hr.hunks[hr.cursor]
+	mark := "☐ excluded"
+	markColor := m.theme.Muted
+	if hr.keep[hr.cursor] {
+		mark = "☑ included"
+		markColor = m.theme.Success
+	}
+	status := fmt.Sprintf("%s  hunk %d/%d · %d selected", mark, hr.cursor+1, len(hr.hunks), kept)
+	b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color(markColor)).Render(ansi.Truncate(status, inner, "…")))
+	b.WriteString("\n" + m.styles.muted.Render(ansi.Truncate(fmt.Sprintf("@@ -%d,%d +%d,%d @@", h.AStart, h.ACount, h.BStart, h.BCount), inner, "…")))
+
+	maxLines := min(14, max(2, m.height-15))
+	lines := h.Lines
+	hidden := 0
+	if len(lines) > maxLines {
+		hidden = len(lines) - maxLines
+		lines = lines[:maxLines]
+	}
+	b.WriteString("\n\n")
+	for i, line := range lines {
+		line = ansi.Truncate(line, inner, "…")
+		switch {
+		case strings.HasPrefix(line, "+"):
+			line = m.styles.success.Render(line)
+		case strings.HasPrefix(line, "-"):
+			line = m.styles.errText.Render(line)
+		default:
+			line = m.styles.muted.Render(line)
+		}
+		b.WriteString(line)
+		if i < len(lines)-1 || hidden > 0 {
+			b.WriteByte('\n')
+		}
+	}
+	if hidden > 0 {
+		b.WriteString(m.styles.muted.Render(fmt.Sprintf("… %d more lines in this hunk", hidden)))
+	}
+	b.WriteString("\n\n" + ansi.Wordwrap(
+		badge("↑↓  Move", m.theme.Border)+"  "+badge("Space  Toggle", m.theme.Warning)+"  "+
+			badge("A  Keep all", m.theme.Success)+"  "+badge("Enter  Apply", m.theme.Success)+"  "+badge("Esc  Back", m.theme.Error),
+		inner, ""))
+	return m.modalFrame(b.String(), m.theme.Warning, hunkModalMaxWidth)
 }
 
 func displayHunkPath(path string) string {

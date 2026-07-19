@@ -17,15 +17,18 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/robert-mcdermott/collomia/internal/app"
-	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/version"
 )
 
 // block is one transcript entry. title is only set for role "panel", the
-// titled card used for informational slash-command output.
-type block struct{ role, title, content string }
+// titled card used for informational slash-command output. Tool and summary
+// retain enough context to syntax-highlight source-oriented tool results.
+type block struct {
+	role, title, content string
+	tool, summary        string
+}
 type runMsg struct {
 	event *runtimeevent.Event
 	done  bool
@@ -152,12 +155,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		env := msg.envelope
 		m.question = &env
 		m.paletteOn = false
-		text := "❓ " + env.question.Text
-		for i, option := range env.question.Options {
-			text += fmt.Sprintf("\n  %d. %s", i+1, option)
-		}
-		text += "\n\nType an answer (or an option number) and press enter; esc declines."
-		m.blocks = append(m.blocks, block{role: "system", content: text})
 		m.input.Reset()
 		m.input.Focus()
 		m.alert("Collomia has a question: " + env.question.Text)
@@ -388,7 +385,7 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 		// place so the user watches builds and tests as they happen.
 		if e.Tool != nil && e.Tool.Output != "" {
 			if !m.streaming || len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "tool-result" {
-				m.blocks = append(m.blocks, block{role: "tool-result"})
+				m.blocks = append(m.blocks, block{role: "tool-result", tool: e.Tool.Name, summary: e.Tool.Summary})
 				m.streaming = true
 			}
 			m.blocks[len(m.blocks)-1].content += e.Tool.Output
@@ -403,8 +400,10 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 				// The final result replaces the streamed view (it may add
 				// error text and truncation markers).
 				m.blocks[len(m.blocks)-1].content = summary
+				m.blocks[len(m.blocks)-1].tool = e.Tool.Name
+				m.blocks[len(m.blocks)-1].summary = e.Tool.Summary
 			} else {
-				m.blocks = append(m.blocks, block{role: "tool-result", content: summary})
+				m.blocks = append(m.blocks, block{role: "tool-result", content: summary, tool: e.Tool.Name, summary: e.Tool.Summary})
 			}
 			m.streaming = false
 		}
@@ -477,12 +476,6 @@ func (m *Model) layout() {
 	headerHeight := 2
 	statusHeight := 1
 	inputArea := 5
-	if m.pending != nil {
-		inputArea = 7
-	}
-	if m.hunkReview != nil {
-		inputArea = 20
-	}
 	if m.picker != nil {
 		inputArea += m.pickerHeight()
 	} else {
@@ -551,10 +544,14 @@ const toolCollapseThreshold = 4
 // still running, then collapses it to a one-line summary once the agent moves
 // on. ctrl+o expands every collapsed result for inspection.
 func (m *Model) renderToolResult(i int) string {
-	content := m.blocks[i].content
+	entry := m.blocks[i]
+	content := entry.content
 	lines := strings.Count(content, "\n") + 1
 	current := m.busy && i == len(m.blocks)-1
 	if m.expandTools || current || lines <= toolCollapseThreshold {
+		if highlighted, ok := m.highlightToolResult(entry); ok {
+			return indent(highlighted, "  │ ")
+		}
 		return m.styles.toolResult.Render(indent(content, "  │ "))
 	}
 	return m.styles.toolResult.Render("  ▸ ") +
@@ -758,7 +755,11 @@ func (m *Model) renderMarkdown(value string) string {
 	}
 	width := max(20, m.width-6)
 	if m.renderer == nil || m.rendererWidth != width {
-		renderer, err := glamour.NewTermRenderer(glamour.WithStandardStyle(m.theme.glamourStyle()), glamour.WithWordWrap(width))
+		renderer, err := glamour.NewTermRenderer(
+			glamour.WithStyles(m.theme.markdownStyle()),
+			glamour.WithChromaFormatter("terminal16m"),
+			glamour.WithWordWrap(width),
+		)
 		if err != nil {
 			return value
 		}
@@ -777,20 +778,24 @@ func (m Model) View() string {
 		return "Starting Collomia…"
 	}
 	sections := []string{m.renderHeader(), m.viewport.View()}
-	if m.picker != nil && m.pending == nil {
+	if m.picker != nil && !m.modalActive() {
 		sections = append(sections, m.renderPicker())
-	} else if m.paletteOn && m.pending == nil {
+	} else if m.paletteOn && !m.modalActive() {
 		sections = append(sections, m.renderPalette())
 	}
-	if m.hunkReview != nil {
-		sections = append(sections, m.renderHunkReview())
-	} else if m.pending != nil {
-		sections = append(sections, m.renderApproval())
-	} else {
-		sections = append(sections, m.styles.inputBox.Width(max(1, m.width-2)).Render(m.input.View()))
-	}
+	sections = append(sections, m.renderComposer())
 	sections = append(sections, m.renderStatusBar())
-	return strings.Join(sections, "\n")
+	base := strings.Join(sections, "\n")
+	switch {
+	case m.hunkReview != nil:
+		return placeOverlay(base, m.renderHunkReview(), m.width, m.height)
+	case m.pending != nil:
+		return placeOverlay(base, m.renderApproval(), m.width, m.height)
+	case m.question != nil:
+		return placeOverlay(base, m.renderQuestion(), m.width, m.height)
+	default:
+		return base
+	}
 }
 
 func (m Model) renderHeader() string {
@@ -806,43 +811,6 @@ func (m Model) renderHeader() string {
 	row := left + strings.Join(tabs, "")
 	rule := m.styles.rule.Render(strings.Repeat("─", max(0, m.width)))
 	return row + "\n" + rule
-}
-
-func (m Model) renderApproval() string {
-	req := m.pending.request
-	title := m.styles.warning.Render("⚠ Permission required")
-	body := fmt.Sprintf("%s\n%s  %s", title, m.styles.accent.Render(req.Tool), req.Action.Summary)
-	if req.Reason != "" {
-		body += "\n" + m.styles.warning.Render(req.Reason)
-	}
-	if req.Action.Preview != "" {
-		preview := req.Action.Preview
-		lines := strings.Split(strings.TrimRight(preview, "\n"), "\n")
-		const maxPreview = 14
-		if len(lines) > maxPreview {
-			lines = append(lines[:maxPreview], fmt.Sprintf("… %d more diff lines (ctrl+o after approval shows full output)", len(lines)-maxPreview))
-		}
-		var colored []string
-		for _, line := range lines {
-			switch {
-			case strings.HasPrefix(line, "+"):
-				colored = append(colored, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Success)).Render(line))
-			case strings.HasPrefix(line, "-"):
-				colored = append(colored, lipgloss.NewStyle().Foreground(lipgloss.Color(m.theme.Error)).Render(line))
-			default:
-				colored = append(colored, m.styles.statusBase.Render(line))
-			}
-		}
-		body += "\n" + strings.Join(colored, "\n")
-	}
-	body += fmt.Sprintf("\n\n%s  approve once   %s  always for %s   %s  deny",
-		badge("y", m.theme.Success), badge("a", m.theme.Warning), req.Tool, badge("n", m.theme.Error))
-	if req.Tool == "write_file" && req.Action.Preview != "" {
-		if hunks, err := diffmodel.ParseHunks(req.Action.Preview); err == nil && len(hunks) >= 2 {
-			body += fmt.Sprintf("   %s  review %d hunks", badge("h", m.theme.Accent), len(hunks))
-		}
-	}
-	return m.styles.approvalBox.Width(max(1, m.width-2) - 2).Render(body)
 }
 
 func (m Model) renderStatusBar() string {
@@ -881,10 +849,17 @@ func (m Model) renderStatusBar() string {
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 
 	var right string
-	if m.busy {
+	switch {
+	case m.hunkReview != nil:
+		right = m.styles.statusBase.Render("↑↓ move · space toggle · enter apply · esc back ")
+	case m.pending != nil:
+		right = m.styles.statusBase.Render("y approve · a always · n deny ")
+	case m.question != nil:
+		right = m.styles.statusBase.Render("enter answer · esc decline ")
+	case m.busy:
 		elapsed := time.Since(m.turnStarted).Round(time.Second)
 		right = m.styles.statusKey.Render(m.spinner.View()) + m.styles.statusBase.Render(fmt.Sprintf(" working %s · esc cancel ", elapsed))
-	} else {
+	default:
 		right = m.styles.statusBase.Render("enter send · ") +
 			m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +
 			m.styles.statusKey.Render("ctrl+t") + m.styles.statusBase.Render(" tabs · ") +

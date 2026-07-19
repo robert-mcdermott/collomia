@@ -273,7 +273,9 @@ Inside the TUI:
 
 Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/tools`, `/skills list`, `/mcp list`, `/config`, `/help`) render their output in a titled, theme-colored panel — the command's subject sits in the box border, body text is tinted with a readable shade derived from the theme (not the terminal's raw default color), and content wraps cleanly to the terminal width. Quick acknowledgements ("Theme switched…") stay as subtle one-line notes.
 
-Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. `ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them.
+Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
+
+`ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
 
@@ -287,7 +289,7 @@ When an approval or question is waiting, or a turn longer than ten seconds finis
 
 ### Approving changes
 
-When the agent proposes a write, command, or other privileged action, an approval prompt shows a colorized diff preview (for file changes) and waits for a decision:
+When the agent proposes a write, command, or other privileged action, a centered floating approval dialog shows the action and a colorized diff preview (for file changes) and waits for a decision. The dialog closes immediately after the choice:
 
 | Key | Effect |
 | --- | --- |
@@ -296,7 +298,7 @@ When the agent proposes a write, command, or other privileged action, an approva
 | `n` / `esc` | Deny. |
 | `h` | For a `write_file` change with two or more diff hunks: open **hunk review** — accept or reject each hunk independently instead of the whole file. |
 
-In hunk review: ↑/↓ (or `j`/`k`) navigate, `space` toggles the current hunk, `a` keeps all, `enter` applies only the selected hunks (composed against a fresh read of the file), `esc` returns to the normal approval prompt. `edit_file` (a single atomic replacement) and `apply_patch` (a multi-file changeset) stay file-level for now.
+Hunk review replaces the approval dialog with a focused preview of the current hunk. ↑/↓ (or `j`/`k`) navigate, `space` toggles the current hunk, `a` keeps all, `enter` applies only the selected hunks (composed against a fresh read of the file), and `esc` returns to the normal approval dialog. `edit_file` (a single atomic replacement) and `apply_patch` (a multi-file changeset) stay file-level for now. Questions from the agent and MCP elicitation use the same transient dialog treatment, with their answer editor inside the box.
 
 ## Themes
 

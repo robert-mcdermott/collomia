@@ -60,16 +60,6 @@ func defaultTheme() Theme {
 	return t
 }
 
-func (t Theme) glamourStyle() string {
-	if t.plain() {
-		return "notty"
-	}
-	if t.Dark {
-		return "dark"
-	}
-	return "light"
-}
-
 // plain reports whether the theme intentionally renders without color
 // (the `plain` theme, also auto-selected under NO_COLOR).
 func (t Theme) plain() bool { return t.Primary == "" }
@@ -117,7 +107,6 @@ type styles struct {
 	paletteSel  lipgloss.Style
 	paletteCmd  lipgloss.Style
 	paletteDesc lipgloss.Style
-	approvalBox lipgloss.Style
 	statusBase  lipgloss.Style
 	statusKey   lipgloss.Style
 	muted       lipgloss.Style
@@ -148,7 +137,6 @@ func newStyles(t Theme) styles {
 		paletteSel:  lipgloss.NewStyle().Bold(true).Foreground(c(onColor(t.Primary))).Background(c(t.Primary)),
 		paletteCmd:  lipgloss.NewStyle().Bold(true).Foreground(c(t.Accent)),
 		paletteDesc: lipgloss.NewStyle().Foreground(c(t.Muted)),
-		approvalBox: lipgloss.NewStyle().Border(lipgloss.ThickBorder()).BorderForeground(c(t.Warning)).Padding(0, 1),
 		statusBase:  lipgloss.NewStyle().Background(c(t.StatusBG)).Foreground(c(t.Muted)),
 		statusKey:   lipgloss.NewStyle().Background(c(t.StatusBG)).Foreground(c(t.Accent)).Bold(true),
 		muted:       lipgloss.NewStyle().Foreground(c(t.Muted)),
