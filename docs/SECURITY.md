@@ -9,13 +9,16 @@ required before advertising any unattended use.
 Collomia's permission prompts and rules are **in-process policy checks**, not
 an operating-system security boundary, unless the OS sandbox is enabled. A
 command approved by you — or auto-approved by autopilot mode — runs with
-your normal user privileges. On macOS you can additionally enable OS-level
-enforcement (`permissions.sandbox`); on Linux and Windows no sandbox backend
-exists yet, and `collo doctor` says so.
+your normal user privileges. macOS and Linux can additionally enable OS-level
+enforcement (`permissions.sandbox`); on Windows no sandbox backend exists
+yet, and `collo doctor` says so.
 
 Do not point autopilot mode at untrusted code or untrusted instructions and
 walk away, on any platform, without the sandbox in `require` mode — and even
-then, understand the limitations listed below.
+then, understand the limitations listed below. This applies equally to
+background processes started with `start_process`: they run under the same
+policy and sandbox as `run_command`, just detached from the turn that
+started them.
 
 ## Autonomy modes: exact properties
 
@@ -48,27 +51,47 @@ grant allows them; they never ride along with autopilot.
 - **Denied-command regexes** are defense in depth against catastrophic
   accidents (`rm -rf /`), nothing more. Regexes cannot enumerate harm.
 
-## The OS sandbox (macOS today)
+## The OS sandbox (macOS and Linux)
 
-`permissions.sandbox: "auto" | "require"` wraps every agent command in a
-Seatbelt profile via `sandbox-exec`:
+`permissions.sandbox: "auto" | "require"` wraps every agent command —
+including background processes started with `start_process`, and commands
+run under a pseudo-terminal (`run_command` with `pty: true`) — in the
+platform's containment mechanism.
+
+**macOS: Seatbelt** (`sandbox-exec`):
 
 - File writes are confined to the workspace, the temp directories, and
   `/dev`; everything else is deny-by-default (reads stay open).
 - Network egress is denied unless `permissions.sandbox_allow_network` is
   true (loopback stays open for local model servers).
-- `require` fails closed: if the backend is unavailable, commands refuse to
-  run. `auto` degrades with a visible doctor warning.
-
-Known limitations, stated plainly:
-
-- `sandbox-exec` is deprecated by Apple but functional; we treat it as
+- `sandbox-exec` is deprecated by Apple but functional; treated as
   best-effort OS enforcement, tested in `internal/tools/command_test.go`.
-- Reads are not confined: a sandboxed command can still read any file your
-  user can. Write and network containment are the enforced properties.
-- Linux (Landlock/seccomp) and Windows (AppContainer) backends are roadmap
-  work. On those platforms the sandbox setting can only be `off` (run
-  unconfined after approval) or `require` (refuse to run).
+
+**Linux: Landlock** (kernel 5.13+, via a hidden `collo __landlock`
+re-exec shim — Landlock restricts the calling process, so the command is
+re-executed through the shim, which applies the ruleset to itself and then
+execs the real command):
+
+- File writes are confined to the granted roots (the workspace, temp
+  directories). Reads are not confined.
+- On kernel 6.7+ (Landlock ABI v4), TCP connect/bind are also denied unless
+  `permissions.sandbox_allow_network` is true. Below ABI v4, only the
+  filesystem is confined and `collo doctor` reports that network is
+  unenforced. **UDP — including DNS — cannot be restricted by Landlock at
+  all**, on any kernel version; treat DNS-based exfiltration as always
+  possible even with the sandbox enabled.
+- `require` fails closed on both platforms: if Landlock is unavailable
+  (kernel too old or disabled), commands refuse to run rather than running
+  unconfined. `auto` degrades with a visible doctor warning.
+
+Shared limitations, stated plainly:
+
+- Reads are not confined on either backend: a sandboxed command can still
+  read any file your user can. Write (and, where supported, network)
+  containment are the enforced properties.
+- **Windows**: no sandbox backend exists yet (AppContainer is roadmap
+  work). The sandbox setting can only be `off` (run unconfined after
+  approval) or fail-closed `require` (refuse to run).
 
 ## Repository trust
 
@@ -86,14 +109,47 @@ and timeout kill the whole group (Unix `SIGKILL` to the group, Windows
 — this is tested. Detached daemons that re-parent before the kill are the
 known residual gap.
 
+**Background processes** (`start_process`) are a deliberate exception to
+the timeout: their lifetime is the session, not the tool call, so a
+dev server started this way keeps running while the agent does other work.
+They still run in their own process group and are killed — group-wide —
+by `stop_process`, `/ps stop`, or automatically when the session ends
+(including background processes started by a delegated write-agent inside
+its own worktree, which are stopped when that sub-agent's task finishes).
+Nothing started this way is expected to outlive the `collo` process.
+
+**PTY commands** (`run_command` with `pty: true`, Unix only) run in their
+own session (`setsid`) rather than merely a process group, because a
+pseudo-terminal's child processes attach to the session leader; killing the
+session on timeout or cancellation still reaches every descendant. Windows
+has no PTY support yet and reports a clear error rather than silently
+running without one.
+
 ## Secrets
 
 Configured provider keys, MCP headers/env values, and common credential
 shapes (OpenAI/Anthropic/AWS/GitHub/Slack keys, JWTs, bearer tokens) are
 redacted from debug logs, JSONL events, and the audit ledger. Redaction is
 best-effort defense in depth — it reduces accidental exposure and does not
-defeat deliberate exfiltration. The parent environment is currently passed
-to commands; narrowing it is roadmap work.
+defeat deliberate exfiltration.
+
+By default, agent commands (including background processes and PTY runs)
+inherit your full environment, which may include unrelated secrets from
+your shell. Set `permissions.command_env: "minimal"` to strip commands down
+to `PATH`, `HOME`, and a short list of other basics — this is the default
+automatically whenever the sandbox is enabled (`sandbox: "auto"` or
+`"require"`), and can be set explicitly without the sandbox too.
+
+## Optional external reviewer
+
+`permissions.reviewer_command`, when set, runs before any non-read action
+that the policy pipeline would otherwise auto-approve. It receives the
+request (tool, summary, risk, normalized resources) as JSON on stdin; a
+non-zero exit or a `{"decision":"deny"}` reply escalates the action to an
+interactive prompt instead of silently allowing it. The reviewer can only
+*tighten* decisions — it is never consulted for actions that would already
+prompt, and a failing or misconfigured reviewer command fails closed
+(escalates to a prompt), never open.
 
 ## Audit
 
