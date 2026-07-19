@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -17,10 +18,15 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
+	"github.com/robert-mcdermott/collomia/internal/webterminal"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		var exitErr *webterminal.ExitError
+		if errors.As(err, &exitErr) && exitErr.Code > 0 {
+			os.Exit(exitErr.Code)
+		}
 		fmt.Fprintln(os.Stderr, "collo:", err)
 		os.Exit(1)
 	}
@@ -29,9 +35,10 @@ func main() {
 type options struct {
 	command, cwd, provider, model, autonomy      string
 	resume                                       string
+	webPort                                      int
 	plan, global, help, version, jsonl           bool
 	strict, revoke, status, debug, markdown, yes bool
-	cont, withReference                          bool
+	cont, withReference, web, webPortSet, noOpen bool
 	args                                         []string
 }
 
@@ -124,6 +131,21 @@ func run(args []string) error {
 	case "sessions":
 		return runSessionsCommand(opts)
 	}
+	if opts.web {
+		executable, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("find collo executable: %w", err)
+		}
+		return webterminal.Run(context.Background(), webterminal.Options{
+			Executable:  executable,
+			Args:        tuiChildArgs(opts),
+			Dir:         opts.cwd,
+			Env:         os.Environ(),
+			Port:        opts.webPort,
+			OpenBrowser: !opts.noOpen,
+			Stderr:      os.Stderr,
+		})
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if opts.command == "review" {
@@ -213,7 +235,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review" || arg == "verify") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review" || arg == "verify") {
 			opts.command = arg
 			continue
 		}
@@ -243,6 +265,27 @@ func parse(args []string) (options, error) {
 			opts.yes = true
 		case arg == "--continue":
 			opts.cont = true
+		case arg == "--web":
+			opts.web = true
+		case arg == "--no-open":
+			opts.noOpen = true
+		case strings.HasPrefix(arg, "--web-port="):
+			value := strings.TrimPrefix(arg, "--web-port=")
+			port, parseErr := strconv.Atoi(value)
+			if parseErr != nil || port < 0 || port > 65535 {
+				return opts, fmt.Errorf("--web-port requires a number between 0 and 65535")
+			}
+			opts.webPort, opts.webPortSet = port, true
+		case arg == "--web-port":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--web-port requires a number between 0 and 65535")
+			}
+			i++
+			port, parseErr := strconv.Atoi(args[i])
+			if parseErr != nil || port < 0 || port > 65535 {
+				return opts, fmt.Errorf("--web-port requires a number between 0 and 65535")
+			}
+			opts.webPort, opts.webPortSet = port, true
 		case strings.HasPrefix(arg, "--resume="):
 			opts.resume = strings.TrimPrefix(arg, "--resume=")
 		case arg == "--resume":
@@ -289,13 +332,50 @@ func parse(args []string) (options, error) {
 			opts.args = append(opts.args, arg)
 		}
 	}
+	if opts.web && opts.command != "tui" {
+		return opts, fmt.Errorf("--web is only available for the interactive TUI")
+	}
+	if !opts.web && (opts.webPortSet || opts.noOpen) {
+		return opts, fmt.Errorf("--web-port and --no-open require --web")
+	}
 	return opts, nil
+}
+
+func tuiChildArgs(opts options) []string {
+	args := []string{"tui", "--cwd", opts.cwd}
+	if opts.provider != "" {
+		args = append(args, "--provider", opts.provider)
+	}
+	if opts.model != "" {
+		args = append(args, "--model", opts.model)
+	}
+	if opts.autonomy != "" {
+		args = append(args, "--autonomy", opts.autonomy)
+	}
+	if opts.plan {
+		args = append(args, "--plan")
+	}
+	if opts.resume != "" {
+		args = append(args, "--resume", opts.resume)
+	}
+	if opts.cont {
+		args = append(args, "--continue")
+	}
+	if opts.debug {
+		args = append(args, "--debug")
+	}
+	if len(opts.args) > 0 {
+		args = append(args, "--")
+		args = append(args, opts.args...)
+	}
+	return args
 }
 
 const helpText = `Collomia — a safe, multi-provider terminal coding agent
 
 Usage:
   collo [flags] [initial prompt]      start the interactive TUI
+  collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
   collo run [flags] <prompt>          run once (or read the prompt from stdin)
   collo init [--with-reference]       write project .collomia.json
   collo init --global [--with-reference]  write the user-wide .collomia/config.json
@@ -320,6 +400,9 @@ Flags:
   --plan                               start in read-only planning mode
   --resume <id>                        resume a saved session
   --continue                           resume the most recent session
+  --web                                serve the TUI in an authenticated local browser terminal (macOS/Linux)
+  --web-port <port>                    local browser-terminal port (default: random available port)
+  --no-open                            (web) print the URL without opening the default browser
   --jsonl                              (run) emit schema-versioned JSONL events on stdout
   --debug                              write a redacted debug log (see collo doctor for path)
   --global                             (init) write the home-directory config instead of project configuration

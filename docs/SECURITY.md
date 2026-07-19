@@ -125,6 +125,38 @@ session on timeout or cancellation still reaches every descendant. Windows
 has no PTY support yet and reports a clear error rather than silently
 running without one.
 
+## Browser-terminal boundary
+
+`collo --web` is a terminal transport around the same TUI, not a separate
+agent service. On macOS and Linux it starts a child `collo tui` in a real PTY,
+so the child has the same workspace, environment, provider credentials,
+configuration, tools, and permission policy as a normal terminal session.
+The browser receives and sends terminal bytes; it cannot choose a different
+executable, working directory, or environment through HTTP.
+
+The initial implementation is deliberately local-only:
+
+- The listener always binds to `127.0.0.1`; there is no remote-host option.
+- The port is randomly assigned by default. `--web-port` selects only the
+  loopback port and does not change the bind address.
+- Every invocation generates a 256-bit random bearer token. The launcher puts
+  it in the browser URL fragment (which HTTP requests do not transmit), the
+  page removes the fragment from browser history, and JavaScript sends the
+  token in the first WebSocket message before the PTY starts.
+- The server requires the exact origin it served, applies restrictive browser
+  security headers, and accepts only one authenticated controlling connection.
+- Closing the controlling browser connection terminates the PTY session and
+  its process group. Page refresh/reconnection and observer sessions are not
+  supported yet.
+
+Anyone who obtains the printed URL before it is used has the same interactive
+control as the user at the terminal, including the ability to answer approval
+prompts. Do not share it. Do not put this server behind a reverse proxy, port
+forward, tunnel, or non-loopback listener: there is no TLS, account identity,
+remote-access policy, or idle-session authentication. The server shuts down
+with the TUI. Windows web-terminal mode is rejected until a real ConPTY backend
+can preserve equivalent terminal and process-lifecycle behavior.
+
 ## Secrets
 
 Configured provider keys, MCP headers/env values, and common credential

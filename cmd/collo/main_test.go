@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,6 +30,53 @@ func TestParseInitWithReference(t *testing.T) {
 	}
 	if opts.command != "init" || !opts.global || !opts.withReference {
 		t.Fatalf("options=%+v", opts)
+	}
+}
+
+func TestParseWebTerminalFlags(t *testing.T) {
+	opts, err := parse([]string{"tui", "--web", "--web-port", "8765", "--no-open", "--provider", "openrouter", "--", "start", "here"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "tui" || !opts.web || opts.webPort != 8765 || !opts.noOpen || opts.provider != "openrouter" {
+		t.Fatalf("options=%+v", opts)
+	}
+	if !slices.Equal(opts.args, []string{"start", "here"}) {
+		t.Fatalf("prompt args=%v", opts.args)
+	}
+}
+
+func TestWebTerminalFlagsRequireWebTUI(t *testing.T) {
+	for _, args := range [][]string{
+		{"run", "--web", "prompt"},
+		{"--web-port", "8765"},
+		{"--no-open"},
+		{"--web", "--web-port", "70000"},
+		{"--web", "--web-port=not-a-port"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Errorf("parse(%v) unexpectedly succeeded", args)
+		}
+	}
+}
+
+func TestTUIChildArgsPreserveTUIOptionsWithoutRecursing(t *testing.T) {
+	opts := options{
+		cwd:      "/tmp/work",
+		provider: "openrouter",
+		model:    "example/model",
+		autonomy: "workspace",
+		plan:     true,
+		resume:   "session-1",
+		debug:    true,
+		web:      true,
+		webPort:  8765,
+		noOpen:   true,
+		args:     []string{"initial", "prompt"},
+	}
+	want := []string{"tui", "--cwd", "/tmp/work", "--provider", "openrouter", "--model", "example/model", "--autonomy", "workspace", "--plan", "--resume", "session-1", "--debug", "--", "initial", "prompt"}
+	if got := tuiChildArgs(opts); !slices.Equal(got, want) {
+		t.Fatalf("child args=%v\nwant=%v", got, want)
 	}
 }
 
