@@ -55,8 +55,8 @@ type Store struct {
 	workspace string
 }
 
-// Open returns the store for a workspace, under the user configuration
-// directory (never inside the workspace). COLLO_STATE_DIR overrides the
+// Open returns the store for a workspace, under the per-user application
+// state directory (never inside the workspace). COLLO_STATE_DIR overrides the
 // base location; tests use it to stay out of the real user directory.
 func Open(workspace string) (*Store, error) {
 	base := os.Getenv("COLLO_STATE_DIR")

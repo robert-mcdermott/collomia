@@ -37,8 +37,8 @@ type Store struct {
 	path       string
 }
 
-// Path returns the trust database location inside the user configuration
-// directory — never inside a workspace, so repositories cannot grant
+// Path returns the trust database location inside the per-user application
+// state directory — never inside a workspace, so repositories cannot grant
 // themselves trust.
 func Path() (string, error) {
 	dir, err := os.UserConfigDir()

@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+)
 
 func TestParseFlagsBeforeSubcommandAndTerminator(t *testing.T) {
 	opts, err := parse([]string{"--cwd", "/tmp/work", "run", "--autopilot", "--", "prompt", "-with-dash"})
@@ -12,5 +19,50 @@ func TestParseFlagsBeforeSubcommandAndTerminator(t *testing.T) {
 	}
 	if len(opts.args) != 2 || opts.args[1] != "-with-dash" {
 		t.Fatalf("args=%v", opts.args)
+	}
+}
+
+func TestParseInitWithReference(t *testing.T) {
+	opts, err := parse([]string{"init", "--global", "--with-reference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "init" || !opts.global || !opts.withReference {
+		t.Fatalf("options=%+v", opts)
+	}
+}
+
+func TestGlobalInitReportsLegacyConfiguration(t *testing.T) {
+	home := t.TempDir()
+	legacyBase := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", legacyBase)
+	t.Setenv("AppData", legacyBase)
+	legacy, err := appconfig.LegacyGlobalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte(`{"schema_version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = run([]string{"init", "--global", "--cwd", t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "former location") || !strings.Contains(err.Error(), filepath.Join(home, ".collomia", "config.json")) {
+		t.Fatalf("expected migration guidance, got %v", err)
+	}
+}
+
+func TestConfigValidateInspectsUntrustedProject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, appconfig.ProjectFile)
+	if err := os.WriteFile(path, []byte(`{"unknown_setting":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := runConfigCommand(options{cwd: dir, command: "config", strict: true, args: []string{"validate"}})
+	if err == nil || !strings.Contains(err.Error(), "unknown_setting") {
+		t.Fatalf("strict validation should inspect the untrusted project file, got %v", err)
 	}
 }

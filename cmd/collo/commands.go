@@ -22,8 +22,18 @@ func runConfigCommand(opts options) error {
 		sub = opts.args[0]
 	}
 	switch sub {
+	case "reference":
+		fmt.Print(appconfig.ConfigReference())
+		return nil
 	case "validate":
-		cfg, err := appconfig.LoadWithOptions(opts.cwd, appconfig.LoadOptions{Strict: opts.strict})
+		// Validation must inspect the project file even before the user trusts
+		// it. Parsing and field validation do not activate any capabilities.
+		cfg, err := appconfig.LoadWithOptions(opts.cwd, appconfig.LoadOptions{
+			Strict: opts.strict,
+			TrustStatus: func(string, []byte) trust.Status {
+				return trust.StatusTrusted
+			},
+		})
 		if err != nil {
 			return err
 		}
@@ -56,7 +66,7 @@ func runConfigCommand(opts options) error {
 		fmt.Print(cfg.LayerReport())
 		return nil
 	default:
-		return fmt.Errorf("unknown config subcommand %q (expected validate or show)", sub)
+		return fmt.Errorf("unknown config subcommand %q (expected show, validate, or reference)", sub)
 	}
 }
 

@@ -52,7 +52,7 @@ The default configuration connects to Ollama at `http://127.0.0.1:11434/v1` and 
 
 ```sh
 ollama pull qwen3-coder
-collo init
+collo init --global --with-reference
 ```
 
 Once releases are published, macOS and Linux can install a checksum-verified binary without `sudo`:
@@ -64,16 +64,92 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 
 The installer writes to `$HOME/.local/bin` by default. Set `COLLO_INSTALL_DIR` or `COLLO_VERSION` to override the destination or pin a release. Windows users can download `collo-windows-amd64.exe` or `collo-windows-arm64.exe` and the checksum manifest from GitHub Releases.
 
-Project configuration lives in `.collomia.json`. Use `collo init --global` to create the user configuration under the operating system's standard config directory. Configuration is layered — defaults, then user, then project, then environment overrides — with later layers overriding earlier ones key by key; `collo config show` displays the merged result and which layer set each value. A project configuration only applies after the workspace is trusted with `collo trust`.
+## Configuration
+
+Collomia supports both user-wide defaults and per-project overrides. You do not need both: use only the global configuration for the same behavior everywhere, only a project configuration for a self-contained workspace, or layer them when a project needs to differ from your normal setup.
+
+### Global and project configuration
+
+`collo init --global` creates the global user configuration in the user's home directory:
+
+| Platform | Global configuration path |
+| --- | --- |
+| macOS and Linux | `~/.collomia/config.json` |
+| Windows | `%USERPROFILE%\.collomia\config.json` |
+
+The global file applies to every workspace for that user. The same `.collomia` directory also holds optional user-level `AGENTS.md`/`COLLOMIA.md` instructions, user skills under `skills/`, and the generated `config.example.jsonc` reference. It is a good place for personal provider definitions, preferred models, permissions, and user-wide options. The generated starter exposes common permission and runtime controls with safe defaults; for example, change `permissions.sandbox` from `off` to `auto` to enable OS sandboxing by default. Store API keys in environment variables and refer to them with `api_key_env`; avoid putting secret values directly in either configuration file.
+
+Older Collomia builds used the operating system's standard configuration directory (`~/Library/Application Support/collomia` on macOS, `$XDG_CONFIG_HOME/collomia` or `~/.config/collomia` on Linux, and `%AppData%\collomia` on Windows). For a non-breaking upgrade, Collomia still reads `config.json`, user instructions, and user skills from that former directory when the corresponding new location is absent. Move those user-edited files to `.collomia` in your home directory; when both old and new configurations exist, the new `~/.collomia/config.json` takes precedence. Internal trust records, saved sessions, and audit logs remain in the OS application-state directory and do not need to be moved.
+
+Running `collo init` without `--global` creates `.collomia.json` in the current workspace (or the directory selected by `--cwd`). This file applies only to that project. It is a good place for project-specific permission rules, sandbox policy, agents, MCP servers, language servers, and other settings that should travel with the repository.
+
+Project configuration is quarantined until you review it and run `collo trust`. Trust is tied to the file contents and is invalidated whenever `.collomia.json` changes. You can safely inspect an untrusted file with `collo config validate --strict` before approving it.
+
+### Precedence and inheritance
+
+Collomia builds the effective configuration in this order:
+
+1. Built-in defaults.
+2. Global user configuration.
+3. Trusted project `.collomia.json`.
+4. `COLLO_PROVIDER` and `COLLO_MODEL` environment overrides.
+
+Each later layer overrides settings supplied by an earlier layer. Settings omitted from a later file continue to inherit their earlier values, so project configuration should contain only intentional overrides. The generated global starter deliberately includes common safe defaults to make them easy to discover and edit. Object fields such as `permissions.mode` can be overridden independently. Lists are replaced when specified, and a same-named entry in a named map such as `providers`, `mcp`, or `agents` should be treated as a complete replacement definition.
+
+For example, a global file can define a personal OpenRouter setup:
+
+```json
+{
+  "schema_version": 1,
+  "default_provider": "openrouter",
+  "providers": {
+    "openrouter": {
+      "type": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OR_API_KEY",
+      "model": "z-ai/glm-5.2",
+      "max_tokens": 128000,
+      "context_window": 500000
+    }
+  },
+  "permissions": {
+    "mode": "ask",
+    "allow_outside_workspace": false,
+    "sandbox": "off",
+    "sandbox_allow_network": false
+  },
+  "options": {
+    "max_iterations": 24,
+    "max_tool_output_bytes": 65536
+  }
+}
+```
+
+A project can then override only its permission mode:
+
+```json
+{
+  "schema_version": 1,
+  "permissions": {
+    "mode": "workspace"
+  }
+}
+```
+
+In that project, the effective configuration uses the global OpenRouter provider and the project's `workspace` permission mode; every other setting comes from the global file or built-in defaults. Run `collo config show` inside a workspace to print the merged, secret-redacted configuration, the applied and quarantined layers, their file paths, and the settings contributed by each layer.
+
+Active configuration files are strict JSON. `collo config reference` prints an exhaustive commented JSONC reference without changing any files. Add `--with-reference` to either form of `collo init` to save that documentation beside the active file as `.collomia.example.jsonc` or `config.example.jsonc`. These reference files are documentation only and are never loaded.
 
 ## Usage
 
 ```text
 collo [flags] [initial prompt]      start the interactive TUI
 collo run [flags] <prompt>          run once, or read a prompt from stdin
-collo init [--global]               create a documented example config
+collo init [--with-reference]       create project .collomia.json
+collo init --global [--with-reference]  create ~/.collomia/config.json
 collo config validate [--strict]    validate configuration with field-level errors
 collo config show                   print the effective configuration and its layers
+collo config reference              print every configuration option with annotations
 collo trust [--status|--revoke]     review and trust this workspace's project config
 collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
 collo capabilities [--markdown]     print the product capability matrix
@@ -97,6 +173,8 @@ Useful flags:
 --continue                           resume the most recently updated session
 --jsonl                              (run) emit schema-versioned JSONL events on stdout
 --debug                              write a redacted debug log
+--global                             (init) create the user-wide config instead of a project config
+--with-reference                     (init) also write the non-loaded annotated JSONC reference
 ```
 
 `COLLO_PROVIDER` and `COLLO_MODEL` override the configured selection without editing files.
@@ -206,7 +284,24 @@ This adapter works with OpenAI, Ollama, vLLM, LM Studio, Phlox-GW, and compatibl
 }
 ```
 
-Use type `openai` for the OpenAI API and `openai-compatible` for other implementations.
+OpenRouter is also available in the generated global starter as an unselected provider example:
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "type": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OR_API_KEY",
+      "model": "z-ai/glm-5.2",
+      "max_tokens": 128000,
+      "context_window": 500000
+    }
+  }
+}
+```
+
+Use type `openai` for the OpenAI API and compatible hosted APIs such as OpenRouter; use `openai-compatible` for local or custom Chat Completions implementations.
 
 ### Anthropic-compatible services
 
@@ -385,7 +480,7 @@ Collomia discovers:
 - `.collomia/SKILLS.md` or `.collomia/skills.md`.
 - `.collomia/skills/<name>/SKILL.md`.
 - `.agents/skills/<name>/SKILL.md`.
-- `<user-config>/collomia/skills/<name>/SKILL.md`.
+- `~/.collomia/skills/<name>/SKILL.md` (or `%USERPROFILE%\.collomia\skills\<name>\SKILL.md` on Windows).
 
 A skill may start with simple YAML-style metadata:
 
