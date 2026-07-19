@@ -9,7 +9,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 ## Highlights
 
 - Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, and a status bar with live context, task-progress, active-agent, and background-process gauges.
-- Ten switchable color themes (including Fred Hutch dark/light) that also set the terminal background to match.
+- Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
 - Streaming OpenAI-compatible and Anthropic-compatible conversations with native tool calling, live model discovery (`/model`), and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
 - Azure OpenAI, Microsoft Foundry OpenAI/v1, and Microsoft Foundry Anthropic endpoint support.
@@ -302,7 +302,7 @@ Hunk review replaces the approval dialog with a focused preview of the current h
 
 ## Themes
 
-Collomia ships eleven themes: `collomia` (default), `synthwave`, `outrun`, `matrix`, `monokai`, `dracula`, `nord`, `tokyo-night`, `fredhutch-dark`, `fredhutch-light`, and `plain` — a fully colorless theme that relies on bold, reverse video, and borders (useful for limited terminals, screen readers, and transcripts). Setting the standard [`NO_COLOR`](https://no-color.org) environment variable selects `plain` automatically, overriding any configured theme. Switch at runtime with `/theme <name>`, or persist a choice in the configuration:
+Collomia ships nineteen themes: `collomia` (default), `synthwave`, `outrun`, `blade-runner-2049`, `chaos-theory`, `cyberpunk-2077-blue`, `cyberpunk-2077-violet`, `catppuccin-mocha`, `gruvbox-dark`, `rose-pine-moon`, `kanagawa-wave`, `matrix`, `monokai`, `dracula`, `nord`, `tokyo-night`, `fredhutch-dark`, `fredhutch-light`, and `plain` — a fully colorless theme that relies on bold, reverse video, and borders (useful for limited terminals, screen readers, and transcripts). Setting the standard [`NO_COLOR`](https://no-color.org) environment variable selects `plain` automatically, overriding any configured theme. Switch at runtime with `/theme <name>`, or persist a choice in the configuration:
 
 ```json
 {

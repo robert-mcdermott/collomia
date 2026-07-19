@@ -56,6 +56,20 @@ func TestSyntaxColorsFollowRuntimeThemeSwitch(t *testing.T) {
 	}
 }
 
+func TestEveryColorThemeBuildsSyntaxStyle(t *testing.T) {
+	for _, theme := range themes {
+		if theme.plain() {
+			continue
+		}
+		t.Run(theme.Name, func(t *testing.T) {
+			style := theme.syntaxStyle()
+			if style == nil || style.Name != "collomia-"+theme.Name {
+				t.Fatalf("syntax style = %#v, want collomia-%s", style, theme.Name)
+			}
+		})
+	}
+}
+
 func TestPlainThemeDisablesToolSyntaxColors(t *testing.T) {
 	m := newTestModel(t)
 	plain, _ := themeByName("plain")

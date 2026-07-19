@@ -1,15 +1,53 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
 
+var hexColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+
 func TestThemeByName(t *testing.T) {
+	expected := []string{
+		"collomia",
+		"synthwave",
+		"outrun",
+		"blade-runner-2049",
+		"chaos-theory",
+		"cyberpunk-2077-blue",
+		"cyberpunk-2077-violet",
+		"catppuccin-mocha",
+		"gruvbox-dark",
+		"rose-pine-moon",
+		"kanagawa-wave",
+		"matrix",
+		"monokai",
+		"dracula",
+		"nord",
+		"tokyo-night",
+		"fredhutch-dark",
+		"fredhutch-light",
+		"plain",
+	}
+	if len(themes) != len(expected) {
+		t.Fatalf("theme count = %d, want %d", len(themes), len(expected))
+	}
+
+	seen := make(map[string]bool, len(themes))
 	for _, theme := range themes {
+		if seen[theme.Name] {
+			t.Fatalf("duplicate theme name %q", theme.Name)
+		}
+		seen[theme.Name] = true
 		got, ok := themeByName(theme.Name)
 		if !ok || got.Name != theme.Name {
 			t.Fatalf("themeByName(%q) not found", theme.Name)
+		}
+	}
+	for _, name := range expected {
+		if !seen[name] {
+			t.Errorf("expected theme %q is missing", name)
 		}
 	}
 	if _, ok := themeByName("no-such-theme"); ok {
@@ -22,14 +60,30 @@ func TestThemeByName(t *testing.T) {
 
 func TestThemeBackgrounds(t *testing.T) {
 	for _, theme := range themes {
+		colors := map[string]string{
+			"primary":    theme.Primary,
+			"secondary":  theme.Secondary,
+			"accent":     theme.Accent,
+			"success":    theme.Success,
+			"warning":    theme.Warning,
+			"error":      theme.Error,
+			"muted":      theme.Muted,
+			"border":     theme.Border,
+			"status":     theme.StatusBG,
+			"background": theme.Background,
+		}
 		if theme.plain() {
-			if theme.Background != "" || theme.StatusBG != "" {
-				t.Fatalf("plain theme must not set colors, got background %q status %q", theme.Background, theme.StatusBG)
+			for role, color := range colors {
+				if color != "" {
+					t.Fatalf("plain theme must not set %s color, got %q", role, color)
+				}
 			}
 			continue
 		}
-		if len(theme.Background) != 7 || !strings.HasPrefix(theme.Background, "#") {
-			t.Fatalf("theme %s has invalid background %q", theme.Name, theme.Background)
+		for role, color := range colors {
+			if !hexColorPattern.MatchString(color) {
+				t.Errorf("theme %s has invalid %s color %q", theme.Name, role, color)
+			}
 		}
 		if theme.Background == theme.StatusBG {
 			t.Fatalf("theme %s: background should differ from the status bar color so the bar stays visible", theme.Name)
