@@ -61,9 +61,10 @@ func capabilityMatrix() []capabilityRow {
 		{"subagents", "parallel delegate scheduler", "implemented", "up to 4 concurrent tasks; write tasks isolated in their own git worktree; no recursion, no auto-merge"},
 		{"subagents", "named agent profiles", "implemented", "config `agents.<name>` sets model/role instructions/tool allowlist/iteration budget; selected per task via delegate's `agent` field"},
 		{"subagents", "sibling conflict detection", "implemented", "a delegate batch flags files touched by more than one sub-agent's worktree; nothing is auto-reconciled"},
-		{"interface", "TUI (themes, palette, tabs, status bar)", "implemented", ""},
+		{"interface", "TUI (themes, palette, tabs, status bar)", "implemented", "11 themes incl. `plain`; NO_COLOR honored; fuzzy pickers for models, themes, sessions, files, skills, and MCP servers"},
+		{"interface", "notifications", "implemented", "terminal bell + OSC 9 desktop notification for approvals, questions, and long turns; options.notifications on|bell|off"},
 		{"interface", "PTY-backed browser terminal", "implemented", "`collo --web`; loopback-only, token-authenticated, embedded xterm.js; macOS/Linux (Windows ConPTY pending)"},
-		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; schema v1"},
+		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; schema v1; final `run.result` line carries status (ok/error/cancelled), answer, changed files, and usage"},
 		{"platform", "macOS / Linux / Windows builds", "implemented", "CI-tested; browser terminal requires macOS/Linux until ConPTY support is added"},
 	}
 }

@@ -262,3 +262,17 @@ func TestDefaultsValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestValidateNotifications(t *testing.T) {
+	cfg := Defaults()
+	for _, ok := range []string{"", "on", "bell", "off", "Bell"} {
+		cfg.Options.Notifications = ok
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("notifications %q should validate: %v", ok, err)
+		}
+	}
+	cfg.Options.Notifications = "loud"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected options.notifications error")
+	}
+}

@@ -262,6 +262,7 @@ const configReferenceJSONC = `
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",
     "theme": "collomia",
+    "notifications": "on",
     "debug": false
   },
 

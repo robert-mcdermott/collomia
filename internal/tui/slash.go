@@ -138,23 +138,31 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		m.addSystem(note)
 	case "/skills":
-		if len(m.runtime.Skills.Skills) == 0 {
-			m.addSystem("No skills discovered.")
+		if len(args) > 0 && args[0] == "list" {
+			if len(m.runtime.Skills.Skills) == 0 {
+				m.addSystem("No skills discovered.")
+				break
+			}
+			var lines []string
+			for _, skill := range m.runtime.Skills.Skills {
+				lines = append(lines, fmt.Sprintf("- %s: %s", skill.Name, skill.Description))
+			}
+			m.addSystem("Discovered skills:\n" + strings.Join(lines, "\n"))
 			break
 		}
-		var lines []string
-		for _, skill := range m.runtime.Skills.Skills {
-			lines = append(lines, fmt.Sprintf("- %s: %s", skill.Name, skill.Description))
-		}
-		m.addSystem("Discovered skills:\n" + strings.Join(lines, "\n"))
+		m.openSkillPicker()
 	case "/mcp":
-		servers := m.runtime.MCP.Servers()
-		if len(servers) == 0 {
-			m.addSystem("No MCP servers connected.")
+		if len(args) > 0 && args[0] == "list" {
+			servers := m.runtime.MCP.Servers()
+			if len(servers) == 0 {
+				m.addSystem("No MCP servers connected.")
+				break
+			}
+			sort.Strings(servers)
+			m.addSystem("Connected MCP servers: " + strings.Join(servers, ", "))
 			break
 		}
-		sort.Strings(servers)
-		m.addSystem("Connected MCP servers: " + strings.Join(servers, ", "))
+		m.openMCPPicker()
 	case "/tools":
 		m.addSystem("Available tools: " + strings.Join(m.runtime.Registry.Names(), ", "))
 	case "/theme":

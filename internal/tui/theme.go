@@ -40,6 +40,9 @@ var themes = []Theme{
 	{Name: "tokyo-night", Dark: true, Primary: "#7AA2F7", Secondary: "#BB9AF7", Accent: "#7DCFFF", Success: "#9ECE6A", Warning: "#E0AF68", Error: "#F7768E", Muted: "#565F89", Border: "#3B4261", StatusBG: "#1A1B26", Background: "#16161E"},
 	{Name: "fredhutch-dark", Dark: true, Primary: "#AA4AC4", Secondary: "#00ABC8", Accent: "#7FD7E8", Success: "#4CC38A", Warning: "#FFB500", Error: "#E5484D", Muted: "#64748B", Border: "#24324A", StatusBG: "#10192B", Background: "#0B1220"},
 	{Name: "fredhutch-light", Dark: false, Primary: "#1B365D", Secondary: "#00ABC8", Accent: "#FFB500", Success: "#2E7D32", Warning: "#B45309", Error: "#C62828", Muted: "#64748B", Border: "#94A3B8", StatusBG: "#E2E8F0", Background: "#F8FAFC"},
+	// plain uses no color at all: structure comes from bold, reverse video,
+	// and borders. Selected automatically when NO_COLOR is set.
+	{Name: "plain", Dark: true},
 }
 
 func themeByName(name string) (Theme, bool) {
@@ -58,11 +61,18 @@ func defaultTheme() Theme {
 }
 
 func (t Theme) glamourStyle() string {
+	if t.plain() {
+		return "notty"
+	}
 	if t.Dark {
 		return "dark"
 	}
 	return "light"
 }
+
+// plain reports whether the theme intentionally renders without color
+// (the `plain` theme, also auto-selected under NO_COLOR).
+func (t Theme) plain() bool { return t.Primary == "" }
 
 // styles holds every lipgloss style derived from the active theme so they are
 // computed once per theme switch instead of on every render.
@@ -95,7 +105,7 @@ type styles struct {
 
 func newStyles(t Theme) styles {
 	c := func(v string) lipgloss.Color { return lipgloss.Color(v) }
-	return styles{
+	s := styles{
 		brand:       lipgloss.NewStyle().Bold(true).Foreground(c(t.Primary)),
 		tabActive:   lipgloss.NewStyle().Bold(true).Foreground(c(onColor(t.Primary))).Background(c(t.Primary)).Padding(0, 1),
 		tabInactive: lipgloss.NewStyle().Foreground(c(t.Muted)).Padding(0, 1),
@@ -121,15 +131,33 @@ func newStyles(t Theme) styles {
 		warning:     lipgloss.NewStyle().Foreground(c(t.Warning)),
 		heading:     lipgloss.NewStyle().Bold(true).Foreground(c(t.Secondary)),
 	}
+	if t.plain() {
+		// Empty colors already render as uncolored text; the styles that rely
+		// on background fills fall back to reverse video so the active tab,
+		// role badges, and palette selection stay distinguishable.
+		pill := lipgloss.NewStyle().Bold(true).Reverse(true).Padding(0, 1)
+		s.tabActive, s.userBadge, s.botBadge = pill, pill, pill
+		s.paletteSel = lipgloss.NewStyle().Bold(true).Reverse(true)
+		s.system = lipgloss.NewStyle().Italic(true)
+		s.errText = lipgloss.NewStyle().Bold(true)
+	}
+	return s
 }
 
-// badge renders a small colored pill like " AUTOPILOT ".
+// badge renders a small colored pill like " AUTOPILOT ". Without a color
+// (plain theme) it falls back to reverse video.
 func badge(text, bg string) string {
+	if bg == "" {
+		return lipgloss.NewStyle().Bold(true).Reverse(true).Padding(0, 1).Render(text)
+	}
 	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(onColor(bg))).Background(lipgloss.Color(bg)).Padding(0, 1).Render(text)
 }
 
 // onColor picks a readable foreground for text placed on the given background.
 func onColor(hex string) string {
+	if hex == "" {
+		return ""
+	}
 	c, err := colorful.Hex(hex)
 	if err != nil {
 		return "#FFFFFF"

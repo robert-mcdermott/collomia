@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
 // openModelPicker lists every configured provider (and its default model)
@@ -157,6 +159,72 @@ func (m *Model) openSessionPicker() {
 	})
 	m.layout()
 	m.refresh()
+}
+
+// openSkillPicker lists discovered skills; choosing one pre-fills the input
+// with a prompt that applies the skill, so the user only adds the task.
+func (m *Model) openSkillPicker() {
+	if len(m.runtime.Skills.Skills) == 0 {
+		m.addSystem("No skills discovered. Add SKILL.md files under .collomia/skills/ in the workspace (requires `collo trust`) or in the user configuration directory.")
+		return
+	}
+	var items []pickerItem
+	for _, skill := range m.runtime.Skills.Skills {
+		items = append(items, pickerItem{id: skill.Name, title: skill.Name, desc: skill.Description})
+	}
+	m.picker = newPicker("Use a skill", items, func(m *Model, item pickerItem) tea.Cmd {
+		m.input.SetValue(`Use the "` + item.id + `" skill: `)
+		m.input.CursorEnd()
+		m.input.Focus()
+		return nil
+	})
+	m.layout()
+	m.refresh()
+}
+
+// openMCPPicker lists connected MCP servers; choosing one prints that
+// server's tools with descriptions.
+func (m *Model) openMCPPicker() {
+	servers := m.runtime.MCP.Servers()
+	if len(servers) == 0 {
+		m.addSystem("No MCP servers connected. Configure mcp.<name> in the configuration file (project servers require `collo trust`).")
+		return
+	}
+	sort.Strings(servers)
+	var items []pickerItem
+	for _, server := range servers {
+		count := len(m.serverTools(server))
+		items = append(items, pickerItem{id: server, title: server, desc: fmt.Sprintf("%d tools", count)})
+	}
+	m.picker = newPicker("MCP servers", items, func(m *Model, item pickerItem) tea.Cmd {
+		defs := m.serverTools(item.id)
+		if len(defs) == 0 {
+			m.addSystem("MCP server " + item.id + " exposes no tools.")
+			return nil
+		}
+		prefix := "MCP server " + item.id + " tool "
+		var lines []string
+		for _, def := range defs {
+			lines = append(lines, "- "+def.Name+" — "+strings.TrimPrefix(def.Description, prefix))
+		}
+		m.addSystem("Tools from MCP server " + item.id + ":\n" + strings.Join(lines, "\n"))
+		return nil
+	})
+	m.layout()
+	m.refresh()
+}
+
+// serverTools returns the registered tool definitions contributed by one MCP
+// server, identified by the description prefix stamped at registration.
+func (m *Model) serverTools(server string) []provider.ToolDefinition {
+	prefix := "MCP server " + server + " tool "
+	var out []provider.ToolDefinition
+	for _, def := range m.runtime.Registry.Definitions(func(tools.Tool) bool { return true }) {
+		if strings.HasPrefix(def.Description, prefix) {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 const filePickerCap = 4000
