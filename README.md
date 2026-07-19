@@ -37,6 +37,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - The agent can pause and ask you a typed question (`ask_user`) instead of guessing.
 - Command output streams into the transcript live, for both foreground and background commands.
 - Interactive and non-interactive operation from the same binary.
+- Local browser terminal (`collo --web`) that runs the existing TUI in a real PTY and serves an embedded, authenticated xterm.js client on loopback (macOS/Linux).
 
 ## Build and run
 
@@ -144,6 +145,7 @@ Active configuration files are strict JSON. `collo config reference` prints an e
 
 ```text
 collo [flags] [initial prompt]      start the interactive TUI
+collo --web [flags] [initial prompt]  open the interactive TUI in a local browser (macOS/Linux)
 collo run [flags] <prompt>          run once, or read a prompt from stdin
 collo init [--with-reference]       create project .collomia.json
 collo init --global [--with-reference]  create ~/.collomia/config.json
@@ -171,6 +173,9 @@ Useful flags:
 --plan                               start in read-only planning mode
 --resume <id>                        resume a saved session
 --continue                           resume the most recently updated session
+--web                                serve the TUI in an authenticated local browser terminal
+--web-port <port>                    choose its loopback port (default: random available port)
+--no-open                            print the browser-terminal URL without opening a browser
 --jsonl                              (run) emit schema-versioned JSONL events on stdout
 --debug                              write a redacted debug log
 --global                             (init) create the user-wide config instead of a project config
@@ -188,6 +193,46 @@ git diff | collo run --plan "Review this patch"
 collo run --resume <session-id> "Continue where we left off"
 collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
 ```
+
+## Browser terminal
+
+On macOS and Linux, `--web` exposes the normal Collomia TUI through a local
+browser without creating a second frontend or agent protocol:
+
+```sh
+# Bind 127.0.0.1 on a random available port and open the default browser.
+collo --web
+
+# Keep normal TUI options and an initial prompt.
+collo --web --provider openrouter --autonomy workspace "Review this project"
+
+# Choose a loopback port, or open the printed URL yourself.
+collo --web --web-port 8765 --no-open
+```
+
+Collomia prints the access URL to stderr even when it opens the browser
+successfully. The server launches the same binary as `collo tui` in a real
+pseudo-terminal, preserving the selected working directory and environment.
+ANSI rendering, raw keyboard input, interactive approvals, Ctrl+C, and browser
+resize events therefore follow the regular TUI path. The xterm.js frontend and
+fit addon are vendored and embedded in the executable; the page does not load
+scripts from a CDN.
+
+Web mode is intentionally local-only. It always binds to `127.0.0.1`, uses a
+random port unless `--web-port` is supplied, generates a new 256-bit token, and
+requires the exact local browser origin. The token is placed in the URL fragment
+so it is not sent in HTTP requests, then sent as the first WebSocket message.
+Only one authenticated browser can control the session. Closing that connection
+ends the TUI and its child process group; refresh/reconnection is not supported
+in this first version.
+
+Treat the printed URL as a password: anyone who obtains it can control the TUI
+and answer its approval prompts. Do not share, proxy, tunnel, or port-forward
+the server. It has no TLS or remote-user authentication. Native Windows web
+mode is not available until Collomia has a ConPTY backend; the command exits
+with a clear error rather than running the TUI without terminal semantics. See
+[the browser-terminal security boundary](docs/SECURITY.md#browser-terminal-boundary)
+for the complete limitations.
 
 ## Slash commands
 
