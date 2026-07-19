@@ -22,6 +22,12 @@ func TestThemeByName(t *testing.T) {
 
 func TestThemeBackgrounds(t *testing.T) {
 	for _, theme := range themes {
+		if theme.plain() {
+			if theme.Background != "" || theme.StatusBG != "" {
+				t.Fatalf("plain theme must not set colors, got background %q status %q", theme.Background, theme.StatusBG)
+			}
+			continue
+		}
 		if len(theme.Background) != 7 || !strings.HasPrefix(theme.Background, "#") {
 			t.Fatalf("theme %s has invalid background %q", theme.Name, theme.Background)
 		}

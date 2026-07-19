@@ -152,7 +152,11 @@ type Options struct {
 	DisabledTools       []string `json:"disabled_tools,omitempty"`
 	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
 	Theme               string   `json:"theme,omitempty"`
-	Debug               bool     `json:"debug,omitempty"`
+	// Notifications controls how the TUI gets the user's attention for
+	// approvals, questions, and finished long turns: "on" (bell + terminal
+	// desktop notification, the default), "bell" (bell only), or "off".
+	Notifications string `json:"notifications,omitempty"`
+	Debug         bool   `json:"debug,omitempty"`
 }
 
 func Defaults() Config {
@@ -475,6 +479,11 @@ func (c Config) ValidateFields() []FieldError {
 		if a.MaxIterations < 0 {
 			errs = append(errs, FieldError{"agents." + name + ".max_iterations", "must not be negative"})
 		}
+	}
+	switch strings.ToLower(c.Options.Notifications) {
+	case "", "on", "bell", "off":
+	default:
+		errs = append(errs, FieldError{"options.notifications", fmt.Sprintf("must be on, bell, or off (got %q)", c.Options.Notifications)})
 	}
 	return errs
 }

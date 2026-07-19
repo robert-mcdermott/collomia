@@ -104,8 +104,8 @@ func TestPaletteFiltersAndRuns(t *testing.T) {
 		t.Fatalf("input should reset after running a command, got %q", m.input.Value())
 	}
 	last := m.blocks[len(m.blocks)-1]
-	if last.role != "system" || !strings.Contains(last.content, "Configured providers") {
-		t.Fatalf("expected /models output, got %+v", last)
+	if last.role != "panel" || last.title != "Configured providers" {
+		t.Fatalf("expected /models panel, got %+v", last)
 	}
 }
 

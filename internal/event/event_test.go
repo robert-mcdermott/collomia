@@ -33,6 +33,24 @@ func TestJSONLWriterEmitsOneLinePerEvent(t *testing.T) {
 	}
 }
 
+func TestRunResultRoundTrips(t *testing.T) {
+	e := New(KindRunResult)
+	e.Result = &RunResult{Status: "cancelled", Error: "context canceled", SessionID: "abc123", ChangedFiles: []string{"main.go"}, DurationMS: 1500}
+	e.Usage = &Usage{InputTokens: 10, OutputTokens: 4}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" ||
+		len(decoded.Result.ChangedFiles) != 1 || decoded.Usage == nil || decoded.Usage.InputTokens != 10 {
+		t.Fatalf("round trip mismatch: %+v", decoded)
+	}
+}
+
 func TestJSONLWriterAppliesRedaction(t *testing.T) {
 	var out strings.Builder
 	w := NewJSONLWriter(&out)

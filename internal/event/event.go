@@ -37,6 +37,9 @@ const (
 	KindWarning            Kind = "warning"
 	KindError              Kind = "error"
 	KindTurnEnd            Kind = "turn.end"
+	// KindRunResult is emitted exactly once, last, by non-interactive runs:
+	// a machine-readable summary of the whole run (additive to schema v1).
+	KindRunResult Kind = "run.result"
 )
 
 // Event is one runtime occurrence. Kind determines which optional payload
@@ -52,6 +55,7 @@ type Event struct {
 	Permission *Permission `json:"permission,omitempty"`
 	File       *FileChange `json:"file,omitempty"`
 	Usage      *Usage      `json:"usage,omitempty"`
+	Result     *RunResult  `json:"result,omitempty"`
 	Error      string      `json:"error,omitempty"`
 }
 
@@ -79,6 +83,18 @@ type Permission struct {
 type FileChange struct {
 	Path      string `json:"path"`
 	Operation string `json:"operation"` // write, edit, delete
+}
+
+// RunResult is the final summary of a non-interactive run. Consumers should
+// use Status — not the presence of an error event mid-stream — to decide how
+// the run ended: "ok", "error", or "cancelled".
+type RunResult struct {
+	Status       string   `json:"status"`
+	Answer       string   `json:"answer,omitempty"`
+	Error        string   `json:"error,omitempty"`
+	SessionID    string   `json:"session_id,omitempty"`
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	DurationMS   int64    `json:"duration_ms"`
 }
 
 // Usage carries provider-reported token accounting.

@@ -23,7 +23,9 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/version"
 )
 
-type block struct{ role, content string }
+// block is one transcript entry. title is only set for role "panel", the
+// titled card used for informational slash-command output.
+type block struct{ role, title, content string }
 type runMsg struct {
 	event *runtimeevent.Event
 	done  bool
@@ -81,6 +83,10 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	if t, ok := themeByName(runtime.Config.Options.Theme); ok {
 		theme = t
 	}
+	// NO_COLOR (https://no-color.org) wins over any configured theme.
+	if os.Getenv("NO_COLOR") != "" {
+		theme, _ = themeByName("plain")
+	}
 	in := textarea.New()
 	in.Placeholder = "Ask Collomia to build, debug, explain…  (/ for commands)"
 	in.Prompt = "❯ "
@@ -111,7 +117,11 @@ func (m *Model) applyTheme(t Theme) {
 	m.input.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	m.input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted))
 	m.renderer = nil // force glamour rebuild with the new style
-	setTerminalBackground(t.Background)
+	if t.Background == "" {
+		ResetTerminalBackground()
+	} else {
+		setTerminalBackground(t.Background)
+	}
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(textarea.Blink, m.spinner.Tick, m.broker.wait()) }
@@ -130,7 +140,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = &env
 		m.paletteOn = false
 		m.input.Blur()
-		ring()
+		m.alert("Approval needed: " + env.request.Action.Summary)
 		m.layout()
 		m.refresh()
 	case modelListMsg:
@@ -150,7 +160,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.blocks = append(m.blocks, block{role: "system", content: text})
 		m.input.Reset()
 		m.input.Focus()
-		ring()
+		m.alert("Collomia has a question: " + env.question.Text)
 		m.layout()
 		m.refresh()
 	case runMsg:
@@ -162,9 +172,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel = nil
 			m.input.Focus()
 			elapsed := time.Since(m.turnStarted).Round(time.Second / 10)
-			// Ding only after long turns — the user has likely tabbed away.
-			if elapsed > 10*time.Second {
-				ring()
+			// Ding on failure, and after long turns — the user has likely
+			// tabbed away.
+			if msg.err != nil {
+				m.alert("Turn failed: " + msg.err.Error())
+			} else if elapsed > 10*time.Second {
+				m.alert(fmt.Sprintf("Turn finished after %s", elapsed))
 			}
 			if msg.err != nil {
 				m.blocks = append(m.blocks, block{role: "error", content: msg.err.Error()})
@@ -521,6 +534,8 @@ func (m *Model) chatContent() string {
 			b.WriteString(m.renderToolResult(i) + "\n\n")
 		case "error":
 			b.WriteString(m.styles.errText.Render("✖ "+block.content) + "\n\n")
+		case "panel":
+			b.WriteString(m.renderPanel(block.title, block.content) + "\n\n")
 		default:
 			b.WriteString(m.styles.system.Render("· "+block.content) + "\n\n")
 		}

@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -180,6 +182,15 @@ func run(args []string) error {
 	return err
 }
 
+// usagePtr converts session usage to the event payload shape, omitting the
+// field entirely when the provider reported nothing.
+func usagePtr(u provider.Usage) *event.Usage {
+	if u.InputTokens == 0 && u.OutputTokens == 0 {
+		return nil
+	}
+	return &event.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CachedTokens: u.CachedTokens, ReasoningTokens: u.ReasoningTokens}
+}
+
 func runNonInteractive(ctx context.Context, opts options) error {
 	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont})
 	if err != nil {
@@ -200,10 +211,30 @@ func runNonInteractive(ctx context.Context, opts options) error {
 	if opts.jsonl {
 		writer := event.NewJSONLWriter(os.Stdout)
 		writer.Redact = runtime.Redactor.Redact
-		_, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
+		started := time.Now()
+		answer, err := runtime.Agent.Run(ctx, prompt, func(e event.Event) {
 			runtime.LogEvent(e)
 			writer.Handle(e)
 		})
+		// The final run.result line is the machine-readable verdict: stable
+		// status, the answer, and what changed — consumers should not have to
+		// reassemble text deltas or scan for error events.
+		result := event.RunResult{Status: "ok", Answer: answer, ChangedFiles: runtime.Changes.Changed(), DurationMS: time.Since(started).Milliseconds()}
+		switch {
+		case err == nil:
+		case errors.Is(err, context.Canceled):
+			result.Status, result.Error = "cancelled", err.Error()
+		default:
+			result.Status, result.Error = "error", err.Error()
+		}
+		if runtime.Session != nil {
+			result.SessionID = runtime.Session.Meta.ID
+		}
+		final := event.New(event.KindRunResult)
+		final.Result = &result
+		final.Usage = usagePtr(runtime.Agent.Usage())
+		runtime.LogEvent(final)
+		writer.Handle(final)
 		return err
 	}
 	_, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
@@ -403,7 +434,7 @@ Flags:
   --web                                serve the TUI in an authenticated local browser terminal (macOS/Linux)
   --web-port <port>                    local browser-terminal port (default: random available port)
   --no-open                            (web) print the URL without opening the default browser
-  --jsonl                              (run) emit schema-versioned JSONL events on stdout
+  --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled)
   --debug                              write a redacted debug log (see collo doctor for path)
   --global                             (init) write the home-directory config instead of project configuration
   --with-reference                     (init) also write the non-loaded annotated JSONC reference

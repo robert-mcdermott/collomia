@@ -194,6 +194,14 @@ collo run --resume <session-id> "Continue where we left off"
 collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
 ```
 
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors:
+
+```json
+{"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
+```
+
+`status` is `ok`, `error`, or `cancelled` (interrupt); on non-`ok` the record carries the error and the process exits non-zero. Pull just the verdict with `... --jsonl | tail -1 | jq .result`.
+
 ## Browser terminal
 
 On macOS and Linux, `--web` exposes the normal Collomia TUI through a local
@@ -256,14 +264,26 @@ Inside the TUI:
 | `/compact [focus]` | Summarize older context to free the model window. |
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one (fuzzy picker with no argument). |
-| `/skills` | List discovered skills. |
-| `/mcp` | List connected MCP servers. |
+| `/skills [list]` | Fuzzy-pick a skill to use — choosing one pre-fills the prompt — or `list` to print them. |
+| `/mcp [list]` | Browse MCP servers with a fuzzy picker — choosing one shows its tools — or `list` for a one-line summary. |
 | `/tools` | List the complete tool surface. |
 | `/config` | Show the active configuration source. |
 | `/clear` | Clear conversation history and usage. |
 | `/help` | Show command help and keybindings. |
 
-Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. `ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them; and the terminal bell rings when an approval or question is waiting.
+Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/tools`, `/skills list`, `/mcp list`, `/config`, `/help`) render their output in a titled, theme-colored panel — the command's subject sits in the box border, body text is tinted with a readable shade derived from the theme (not the terminal's raw default color), and content wraps cleanly to the terminal width. Quick acknowledgements ("Theme switched…") stay as subtle one-line notes.
+
+Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. `ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them.
+
+When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
+
+```json
+{
+  "options": { "notifications": "on" }
+}
+```
+
+`"on"` (default) is bell plus desktop notification, `"bell"` is the bell only, `"off"` is silent.
 
 ### Approving changes
 
@@ -280,7 +300,7 @@ In hunk review: ↑/↓ (or `j`/`k`) navigate, `space` toggles the current hunk,
 
 ## Themes
 
-Collomia ships ten color themes: `collomia` (default), `synthwave`, `outrun`, `matrix`, `monokai`, `dracula`, `nord`, `tokyo-night`, `fredhutch-dark`, and `fredhutch-light`. Switch at runtime with `/theme <name>`, or persist a choice in the configuration:
+Collomia ships eleven themes: `collomia` (default), `synthwave`, `outrun`, `matrix`, `monokai`, `dracula`, `nord`, `tokyo-night`, `fredhutch-dark`, `fredhutch-light`, and `plain` — a fully colorless theme that relies on bold, reverse video, and borders (useful for limited terminals, screen readers, and transcripts). Setting the standard [`NO_COLOR`](https://no-color.org) environment variable selects `plain` automatically, overriding any configured theme. Switch at runtime with `/theme <name>`, or persist a choice in the configuration:
 
 ```json
 {
@@ -541,7 +561,7 @@ description: Verify release artifacts, checksums, and changelog conventions.
 Full instructions that are loaded only when this skill is relevant.
 ```
 
-Only skill names and descriptions are included initially (`/skills` lists them). The model uses `load_skill` to bring the full instructions into context when needed, so unused skills cost nothing.
+Only skill names and descriptions are included initially (`/skills` opens a fuzzy picker; choosing a skill pre-fills the prompt with `Use the "<name>" skill: ` so you just add the task). The model uses `load_skill` to bring the full instructions into context when needed, so unused skills cost nothing.
 
 ## MCP
 
@@ -569,7 +589,7 @@ MCP servers are configured by name. Collomia supports the current `stdio` and St
 }
 ```
 
-Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. `/mcp` lists connected servers.
+Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. `/mcp` opens a picker of connected servers; choosing one lists its tools with descriptions.
 
 MCP configuration can launch processes or contact remote services. Servers are not started unless their entry explicitly sets `"trusted": true`; review a project-provided `.collomia.json` before granting that trust — this is exactly what `collo trust` gates.
 
