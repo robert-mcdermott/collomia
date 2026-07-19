@@ -157,6 +157,9 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		permissions.SetLedger(ledger)
 	}
 	mcpManager, warnings := mcpclient.ConnectAll(ctx, cfg.MCP, registry)
+	for _, issue := range catalog.Issues {
+		warnings = append(warnings, fmt.Errorf("skills: %s", issue))
+	}
 	if ledgerErr != nil {
 		warnings = append(warnings, fmt.Errorf("audit ledger unavailable: %w", ledgerErr))
 	}

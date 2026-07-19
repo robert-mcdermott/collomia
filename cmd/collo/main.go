@@ -132,6 +132,8 @@ func run(args []string) error {
 		return runPolicyCommand(opts)
 	case "sessions":
 		return runSessionsCommand(opts)
+	case "skills":
+		return runSkillsCommand(opts)
 	}
 	if opts.web {
 		executable, err := os.Executable()
@@ -266,7 +268,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "review" || arg == "verify") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "review" || arg == "verify") {
 			opts.command = arg
 			continue
 		}
@@ -420,6 +422,7 @@ Usage:
   collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
   collo verify [focus]                detect and run this project's build/lint/test commands headlessly
   collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
+  collo skills [list|show|new|install|update|remove|enable|disable]  manage agent skills (project and --global scopes)
   collo version                       print build information
 
 Flags:

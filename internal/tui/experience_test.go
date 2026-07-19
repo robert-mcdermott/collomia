@@ -72,7 +72,7 @@ func TestSkillPickerWithoutSkills(t *testing.T) {
 		t.Fatal("picker should not open without skills")
 	}
 	last := m.blocks[len(m.blocks)-1]
-	if !strings.Contains(last.content, "No skills discovered") {
+	if !strings.Contains(last.content, "No skills installed") {
 		t.Fatalf("expected hint, got %q", last.content)
 	}
 }

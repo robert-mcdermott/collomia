@@ -23,7 +23,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, and a maintained [capability matrix](docs/CAPABILITIES.md).
 - Schema-versioned JSONL event stream for automation (`collo run --jsonl`), with `--resume`/`--continue` for headless runs.
-- `SKILL.md`, `SKILLS.md`, and `skills.md` discovery with on-demand skill loading, plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
+- Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK.
 - **Multi-agent delegation**: the `delegate` tool runs up to six sub-agent tasks concurrently (bounded to four at once). Read-only tasks share the workspace; write-capable tasks get their own isolated git worktree so parallel agents never race on the same files, with sibling-conflict detection across a batch. Optional named agent profiles (model, role instructions, tool allowlist) live in configuration.
 - **Background processes**: `start_process`/`list_processes`/`process_output`/`stop_process` run dev servers, watchers, and long test runs without blocking the turn, with the same safety analysis as `run_command`; `/ps` manages them from the TUI, and everything is stopped at session exit.
@@ -265,7 +265,7 @@ Inside the TUI:
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one (fuzzy picker with no argument). |
 | `/skills [list]` | Fuzzy-pick a skill to use — choosing one pre-fills the prompt — or `list` to print them. |
-| `/mcp [list]` | Browse MCP servers with a fuzzy picker — choosing one shows its tools — or `list` for a one-line summary. |
+| `/mcp [subcommand]` | Browse MCP servers with a fuzzy picker, or manage them at runtime: `list`/`status` (health, identity, negotiated capabilities), `ping`, `reconnect`, `enable`/`disable`, `add`, `remove`. |
 | `/tools` | List the complete tool surface. |
 | `/config` | Show the active configuration source. |
 | `/clear` | Clear conversation history and usage. |
@@ -540,28 +540,54 @@ Use these for house style, testing conventions, deployment gotchas — anything 
 
 ## Skills
 
-Collomia discovers:
+A skill is a directory with a `SKILL.md` manifest and, optionally, supporting material the agent uses on demand:
 
-- `SKILLS.md` or `skills.md` in the workspace.
-- `.collomia/SKILLS.md` or `.collomia/skills.md`.
-- `.collomia/skills/<name>/SKILL.md`.
-- `.agents/skills/<name>/SKILL.md`.
-- `~/.collomia/skills/<name>/SKILL.md` (or `%USERPROFILE%\.collomia\skills\<name>\SKILL.md` on Windows).
+```
+release-check/
+  SKILL.md          # required: front matter + instructions
+  scripts/          # executable helpers the agent runs with run_command
+  references/       # extra documentation the agent reads with read_file
+  assets/           # templates and files used in the skill's output
+```
 
-A skill may start with simple YAML-style metadata:
+Skills are discovered from two scopes with deterministic precedence — **project** skills (`.collomia/skills/<name>/` or `.agents/skills/<name>/`, active only in trusted workspaces) shadow **global** skills of the same name (`~/.collomia/skills/<name>/`, applying to every workspace). Legacy single-file `SKILLS.md`/`skills.md` manifests are still read. Shadowed duplicates are reported at startup rather than silently dropped.
+
+`SKILL.md` starts with YAML front matter. `name` (lowercase letters, digits, hyphens; must match the directory) and `description` are required; the parser also understands folded/literal blocks, `license`, `allowed-tools`, and a nested `metadata` map:
 
 ```md
 ---
 name: release-check
-description: Verify release artifacts, checksums, and changelog conventions.
+description: >-
+  Verify release artifacts, checksums, and changelog conventions
+  before publishing a new version.
+allowed-tools: [read_file, run_command]
+metadata:
+  version: 1.0.0
 ---
 
 # Release check
 
 Full instructions that are loaded only when this skill is relevant.
+Point the agent at references/ files and scripts/ helpers as needed.
 ```
 
-Only skill names and descriptions are included initially (`/skills` opens a fuzzy picker; choosing a skill pre-fills the prompt with `Use the "<name>" skill: ` so you just add the task). The model uses `load_skill` to bring the full instructions into context when needed, so unused skills cost nothing.
+Only names and descriptions enter the system prompt (`/skills` opens a fuzzy picker; choosing a skill pre-fills the prompt with `Use the "<name>" skill: ` so you just add the task). The model calls `load_skill` to pull the full instructions into context when relevant — the loaded result maps out the bundled scripts, references, and assets so the agent can use them without guessing paths. Unused skills cost nothing; bundled files cost nothing until read. Skill scripts execute through the same permission rules and sandbox as any other command — bundling a script grants it nothing.
+
+The `collo skills` command manages the whole lifecycle:
+
+```bash
+collo skills list                    # every skill: scope, version, bundle size, validation warnings
+collo skills show release-check      # full metadata, sha256, bundled file listing
+collo skills new my-skill            # scaffold a project skill (.collomia/skills/my-skill/)
+collo skills new my-skill --global   # scaffold in ~/.collomia/skills/ for every workspace
+collo skills install ./some-skill    # validate and copy a skill directory in (--global for user scope)
+collo skills update ./some-skill     # reinstall, replacing the existing version
+collo skills disable my-skill        # keep it installed but hidden from the agent
+collo skills enable my-skill
+collo skills remove my-skill --yes
+```
+
+Validation problems (missing front matter, name/directory mismatch, oversized descriptions) are shown as warnings in `list` and `show` without breaking discovery, and installs refuse symlinks and oversized trees.
 
 ## MCP
 
@@ -590,6 +616,22 @@ MCP servers are configured by name. Collomia supports the current `stdio` and St
 ```
 
 Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. `/mcp` opens a picker of connected servers; choosing one lists its tools with descriptions.
+
+Servers are managed at runtime without restarting:
+
+```
+/mcp status                 every server: health, transport, server name/version,
+                            negotiated capabilities, tool count, uptime, last error
+/mcp ping docs              health-check one server (a failure is recorded as an error state)
+/mcp reconnect docs         tear down and re-establish the session, refreshing its tool catalog
+/mcp disable docs           close the server and withdraw its tools for this session
+/mcp enable docs            bring it back (cannot override missing trust)
+/mcp add scratch npx -y @modelcontextprotocol/server-filesystem .
+/mcp add remote --url https://example.com/mcp
+/mcp remove scratch         disconnect and forget (configured servers return next start)
+```
+
+Untrusted, disabled, and failed servers stay visible in `/mcp status` with their exact initialization errors instead of silently disappearing, so a misconfigured server is diagnosable from inside the session. Servers added with `/mcp add` are session-scoped and user-initiated (the trust gate quarantines *repository-supplied* configuration, not your own commands); add them to the configuration file to keep them.
 
 MCP configuration can launch processes or contact remote services. Servers are not started unless their entry explicitly sets `"trusted": true`; review a project-provided `.collomia.json` before granting that trust — this is exactly what `collo trust` gates.
 

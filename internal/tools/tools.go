@@ -70,6 +70,15 @@ func (r *Registry) Add(tool Tool) {
 	r.tools[tool.Definition().Name] = tool
 }
 
+// Remove deletes a tool by name. It exists for MCP lifecycle management:
+// when a server is disabled, removed, or reconnected, its stale tool entries
+// must leave the registry so the model cannot call dead sessions.
+func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
