@@ -19,9 +19,18 @@ type OpenAIClient struct {
 	ChatURL      string
 	APIKeyHeader string
 	HTTP         *http.Client
+	Declared     Capabilities
 }
 
 func (c *OpenAIClient) Name() string { return c.Label }
+
+func (c *OpenAIClient) Capabilities() Capabilities {
+	if c.Declared.ProviderType != "" {
+		return c.Declared
+	}
+	capabilities, _ := CapabilitiesFor("openai-compatible", "", 0)
+	return capabilities
+}
 
 // ListModels queries GET /models, which OpenAI, Ollama, vLLM, LM Studio,
 // and most compatible gateways implement.

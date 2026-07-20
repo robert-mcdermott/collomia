@@ -63,6 +63,10 @@ type Client interface {
 type ModelInfo struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name,omitempty"`
+	// Capabilities describes Collomia's effective adapter support for this
+	// model. Catalog APIs that do not publish per-model metadata inherit the
+	// adapter declaration and retain unknown model-dependent facts.
+	Capabilities Capabilities `json:"capabilities"`
 }
 
 // ModelLister is an optional Client capability: providers whose APIs expose

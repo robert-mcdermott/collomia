@@ -257,6 +257,42 @@ func TestValidateAzureProviderTypes(t *testing.T) {
 	}
 }
 
+func TestValidateBedrockAuthenticationModes(t *testing.T) {
+	for _, auth := range []string{"", "auto", "sigv4", "bearer"} {
+		cfg := Defaults()
+		cfg.Providers["bedrock"] = Provider{Type: "bedrock", Auth: auth, Model: "model"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("auth %q should validate: %v", auth, err)
+		}
+	}
+
+	cfg := Defaults()
+	cfg.Providers["bedrock"] = Provider{Type: "bedrock", Auth: "basic", Model: "model"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "providers.bedrock.auth") {
+		t.Fatalf("invalid auth error=%v", err)
+	}
+
+	cfg.Providers["bedrock"] = Provider{Type: "bedrock", Auth: "sigv4", APIKeyEnv: "AWS_BEARER_TOKEN_BEDROCK", Model: "model"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "providers.bedrock.api_key_env") {
+		t.Fatalf("ignored bearer setting error=%v", err)
+	}
+
+	cfg.Providers["bedrock"] = Provider{Type: "bedrock", Auth: "bearer", Profile: "development", Model: "model"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "providers.bedrock.profile") {
+		t.Fatalf("ignored profile error=%v", err)
+	}
+}
+
+func TestNormalizeBedrockAuthenticationMode(t *testing.T) {
+	cfg := Defaults()
+	cfg.Providers["bedrock"] = Provider{Type: " BEDROCK ", Auth: " BeArEr ", Model: "model"}
+	cfg.normalize()
+	provider := cfg.Providers["bedrock"]
+	if provider.Type != "bedrock" || provider.Auth != "bearer" {
+		t.Fatalf("provider=%+v", provider)
+	}
+}
+
 func TestDefaultsValidate(t *testing.T) {
 	if err := Defaults().Validate(); err != nil {
 		t.Fatal(err)

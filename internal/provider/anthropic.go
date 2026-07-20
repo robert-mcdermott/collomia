@@ -16,9 +16,18 @@ type AnthropicClient struct {
 	Headers    map[string]string
 	BearerAuth bool
 	HTTP       *http.Client
+	Declared   Capabilities
 }
 
 func (c *AnthropicClient) Name() string { return c.Label }
+
+func (c *AnthropicClient) Capabilities() Capabilities {
+	if c.Declared.ProviderType != "" {
+		return c.Declared
+	}
+	capabilities, _ := CapabilitiesFor("anthropic-compatible", "", 0)
+	return capabilities
+}
 
 // ListModels queries GET /v1/models on the Anthropic API.
 func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {

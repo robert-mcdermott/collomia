@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,5 +221,48 @@ func TestRuntimeQuarantinesUntrustedProject(t *testing.T) {
 	}
 	if !warned {
 		t.Fatalf("quarantine warning missing: %v", runtime.Warnings)
+	}
+}
+
+func TestProviderInspectionCombinesCapabilitiesAndAvailability(t *testing.T) {
+	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"data":[{"id":"live-model"}]}`)
+	}))
+	defer server.Close()
+
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.Config.Providers = map[string]appconfig.Provider{
+		"live": {Type: "openai-compatible", BaseURL: server.URL, Model: "live-model", Context: 64_000},
+		"aws":  {Type: "bedrock", Model: "bedrock-model", Region: "us-east-1", Context: 128_000},
+	}
+	runtime.Config.DefaultProvider = "live"
+
+	statuses := runtime.InspectProviders(t.Context())
+	if len(statuses) != 2 || statuses[0].Name != "aws" || statuses[1].Name != "live" {
+		t.Fatalf("statuses=%+v", statuses)
+	}
+	if statuses[0].Availability != ProviderUnverified || statuses[0].Capabilities.Streaming != provider.CapabilityUnsupported {
+		t.Fatalf("aws=%+v", statuses[0])
+	}
+	if statuses[1].Availability != ProviderAvailable || len(statuses[1].Models) != 1 || statuses[1].Models[0].Capabilities.ContextWindow != 64_000 {
+		t.Fatalf("live=%+v", statuses[1])
+	}
+}
+
+func TestNewRedactorIncludesStandardBedrockBearerToken(t *testing.T) {
+	t.Setenv(provider.BedrockBearerTokenEnv, "bedrock-bearer-token-secret")
+	cfg := appconfig.Defaults()
+	cfg.Providers["bedrock"] = appconfig.Provider{Type: "bedrock", Model: "model"}
+	redactor := NewRedactor(cfg)
+	if got := redactor.Redact("Authorization: Bearer bedrock-bearer-token-secret"); strings.Contains(got, "bedrock-bearer-token-secret") {
+		t.Fatalf("token was not redacted: %q", got)
 	}
 }

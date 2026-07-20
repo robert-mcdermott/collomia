@@ -165,6 +165,23 @@ redacted from debug logs, JSONL events, and the audit ledger. Redaction is
 best-effort defense in depth — it reduces accidental exposure and does not
 defeat deliberate exfiltration.
 
+For native Amazon Bedrock, `auth: "sigv4"` delegates credential discovery to
+the AWS SDK chain (environment access/secret/session values, shared profiles,
+IAM Identity Center, assumed/web-identity roles, and workload identity) and
+signs each request without placing those credentials in Collomia's
+configuration. `auth: "bearer"` sends a configured short- or long-term Bedrock
+API key only in the HTTPS Authorization header. `auth: "auto"` prefers an
+explicit `api_key`/`api_key_env` or `AWS_BEARER_TOKEN_BEDROCK`, then falls back
+to SigV4. Set an explicit mode when both families exist and credential choice
+must not vary with the environment.
+
+The standard `AWS_BEARER_TOKEN_BEDROCK` value is registered with the redactor
+when Bedrock is configured. Prefer `api_key_env` over literal `api_key`.
+Collomia accepts already-generated short- and long-term Bedrock keys but does
+not mint or refresh short-term bearer keys; replace an expiring token and
+restart the process. AWS SDK-managed temporary SigV4 credentials retain the
+SDK's normal refresh behavior.
+
 By default, agent commands (including background processes and PTY runs)
 inherit your full environment, which may include unrelated secrets from
 your shell. Set `permissions.command_env: "minimal"` to strip commands down

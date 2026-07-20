@@ -10,7 +10,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 - Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, and a status bar with live context, task-progress, active-agent, and background-process gauges.
 - Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
-- Streaming OpenAI-compatible and Anthropic-compatible conversations with native tool calling, live model discovery (`/model`), and automatic retry with backoff on transient failures.
+- Streaming OpenAI-compatible and Anthropic-compatible conversations with native tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
 - Azure OpenAI, Microsoft Foundry OpenAI/v1, and Microsoft Foundry Anthropic endpoint support.
 - Local Ollama, vLLM, LM Studio, Phlox-GW, and other OpenAI-compatible endpoints.
@@ -248,9 +248,9 @@ Inside the TUI:
 
 | Command | Purpose |
 | --- | --- |
-| `/status` | Show workspace, provider, model, plan, autonomy, and config status. |
+| `/status` | Show workspace, provider, model, effective capabilities, plan, autonomy, and config status. |
 | `/model [provider/model]` | Show or switch the active provider and model (opens a fuzzy picker with no argument). |
-| `/models` | List configured providers and their default models. |
+| `/models` | Show each provider's default model, effective capabilities, endpoint constraints, and live catalog availability when the adapter supports discovery. |
 | `/context` | Break down exactly what the model sees: system prompt, instructions, skills, tool results, conversation, compaction summaries, and the usage gauge. |
 | `/plan [on\|off]` | Toggle read-only planning mode. |
 | `/tasks` | Show the structured task plan the agent maintains. |
@@ -327,6 +327,10 @@ Terminal compatibility notes:
 
 Every provider has a local name and a protocol `type`. Secrets should normally be referenced with `api_key_env` instead of stored in the file.
 
+Collomia keeps an effective capability declaration for every provider/model selection. It distinguishes `supported`, `partial`, `unsupported`, and `unknown` for tool calling, streaming, reasoning, images, structured output, token usage, prompt caching, parallel tool calls, and model discovery; it also carries the configured context window and adapter-specific constraints. `/status`, `/model`, and `/models` expose this information. `/models` probes supported catalog endpoints concurrently and reports providers without a catalog as **unverified**, not incorrectly **unavailable**. Catalogs such as OpenAI-compatible `GET /models` often return names without feature metadata, so Collomia reports model-dependent facts as unknown instead of inferring capabilities from a model name.
+
+The declaration describes what Collomia's current adapter can send and consume, which may be smaller than the vendor API's complete feature set. Before any provider request, Collomia rejects a known contradiction (for example, sending tools through an adapter declared not to support them, or configuring a maximum output larger than the context window). Unknown and partial capabilities remain visible but do not cause speculative failures.
+
 ### OpenAI-compatible services
 
 This adapter works with OpenAI, Ollama, vLLM, LM Studio, Phlox-GW, and compatible gateways. It uses `/chat/completions`, streaming SSE, and function tools. Picking a provider in `/model` queries its live `GET /models` catalog when supported.
@@ -390,13 +394,20 @@ Set `"auth": "bearer"` when a compatible endpoint expects an OAuth bearer token 
 
 ### AWS Bedrock
 
-Native Bedrock uses the Converse API, standard AWS credential resolution, and SigV4 signing:
+Native Bedrock uses the Converse API and supports both AWS SigV4 credentials and the newer Amazon Bedrock bearer API keys. `auth` controls the credential family:
+
+- `auto` (the default) uses `api_key`/`api_key_env` or `AWS_BEARER_TOKEN_BEDROCK` when present; otherwise it uses the AWS credential chain.
+- `sigv4` requires the AWS credential chain even if a bearer token is present.
+- `bearer` requires a short- or long-term Bedrock API key and never attempts SigV4.
+
+For production and human development, prefer temporary SigV4 credentials obtained through an IAM role or IAM Identity Center. The SDK chain supports long-term IAM access/secret pairs, temporary access/secret/session-token credentials, shared profiles, SSO, assume-role/web-identity flows, and ECS/EKS/EC2 workload roles:
 
 ```json
 {
   "providers": {
     "bedrock": {
       "type": "bedrock",
+      "auth": "sigv4",
       "region": "us-west-2",
       "profile": "development",
       "model": "your-bedrock-model-id"
@@ -405,7 +416,36 @@ Native Bedrock uses the Converse API, standard AWS credential resolution, and Si
 }
 ```
 
-The profile is optional. Environment credentials, shared AWS configuration, SSO, and instance roles are resolved by the AWS SDK.
+The profile is optional. With no profile, the SDK uses its default chain. Environment-based temporary credentials use all three standard values:
+
+```bash
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_SESSION_TOKEN="..." # required for STS/temporary credentials
+export AWS_REGION="us-west-2"
+```
+
+For either a short-term or long-term Amazon Bedrock API key, use bearer mode. The key type is encoded by AWS; Collomia sends both forms identically and never writes the key into session data:
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK="..."
+```
+
+```json
+{
+  "providers": {
+    "bedrock-key": {
+      "type": "bedrock",
+      "auth": "bearer",
+      "api_key_env": "AWS_BEARER_TOKEN_BEDROCK",
+      "region": "us-west-2",
+      "model": "us.anthropic.claude-sonnet-4-6"
+    }
+  }
+}
+```
+
+Collomia consumes an already-generated Bedrock API key; it does not currently mint or refresh short-term keys. Replace the environment value and restart Collomia before an expiring key becomes invalid. AWS recommends short-term keys for production and long-term keys only for exploration. Bearer keys are limited to supported Bedrock/Bedrock Runtime operations; they do not grant Agents or bidirectional-stream operations. `collo doctor` reports the selected authentication family and missing bearer-token variables without printing credential values.
 
 Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key:
 
@@ -415,7 +455,7 @@ Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key:
     "mantle": {
       "type": "bedrock-mantle",
       "base_url": "https://bedrock-mantle.us-west-2.api.aws/v1",
-      "api_key_env": "AWS_BEDROCK_API_KEY",
+      "api_key_env": "AWS_BEARER_TOKEN_BEDROCK",
       "model": "openai.gpt-oss-120b"
     }
   }

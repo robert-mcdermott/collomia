@@ -10,33 +10,48 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
+const (
+	// BedrockBearerTokenEnv is the standard environment variable recognized by
+	// Amazon Bedrock for short- and long-term Bedrock API keys.
+	BedrockBearerTokenEnv = "AWS_BEARER_TOKEN_BEDROCK"
+	bedrockAuthAuto       = "auto"
+	bedrockAuthSigV4      = "sigv4"
+	bedrockAuthBearer     = "bearer"
+)
+
 type BedrockClient struct {
-	Label   string
-	Region  string
-	Profile string
-	HTTP    *http.Client
+	Label     string
+	Region    string
+	Profile   string
+	Auth      string
+	APIKey    string
+	APIKeyEnv string
+	HTTP      *http.Client
+	Declared  Capabilities
 }
 
 func (c *BedrockClient) Name() string { return c.Label }
+
+func (c *BedrockClient) Capabilities() Capabilities {
+	if c.Declared.ProviderType != "" {
+		return c.Declared
+	}
+	capabilities, _ := CapabilitiesFor("bedrock", "", 0)
+	return capabilities
+}
 
 func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
 	region := c.Region
 	if region == "" {
 		region = "us-east-1"
-	}
-	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
-	if c.Profile != "" {
-		opts = append(opts, awsconfig.WithSharedConfigProfile(c.Profile))
-	}
-	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
-	if err != nil {
-		return Response{}, fmt.Errorf("load AWS configuration: %w", err)
 	}
 	body, err := bedrockRequest(in)
 	if err != nil {
@@ -52,13 +67,8 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 		return Response{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	credentials, err := cfg.Credentials.Retrieve(ctx)
-	if err != nil {
-		return Response{}, fmt.Errorf("retrieve AWS credentials: %w", err)
-	}
-	digest := sha256.Sum256(data)
-	if err := v4.NewSigner().SignHTTP(ctx, credentials, req, hex.EncodeToString(digest[:]), "bedrock", region, time.Now()); err != nil {
-		return Response{}, fmt.Errorf("sign Bedrock request: %w", err)
+	if err := c.authenticate(ctx, req, data, region); err != nil {
+		return Response{}, err
 	}
 	client := c.HTTP
 	if client == nil {
@@ -75,15 +85,96 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 	return parseBedrockResponse(resp.Body, onDelta)
 }
 
+func (c *BedrockClient) authenticate(ctx context.Context, req *http.Request, body []byte, region string) error {
+	switch c.authMode() {
+	case bedrockAuthBearer:
+		token, source, err := c.bearerToken()
+		if err != nil {
+			return err
+		}
+		if strings.ContainsAny(token, "\r\n") {
+			return fmt.Errorf("Bedrock bearer token from %s contains invalid control characters", source)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		return nil
+	case bedrockAuthSigV4:
+		opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+		if c.Profile != "" {
+			opts = append(opts, awsconfig.WithSharedConfigProfile(c.Profile))
+		}
+		cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+		if err != nil {
+			return fmt.Errorf("load AWS configuration: %w", err)
+		}
+		credentials, err := cfg.Credentials.Retrieve(ctx)
+		if err != nil {
+			return fmt.Errorf("retrieve AWS credentials: %w", err)
+		}
+		digest := sha256.Sum256(body)
+		if err := v4.NewSigner().SignHTTP(ctx, credentials, req, hex.EncodeToString(digest[:]), "bedrock", region, time.Now()); err != nil {
+			return fmt.Errorf("sign Bedrock request: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported Bedrock auth mode %q", c.Auth)
+	}
+}
+
+// authMode resolves auto without reading or exposing the token value. An
+// explicitly named api_key_env selects bearer even when it is currently
+// unset, producing a useful missing-variable error instead of silently
+// falling back to unrelated AWS credentials.
+func (c *BedrockClient) authMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.Auth))
+	if mode == "" {
+		mode = bedrockAuthAuto
+	}
+	if mode != bedrockAuthAuto {
+		return mode
+	}
+	if strings.TrimSpace(c.APIKey) != "" || strings.TrimSpace(c.APIKeyEnv) != "" || strings.TrimSpace(os.Getenv(BedrockBearerTokenEnv)) != "" {
+		return bedrockAuthBearer
+	}
+	return bedrockAuthSigV4
+}
+
+func (c *BedrockClient) bearerToken() (token, source string, err error) {
+	if token = strings.TrimSpace(c.APIKey); token != "" {
+		return token, "configured api_key", nil
+	}
+	if envName := strings.TrimSpace(c.APIKeyEnv); envName != "" {
+		if token = strings.TrimSpace(os.Getenv(envName)); token == "" {
+			return "", envName, fmt.Errorf("Bedrock bearer auth requires environment variable %s to be set", envName)
+		}
+		return token, envName, nil
+	}
+	if token = strings.TrimSpace(os.Getenv(BedrockBearerTokenEnv)); token == "" {
+		return "", BedrockBearerTokenEnv, fmt.Errorf("Bedrock bearer auth requires api_key, api_key_env, or environment variable %s", BedrockBearerTokenEnv)
+	}
+	return token, BedrockBearerTokenEnv, nil
+}
+
 func bedrockRequest(in Request) (map[string]any, error) {
 	messages := make([]any, 0, len(in.Messages))
-	for _, msg := range in.Messages {
+	for i := 0; i < len(in.Messages); i++ {
+		msg := in.Messages[i]
 		role := msg.Role
 		content := []any{}
 		switch {
 		case msg.Role == "tool":
 			role = "user"
-			content = append(content, map[string]any{"toolResult": map[string]any{"toolUseId": msg.ToolCallID, "content": []any{map[string]any{"text": msg.Content}}, "status": "success"}})
+			// Converse requires the results for every toolUse block from one
+			// assistant response in the content array of the immediately
+			// following user message. Collomia stores each result as a separate
+			// normalized message, so coalesce the consecutive result batch here.
+			for {
+				content = append(content, bedrockToolResult(msg))
+				if i+1 >= len(in.Messages) || in.Messages[i+1].Role != "tool" {
+					break
+				}
+				i++
+				msg = in.Messages[i]
+			}
 		default:
 			if msg.Content != "" {
 				content = append(content, map[string]any{"text": msg.Content})
@@ -117,6 +208,14 @@ func bedrockRequest(in Request) (map[string]any, error) {
 		body["toolConfig"] = map[string]any{"tools": tools}
 	}
 	return body, nil
+}
+
+func bedrockToolResult(msg Message) map[string]any {
+	return map[string]any{"toolResult": map[string]any{
+		"toolUseId": msg.ToolCallID,
+		"content":   []any{map[string]any{"text": msg.Content}},
+		"status":    "success",
+	}}
 }
 
 func parseBedrockResponse(r io.Reader, onDelta func(Delta)) (Response, error) {

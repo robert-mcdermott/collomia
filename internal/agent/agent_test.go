@@ -27,6 +27,20 @@ type fakeClient struct {
 	chat  func(int, provider.Request) (provider.Response, error)
 }
 
+type capabilityClient struct {
+	calls        int
+	capabilities provider.Capabilities
+}
+
+func (c *capabilityClient) Name() string { return "capability-fixture" }
+func (c *capabilityClient) Capabilities() provider.Capabilities {
+	return c.capabilities
+}
+func (c *capabilityClient) Chat(context.Context, provider.Request, func(provider.Delta)) (provider.Response, error) {
+	c.calls++
+	return provider.Response{Content: "network request should not happen"}, nil
+}
+
 func (f *fakeClient) Name() string { return "fake" }
 func (f *fakeClient) Chat(_ context.Context, request provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
 	f.calls++
@@ -61,6 +75,25 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	}
 	if result != "finished" || delta != "finished" || client.calls != 2 {
 		t.Fatalf("result=%q delta=%q calls=%d", result, delta, client.calls)
+	}
+}
+
+func TestAgentPreflightsUnsupportedToolCapability(t *testing.T) {
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"},
+		Run:    func(context.Context, json.RawMessage) (string, error) { return "observed", nil },
+	})
+	client := &capabilityClient{capabilities: provider.Capabilities{
+		ProviderType: "fixture", Model: "text-only", Tools: provider.CapabilityUnsupported,
+	}}
+	a := New(Options{Client: client, ProviderName: "fixture", Model: "text-only", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil)})
+	_, err := a.Run(t.Context(), "inspect it", nil)
+	if err == nil || !strings.Contains(err.Error(), "capability preflight") {
+		t.Fatalf("error=%v", err)
+	}
+	if client.calls != 0 {
+		t.Fatalf("provider was called %d time(s)", client.calls)
 	}
 }
 

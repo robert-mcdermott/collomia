@@ -48,12 +48,11 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 	case "/status":
 		m.addPanel("Status", m.runtime.Summary())
 	case "/models":
-		var lines []string
-		for _, name := range m.runtime.Config.ProviderNames() {
-			p := m.runtime.Config.Providers[name]
-			lines = append(lines, fmt.Sprintf("- %s  [%s]  %s", name, p.Type, p.Model))
+		m.addPanel("Provider models", renderProviderStatuses(m.runtime.ConfiguredProviders()))
+		runtime := m.runtime
+		return false, func() tea.Msg {
+			return providerStatusMsg{statuses: runtime.InspectProviders(context.Background())}
 		}
-		m.addPanel("Configured providers", strings.Join(lines, "\n"))
 	case "/model":
 		if len(args) == 0 {
 			m.openModelPicker()
