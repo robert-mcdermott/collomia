@@ -26,3 +26,28 @@ func TestDirUsesUserHome(t *testing.T) {
 		t.Fatalf("ConfigPath()=%q, want %q", path, want)
 	}
 }
+
+func TestGlobalArtifactPathsShareOneRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	for _, elements := range [][]string{
+		{"config.json"},
+		{"skills"},
+		{"sessions"},
+		{"logs"},
+		{"audit"},
+		{"trust.json"},
+		{"mcp-pins.json"},
+	} {
+		got, err := Path(elements...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(append([]string{home, ".collomia"}, elements...)...)
+		if got != want {
+			t.Errorf("Path(%q)=%q, want %q", elements, got, want)
+		}
+	}
+}

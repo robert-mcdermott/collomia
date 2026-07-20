@@ -433,19 +433,18 @@ in depth, not protection against a malicious command or model-directed
 exfiltration. Prefer `permissions.command_env: "minimal"`, an OS sandbox, and
 short-lived credentials for higher-risk work.
 
-### Legacy global location
+### One global directory
 
-Older builds used the platform configuration directory, such as
-`~/Library/Application Support/collomia/config.json` on macOS,
-`$XDG_CONFIG_HOME/collomia/config.json` or `~/.config/collomia/config.json` on
-Linux, and `%AppData%\collomia\config.json` on Windows. If the new
-`~/.collomia/config.json` does not exist, Collomia still reads the former file
-and reports that fallback in `config show` and `doctor`.
+Collomia uses one global root for every persistent user-level file:
 
-Move user-edited configuration, instructions, and skills to the new
-home-directory `.collomia` directory. When both old and new files exist, the
-new location wins. Internal state such as sessions, trust records, MCP pins,
-audit ledgers, and logs remains in OS application-state/cache directories.
+- `~/.collomia/` on macOS and Linux.
+- `%USERPROFILE%\.collomia\` on Windows.
+
+Configuration, generated references, user instructions, skills, sessions,
+logs, audit ledgers, repository trust decisions, and MCP pins all live below
+that root. Collomia does not search any additional platform configuration or
+cache directory. This makes the complete user state easy to inspect, back up,
+or remove as one unit.
 
 ### Validation and schema versions
 
@@ -572,7 +571,7 @@ inspect.
 | `max_iterations` | Maximum model/tool iterations in one turn; defaults to `24`. |
 | `max_tool_output_bytes` | Per-result cap used by shell output and agent context; defaults to `65536`. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
-| `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain in the OS application-state location. |
+| `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
 | `debug` | Enables redacted structured debug logging for every run. |
@@ -1947,8 +1946,8 @@ User-wide instructions live beside the global configuration:
 ```
 
 Collomia uses the first user instruction file found, checking `AGENTS.md`
-before `COLLOMIA.md` in the preferred directory and then the former legacy
-configuration directory. It applies to every workspace.
+before `COLLOMIA.md` in the global `.collomia` directory. It applies to every
+workspace.
 
 Project instructions live at the workspace root:
 
@@ -1992,7 +1991,6 @@ Locations, in precedence order:
 1. `<workspace>/.collomia/skills/<name>/`
 2. `<workspace>/.agents/skills/<name>/`
 3. `~/.collomia/skills/<name>/`
-4. Former legacy user configuration skill directory
 
 Project skills of the same name shadow user skills; shadowing is reported.
 Legacy project `SKILLS.md`/`skills.md` files at the root or under `.collomia`
@@ -2482,12 +2480,15 @@ ConPTY backend can preserve equivalent terminal and process semantics.
 
 ### User-editable files
 
+In this table, `<global-root>` means `~/.collomia` on macOS/Linux and
+`%USERPROFILE%\.collomia` on Windows.
+
 | File/directory | Purpose |
 | --- | --- |
-| `~/.collomia/config.json` | Global active configuration. On Windows, use `%USERPROFILE%\.collomia\config.json`. |
-| `~/.collomia/config.example.jsonc` | Generated commented reference; never loaded. |
-| `~/.collomia/AGENTS.md` or `COLLOMIA.md` | User-wide instructions. |
-| `~/.collomia/skills/` | User-wide skills. |
+| `<global-root>/config.json` | Global active configuration. |
+| `<global-root>/config.example.jsonc` | Generated commented reference; never loaded. |
+| `<global-root>/AGENTS.md` or `COLLOMIA.md` | User-wide instructions. |
+| `<global-root>/skills/` | User-wide skills. |
 | `<workspace>/.collomia.json` | Project configuration, content-trusted when present. |
 | `<workspace>/.collomia.example.jsonc` | Project reference only. |
 | `<workspace>/AGENTS.md`, `COLLOMIA.md` | Project instructions. |
@@ -2499,33 +2500,21 @@ configuration; use environment variable names.
 
 ### Internal state
 
-Collomia deliberately keeps internal mutable state outside the repository:
+Collomia keeps internal mutable state outside the repository but inside the
+same global root as the configuration. The root is `~/.collomia/` on
+macOS/Linux and `%USERPROFILE%\.collomia\` on Windows:
 
-| State | Relative location under the OS user configuration directory |
+| State | Relative location under the global root |
 | --- | --- |
-| Sessions | `collomia/sessions/<workspace-name-and-hash>/*.jsonl` |
-| Audit ledger | `collomia/audit/<workspace-name-and-hash>.jsonl` |
-| Trust database | `collomia/trust.json` |
-| MCP pins | `collomia/mcp-pins.json` |
+| Sessions | `sessions/<workspace-name-and-hash>/*.jsonl` |
+| Audit ledger | `audit/<workspace-name-and-hash>.jsonl` |
+| Trust database | `trust.json` |
+| MCP pins | `mcp-pins.json` |
+| Debug logs | `logs/*.log` |
 
-Typical OS user configuration roots are:
-
-- macOS: `~/Library/Application Support`
-- Linux: `$XDG_CONFIG_HOME`, or `~/.config`
-- Windows: `%AppData%`
-
-`COLLO_STATE_DIR` overrides only the base used by the durable session store;
-sessions then live under `$COLLO_STATE_DIR/collomia/sessions`. It does not move
-audit, trust, MCP pins, or logs. `options.transcript_directory` is currently
-reserved and does not relocate sessions.
-
-Debug logs use the OS user cache directory:
-
-- macOS: `~/Library/Caches/collomia/logs`
-- Linux: `$XDG_CACHE_HOME/collomia/logs`, or `~/.cache/collomia/logs`
-- Windows: `%LocalAppData%\collomia\logs`
-
-Run `collo doctor` to print the exact log directory for the current machine.
+`options.transcript_directory` is currently reserved and does not relocate
+sessions. Run `collo doctor` to print the exact log directory for the current
+machine.
 
 ### Debug logging
 
@@ -2743,9 +2732,9 @@ Configuration and history are deliberately not removed with the binary. If you
 want a complete data removal, first inspect and then delete the exact locations
 listed under [Files, state, logs, and privacy](#files-state-logs-and-privacy):
 
-- The home-directory `.collomia` user-editable directory.
-- The OS configuration directory's `collomia` state directory.
-- The OS cache directory's `collomia/logs` directory.
+- The home-directory `.collomia` directory, which contains all global
+  configuration, skills, instructions, sessions, logs, audit history, trust
+  decisions, and MCP pins.
 - Any retained dirty sub-agent worktrees under the OS temporary
   `collomia-worktrees` directory and their `collomia/*` Git branches.
 

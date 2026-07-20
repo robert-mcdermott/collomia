@@ -11,16 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
-// Dir returns the log directory in the user cache location — never the
+// Dir returns the log directory under the per-user Collomia root — never the
 // workspace, so logs cannot leak into commits.
 func Dir() (string, error) {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "collomia", "logs"), nil
+	return userconfig.Path("logs")
 }
 
 // Setup opens a session log file and returns a logger plus the file path.

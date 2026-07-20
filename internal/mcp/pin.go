@@ -11,6 +11,7 @@ import (
 	"time"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
 // pinRecord remembers what a trusted server looked like the last time it was
@@ -23,8 +24,8 @@ type pinRecord struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
-// pinStore lives in the per-user application state directory (like the trust
-// database) — never inside a workspace — keyed by workspace and server name.
+// pinStore lives under the per-user Collomia root (like the trust database) —
+// never inside a workspace — keyed by workspace and server name.
 type pinStore struct {
 	Version int                  `json:"version"`
 	Servers map[string]pinRecord `json:"servers"`
@@ -32,11 +33,7 @@ type pinStore struct {
 }
 
 func pinPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "collomia", "mcp-pins.json"), nil
+	return userconfig.Path("mcp-pins.json")
 }
 
 func loadPins() (*pinStore, error) {

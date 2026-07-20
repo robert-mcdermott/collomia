@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +18,8 @@ func TestMain(m *testing.M) {
 	// can pick up the developer's real global configuration and change the
 	// effective values and origin assertions.
 	for key, value := range map[string]string{
-		"HOME":            root,
-		"USERPROFILE":     root,
-		"XDG_CONFIG_HOME": filepath.Join(root, ".config"),
-		"AppData":         filepath.Join(root, "AppData", "Roaming"),
+		"HOME":        root,
+		"USERPROFILE": root,
 	} {
 		if err := os.Setenv(key, value); err != nil {
 			panic(err)
@@ -168,64 +165,25 @@ func TestGlobalPathUsesHomeDirectory(t *testing.T) {
 	}
 }
 
-func TestLoadFallsBackToLegacyGlobalPath(t *testing.T) {
-	legacy, err := LegacyGlobalPath()
+func TestLoadAppliesGlobalPath(t *testing.T) {
+	path, err := GlobalPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(legacy)) })
-	data := `{"schema_version":1,"default_provider":"legacy","providers":{"legacy":{"type":"openai-compatible","base_url":"http://localhost:1234/v1","model":"legacy-model"}}}`
-	if err := os.WriteFile(legacy, []byte(data), 0o600); err != nil {
+	t.Cleanup(func() { _ = os.Remove(path) })
+	data := `{"schema_version":1,"default_provider":"global","providers":{"global":{"type":"openai-compatible","base_url":"http://localhost:1234/v1","model":"test"}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadWithOptions(t.TempDir(), LoadOptions{TrustStatus: trustAll})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultProvider != "legacy" || cfg.Source != legacy {
-		t.Fatalf("legacy config not applied: provider=%q source=%q", cfg.DefaultProvider, cfg.Source)
-	}
-	if len(cfg.Layers) < 2 || !strings.Contains(cfg.Layers[1].Note, "move this file") {
-		t.Fatalf("legacy layer should include migration guidance: %+v", cfg.Layers)
-	}
-}
-
-func TestNewGlobalPathTakesPrecedenceOverLegacyPath(t *testing.T) {
-	current, err := GlobalPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := LegacyGlobalPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{current, legacy} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(filepath.Dir(current))
-		_ = os.RemoveAll(filepath.Dir(legacy))
-	})
-	configFor := func(name string) []byte {
-		return []byte(fmt.Sprintf(`{"schema_version":1,"default_provider":%q,"providers":{%q:{"type":"openai-compatible","base_url":"http://localhost:1234/v1","model":"test"}}}`, name, name))
-	}
-	if err := os.WriteFile(legacy, configFor("legacy"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(current, configFor("current"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadWithOptions(t.TempDir(), LoadOptions{TrustStatus: trustAll})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DefaultProvider != "current" || cfg.Source != current {
-		t.Fatalf("new global config should win: provider=%q source=%q", cfg.DefaultProvider, cfg.Source)
+	if cfg.DefaultProvider != "global" || cfg.Source != path {
+		t.Fatalf("global config not applied: provider=%q source=%q", cfg.DefaultProvider, cfg.Source)
 	}
 }
 

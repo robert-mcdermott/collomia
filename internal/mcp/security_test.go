@@ -3,7 +3,6 @@ package mcpclient
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +20,6 @@ func testOpts(t *testing.T) Options {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	return Options{Workspace: t.TempDir()}
 }
 

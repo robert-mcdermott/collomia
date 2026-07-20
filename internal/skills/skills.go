@@ -78,8 +78,8 @@ var nameRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Discover finds skills with deterministic precedence: trusted project skills
 // (.collomia/skills, .agents/skills, then legacy SKILLS.md files) shadow
-// user-level skills (~/.collomia/skills, then the legacy config directory)
-// of the same name. Results are sorted by name.
+// user-level skills (~/.collomia/skills) of the same name. Results are sorted
+// by name.
 func Discover(workspace string, includeProject bool) (Catalog, error) {
 	type candidate struct {
 		path, dir, source string
@@ -110,7 +110,7 @@ func Discover(workspace string, includeProject bool) (Catalog, error) {
 			candidates = append(candidates, candidate{path: filepath.Join(workspace, ".collomia", name), source: "project"})
 		}
 	}
-	for _, dir := range userconfig.SearchDirs() {
+	if dir, err := userconfig.Dir(); err == nil {
 		addRoot(filepath.Join(dir, "skills"), "user")
 	}
 	seenPath := map[string]bool{}
@@ -355,21 +355,23 @@ func ProjectInstructions(workspace string) (string, error) {
 // the collomia configuration directory. It applies to every workspace and
 // precedes project instructions, so a project can refine or override it.
 func GlobalInstructions() (string, error) {
-	for _, dir := range userconfig.SearchDirs() {
-		for _, name := range []string{"AGENTS.md", "COLLOMIA.md"} {
-			path := filepath.Join(dir, name)
-			data, err := os.ReadFile(path)
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				return "", err
-			}
-			if len(data) > maxSkillBytes {
-				return "", fmt.Errorf("%s exceeds %d bytes", path, maxSkillBytes)
-			}
-			return fmt.Sprintf("# Global user instructions from %s\n(Project instructions, when present, take precedence over these.)\n%s", path, string(data)), nil
+	dir, err := userconfig.Dir()
+	if err != nil {
+		return "", err
+	}
+	for _, name := range []string{"AGENTS.md", "COLLOMIA.md"} {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
 		}
+		if err != nil {
+			return "", err
+		}
+		if len(data) > maxSkillBytes {
+			return "", fmt.Errorf("%s exceeds %d bytes", path, maxSkillBytes)
+		}
+		return fmt.Sprintf("# Global user instructions from %s\n(Project instructions, when present, take precedence over these.)\n%s", path, string(data)), nil
 	}
 	return "", nil
 }

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
 type Entry struct {
@@ -37,13 +39,9 @@ type Ledger struct {
 	Redact func(string) string
 }
 
-// Dir returns the ledger directory in the per-user application-state location.
+// Dir returns the ledger directory under the per-user Collomia root.
 func Dir() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "collomia", "audit"), nil
+	return userconfig.Path("audit")
 }
 
 // Open returns the ledger for a workspace, creating its directory.

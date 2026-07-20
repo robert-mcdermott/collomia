@@ -81,26 +81,21 @@ func TestTUIChildArgsPreserveTUIOptionsWithoutRecursing(t *testing.T) {
 	}
 }
 
-func TestGlobalInitReportsLegacyConfiguration(t *testing.T) {
+func TestGlobalInitWritesHomeDirectoryConfiguration(t *testing.T) {
 	home := t.TempDir()
-	legacyBase := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", legacyBase)
-	t.Setenv("AppData", legacyBase)
-	legacy, err := appconfig.LegacyGlobalPath()
+	err := run([]string{"init", "--global", "--cwd", t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+	path := filepath.Join(home, ".collomia", "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(legacy, []byte(`{"schema_version":1}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err = run([]string{"init", "--global", "--cwd", t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "former location") || !strings.Contains(err.Error(), filepath.Join(home, ".collomia", "config.json")) {
-		t.Fatalf("expected migration guidance, got %v", err)
+	if !strings.Contains(string(data), `"schema_version": 1`) {
+		t.Fatalf("unexpected starter at %s: %s", path, data)
 	}
 }
 

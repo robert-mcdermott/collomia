@@ -36,8 +36,6 @@ func newTestModel(t *testing.T) Model {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("COLLO_STATE_DIR", t.TempDir())
 	runtime, err := app.New(context.Background(), app.Options{Workspace: t.TempDir()})
 	if err != nil {
 		t.Fatalf("app.New: %v", err)

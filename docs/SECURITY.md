@@ -146,8 +146,9 @@ Shared limitations, stated plainly:
 A repository can ship `.collomia.json` (permissions, MCP servers) plus
 skills and instruction files. All of it is quarantined until you run `collo
 trust` after review. Trust is bound to the file's SHA-256; any change
-re-quarantines. The trust database lives in your user configuration
-directory, never in the workspace, so a repository cannot approve itself.
+re-quarantines. The trust database lives at `~/.collomia/trust.json` on
+macOS/Linux or `%USERPROFILE%\.collomia\trust.json` on Windows, never in the
+workspace, so a repository cannot approve itself.
 
 The trust record is anchored to `.collomia.json`. A workspace without that
 file has no project configuration to approve, and the runtime treats its

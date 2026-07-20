@@ -233,12 +233,6 @@ func GlobalPath() (string, error) {
 	return userconfig.ConfigPath()
 }
 
-// LegacyGlobalPath returns the pre-~/.collomia location. New files must use
-// GlobalPath; the legacy path is retained only for migration compatibility.
-func LegacyGlobalPath() (string, error) {
-	return userconfig.LegacyConfigPath()
-}
-
 type LoadOptions struct {
 	// Strict rejects unknown fields and treats warnings as errors.
 	Strict bool
@@ -261,13 +255,9 @@ func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 	cfg.Source = "defaults"
 	cfg.ProjectTrusted = true
 
-	if global, note, err := globalPathForLoad(); err == nil {
-		before := len(cfg.Layers)
+	if global, err := GlobalPath(); err == nil {
 		if err := cfg.applyFile(global, "user", opts.Strict); err != nil {
 			return cfg, err
-		}
-		if note != "" && len(cfg.Layers) > before {
-			cfg.Layers[len(cfg.Layers)-1].Note = note
 		}
 	}
 
@@ -306,28 +296,6 @@ func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 		return cfg, ValidationError{Errors: errs}
 	}
 	return cfg, nil
-}
-
-// globalPathForLoad prefers ~/.collomia/config.json and falls back to the
-// former OS-specific location only when the new file does not exist.
-func globalPathForLoad() (path, note string, err error) {
-	path, err = GlobalPath()
-	if err != nil {
-		return "", "", err
-	}
-	if _, statErr := os.Stat(path); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
-		return path, "", nil
-	}
-	legacy, legacyErr := LegacyGlobalPath()
-	if legacyErr != nil || filepath.Clean(legacy) == filepath.Clean(path) {
-		return path, "", nil
-	}
-	if _, statErr := os.Stat(legacy); statErr == nil {
-		return legacy, "former global config location; move this file to " + path, nil
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return legacy, "", nil
-	}
-	return path, "", nil
 }
 
 func (c *Config) applyFile(path, layer string, strict bool) error {

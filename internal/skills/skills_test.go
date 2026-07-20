@@ -12,11 +12,8 @@ import (
 func isolateUserDirectories(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
-	legacy := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", legacy)
-	t.Setenv("AppData", legacy)
 }
 
 func TestGlobalInstructionsUseDotCollomia(t *testing.T) {

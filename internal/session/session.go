@@ -22,6 +22,7 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
 type Meta struct {
@@ -55,20 +56,15 @@ type Store struct {
 	workspace string
 }
 
-// Open returns the store for a workspace, under the per-user application
-// state directory (never inside the workspace). COLLO_STATE_DIR overrides the
-// base location; tests use it to stay out of the real user directory.
+// Open returns the store for a workspace under ~/.collomia/sessions (or the
+// equivalent USERPROFILE path on Windows), never inside the workspace.
 func Open(workspace string) (*Store, error) {
-	base := os.Getenv("COLLO_STATE_DIR")
-	if base == "" {
-		var err error
-		base, err = os.UserConfigDir()
-		if err != nil {
-			return nil, err
-		}
+	base, err := userconfig.Path("sessions")
+	if err != nil {
+		return nil, err
 	}
 	sum := sha256.Sum256([]byte(workspace))
-	dir := filepath.Join(base, "collomia", "sessions", filepath.Base(workspace)+"-"+hex.EncodeToString(sum[:6]))
+	dir := filepath.Join(base, filepath.Base(workspace)+"-"+hex.EncodeToString(sum[:6]))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}

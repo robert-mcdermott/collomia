@@ -80,16 +80,6 @@ func run(args []string) error {
 			if err != nil {
 				return err
 			}
-			if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-				legacy, legacyErr := appconfig.LegacyGlobalPath()
-				if legacyErr == nil && filepath.Clean(legacy) != filepath.Clean(path) {
-					if _, legacyStatErr := os.Stat(legacy); legacyStatErr == nil {
-						return fmt.Errorf("global configuration exists at the former location %s; move it to %s", legacy, path)
-					} else if !errors.Is(legacyStatErr, os.ErrNotExist) {
-						return legacyStatErr
-					}
-				}
-			}
 		}
 		paths := []string{path}
 		if opts.withReference {
