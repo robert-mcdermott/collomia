@@ -1043,11 +1043,24 @@ func isCriticalWriteTarget(target, cwd, workspace string) bool {
 
 func resolveStaticPath(target, cwd string) (string, bool) {
 	expanded, ok := expandStaticTarget(target)
-	if !ok || containsGlob(expanded) {
-		if ok && filepath.IsAbs(expanded) {
+	if !ok {
+		return "", false
+	}
+
+	// Keep Unix system paths recognizable even when the host uses different
+	// path semantics. Windows can still invoke commands through MSYS, Git Bash,
+	// WSL, or another nested shell, so /dev, /proc, and /sys targets must reach
+	// the catastrophic-command classifier instead of being joined to cwd.
+	portable := strings.ReplaceAll(expanded, `\`, "/")
+	if isPortableSystemPath(portable) {
+		return filepath.Clean(filepath.FromSlash(portable)), true
+	}
+
+	if containsGlob(expanded) {
+		if filepath.IsAbs(expanded) {
 			return filepath.Clean(expanded), true
 		}
-		if ok && cwd != "" {
+		if cwd != "" {
 			return filepath.Clean(filepath.Join(cwd, expanded)), true
 		}
 		return "", false
@@ -1062,6 +1075,16 @@ func resolveStaticPath(target, cwd string) (string, bool) {
 		expanded = filepath.Join(cwd, expanded)
 	}
 	return filepath.Clean(expanded), true
+}
+
+func isPortableSystemPath(path string) bool {
+	lower := strings.ToLower(path)
+	for _, root := range []string{"/dev", "/proc", "/sys"} {
+		if lower == root || strings.HasPrefix(lower, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func expandStaticTarget(target string) (string, bool) {

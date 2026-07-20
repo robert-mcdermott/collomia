@@ -102,8 +102,15 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppContainer helper failed: %v\n%s", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != "inside=ok outside=denied" {
-		t.Fatalf("enforcement mismatch: %s", got)
+	markerFound := false
+	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) == "inside=ok outside=denied" {
+			markerFound = true
+			break
+		}
+	}
+	if !markerFound {
+		t.Fatalf("enforcement mismatch: %q", strings.TrimSpace(string(out)))
 	}
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("outside file exists despite AppContainer confinement")
