@@ -134,3 +134,13 @@ func TestProviderDiagnosticExplainsBedrockAuthentication(t *testing.T) {
 		t.Fatalf("auto bearer diagnostic=%q %q", status, detail)
 	}
 }
+
+func TestProviderDiagnosticShowsTimeoutPolicy(t *testing.T) {
+	status, detail := providerDiagnostic(appconfig.Provider{
+		Type: "openai", APIKey: "resolved",
+		ConnectTimeoutSeconds: 4, RequestTimeoutSeconds: 90, StreamIdleTimeoutSeconds: 15,
+	})
+	if status != "ok" || !strings.Contains(detail, "connect=4s") || !strings.Contains(detail, "request=90s") || !strings.Contains(detail, "idle=15s") {
+		t.Fatalf("diagnostic=%q %q", status, detail)
+	}
+}

@@ -5,16 +5,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const maxErrorBody = 64 * 1024
+
+var errStreamIdleTimeout = errors.New("provider response stream exceeded its idle timeout")
 
 func newJSONRequest(ctx context.Context, method, url string, body any) (*http.Request, error) {
 	data, err := json.Marshal(body)
@@ -30,12 +34,12 @@ func newJSONRequest(ctx context.Context, method, url string, body any) (*http.Re
 	return req, nil
 }
 
-func checkResponse(resp *http.Response, providerName string) error {
+func checkResponse(resp *http.Response, providerName, operation string) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-	return fmt.Errorf("%s returned %s: %s", providerName, resp.Status, strings.TrimSpace(string(body)))
+	return responseError(resp, providerName, operation, body)
 }
 
 func sseLines(body io.Reader, handle func(event, data string) error) error {
@@ -73,8 +77,22 @@ func sseLines(body io.Reader, handle func(event, data string) error) error {
 	return flush()
 }
 
+// newHTTPClient applies separate connect, whole-request, and response-idle
+// bounds. The idle timeout is enforced per read and therefore also catches a
+// streaming endpoint that connects successfully and then stops producing
+// events.
+func newHTTPClient(connectTimeout, requestTimeout, idleTimeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = dialer.DialContext
+	return &http.Client{
+		Transport: idleTimeoutTransport{base: transport, timeout: idleTimeout},
+		Timeout:   requestTimeout,
+	}
+}
+
 func httpClient() *http.Client {
-	return &http.Client{Timeout: 30 * time.Minute}
+	return newHTTPClient(10*time.Second, 30*time.Minute, 5*time.Minute)
 }
 
 // retryableStatus reports whether a response indicates a transient failure
@@ -94,7 +112,7 @@ func retryableStatus(code int) bool {
 // jitter, honoring Retry-After. Requests built by newJSONRequest or with a
 // nil body are replayable. The final attempt's response is returned as-is so
 // the caller's error reporting stays unchanged.
-func doWithRetry(client *http.Client, req *http.Request, label string) (*http.Response, error) {
+func doWithRetry(client *http.Client, req *http.Request, label, operation string) (*http.Response, error) {
 	const attempts = 3
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -114,24 +132,38 @@ func doWithRetry(client *http.Client, req *http.Request, label string) (*http.Re
 			if !retryableStatus(resp.StatusCode) || attempt == attempts-1 {
 				return resp, nil
 			}
-			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+			if req.Body != nil && req.GetBody == nil {
+				return resp, nil
+			}
+			retryAfterHeader := resp.Header.Get("Retry-After")
+			retryAfter := parseRetryAfter(retryAfterHeader)
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 			resp.Body.Close()
-			lastErr = fmt.Errorf("%s returned %s: %s", label, resp.Status, strings.TrimSpace(string(body)))
-			if wait(req.Context(), backoffDelay(attempt, retryAfter)) != nil {
-				return nil, req.Context().Err()
+			lastErr = responseError(resp, label, operation, body)
+			delay := backoffDelay(attempt, retryAfter)
+			if strings.TrimSpace(retryAfterHeader) != "" && retryAfter == 0 {
+				delay = 0
+			}
+			if wait(req.Context(), delay) != nil {
+				return nil, classifyTransportError(req.Context(), label, operation, req.Context().Err())
 			}
 			continue
 		}
-		lastErr = err
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		lastErr = classifyTransportError(req.Context(), label, operation, err)
 		if req.Context().Err() != nil {
-			return nil, err
+			return nil, lastErr
+		}
+		if req.Body != nil && req.GetBody == nil {
+			return nil, lastErr
 		}
 		if wait(req.Context(), backoffDelay(attempt, 0)) != nil {
-			return nil, req.Context().Err()
+			return nil, classifyTransportError(req.Context(), label, operation, req.Context().Err())
 		}
 	}
-	return nil, fmt.Errorf("%s: giving up after %d attempts: %w", label, attempts, lastErr)
+	return nil, lastErr
 }
 
 func backoffDelay(attempt int, retryAfter time.Duration) time.Duration {
@@ -185,4 +217,75 @@ func rawObject(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return raw
+}
+
+type idleTimeoutTransport struct {
+	base    http.RoundTripper
+	timeout time.Duration
+}
+
+func (t idleTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil || t.timeout <= 0 {
+		return resp, err
+	}
+	resp.Body = newIdleTimeoutBody(resp.Body, t.timeout)
+	return resp, nil
+}
+
+type idleTimeoutBody struct {
+	body     io.ReadCloser
+	timeout  time.Duration
+	mu       sync.Mutex
+	timer    *time.Timer
+	closed   bool
+	timedOut bool
+}
+
+func newIdleTimeoutBody(body io.ReadCloser, timeout time.Duration) *idleTimeoutBody {
+	b := &idleTimeoutBody{body: body, timeout: timeout}
+	b.timer = time.AfterFunc(timeout, b.expire)
+	return b
+}
+
+func (b *idleTimeoutBody) Read(p []byte) (int, error) {
+	n, err := b.body.Read(p)
+	b.mu.Lock()
+	timedOut := b.timedOut
+	if n > 0 && !b.closed && !timedOut {
+		b.timer.Stop()
+		b.timer.Reset(b.timeout)
+	}
+	if err != nil || timedOut {
+		b.timer.Stop()
+	}
+	b.mu.Unlock()
+	if timedOut {
+		return n, errStreamIdleTimeout
+	}
+	return n, err
+}
+
+func (b *idleTimeoutBody) Close() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	b.timer.Stop()
+	b.mu.Unlock()
+	return b.body.Close()
+}
+
+func (b *idleTimeoutBody) expire() {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	b.timedOut = true
+	b.closed = true
+	b.mu.Unlock()
+	_ = b.body.Close()
 }

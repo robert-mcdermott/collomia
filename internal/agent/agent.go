@@ -227,6 +227,14 @@ func withOverriddenContent(toolName string, args json.RawMessage, content string
 func errorEvent(err error) event.Event {
 	e := event.New(event.KindError)
 	e.Error = err.Error()
+	if providerErr, ok := provider.AsError(err); ok {
+		e.Provider = &event.ProviderFailure{
+			Name: providerErr.Provider, Operation: providerErr.Operation,
+			Kind: string(providerErr.Kind), StatusCode: providerErr.StatusCode,
+			Retryable: providerErr.Retryable, RetryAfterMS: providerErr.RetryAfter.Milliseconds(),
+			RequestID: providerErr.RequestID,
+		}
+	}
 	return e
 }
 
@@ -629,6 +637,18 @@ func (a *Agent) Capabilities() provider.Capabilities {
 		return reporter.Capabilities()
 	}
 	return provider.Capabilities{Model: a.model, ContextWindow: a.providerConfig.Context}
+}
+
+// ProviderHealth reports process-local health for the active provider. Test
+// doubles and custom clients that do not implement health reporting remain
+// usable and start in the explicit unknown state.
+func (a *Agent) ProviderHealth() provider.Health {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if reporter, ok := a.client.(provider.HealthReporter); ok {
+		return reporter.Health()
+	}
+	return provider.Health{State: provider.HealthUnknown}
 }
 
 func (a *Agent) Usage() provider.Usage { a.mu.RLock(); defer a.mu.RUnlock(); return a.usage }

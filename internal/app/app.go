@@ -122,6 +122,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	client = provider.WithResilience(client)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		return nil, err
@@ -285,6 +286,7 @@ func (r *Runtime) ListModels(ctx context.Context, providerName string) ([]provid
 	if err != nil {
 		return nil, err
 	}
+	client = provider.WithResilience(client)
 	capabilities, err := provider.CapabilitiesFor(p.Type, model, p.Context)
 	if err != nil {
 		return nil, err
@@ -533,10 +535,11 @@ func (r *Runtime) Select(providerName, model string) error {
 	if err != nil {
 		return err
 	}
+	client = provider.WithResilience(client)
 	r.Agent.SetProvider(providerName, resolved, p, client)
 	return nil
 }
 func (r *Runtime) Summary() string {
 	p, m := r.Agent.Selection()
-	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\ncapabilities: %s\nautonomy: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.Agent.Plan(), r.Config.Source)
+	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.Agent.Plan(), r.Config.Source)
 }

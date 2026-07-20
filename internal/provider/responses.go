@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 )
@@ -81,12 +80,12 @@ func (c *ResponsesClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req, c.Label, "responses")
 	if err != nil {
-		return Response{}, fmt.Errorf("%s request: %w", c.Label, err)
+		return Response{}, err
 	}
 	defer resp.Body.Close()
-	if err := checkResponse(resp, c.Label); err != nil {
+	if err := checkResponse(resp, c.Label, "responses"); err != nil {
 		return Response{}, err
 	}
 	var payload struct {
@@ -112,10 +111,10 @@ func (c *ResponsesClient) Chat(ctx context.Context, in Request, onDelta func(Del
 		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return Response{}, err
+		return Response{}, protocolError(c.Label, "decode responses response", err)
 	}
 	if payload.Error != nil {
-		return Response{}, fmt.Errorf("%s: %s", c.Label, payload.Error.Message)
+		return Response{}, &Error{Provider: c.Label, Operation: "responses", Kind: ErrorInvalidRequest, Message: payload.Error.Message}
 	}
 	out := Response{Stop: payload.Status, Usage: Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens}}
 	for _, item := range payload.Output {

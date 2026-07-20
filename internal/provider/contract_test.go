@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -100,6 +101,27 @@ func TestResponsesContract(t *testing.T) {
 	assertContractResponse(t, &ResponsesClient{Label: "responses-contract", BaseURL: server.URL, APIKey: "secret"}, "checked", Usage{InputTokens: 11, OutputTokens: 5})
 }
 
+func TestResponsesRetriesTransientFailure(t *testing.T) {
+	calls := 0
+	client := &ResponsesClient{
+		Label: "responses-retry", BaseURL: "https://example.invalid", APIKey: "secret",
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"recovered"}]}]}`
+			status := http.StatusOK
+			if calls == 1 {
+				status = http.StatusServiceUnavailable
+				body = `{"error":{"message":"temporarily unavailable"}}`
+			}
+			return &http.Response{StatusCode: status, Status: http.StatusText(status), Header: http.Header{"Retry-After": []string{"0"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+		})},
+	}
+	response, err := client.Chat(t.Context(), contractRequest(), nil)
+	if err != nil || response.Content != "recovered" || calls != 2 {
+		t.Fatalf("response=%+v calls=%d err=%v", response, calls, err)
+	}
+}
+
 func TestBedrockConverseContract(t *testing.T) {
 	body, err := bedrockRequest(contractRequest())
 	if err != nil {
@@ -117,6 +139,27 @@ func TestBedrockConverseContract(t *testing.T) {
 	}
 	if response.Content != "checked" || streamed.String() != "checked" || len(response.ToolCalls) != 1 || response.ToolCalls[0].Name != "read_file" || string(response.ToolCalls[0].Arguments) != `{"path":"README.md"}` || response.Usage != (Usage{InputTokens: 8, OutputTokens: 2}) {
 		t.Fatalf("response=%+v streamed=%q", response, streamed.String())
+	}
+}
+
+func TestBedrockConverseRetriesTransientFailure(t *testing.T) {
+	calls := 0
+	client := &BedrockClient{
+		Label: "bedrock-retry", Region: "us-east-1", Auth: "bearer", APIKey: "secret",
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := `{"output":{"message":{"content":[{"text":"recovered"}]}},"usage":{"inputTokens":1,"outputTokens":1},"stopReason":"end_turn"}`
+			status := http.StatusOK
+			if calls == 1 {
+				status = http.StatusTooManyRequests
+				body = `{"message":"slow down"}`
+			}
+			return &http.Response{StatusCode: status, Status: http.StatusText(status), Header: http.Header{"Retry-After": []string{"0"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+		})},
+	}
+	response, err := client.Chat(t.Context(), contractRequest(), nil)
+	if err != nil || response.Content != "recovered" || calls != 2 {
+		t.Fatalf("response=%+v calls=%d err=%v", response, calls, err)
 	}
 }
 

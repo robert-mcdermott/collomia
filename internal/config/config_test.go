@@ -63,12 +63,33 @@ func TestLoadProjectConfigAndExpandEnvironment(t *testing.T) {
 	if p.BaseURL != "http://localhost:1234/v1" {
 		t.Fatalf("base URL=%q", p.BaseURL)
 	}
+	if p.ConnectTimeoutSeconds != 10 || p.RequestTimeoutSeconds != 1800 || p.StreamIdleTimeoutSeconds != 300 {
+		t.Fatalf("provider timeout defaults=%+v", p)
+	}
 	name, _, model, err := cfg.Selected("custom", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if name != "custom" || model != "preferred" {
 		t.Fatalf("selected %s/%s", name, model)
+	}
+}
+
+func TestValidateProviderTimeouts(t *testing.T) {
+	cfg := Defaults()
+	p := cfg.Providers["ollama"]
+	p.ConnectTimeoutSeconds = -1
+	p.RequestTimeoutSeconds = -2
+	p.StreamIdleTimeoutSeconds = -3
+	cfg.Providers["ollama"] = p
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected negative provider timeouts to fail validation")
+	}
+	for _, field := range []string{"connect_timeout_seconds", "request_timeout_seconds", "stream_idle_timeout_seconds"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("error %q missing %q", err, field)
+		}
 	}
 }
 

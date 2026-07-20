@@ -51,6 +51,23 @@ func TestRunResultRoundTrips(t *testing.T) {
 	}
 }
 
+func TestProviderFailureRoundTrips(t *testing.T) {
+	e := New(KindError)
+	e.Error = "rate limited"
+	e.Provider = &ProviderFailure{Name: "openrouter/glm", Operation: "chat", Kind: "rate_limit", StatusCode: 429, Retryable: true, RetryAfterMS: 3000, RequestID: "req-123"}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Provider == nil || decoded.Provider.Kind != "rate_limit" || decoded.Provider.StatusCode != 429 || !decoded.Provider.Retryable || decoded.Provider.RetryAfterMS != 3000 || decoded.Provider.RequestID != "req-123" {
+		t.Fatalf("provider failure round trip mismatch: %+v", decoded.Provider)
+	}
+}
+
 func TestJSONLWriterAppliesRedaction(t *testing.T) {
 	var out strings.Builder
 	w := NewJSONLWriter(&out)

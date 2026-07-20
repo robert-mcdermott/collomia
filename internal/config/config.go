@@ -71,20 +71,23 @@ type Layer struct {
 }
 
 type Provider struct {
-	Type        string            `json:"type"`
-	BaseURL     string            `json:"base_url,omitempty"`
-	APIKey      string            `json:"api_key,omitempty"`
-	APIKeyEnv   string            `json:"api_key_env,omitempty"`
-	Model       string            `json:"model,omitempty"`
-	Region      string            `json:"region,omitempty"`
-	Profile     string            `json:"profile,omitempty"`
-	Deployment  string            `json:"deployment,omitempty"`
-	APIVersion  string            `json:"api_version,omitempty"`
-	Auth        string            `json:"auth,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
-	Context     int               `json:"context_window,omitempty"`
-	Temperature *float64          `json:"temperature,omitempty"`
+	Type                     string            `json:"type"`
+	BaseURL                  string            `json:"base_url,omitempty"`
+	APIKey                   string            `json:"api_key,omitempty"`
+	APIKeyEnv                string            `json:"api_key_env,omitempty"`
+	Model                    string            `json:"model,omitempty"`
+	Region                   string            `json:"region,omitempty"`
+	Profile                  string            `json:"profile,omitempty"`
+	Deployment               string            `json:"deployment,omitempty"`
+	APIVersion               string            `json:"api_version,omitempty"`
+	Auth                     string            `json:"auth,omitempty"`
+	Headers                  map[string]string `json:"headers,omitempty"`
+	MaxTokens                int               `json:"max_tokens,omitempty"`
+	Context                  int               `json:"context_window,omitempty"`
+	Temperature              *float64          `json:"temperature,omitempty"`
+	ConnectTimeoutSeconds    int               `json:"connect_timeout_seconds,omitempty"`
+	RequestTimeoutSeconds    int               `json:"request_timeout_seconds,omitempty"`
+	StreamIdleTimeoutSeconds int               `json:"stream_idle_timeout_seconds,omitempty"`
 }
 
 type Permissions struct {
@@ -399,6 +402,15 @@ func (c *Config) normalize() {
 		if p.MaxTokens <= 0 {
 			p.MaxTokens = 8192
 		}
+		if p.ConnectTimeoutSeconds == 0 {
+			p.ConnectTimeoutSeconds = 10
+		}
+		if p.RequestTimeoutSeconds == 0 {
+			p.RequestTimeoutSeconds = 30 * 60
+		}
+		if p.StreamIdleTimeoutSeconds == 0 {
+			p.StreamIdleTimeoutSeconds = 5 * 60
+		}
 		c.Providers[name] = p
 	}
 	for name, server := range c.MCP {
@@ -487,6 +499,18 @@ func (c Config) ValidateFields() []FieldError {
 			}
 			if provider.Auth == "bearer" && provider.Profile != "" {
 				errs = append(errs, FieldError{field + ".profile", "is not used with auth=bearer; remove it or change auth to sigv4/auto"})
+			}
+		}
+		for _, timeout := range []struct {
+			key   string
+			value int
+		}{
+			{"connect_timeout_seconds", provider.ConnectTimeoutSeconds},
+			{"request_timeout_seconds", provider.RequestTimeoutSeconds},
+			{"stream_idle_timeout_seconds", provider.StreamIdleTimeoutSeconds},
+		} {
+			if timeout.value < 0 {
+				errs = append(errs, FieldError{field + "." + timeout.key, "must not be negative"})
 			}
 		}
 	}

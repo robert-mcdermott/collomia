@@ -66,6 +66,9 @@ func TestWriteGlobalStarterIncludesProvidersPermissionsAndOptions(t *testing.T) 
 	if openrouter.Type != "openai" || openrouter.BaseURL != "https://openrouter.ai/api/v1" || openrouter.APIKeyEnv != "OR_API_KEY" || openrouter.Model != "z-ai/glm-5.2" || openrouter.MaxTokens != 128000 || openrouter.Context != 500000 {
 		t.Fatalf("openrouter=%+v", openrouter)
 	}
+	if openrouter.ConnectTimeoutSeconds != 10 || openrouter.RequestTimeoutSeconds != 1800 || openrouter.StreamIdleTimeoutSeconds != 300 {
+		t.Fatalf("openrouter timeout defaults=%+v", openrouter)
+	}
 	var permissions map[string]json.RawMessage
 	if err := json.Unmarshal(rawField(t, data, "permissions"), &permissions); err != nil {
 		t.Fatal(err)

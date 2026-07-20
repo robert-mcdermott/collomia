@@ -512,3 +512,18 @@ func TestUserPromptHookBlocksTurn(t *testing.T) {
 		t.Fatalf("blocked prompt must not enter the conversation, got %d messages", a.MessageCount())
 	}
 }
+
+func TestProviderErrorEventIncludesMachineReadableClassification(t *testing.T) {
+	err := &provider.Error{
+		Provider: "openrouter/glm", Operation: "chat", Kind: provider.ErrorRateLimit,
+		StatusCode: 429, Retryable: true, RetryAfter: 3 * time.Second, RequestID: "req-123",
+		Message: "rate limited",
+	}
+	e := errorEvent(err)
+	if e.Provider == nil {
+		t.Fatal("provider classification missing from error event")
+	}
+	if e.Provider.Name != "openrouter/glm" || e.Provider.Operation != "chat" || e.Provider.Kind != "rate_limit" || e.Provider.StatusCode != 429 || !e.Provider.Retryable || e.Provider.RetryAfterMS != 3000 || e.Provider.RequestID != "req-123" {
+		t.Fatalf("provider failure=%+v", e.Provider)
+	}
+}

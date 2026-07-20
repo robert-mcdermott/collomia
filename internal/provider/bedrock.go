@@ -68,21 +68,22 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if err := c.authenticate(ctx, req, data, region); err != nil {
-		return Response{}, err
+		return Response{}, &Error{Provider: c.Label, Operation: "authenticate", Kind: ErrorAuthentication, Message: sanitizeProviderText(err.Error(), 2048), Err: err}
 	}
 	client := c.HTTP
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req, c.Label, "converse")
 	if err != nil {
-		return Response{}, fmt.Errorf("Bedrock request: %w", err)
-	}
-	defer resp.Body.Close()
-	if err := checkResponse(resp, "Bedrock"); err != nil {
 		return Response{}, err
 	}
-	return parseBedrockResponse(resp.Body, onDelta)
+	defer resp.Body.Close()
+	if err := checkResponse(resp, c.Label, "converse"); err != nil {
+		return Response{}, err
+	}
+	response, err := parseBedrockResponse(resp.Body, onDelta)
+	return response, protocolError(c.Label, "decode converse response", err)
 }
 
 func (c *BedrockClient) authenticate(ctx context.Context, req *http.Request, body []byte, region string) error {

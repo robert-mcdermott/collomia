@@ -46,10 +46,12 @@ func WriteStarter(path string, global bool) error {
 			"ollama": {
 				Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1",
 				Model: "qwen3-coder", Context: 32768, MaxTokens: 8192,
+				ConnectTimeoutSeconds: 10, RequestTimeoutSeconds: 1800, StreamIdleTimeoutSeconds: 300,
 			},
 			"openrouter": {
 				Type: "openai", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "OR_API_KEY",
 				Model: "z-ai/glm-5.2", MaxTokens: 128000, Context: 500000,
+				ConnectTimeoutSeconds: 10, RequestTimeoutSeconds: 1800, StreamIdleTimeoutSeconds: 300,
 			},
 		}
 		inactive := false
@@ -119,7 +121,12 @@ const configReferenceJSONC = `
       "api_key_env": "OR_API_KEY",
       "model": "z-ai/glm-5.2",
       "max_tokens": 128000,
-      "context_window": 500000
+      "context_window": 500000,
+      // Connection establishment, whole request, and time between response
+      // chunks are bounded independently. Zero/omitted uses these defaults.
+      "connect_timeout_seconds": 10,
+      "request_timeout_seconds": 1800,
+      "stream_idle_timeout_seconds": 300
     },
     "openai": {
       "type": "openai",

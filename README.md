@@ -194,7 +194,7 @@ collo run --resume <session-id> "Continue where we left off"
 collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
 ```
 
-With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors:
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors. Provider failures add a classified `provider` object to the preceding `error` event (for example, `{"kind":"rate_limit","status_code":429,"retryable":true,"retry_after_ms":3000,"request_id":"…"}`):
 
 ```json
 {"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
@@ -330,6 +330,27 @@ Every provider has a local name and a protocol `type`. Secrets should normally b
 Collomia keeps an effective capability declaration for every provider/model selection. It distinguishes `supported`, `partial`, `unsupported`, and `unknown` for tool calling, streaming, reasoning, images, structured output, token usage, prompt caching, parallel tool calls, and model discovery; it also carries the configured context window and adapter-specific constraints. `/status`, `/model`, and `/models` expose this information. `/models` probes supported catalog endpoints concurrently and reports providers without a catalog as **unverified**, not incorrectly **unavailable**. Catalogs such as OpenAI-compatible `GET /models` often return names without feature metadata, so Collomia reports model-dependent facts as unknown instead of inferring capabilities from a model name.
 
 The declaration describes what Collomia's current adapter can send and consume, which may be smaller than the vendor API's complete feature set. Before any provider request, Collomia rejects a known contradiction (for example, sending tools through an adapter declared not to support them, or configuring a maximum output larger than the context window). Unknown and partial capabilities remain visible but do not cause speculative failures.
+
+All built-in HTTP adapters use the same resilience policy. Network failures and HTTP 408, 429, 5xx, and 529 responses are retried up to three attempts with bounded exponential backoff, jitter, and `Retry-After`; authentication, permission, not-found, and other ordinary 4xx failures are not retried. A request is retried only when its body can be replayed. Failures are classified as `authentication`, `permission`, `rate_limit`, `invalid_request`, `not_found`, `timeout`, `unavailable`, `protocol`, `cancelled`, or `unknown`; status, retry timing, and request IDs are included when the provider supplies them. In `--jsonl` mode the same fields appear under `provider` on the `error` event.
+
+Three consecutive transient request failures open a 30-second circuit so a broken endpoint is not hammered; one recovery probe closes it. `/status` shows the active provider as `not checked yet`, `healthy`, `degraded`, `circuit open`, or `testing recovery`. Switching provider/model starts a fresh health state. Timeouts are configured per provider (values shown are the defaults):
+
+```json
+{
+  "providers": {
+    "example": {
+      "type": "openai-compatible",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "qwen3-coder",
+      "connect_timeout_seconds": 10,
+      "request_timeout_seconds": 1800,
+      "stream_idle_timeout_seconds": 300
+    }
+  }
+}
+```
+
+`connect_timeout_seconds` bounds connection establishment, `request_timeout_seconds` bounds the complete request, and `stream_idle_timeout_seconds` bounds the silence between response chunks. Increase the idle timeout for models that legitimately spend more than five minutes without emitting data; do not disable these bounds for an unattended run.
 
 ### OpenAI-compatible services
 

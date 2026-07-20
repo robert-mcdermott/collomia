@@ -51,12 +51,12 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := doWithRetry(client, req, c.Label)
+	resp, err := doWithRetry(client, req, c.Label, "list models")
 	if err != nil {
-		return nil, fmt.Errorf("%s models: %w", c.Label, err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-	if err := checkResponse(resp, c.Label); err != nil {
+	if err := checkResponse(resp, c.Label, "list models"); err != nil {
 		return nil, err
 	}
 	var payload struct {
@@ -66,7 +66,7 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
+		return nil, protocolError(c.Label, "list models", err)
 	}
 	models := make([]ModelInfo, 0, len(payload.Data))
 	for _, m := range payload.Data {
@@ -118,18 +118,20 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := doWithRetry(client, req, c.Label)
+	resp, err := doWithRetry(client, req, c.Label, "chat")
 	if err != nil {
-		return Response{}, fmt.Errorf("%s request: %w", c.Label, err)
+		return Response{}, err
 	}
 	defer resp.Body.Close()
-	if err := checkResponse(resp, c.Label); err != nil {
+	if err := checkResponse(resp, c.Label, "chat"); err != nil {
 		return Response{}, err
 	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return parseAnthropicNonStream(resp.Body, onDelta)
+		response, err := parseAnthropicNonStream(resp.Body, onDelta)
+		return response, protocolError(c.Label, "decode chat response", err)
 	}
-	return parseAnthropicStream(resp.Body, onDelta)
+	response, err := parseAnthropicStream(resp.Body, onDelta)
+	return response, protocolError(c.Label, "read chat stream", err)
 }
 
 func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta func(Delta)) (Response, error) {

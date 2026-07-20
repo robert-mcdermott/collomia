@@ -137,7 +137,7 @@ func runDoctorCommand(opts options) error {
 }
 
 func providerDiagnostic(p appconfig.Provider) (status, detail string) {
-	status, detail = "ok", p.Type
+	status, detail = "ok", p.Type+providerTimeoutDiagnostic(p)
 	if p.Type == "bedrock" {
 		auth := strings.ToLower(strings.TrimSpace(p.Auth))
 		if auth == "" {
@@ -177,4 +177,18 @@ func providerDiagnostic(p appconfig.Provider) (status, detail string) {
 		detail += "; no credential configured (fine for local endpoints)"
 	}
 	return status, detail
+}
+
+func providerTimeoutDiagnostic(p appconfig.Provider) string {
+	connect, request, idle := p.ConnectTimeoutSeconds, p.RequestTimeoutSeconds, p.StreamIdleTimeoutSeconds
+	if connect <= 0 {
+		connect = 10
+	}
+	if request <= 0 {
+		request = 30 * 60
+	}
+	if idle <= 0 {
+		idle = 5 * 60
+	}
+	return fmt.Sprintf("; timeouts connect=%ds request=%ds idle=%ds", connect, request, idle)
 }
