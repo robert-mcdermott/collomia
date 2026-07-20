@@ -2,6 +2,8 @@
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with OS sandbox enforcement on macOS and Linux — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
+New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting.
+
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
 An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`). The [roadmap](ROADMAP.md) tracks what's still ahead.
@@ -18,7 +20,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Conservative static command analysis: commands that cannot be fully read (substitutions, `eval`, inline interpreters) always require interactive approval, in every mode.
 - Workspace containment, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
 - OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem (and, on newer kernels, TCP) containment on Linux, both with `auto` and fail-closed `require` modes.
-- Repository trust: project-provided configuration, MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
+- Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, and a maintained [capability matrix](docs/CAPABILITIES.md).
@@ -662,7 +664,7 @@ Path tools canonicalize paths and existing symlinks before checking containment.
 
 - **macOS**: Seatbelt (`sandbox-exec`) confines file writes to the workspace and denies network egress unless `sandbox_allow_network` is set.
 - **Linux**: Landlock confines file writes to the workspace (kernel 5.13+); on kernel 6.7+ (Landlock ABI v4) it also denies TCP connect/bind unless `sandbox_allow_network` is set. UDP, including DNS, cannot be restricted by Landlock yet.
-- **Windows**: no sandbox backend exists yet; `sandbox` can only be `off` or fail-closed `require`.
+- **Windows**: no sandbox backend exists yet; `auto` degrades to approval checks only, while fail-closed `require` refuses agent commands.
 
 `collo doctor` reports your platform's actual sandbox status. Two more knobs narrow the blast radius further: `command_env: "minimal"` strips agent commands down to `PATH`/`HOME`/basics instead of inheriting your full environment (the default whenever the sandbox is enabled), and `reviewer_command` runs an external program of your choosing before any non-read action is auto-approved — a non-zero exit or a `{"decision":"deny"}` reply escalates it to an interactive prompt instead of silently allowing it. The exact guarantees and limitations of every mode and backend are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
@@ -687,14 +689,14 @@ Every permission decision and execution outcome is appended to a per-workspace a
 
 ### Repository trust
 
-A repository can ship `.collomia.json`, skills, and instruction files — but none of it takes effect until you review and approve it with `collo trust`. Trust is bound to the project configuration's content hash and is automatically invalidated when the file changes. `collo trust --status` shows the current state; `collo trust --revoke` withdraws approval.
+A repository can ship `.collomia.json`, skills, and instruction files. When `.collomia.json` is present, the entire project layer — including project skills and instructions — stays quarantined until you review and approve the file with `collo trust`. Trust is bound to the project configuration's content hash and is automatically invalidated when the file changes. `collo trust --status` shows the current state; `collo trust --revoke` withdraws approval. A workspace with no `.collomia.json` has no configuration file to approve, so review repository-provided skills and instructions before use; the [user guide](docs/USER_GUIDE.md#repository-trust) explains this boundary.
 
 ## Instructions
 
 Beyond the project's `.collomia.json`, Collomia layers plain-text instructions into every system prompt:
 
 - A **user-level** `AGENTS.md` or `COLLOMIA.md` in your Collomia configuration directory (next to `config.json`) applies to every workspace you use.
-- A **project-level** `AGENTS.md` or `COLLOMIA.md` in the workspace root applies to that repository, and is only read once the workspace is trusted. Project instructions are layered after (and can refine or override) the user-level ones.
+- A **project-level** `AGENTS.md` or `COLLOMIA.md` in the workspace root applies to that repository when the runtime project-trust state permits it (a present `.collomia.json` must be trusted). Project instructions are layered after (and can refine or override) the user-level ones.
 
 Use these for house style, testing conventions, deployment gotchas — anything you'd otherwise repeat in every prompt.
 
@@ -710,7 +712,7 @@ release-check/
   assets/           # templates and files used in the skill's output
 ```
 
-Skills are discovered from two scopes with deterministic precedence — **project** skills (`.collomia/skills/<name>/` or `.agents/skills/<name>/`, active only in trusted workspaces) shadow **global** skills of the same name (`~/.collomia/skills/<name>/`, applying to every workspace). Legacy single-file `SKILLS.md`/`skills.md` manifests are still read. Shadowed duplicates are reported at startup rather than silently dropped.
+Skills are discovered from two scopes with deterministic precedence — **project** skills (`.collomia/skills/<name>/` or `.agents/skills/<name>/`, active when the runtime project-trust state permits them; a present `.collomia.json` must be trusted) shadow **global** skills of the same name (`~/.collomia/skills/<name>/`, applying to every workspace). Legacy single-file `SKILLS.md`/`skills.md` manifests are still read. Shadowed duplicates are reported at startup rather than silently dropped.
 
 `SKILL.md` starts with YAML front matter. `name` (lowercase letters, digits, hyphens; must match the directory) and `description` are required; the parser also understands folded/literal blocks, `license`, `allowed-tools`, and a nested `metadata` map:
 
