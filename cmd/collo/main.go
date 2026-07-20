@@ -48,6 +48,9 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "__landlock" {
 		return runLandlockShim(args[1:])
 	}
+	if len(args) > 0 && args[0] == "__appcontainer" {
+		return runAppContainerShim(args[1:])
+	}
 	opts, err := parse(args)
 	if err != nil {
 		return err
@@ -76,16 +79,6 @@ func run(args []string) error {
 			path, err = appconfig.GlobalPath()
 			if err != nil {
 				return err
-			}
-			if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-				legacy, legacyErr := appconfig.LegacyGlobalPath()
-				if legacyErr == nil && filepath.Clean(legacy) != filepath.Clean(path) {
-					if _, legacyStatErr := os.Stat(legacy); legacyStatErr == nil {
-						return fmt.Errorf("global configuration exists at the former location %s; move it to %s", legacy, path)
-					} else if !errors.Is(legacyStatErr, os.ErrNotExist) {
-						return legacyStatErr
-					}
-				}
 			}
 		}
 		paths := []string{path}

@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,6 +44,20 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 	if loaded.Meta.Turns != 1 || loaded.Meta.Provider != "ollama" {
 		t.Fatalf("meta=%+v", loaded.Meta)
+	}
+}
+
+func TestOpenUsesGlobalRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	store, err := Open(filepath.Join(home, "work", "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot := filepath.Join(home, ".collomia", "sessions") + string(filepath.Separator)
+	if !strings.HasPrefix(store.dir, wantRoot) {
+		t.Fatalf("session dir=%q, want it below %q", store.dir, wantRoot)
 	}
 }
 

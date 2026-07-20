@@ -94,6 +94,41 @@ func TestQuestionUsesTransientOverlay(t *testing.T) {
 	}
 }
 
+func TestOneTimeApprovalDoesNotOfferOrAcceptAlways(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan permission.Decision, 1)
+	m.pending = &approvalEnvelope{
+		request: permission.Request{
+			Tool: "run_command",
+			Action: tools.Action{
+				Risk: tools.RiskExecute, Summary: "run git reset --hard",
+				ConfirmReasons: []string{"git reset --hard can discard uncommitted work"},
+			},
+			Reason: "one-time confirmation required",
+		},
+		reply: reply,
+	}
+	plain := ansi.Strip(m.View())
+	if strings.Contains(plain, "A  Always") {
+		t.Fatalf("one-time approval offered a persistent grant:\n%s", plain)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(Model)
+	if m.pending == nil {
+		t.Fatal("always key resolved a one-time approval")
+	}
+	select {
+	case decision := <-reply:
+		t.Fatalf("always key sent a decision: %+v", decision)
+	default:
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(Model)
+	if decision := <-reply; !decision.Allow || decision.Always {
+		t.Fatalf("decision=%+v, want approve once", decision)
+	}
+}
+
 func TestModalUsesActiveThemeBorder(t *testing.T) {
 	m := newTestModel(t)
 	theme, _ := themeByName("matrix")

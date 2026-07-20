@@ -107,7 +107,9 @@ type Permissions struct {
 	AllowOutsideWorkspace bool     `json:"allow_outside_workspace"`
 	AllowedTools          []string `json:"allowed_tools,omitempty"`
 	DeniedTools           []string `json:"denied_tools,omitempty"`
-	DeniedCommands        []string `json:"denied_commands,omitempty"`
+	// DeniedCommands is monotonic across configuration layers: each layer can
+	// add patterns, but cannot remove built-in or higher-scope denials.
+	DeniedCommands []string `json:"denied_commands,omitempty"`
 	// Rules are ordered allow/prompt/deny decisions matched before the
 	// autonomy mode's defaults. See internal/policy.
 	Rules []Rule `json:"rules,omitempty"`
@@ -115,6 +117,10 @@ type Permissions struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxAllowNetwork permits network egress inside the sandbox.
 	SandboxAllowNetwork bool `json:"sandbox_allow_network,omitempty"`
+	// SandboxWritableRoots grants sandboxed commands write access to
+	// additional explicit roots (for example a package-manager cache). Relative
+	// paths are resolved from the workspace.
+	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"`
 	// CommandEnv controls the environment passed to agent commands: "full"
 	// (inherit everything, the default) or "minimal" (PATH, HOME, and other
 	// basics only, keeping parent secrets out of child processes).
@@ -211,12 +217,11 @@ func Defaults() Config {
 			},
 		},
 		Permissions: Permissions{
-			Mode: "ask",
+			Mode:                "ask",
+			SandboxAllowNetwork: true,
 			DeniedCommands: []string{
 				`(?i)(^|[;&|]\s*)(rm\s+-[^\s]*(rf|fr)[^\s]*|rmdir\s+/s)\s+([/~]|\.{1,2}|\*|[a-z]:\\)($|\s)`,
-				`(?i)(^|[;&|]\s*)git\s+(reset\s+--hard|clean\s+-[^\s]*f[^\s]*)($|\s)`,
-				`(?i)(^|[;&|]\s*)(del|erase)\s+/[^\s]*[sq][^\s]*\s+[a-z]:\\($|\s)`,
-				`(?i)(^|[;&|]\s*)(shutdown|reboot|mkfs|diskpart)(\s|$)`,
+				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
 			},
 		},
 		MCP:     map[string]MCPServer{},
@@ -226,12 +231,6 @@ func Defaults() Config {
 
 func GlobalPath() (string, error) {
 	return userconfig.ConfigPath()
-}
-
-// LegacyGlobalPath returns the pre-~/.collomia location. New files must use
-// GlobalPath; the legacy path is retained only for migration compatibility.
-func LegacyGlobalPath() (string, error) {
-	return userconfig.LegacyConfigPath()
 }
 
 type LoadOptions struct {
@@ -256,13 +255,9 @@ func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 	cfg.Source = "defaults"
 	cfg.ProjectTrusted = true
 
-	if global, note, err := globalPathForLoad(); err == nil {
-		before := len(cfg.Layers)
+	if global, err := GlobalPath(); err == nil {
 		if err := cfg.applyFile(global, "user", opts.Strict); err != nil {
 			return cfg, err
-		}
-		if note != "" && len(cfg.Layers) > before {
-			cfg.Layers[len(cfg.Layers)-1].Note = note
 		}
 	}
 
@@ -303,28 +298,6 @@ func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 	return cfg, nil
 }
 
-// globalPathForLoad prefers ~/.collomia/config.json and falls back to the
-// former OS-specific location only when the new file does not exist.
-func globalPathForLoad() (path, note string, err error) {
-	path, err = GlobalPath()
-	if err != nil {
-		return "", "", err
-	}
-	if _, statErr := os.Stat(path); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
-		return path, "", nil
-	}
-	legacy, legacyErr := LegacyGlobalPath()
-	if legacyErr != nil || filepath.Clean(legacy) == filepath.Clean(path) {
-		return path, "", nil
-	}
-	if _, statErr := os.Stat(legacy); statErr == nil {
-		return legacy, "former global config location; move this file to " + path, nil
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return legacy, "", nil
-	}
-	return path, "", nil
-}
-
 func (c *Config) applyFile(path, layer string, strict bool) error {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -346,9 +319,11 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 	if strict {
 		decoder.DisallowUnknownFields()
 	}
+	inheritedDeniedCommands := append([]string(nil), c.Permissions.DeniedCommands...)
 	if err := decoder.Decode(c); err != nil {
 		return fmt.Errorf("parse config %s: %w", path, err)
 	}
+	c.Permissions.DeniedCommands = additiveStrings(inheritedDeniedCommands, c.Permissions.DeniedCommands)
 	keys := flattenJSON(data)
 	for _, key := range keys {
 		c.Origins[key] = layer
@@ -356,6 +331,24 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 	c.Layers = append(c.Layers, Layer{Name: layer, Path: path, Applied: true, Keys: keys})
 	c.Source = path
 	return nil
+}
+
+// additiveStrings preserves inherited safety policy while allowing a lower
+// configuration layer to add entries. Exact duplicates are retained once in
+// first-seen order so built-ins always precede user and project additions.
+func additiveStrings(inherited, additions []string) []string {
+	merged := make([]string, 0, len(inherited)+len(additions))
+	seen := make(map[string]struct{}, len(inherited)+len(additions))
+	for _, values := range [][]string{inherited, additions} {
+		for _, value := range values {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			merged = append(merged, value)
+		}
+	}
+	return merged
 }
 
 func (c *Config) applyEnv() {
@@ -492,6 +485,11 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "full", "minimal":
 	default:
 		errs = append(errs, FieldError{"permissions.command_env", fmt.Sprintf("must be full or minimal (got %q)", c.Permissions.CommandEnv)})
+	}
+	for i, root := range c.Permissions.SandboxWritableRoots {
+		if strings.TrimSpace(root) == "" {
+			errs = append(errs, FieldError{fmt.Sprintf("permissions.sandbox_writable_roots.%d", i), "must not be empty"})
+		}
 	}
 	for name, provider := range c.Providers {
 		field := "providers." + name

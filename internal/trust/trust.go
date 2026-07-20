@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
 type Status string
@@ -37,15 +39,10 @@ type Store struct {
 	path       string
 }
 
-// Path returns the trust database location inside the per-user application
-// state directory — never inside a workspace, so repositories cannot grant
-// themselves trust.
+// Path returns the trust database location under the per-user Collomia root —
+// never inside a workspace, so repositories cannot grant themselves trust.
 func Path() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "collomia", "trust.json"), nil
+	return userconfig.Path("trust.json")
 }
 
 func Load() (*Store, error) {

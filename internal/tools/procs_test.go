@@ -119,6 +119,22 @@ func TestStartProcessHonorsDeniedPatterns(t *testing.T) {
 	}
 }
 
+func TestStartProcessHonorsBuiltInCatastrophicDenial(t *testing.T) {
+	manager, start, _, _, _ := newProcFixture(t)
+	defer manager.StopAll()
+	raw := json.RawMessage(`{"command":"rm -rf ."}`)
+	action, err := start.Assess(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(action.HardDenyReasons) == 0 {
+		t.Fatalf("assessment did not report catastrophic target: %+v", action)
+	}
+	if _, err := start.Execute(t.Context(), raw); err == nil || !strings.Contains(err.Error(), "catastrophic-command protection") {
+		t.Fatalf("background execution must repeat built-in protection, got %v", err)
+	}
+}
+
 func TestStartProcessAssessUsesShellAnalysis(t *testing.T) {
 	_, start, _, _, _ := newProcFixture(t)
 	action, err := start.Assess(startArgs("npm run dev"))

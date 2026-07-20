@@ -20,6 +20,14 @@ func platformBackend() Backend { return darwinBackend{} }
 
 func (darwinBackend) Name() string { return "sandbox-exec (Seatbelt)" }
 
+func (darwinBackend) Capabilities() Capabilities {
+	return Capabilities{
+		WriteIsolation:   true,
+		NetworkIsolation: NetworkFull,
+		Notes:            []string{"localhost remains available when remote network is denied", "process-group termination is best effort"},
+	}
+}
+
 func (darwinBackend) Available() error {
 	if _, err := exec.LookPath("sandbox-exec"); err != nil {
 		return fmt.Errorf("sandbox-exec not found: %w", err)

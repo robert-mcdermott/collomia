@@ -77,8 +77,12 @@ func (m Model) renderApproval() string {
 			body.WriteString(m.styles.muted.Render(fmt.Sprintf("… %d more diff lines", hidden)))
 		}
 	}
-	buttons := badge("Y  Approve", m.theme.Success) + "  " +
-		badge("A  Always", m.theme.Warning) + "  " + badge("N  Deny", m.theme.Error)
+	oneTime := req.Action.Uninspectable || len(req.Action.ConfirmReasons) > 0
+	buttons := badge("Y  Approve", m.theme.Success) + "  "
+	if !oneTime {
+		buttons += badge("A  Always", m.theme.Warning) + "  "
+	}
+	buttons += badge("N  Deny", m.theme.Error)
 	if req.Tool == "write_file" && req.Action.Preview != "" {
 		if hunks, err := diffmodel.ParseHunks(req.Action.Preview); err == nil && len(hunks) >= 2 {
 			buttons += "  " + badge(fmt.Sprintf("H  Review %d hunks", len(hunks)), m.theme.Accent)

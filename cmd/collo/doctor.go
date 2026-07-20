@@ -100,8 +100,10 @@ func runDoctorCommand(opts options) error {
 	// Sandbox readiness.
 	backend := sandbox.ForPlatform()
 	mode := "off"
+	allowNetwork := false
 	if err == nil && cfg.Permissions.Sandbox != "" {
 		mode = cfg.Permissions.Sandbox
+		allowNetwork = cfg.Permissions.SandboxAllowNetwork
 	}
 	if availErr := backend.Available(); availErr != nil {
 		status := "warn"
@@ -110,7 +112,25 @@ func runDoctorCommand(opts options) error {
 		}
 		add("sandbox", status, fmt.Sprintf("mode=%s; %v", mode, availErr))
 	} else {
-		add("sandbox", "ok", fmt.Sprintf("mode=%s; backend %s available", mode, backend.Name()))
+		caps := backend.Capabilities()
+		detail := fmt.Sprintf("mode=%s; backend %s available; %s", mode, backend.Name(), caps.Summary())
+		if mode == string(sandbox.ModeOff) {
+			detail += "; OS enforcement is disabled"
+			add("sandbox", "ok", detail)
+		} else if missing := caps.Missing(sandbox.Policy{WorkspaceRoot: opts.cwd, AllowNetwork: allowNetwork}); len(missing) > 0 {
+			status := "warn"
+			if mode == string(sandbox.ModeRequire) {
+				status = "fail"
+			}
+			add("sandbox", status, detail+"; requested policy is missing "+strings.Join(missing, " and "))
+		} else {
+			if allowNetwork {
+				detail += "; command network is allowed"
+			} else {
+				detail += "; command network is denied"
+			}
+			add("sandbox", "ok", detail)
+		}
 	}
 
 	// Log directory.

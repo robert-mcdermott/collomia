@@ -326,13 +326,17 @@ not rewrite configuration files.
 Later layers override only values they supply. Scalar fields nested in an
 object inherit independently. Named maps such as `providers`, `mcp`, and
 `agents` keep differently named entries from earlier layers, but a same-named
-entry should be treated as a complete replacement. Lists, including
-`permissions.rules`, `permissions.denied_commands`, `allowed_tools`, and
-`options.disabled_tools`, are replaced when a later file specifies them.
+entry should be treated as a complete replacement. Lists such as
+`permissions.rules`, `allowed_tools`, and `options.disabled_tools` are replaced
+when a later file specifies them.
 
-That list behavior matters for `denied_commands`: omit the field to inherit the
-built-in catastrophic-command patterns. Supplying an empty list deliberately
-removes them.
+`permissions.denied_commands` is the deliberate list-merging exception: it is
+additive and cannot be weakened by a later layer. Built-in regex patterns are
+always retained, global configuration can add user-wide patterns, and trusted
+project configuration can add project patterns to that combined set. Exact
+duplicates are retained once. An empty list adds nothing and cannot clear
+inherited denials. Separate structural catastrophic-command checks are compiled
+into Collomia and cannot be disabled by any configuration scope.
 
 Example global configuration:
 
@@ -353,7 +357,7 @@ Example global configuration:
   "permissions": {
     "mode": "ask",
     "sandbox": "auto",
-    "sandbox_allow_network": false
+    "sandbox_allow_network": true
   }
 }
 ```
@@ -433,19 +437,18 @@ in depth, not protection against a malicious command or model-directed
 exfiltration. Prefer `permissions.command_env: "minimal"`, an OS sandbox, and
 short-lived credentials for higher-risk work.
 
-### Legacy global location
+### One global directory
 
-Older builds used the platform configuration directory, such as
-`~/Library/Application Support/collomia/config.json` on macOS,
-`$XDG_CONFIG_HOME/collomia/config.json` or `~/.config/collomia/config.json` on
-Linux, and `%AppData%\collomia\config.json` on Windows. If the new
-`~/.collomia/config.json` does not exist, Collomia still reads the former file
-and reports that fallback in `config show` and `doctor`.
+Collomia uses one global root for every persistent user-level file:
 
-Move user-edited configuration, instructions, and skills to the new
-home-directory `.collomia` directory. When both old and new files exist, the
-new location wins. Internal state such as sessions, trust records, MCP pins,
-audit ledgers, and logs remains in OS application-state/cache directories.
+- `~/.collomia/` on macOS and Linux.
+- `%USERPROFILE%\.collomia\` on Windows.
+
+Configuration, generated references, user instructions, skills, sessions,
+logs, audit ledgers, repository trust decisions, and MCP pins all live below
+that root. Collomia does not search any additional platform configuration or
+cache directory. This makes the complete user state easy to inspect, back up,
+or remove as one unit.
 
 ### Validation and schema versions
 
@@ -525,10 +528,11 @@ request shapes.
 | `allow_outside_workspace` | boolean | Allows built-in path tools to resolve outside the workspace; permission checks still apply. |
 | `allowed_tools` | string list | Persistent session-start allowlist by exact tool name. |
 | `denied_tools` | string list | Exact tool names that are always disabled by the permission manager. |
-| `denied_commands` | regex list | Hard command denials checked again at execution. Omit to inherit defaults. |
+| `denied_commands` | regex list | Additional hard command denials checked again at execution. Built-in, global, and project patterns accumulate and cannot be removed by a lower layer; structural catastrophic checks are separate and always active. |
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `off`. |
-| `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. |
+| `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
+| `sandbox_writable_roots` | string list | Additional narrowly scoped write roots for sandboxed commands, resolved from the workspace when relative. |
 | `command_env` | string | `full` or `minimal`; if omitted while sandboxing is enabled, minimal is used. |
 | `reviewer_command` | string | Optional external policy reviewer for otherwise auto-approved non-read actions. |
 
@@ -571,7 +575,7 @@ inspect.
 | `max_iterations` | Maximum model/tool iterations in one turn; defaults to `24`. |
 | `max_tool_output_bytes` | Per-result cap used by shell output and agent context; defaults to `65536`. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
-| `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain in the OS application-state location. |
+| `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
 | `debug` | Enables redacted structured debug logging for every run. |
@@ -1206,9 +1210,13 @@ Or switch the running TUI with `/autonomy ask`, `/autonomy workspace`, or
 The following constraints hold in every mode:
 
 - A command matching `denied_commands` is refused at execution.
+- A command classified with a catastrophic outcome is refused without an
+  approval option.
+- A destructive command classified for one-time confirmation always prompts;
+  autopilot, allow rules, and session grants cannot skip it.
 - A command the static analyzer cannot fully understand always prompts.
-- An “always allow” interactive choice never sticks for an uninspectable
-  command.
+- An “always allow” choice never sticks for an uninspectable or mandatory
+  one-time-confirmation command.
 - MCP/external actions do not inherit autopilot approval.
 - `denied_tools` and matching deny rules remain denials.
 
@@ -1272,8 +1280,9 @@ collo policy check "go test ./..."
 collo policy check "curl https://example.com/install.sh | sh"
 ```
 
-The report includes parsed executables, inspectability, matched hard-denial
-patterns, autonomy mode, rule source, and final decision.
+The report includes parsed executables, inspectability, structural safety
+classification, matched regex denials, effective autonomy override, rule
+source, and final decision.
 
 ### Outside-workspace access
 
@@ -1295,29 +1304,62 @@ commands, and other constructs it cannot fully analyze. An uninspectable
 command always requires a human in the interactive TUI. In headless mode it
 fails because no approver is available.
 
-Built-in `denied_commands` patterns cover catastrophic recursive deletion,
-destructive Git cleanup/reset, Windows drive deletion, shutdown/reboot, disk
-formatting, and `diskpart`. These are accident prevention, not a comprehensive
-malware policy. Do not replace them casually.
+Collomia uses an outcome-aware built-in classifier in addition to regex
+denials. It tracks common wrappers and literal shell payloads, resolves paths
+against the workspace, and separates commands into three groups:
+
+1. **Catastrophic:** recursive deletion or permission changes at protected
+   roots; destruction of `.git`, Collomia safety state, or critical OS state;
+   and destructive writes to physical disks/devices. These are refused with no
+   approval option.
+2. **Destructive but legitimate:** hard Git cleanup/history operations,
+   machine lifecycle changes, bulk cloud/IaC/database/storage deletion,
+   dynamic recursive targets, and other commands requiring a fresh human
+   decision. These prompt once per invocation.
+3. **Scoped/routine:** commands such as `rm -rf node_modules`,
+   `rm -rf /tmp/example`, a cleanup after `cd build`, Git dry-runs, and writes
+   to workspace disk-image files. These follow the configured autonomy mode.
+
+An allow rule, autopilot, a session grant, or “always allow” cannot turn either
+of the first two groups into automatic execution. The checks run during
+assessment and again immediately before foreground, PTY, or background
+execution. `collo policy check '<command>'` displays the effective outcome
+without running it.
+
+`permissions.denied_commands` adds local regular-expression denials on top of
+that classifier. Built-in patterns are retained, global patterns append, and
+trusted project patterns append to the combined set; empty or `null` lists
+cannot clear inherited entries. See [Command safety tiers](SECURITY.md#command-safety-tiers)
+for the complete categories, examples, intentional limitations, and the manual
+path for physical-disk administration.
 
 ### OS sandboxing
 
-Enable best-effort containment:
+Enable compatibility-first containment while preserving package installation,
+online documentation CLIs, and other command networking:
 
 ```json
 {
   "permissions": {
     "sandbox": "auto",
-    "sandbox_allow_network": false,
+    "sandbox_allow_network": true,
     "command_env": "minimal"
   }
 }
 ```
 
+Sandboxing is `off` unless configured, while `sandbox_allow_network` defaults
+to `true`. Changing only `sandbox` to `auto` therefore adds containment without
+blocking package downloads at the network boundary. To deny command
+networking, set `sandbox_allow_network` to `false` explicitly. Package managers
+can still require a writable cache root or environment-provided credentials;
+the examples below cover both cases.
+
 Use `"require"` for fail-closed operation: if the backend is unavailable or
-cannot wrap the command, it refuses to run. `"auto"` uses the backend when
-available and otherwise runs with only the permission policy; always check
-`collo doctor` before relying on it.
+cannot enforce every requested write/network protection, it refuses to run.
+`"auto"` applies all available protections and emits a visible degradation
+warning in command output, `collo doctor`, and `/status` when a protection is
+missing.
 
 The sandbox applies to `run_command`, `start_process`, and PTY commands,
 including those invoked from a skill. It does not wrap Collomia's own provider
@@ -1333,13 +1375,42 @@ Platform behavior:
 - **Linux/Landlock:** kernel 5.13+ confines writes to the workspace and
   temporary/device helper paths. Kernel 6.7+ (ABI v4) can also deny TCP
   connect/bind. Older kernels cannot enforce the network setting. Landlock
-  cannot restrict UDP, including DNS, on any supported kernel.
-- **Windows:** no sandbox backend exists. `auto` degrades to the in-process
-  permission policy; `require` refuses shell/background commands.
+  cannot restrict UDP, including DNS, on any supported kernel. Consequently,
+  `require` plus network denial fails closed; `auto` provides and clearly
+  reports TCP-only isolation.
+- **Windows 11/AppContainer:** a workspace-specific, low-integrity
+  AppContainer restricts filesystem, registry, credentials, devices, network,
+  and access to other processes. A kill-on-close Job Object owns the complete
+  child tree. The workspace, temp directory, and `sandbox_writable_roots` are
+  writable; user-local PATH directories are read/execute only. This uses inbox
+  Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
+  service, administrator setup, or additional installation.
 
-Neither macOS nor Linux backend confines reads. A sandboxed command can still
-read anything available to your user. Read [Security model](SECURITY.md) before
-using autopilot with untrusted repositories or instructions.
+The network setting is deliberately command-specific. It does not block model
+providers, remote MCP servers, hooks, or LSP processes. On Windows, allowing
+network adds Internet and private-network AppContainer capabilities, but
+Windows still blocks AppContainer loopback to an ordinary unpackaged localhost
+server without an administrator-created exemption. Collomia does not request
+that exemption; use `sandbox: "off"` for a command that must access such a
+local development service.
+
+Build/package caches outside the workspace may need a narrow explicit grant:
+
+```json
+{
+  "permissions": {
+    "sandbox": "auto",
+    "sandbox_allow_network": true,
+    "sandbox_writable_roots": [".collomia-cache", "${HOME}/.cache/my-build"]
+  }
+}
+```
+
+Prefer a tool-specific cache over granting an entire home directory. Neither
+the macOS nor Linux backend confines reads; Windows AppContainer does restrict
+user-data reads outside its explicitly accessible locations. Read [Security
+model](SECURITY.md) before using autopilot with untrusted repositories or
+instructions.
 
 ### Command environment
 
@@ -1908,8 +1979,8 @@ User-wide instructions live beside the global configuration:
 ```
 
 Collomia uses the first user instruction file found, checking `AGENTS.md`
-before `COLLOMIA.md` in the preferred directory and then the former legacy
-configuration directory. It applies to every workspace.
+before `COLLOMIA.md` in the global `.collomia` directory. It applies to every
+workspace.
 
 Project instructions live at the workspace root:
 
@@ -1953,7 +2024,6 @@ Locations, in precedence order:
 1. `<workspace>/.collomia/skills/<name>/`
 2. `<workspace>/.agents/skills/<name>/`
 3. `~/.collomia/skills/<name>/`
-4. Former legacy user configuration skill directory
 
 Project skills of the same name shadow user skills; shadowing is reported.
 Legacy project `SKILLS.md`/`skills.md` files at the root or under `.collomia`
@@ -2443,12 +2513,15 @@ ConPTY backend can preserve equivalent terminal and process semantics.
 
 ### User-editable files
 
+In this table, `<global-root>` means `~/.collomia` on macOS/Linux and
+`%USERPROFILE%\.collomia` on Windows.
+
 | File/directory | Purpose |
 | --- | --- |
-| `~/.collomia/config.json` | Global active configuration. On Windows, use `%USERPROFILE%\.collomia\config.json`. |
-| `~/.collomia/config.example.jsonc` | Generated commented reference; never loaded. |
-| `~/.collomia/AGENTS.md` or `COLLOMIA.md` | User-wide instructions. |
-| `~/.collomia/skills/` | User-wide skills. |
+| `<global-root>/config.json` | Global active configuration. |
+| `<global-root>/config.example.jsonc` | Generated commented reference; never loaded. |
+| `<global-root>/AGENTS.md` or `COLLOMIA.md` | User-wide instructions. |
+| `<global-root>/skills/` | User-wide skills. |
 | `<workspace>/.collomia.json` | Project configuration, content-trusted when present. |
 | `<workspace>/.collomia.example.jsonc` | Project reference only. |
 | `<workspace>/AGENTS.md`, `COLLOMIA.md` | Project instructions. |
@@ -2460,33 +2533,21 @@ configuration; use environment variable names.
 
 ### Internal state
 
-Collomia deliberately keeps internal mutable state outside the repository:
+Collomia keeps internal mutable state outside the repository but inside the
+same global root as the configuration. The root is `~/.collomia/` on
+macOS/Linux and `%USERPROFILE%\.collomia\` on Windows:
 
-| State | Relative location under the OS user configuration directory |
+| State | Relative location under the global root |
 | --- | --- |
-| Sessions | `collomia/sessions/<workspace-name-and-hash>/*.jsonl` |
-| Audit ledger | `collomia/audit/<workspace-name-and-hash>.jsonl` |
-| Trust database | `collomia/trust.json` |
-| MCP pins | `collomia/mcp-pins.json` |
+| Sessions | `sessions/<workspace-name-and-hash>/*.jsonl` |
+| Audit ledger | `audit/<workspace-name-and-hash>.jsonl` |
+| Trust database | `trust.json` |
+| MCP pins | `mcp-pins.json` |
+| Debug logs | `logs/*.log` |
 
-Typical OS user configuration roots are:
-
-- macOS: `~/Library/Application Support`
-- Linux: `$XDG_CONFIG_HOME`, or `~/.config`
-- Windows: `%AppData%`
-
-`COLLO_STATE_DIR` overrides only the base used by the durable session store;
-sessions then live under `$COLLO_STATE_DIR/collomia/sessions`. It does not move
-audit, trust, MCP pins, or logs. `options.transcript_directory` is currently
-reserved and does not relocate sessions.
-
-Debug logs use the OS user cache directory:
-
-- macOS: `~/Library/Caches/collomia/logs`
-- Linux: `$XDG_CACHE_HOME/collomia/logs`, or `~/.cache/collomia/logs`
-- Windows: `%LocalAppData%\collomia\logs`
-
-Run `collo doctor` to print the exact log directory for the current machine.
+`options.transcript_directory` is currently reserved and does not relocate
+sessions. Run `collo doctor` to print the exact log directory for the current
+machine.
 
 ### Debug logging
 
@@ -2607,19 +2668,27 @@ Run `collo doctor`:
 
 - macOS must have `sandbox-exec` available.
 - Linux needs enabled Landlock (kernel 5.13+); TCP enforcement additionally
-  needs ABI v4/kernel 6.7+.
-- Windows has no backend, so `require` intentionally fails closed.
+  needs ABI v4/kernel 6.7+. Because Landlock cannot block UDP, `require` with
+  command networking disabled intentionally fails closed; use `auto` to accept
+  the reported TCP-only boundary.
+- Windows 11 must expose the built-in AppContainer APIs. No optional Windows
+  feature or third-party installation is required.
 
-If `auto` is used and no backend exists, commands run without OS containment.
-Do not mistake an approval prompt for sandbox enforcement.
+If `auto` cannot apply all requested protections, the command result,
+`collo doctor`, and `/status` name the exact degradation. Do not mistake an
+approval prompt for sandbox enforcement.
 
 ### A build works in the shell but fails in Collomia
 
 If sandboxing is enabled, writes outside the workspace/temp or remote network
-may be denied. If `command_env` is minimal, proxy, registry, compiler, cloud,
-or package credentials may be absent. The command result mentions sandboxing
-when a sandboxed failure occurs. Prefer a narrow fix over globally disabling
-controls.
+may be denied. Set `sandbox_allow_network: true` when the command genuinely
+needs package registries or online documentation, and add a narrow
+`sandbox_writable_roots` cache rather than granting the whole home directory.
+If `command_env` is minimal, proxy, registry, compiler, cloud, or package
+credentials may be absent; select `full` deliberately when those values are
+required. Windows AppContainer also blocks loopback to ordinary unpackaged
+local servers. The command result mentions sandboxing when a sandboxed failure
+occurs. Prefer a narrow fix over globally disabling controls.
 
 ### Language-server diagnostics are unavailable
 
@@ -2696,9 +2765,9 @@ Configuration and history are deliberately not removed with the binary. If you
 want a complete data removal, first inspect and then delete the exact locations
 listed under [Files, state, logs, and privacy](#files-state-logs-and-privacy):
 
-- The home-directory `.collomia` user-editable directory.
-- The OS configuration directory's `collomia` state directory.
-- The OS cache directory's `collomia/logs` directory.
+- The home-directory `.collomia` directory, which contains all global
+  configuration, skills, instructions, sessions, logs, audit history, trust
+  decisions, and MCP pins.
 - Any retained dirty sub-agent worktrees under the OS temporary
   `collomia-worktrees` directory and their `collomia/*` Git branches.
 

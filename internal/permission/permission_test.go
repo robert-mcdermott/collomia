@@ -123,6 +123,55 @@ func TestAlwaysDoesNotStickForUninspectableCommands(t *testing.T) {
 	}
 }
 
+func TestCatastrophicCommandCannotBeApproved(t *testing.T) {
+	prompts := 0
+	m := New(appconfig.Permissions{Mode: "autopilot", Rules: []appconfig.Rule{
+		{Action: "allow", Tool: "run_command", Command: "*"},
+	}}, func(context.Context, Request) (Decision, error) {
+		prompts++
+		return Decision{Allow: true}, nil
+	})
+	action := tools.Action{
+		Risk: tools.RiskExecute, Summary: "run: rm -rf /",
+		Executables: []string{"rm"}, HardDenyReasons: []string{"recursive rm targets protected root /"},
+	}
+	grant, err := m.Authorize(t.Context(), "run_command", action)
+	if !errors.Is(err, ErrDenied) {
+		t.Fatalf("catastrophic command must be denied, got %v", err)
+	}
+	if grant.Source != "safety" {
+		t.Fatalf("source=%q", grant.Source)
+	}
+	if prompts != 0 {
+		t.Fatalf("catastrophic denial must not be presented as approvable; prompts=%d", prompts)
+	}
+}
+
+func TestMandatoryConfirmationOverridesAutopilotAndAllowRule(t *testing.T) {
+	prompts := 0
+	m := New(appconfig.Permissions{Mode: "autopilot", Rules: []appconfig.Rule{
+		{Action: "allow", Tool: "run_command", Command: "git"},
+	}}, func(_ context.Context, request Request) (Decision, error) {
+		prompts++
+		if !strings.Contains(request.Reason, "one-time confirmation") {
+			t.Errorf("reason=%q", request.Reason)
+		}
+		return Decision{Allow: true, Always: true}, nil
+	})
+	action := tools.Action{
+		Risk: tools.RiskExecute, Summary: "run: git reset --hard",
+		Executables: []string{"git"}, ConfirmReasons: []string{"git reset --hard can discard uncommitted work"},
+	}
+	for range 2 {
+		if _, err := m.Authorize(t.Context(), "run_command", action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if prompts != 2 {
+		t.Fatalf("one-time confirmations must never persist; prompts=%d", prompts)
+	}
+}
+
 func TestPathScopedDenyRule(t *testing.T) {
 	m := New(appconfig.Permissions{Mode: "autopilot", Rules: []appconfig.Rule{
 		{Action: "deny", Path: "/workspace/secrets/**"},

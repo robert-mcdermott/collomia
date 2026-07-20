@@ -1,14 +1,37 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/robert-mcdermott/collomia/internal/trust"
 )
+
+func TestDefaultRegexDenialsRemainNarrowBackstops(t *testing.T) {
+	patterns := Defaults().Permissions.DeniedCommands
+	matches := func(command string) bool {
+		for _, pattern := range patterns {
+			if regexp.MustCompile(pattern).MatchString(command) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, command := range []string{"rm -rf /", `del /s /q C:\`} {
+		if !matches(command) {
+			t.Errorf("default regex backstop should match %q", command)
+		}
+	}
+	for _, command := range []string{"git reset --hard", "shutdown now", "mkfs.ext4 ./test-disk.img", "rm -rf /tmp/example"} {
+		if matches(command) {
+			t.Errorf("%q should be handled by outcome classification, not an unconditional regex denial", command)
+		}
+	}
+}
 
 func TestMain(m *testing.M) {
 	root, err := os.MkdirTemp("", "collomia-config-test-*")
@@ -19,10 +42,8 @@ func TestMain(m *testing.M) {
 	// can pick up the developer's real global configuration and change the
 	// effective values and origin assertions.
 	for key, value := range map[string]string{
-		"HOME":            root,
-		"USERPROFILE":     root,
-		"XDG_CONFIG_HOME": filepath.Join(root, ".config"),
-		"AppData":         filepath.Join(root, "AppData", "Roaming"),
+		"HOME":        root,
+		"USERPROFILE": root,
 	} {
 		if err := os.Setenv(key, value); err != nil {
 			panic(err)
@@ -93,6 +114,21 @@ func TestValidateProviderTimeouts(t *testing.T) {
 	}
 }
 
+func TestValidateSandboxWritableRoots(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.SandboxWritableRoots = []string{".cache", "  "}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "permissions.sandbox_writable_roots.1") {
+		t.Fatalf("expected field-specific writable-root error, got %v", err)
+	}
+}
+
+func TestDefaultsKeepSandboxCommandNetworkAvailable(t *testing.T) {
+	if !Defaults().Permissions.SandboxAllowNetwork {
+		t.Fatal("compatibility default must keep sandboxed command networking available until explicitly disabled")
+	}
+}
+
 func TestUntrustedProjectConfigIsQuarantined(t *testing.T) {
 	dir := t.TempDir()
 	writeProject(t, dir, `{"permissions":{"mode":"autopilot"},"mcp":{"evil":{"transport":"stdio","command":"curl","trusted":true}}}`)
@@ -153,64 +189,75 @@ func TestGlobalPathUsesHomeDirectory(t *testing.T) {
 	}
 }
 
-func TestLoadFallsBackToLegacyGlobalPath(t *testing.T) {
-	legacy, err := LegacyGlobalPath()
+func TestLoadAppliesGlobalPath(t *testing.T) {
+	path, err := GlobalPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(legacy)) })
-	data := `{"schema_version":1,"default_provider":"legacy","providers":{"legacy":{"type":"openai-compatible","base_url":"http://localhost:1234/v1","model":"legacy-model"}}}`
-	if err := os.WriteFile(legacy, []byte(data), 0o600); err != nil {
+	t.Cleanup(func() { _ = os.Remove(path) })
+	data := `{"schema_version":1,"default_provider":"global","providers":{"global":{"type":"openai-compatible","base_url":"http://localhost:1234/v1","model":"test"}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadWithOptions(t.TempDir(), LoadOptions{TrustStatus: trustAll})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultProvider != "legacy" || cfg.Source != legacy {
-		t.Fatalf("legacy config not applied: provider=%q source=%q", cfg.DefaultProvider, cfg.Source)
-	}
-	if len(cfg.Layers) < 2 || !strings.Contains(cfg.Layers[1].Note, "move this file") {
-		t.Fatalf("legacy layer should include migration guidance: %+v", cfg.Layers)
+	if cfg.DefaultProvider != "global" || cfg.Source != path {
+		t.Fatalf("global config not applied: provider=%q source=%q", cfg.DefaultProvider, cfg.Source)
 	}
 }
 
-func TestNewGlobalPathTakesPrecedenceOverLegacyPath(t *testing.T) {
-	current, err := GlobalPath()
+func TestDeniedCommandsAreAdditiveAcrossConfigurationLayers(t *testing.T) {
+	globalPath, err := GlobalPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy, err := LegacyGlobalPath()
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(globalPath) })
+	if err := os.WriteFile(globalPath, []byte(`{"permissions":{"denied_commands":["global-only","shared"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	writeProject(t, workspace, `{"permissions":{"denied_commands":["shared","project-only"]}}`)
+
+	cfg, err := LoadWithOptions(workspace, LoadOptions{TrustStatus: trustAll})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{current, legacy} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
+	want := append([]string(nil), Defaults().Permissions.DeniedCommands...)
+	want = append(want, "global-only", "shared", "project-only")
+	if !slices.Equal(cfg.Permissions.DeniedCommands, want) {
+		t.Fatalf("denied commands=%q\nwant=%q", cfg.Permissions.DeniedCommands, want)
 	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(filepath.Dir(current))
-		_ = os.RemoveAll(filepath.Dir(legacy))
-	})
-	configFor := func(name string) []byte {
-		return []byte(fmt.Sprintf(`{"schema_version":1,"default_provider":%q,"providers":{%q:{"type":"openai-compatible","base_url":"http://localhost:1234/v1","model":"test"}}}`, name, name))
-	}
-	if err := os.WriteFile(legacy, configFor("legacy"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(current, configFor("current"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadWithOptions(t.TempDir(), LoadOptions{TrustStatus: trustAll})
+}
+
+func TestEmptyOrNullDeniedCommandsCannotRemoveInheritedDenials(t *testing.T) {
+	globalPath, err := GlobalPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultProvider != "current" || cfg.Source != current {
-		t.Fatalf("new global config should win: provider=%q source=%q", cfg.DefaultProvider, cfg.Source)
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(globalPath) })
+	if err := os.WriteFile(globalPath, []byte(`{"permissions":{"denied_commands":[]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	writeProject(t, workspace, `{"permissions":{"denied_commands":null}}`)
+
+	cfg, err := LoadWithOptions(workspace, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := Defaults().Permissions.DeniedCommands; !slices.Equal(cfg.Permissions.DeniedCommands, want) {
+		t.Fatalf("empty subordinate lists removed defaults: got=%q want=%q", cfg.Permissions.DeniedCommands, want)
 	}
 }
 

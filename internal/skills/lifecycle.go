@@ -32,7 +32,7 @@ func UserSkillsDir() (string, error) {
 // scope first (matching discovery precedence).
 func Roots(workspace string) []string {
 	roots := []string{ProjectSkillsDir(workspace), filepath.Join(workspace, ".agents", "skills")}
-	for _, dir := range userconfig.SearchDirs() {
+	if dir, err := userconfig.Dir(); err == nil {
 		roots = append(roots, filepath.Join(dir, "skills"))
 	}
 	return roots

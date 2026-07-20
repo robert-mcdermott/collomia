@@ -13,6 +13,9 @@ import (
 
 type Analysis struct {
 	Raw string
+	// workspace is the original command root. It is deliberately kept
+	// separate from a segment's current directory after `cd`.
+	workspace string
 	// Executables lists the argv[0] of every simple command found, plus the
 	// real targets behind transparent wrappers like env or timeout.
 	Executables []string
@@ -21,6 +24,12 @@ type Analysis struct {
 	Inspectable bool
 	// Reasons explains every inspectability failure.
 	Reasons []string
+	// HardDenyReasons identifies catastrophic outcomes that cannot be approved
+	// or overridden by configuration.
+	HardDenyReasons []string
+	// ConfirmReasons identifies destructive but potentially legitimate actions
+	// that require a fresh interactive approval, even in autopilot mode.
+	ConfirmReasons []string
 }
 
 // wrappers run another command given as their arguments; the wrapped command
@@ -42,19 +51,78 @@ var interpreters = map[string]bool{
 var opaque = map[string]bool{"eval": true, "exec": true, "source": true, ".": true, "trap": true, "alias": true}
 
 func Analyze(command string) Analysis {
-	a := Analysis{Raw: command, Inspectable: true}
+	return analyzeAt(command, "", "")
+}
+
+// AnalyzeInWorkspace analyzes command with workspace as its initial working
+// directory, allowing catastrophic relative targets to be resolved safely.
+func AnalyzeInWorkspace(command, workspace string) Analysis {
+	if workspace != "" {
+		if abs, err := filepath.Abs(workspace); err == nil {
+			workspace = abs
+		}
+		if canonical, err := filepath.EvalSymlinks(workspace); err == nil {
+			workspace = canonical
+		}
+	}
+	return analyzeAt(command, workspace, workspace)
+}
+
+func analyzeAt(command, workspace, cwd string) Analysis {
+	a := Analysis{Raw: command, workspace: workspace, Inspectable: true}
+	classifyRawWindows(command, &a)
 	segments, ok := split(command, &a)
 	if !ok {
 		return a
 	}
 	for _, segment := range segments {
-		a.analyzeSegment(segment)
+		a.analyzeSegment(segment.tokens)
+		nextCWD := classifySegment(segment.tokens, cwd, &a)
+		if nextCWD != cwd {
+			switch segment.follow {
+			case "&&":
+				// A following command runs only if cd succeeded.
+				cwd = nextCWD
+			case ";", "newline":
+				// The shell continues even when cd fails, so relative effects
+				// cannot safely be resolved to either directory. Destructive
+				// classifiers will require confirmation when they see that
+				// unresolved state; harmless commands remain routine.
+				cwd = ""
+				// `||`, pipelines, and background cd do not change the current
+				// shell directory on the path that executes the next command.
+			}
+		}
+		if segment.follow == ")" || segment.follow == "}" {
+			// A grouped/subshell directory change cannot leak to the outer
+			// command. Reset conservatively to the protected workspace root.
+			cwd = workspace
+		}
 	}
+	classifyRedirections(command, cwd, &a)
 	if len(a.Executables) == 0 && a.Inspectable && strings.TrimSpace(command) != "" {
 		// Nothing recognizable (e.g. bare assignments); treat as opaque.
 		a.flag("no executable could be identified")
 	}
 	return a
+}
+
+func (a *Analysis) hardDeny(reason string) {
+	for _, existing := range a.HardDenyReasons {
+		if existing == reason {
+			return
+		}
+	}
+	a.HardDenyReasons = append(a.HardDenyReasons, reason)
+}
+
+func (a *Analysis) confirm(reason string) {
+	for _, existing := range a.ConfirmReasons {
+		if existing == reason {
+			return
+		}
+	}
+	a.ConfirmReasons = append(a.ConfirmReasons, reason)
 }
 
 func (a *Analysis) flag(reason string) {
@@ -70,8 +138,13 @@ func (a *Analysis) flag(reason string) {
 // split tokenizes the command into simple-command token lists, honoring
 // quotes and splitting on ;, &, |, &&, ||, newlines, and subshell
 // parentheses. It flags constructs that defeat static analysis.
-func split(command string, a *Analysis) ([][]string, bool) {
-	var segments [][]string
+type parsedSegment struct {
+	tokens []string
+	follow string
+}
+
+func split(command string, a *Analysis) ([]parsedSegment, bool) {
+	var segments []parsedSegment
 	var current []string
 	var token strings.Builder
 	tokenStarted := false
@@ -82,10 +155,10 @@ func split(command string, a *Analysis) ([][]string, bool) {
 			tokenStarted = false
 		}
 	}
-	endSegment := func() {
+	endSegment := func(follow string) {
 		flush()
 		if len(current) > 0 {
-			segments = append(segments, current)
+			segments = append(segments, parsedSegment{tokens: current, follow: follow})
 			current = nil
 		}
 	}
@@ -148,16 +221,22 @@ func split(command string, a *Analysis) ([][]string, bool) {
 			tokenStarted = true
 			token.WriteRune(c)
 		case c == ';' || c == '\n':
-			endSegment()
+			follow := ";"
+			if c == '\n' {
+				follow = "newline"
+			}
+			endSegment(follow)
 		case c == '&' || c == '|':
 			// &&, ||, |, & and redirection-adjacent forms all end the
 			// current simple command.
-			endSegment()
+			follow := string(c)
 			if i+1 < len(runes) && (runes[i+1] == '&' || runes[i+1] == '|') {
+				follow += string(runes[i+1])
 				i++
 			}
+			endSegment(follow)
 		case c == '(' || c == ')' || c == '{' || c == '}':
-			endSegment()
+			endSegment(string(c))
 		case c == '>' || c == '<':
 			// Redirection: drop the operator and its target word.
 			flush()
@@ -176,7 +255,7 @@ func split(command string, a *Analysis) ([][]string, bool) {
 			token.WriteRune(c)
 		}
 	}
-	endSegment()
+	endSegment("")
 	return segments, true
 }
 

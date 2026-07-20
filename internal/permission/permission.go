@@ -112,6 +112,12 @@ func (m *Manager) decide(tool string, action tools.Action) (Grant, string, strin
 	if denied {
 		return Grant{Source: "denied-tool"}, "deny", ""
 	}
+	// Catastrophic outcomes are not permissions. They are refused before
+	// configurable rules, autonomy modes, and session grants can widen access.
+	if len(action.HardDenyReasons) > 0 {
+		reason := strings.Join(action.HardDenyReasons, "; ")
+		return Grant{Source: "safety", Rule: reason}, "deny", ""
+	}
 	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
 	decision := policy.Evaluate(rules, request)
 	if decision.Matched() {
@@ -120,7 +126,11 @@ func (m *Manager) decide(tool string, action tools.Action) (Grant, string, strin
 		case "deny":
 			return grant, "deny", ""
 		case "allow":
-			return grant, "allow", ""
+			// One-time confirmations and opaque commands may not be widened
+			// into automatic approval by an allow rule.
+			if len(action.ConfirmReasons) == 0 && !action.Uninspectable {
+				return grant, "allow", ""
+			}
 		case "prompt":
 			return grant, "prompt", "policy rule requires approval: " + decision.Describe()
 		}
@@ -132,6 +142,10 @@ func (m *Manager) decide(tool string, action tools.Action) (Grant, string, strin
 	// needs a human, regardless of autonomy mode.
 	if action.Uninspectable && action.Risk == tools.RiskExecute {
 		return Grant{Source: "analysis"}, "prompt", "command could not be fully analyzed: " + strings.Join(action.AnalysisReasons, "; ")
+	}
+	if len(action.ConfirmReasons) > 0 && action.Risk == tools.RiskExecute {
+		reason := strings.Join(action.ConfirmReasons, "; ")
+		return Grant{Source: "safety", Rule: reason}, "prompt", "one-time confirmation required: " + reason
 	}
 	if sessionAllowed {
 		return Grant{Source: "session"}, "allow", ""
@@ -200,9 +214,9 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 		record(false)
 		return grant, fmt.Errorf("%w: %s", ErrDenied, action.Summary)
 	}
-	// "Always" never sticks for commands the analyzer could not read; each
-	// uninspectable command must be approved on its own.
-	if decision.Always && !action.Uninspectable {
+	// "Always" never sticks for commands the analyzer could not read or that
+	// carry a mandatory confirmation; each must be approved on its own.
+	if decision.Always && !action.Uninspectable && len(action.ConfirmReasons) == 0 {
 		m.mu.Lock()
 		m.allowed[tool] = true
 		m.mu.Unlock()

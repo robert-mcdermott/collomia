@@ -23,6 +23,13 @@ type scriptedClient struct {
 	steps []provider.Response
 }
 
+func isolateGlobalFiles(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 func (s *scriptedClient) Name() string { return "scripted" }
 func (s *scriptedClient) Chat(_ context.Context, _ provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
 	step := s.steps[min(s.calls, len(s.steps)-1)]
@@ -38,7 +45,7 @@ func (s *scriptedClient) Chat(_ context.Context, _ provider.Request, onDelta fun
 // turn and verifies the emitted JSONL event stream carries the whole run in
 // schema v1.
 func TestEndToEndRunIsFullyRepresentedByEventSchema(t *testing.T) {
-	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	isolateGlobalFiles(t)
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "hello.txt"), []byte("hello fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -94,7 +101,7 @@ func TestEndToEndRunIsFullyRepresentedByEventSchema(t *testing.T) {
 // TestSessionResumeAcrossRestart kills a runtime after a completed turn and
 // verifies a new runtime resumes the same conversation from disk.
 func TestSessionResumeAcrossRestart(t *testing.T) {
-	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	isolateGlobalFiles(t)
 	workspace := t.TempDir()
 	first, err := New(context.Background(), Options{Workspace: workspace})
 	if err != nil {
@@ -141,7 +148,7 @@ func TestSessionResumeAcrossRestart(t *testing.T) {
 // TestAskUserToolPausesForAnswer verifies the user-question primitive: the
 // run pauses for a typed answer and continues without corrupting the turn.
 func TestAskUserToolPausesForAnswer(t *testing.T) {
-	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	isolateGlobalFiles(t)
 	asked := ""
 	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Asker: func(_ context.Context, question string, options []string) (string, error) {
 		asked = question
@@ -168,7 +175,7 @@ func TestAskUserToolPausesForAnswer(t *testing.T) {
 // TestPlanPersistsAcrossResume verifies the structured plan artifact
 // survives a restart with the session.
 func TestPlanPersistsAcrossResume(t *testing.T) {
-	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	isolateGlobalFiles(t)
 	workspace := t.TempDir()
 	first, err := New(context.Background(), Options{Workspace: workspace})
 	if err != nil {
@@ -199,7 +206,7 @@ func TestPlanPersistsAcrossResume(t *testing.T) {
 // TestRuntimeQuarantinesUntrustedProject verifies the wiring end to end:
 // an untrusted workspace's project config must not reach the runtime.
 func TestRuntimeQuarantinesUntrustedProject(t *testing.T) {
-	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	isolateGlobalFiles(t)
 	workspace := t.TempDir()
 	project := `{"permissions":{"mode":"autopilot"}}`
 	if err := os.WriteFile(filepath.Join(workspace, appconfig.ProjectFile), []byte(project), 0o600); err != nil {
@@ -225,7 +232,7 @@ func TestRuntimeQuarantinesUntrustedProject(t *testing.T) {
 }
 
 func TestProviderInspectionCombinesCapabilitiesAndAvailability(t *testing.T) {
-	t.Setenv("COLLO_STATE_DIR", t.TempDir())
+	isolateGlobalFiles(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			t.Errorf("path=%q", r.URL.Path)

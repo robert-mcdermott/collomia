@@ -22,6 +22,7 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		command.SandboxMode = sandbox.Mode(cfg.Permissions.Sandbox)
 	}
 	command.AllowNetwork = cfg.Permissions.SandboxAllowNetwork
+	command.ExtraWritableRoots = append([]string(nil), cfg.Permissions.SandboxWritableRoots...)
 	// Sandboxed configurations default to the minimal environment; an
 	// explicit command_env setting always wins.
 	sandboxed := command.SandboxMode == sandbox.ModeAuto || command.SandboxMode == sandbox.ModeRequire
