@@ -90,8 +90,9 @@ Shared limitations, stated plainly:
   read any file your user can. Write (and, where supported, network)
   containment are the enforced properties.
 - **Windows**: no sandbox backend exists yet (AppContainer is roadmap
-  work). The sandbox setting can only be `off` (run unconfined after
-  approval) or fail-closed `require` (refuse to run).
+  work). `off` runs after the in-process approval checks, `auto` degrades to
+  those same checks because no backend is available, and fail-closed `require`
+  refuses agent commands.
 
 ## Repository trust
 
@@ -100,6 +101,12 @@ skills and instruction files. All of it is quarantined until you run `collo
 trust` after review. Trust is bound to the file's SHA-256; any change
 re-quarantines. The trust database lives in your user configuration
 directory, never in the workspace, so a repository cannot approve itself.
+
+The trust record is anchored to `.collomia.json`. A workspace without that
+file has no project configuration to approve, and the runtime treats its
+project-trust state as active. Review repository-provided instructions and
+skills before use; add a project configuration when you want their activation
+to be bound to an explicit `collo trust` decision.
 
 ## Process control
 
