@@ -233,7 +233,9 @@ const configReferenceJSONC = `
     "allow_outside_workspace": false,
     "allowed_tools": [],
     "denied_tools": [],
-    // Omit denied_commands to inherit built-in safety patterns.
+    // Additional regex hard denials. These append across scopes and are
+    // separate from Collomia's non-configurable catastrophic-outcome checks.
+    // An empty list adds nothing; lower layers cannot remove inherited rules.
     "denied_commands": [],
     // Rules are ordered; the first matching allow, prompt, or deny wins.
     "rules": [

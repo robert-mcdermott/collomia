@@ -27,16 +27,22 @@ func runPolicyCommand(opts options) error {
 	if err != nil {
 		return err
 	}
-	analysis := shell.Analyze(command)
+	analysis := shell.AnalyzeInWorkspace(command, opts.cwd)
 	action := tools.Action{
 		Risk: tools.RiskExecute, Summary: "run: " + command,
 		Executables: analysis.Executables, Uninspectable: !analysis.Inspectable, AnalysisReasons: analysis.Reasons,
+		HardDenyReasons: analysis.HardDenyReasons, ConfirmReasons: analysis.ConfirmReasons,
 	}
 	manager := permission.New(cfg.Permissions, nil)
+	if opts.autonomy != "" {
+		if err := manager.SetMode(opts.autonomy); err != nil {
+			return err
+		}
+	}
 	grant, outcome := manager.Evaluate("run_command", action)
 
 	fmt.Printf("command:      %s\n", command)
-	fmt.Printf("autonomy:     %s\n", cfg.Permissions.Mode)
+	fmt.Printf("autonomy:     %s\n", manager.Mode())
 	if len(analysis.Executables) > 0 {
 		fmt.Printf("executables:  %s\n", strings.Join(analysis.Executables, ", "))
 	}
@@ -44,6 +50,11 @@ func runPolicyCommand(opts options) error {
 		fmt.Println("analysis:     inspectable")
 	} else {
 		fmt.Printf("analysis:     UNINSPECTABLE (%s) — interactive approval always required\n", strings.Join(analysis.Reasons, "; "))
+	}
+	if len(analysis.HardDenyReasons) > 0 {
+		fmt.Printf("safety:       catastrophic (%s)\n", strings.Join(analysis.HardDenyReasons, "; "))
+	} else if len(analysis.ConfirmReasons) > 0 {
+		fmt.Printf("safety:       one-time confirmation (%s)\n", strings.Join(analysis.ConfirmReasons, "; "))
 	}
 	for _, re := range cfg.Permissions.DeniedCommands {
 		if matched, _ := regexpMatch(re, command); matched {

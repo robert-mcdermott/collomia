@@ -107,7 +107,9 @@ type Permissions struct {
 	AllowOutsideWorkspace bool     `json:"allow_outside_workspace"`
 	AllowedTools          []string `json:"allowed_tools,omitempty"`
 	DeniedTools           []string `json:"denied_tools,omitempty"`
-	DeniedCommands        []string `json:"denied_commands,omitempty"`
+	// DeniedCommands is monotonic across configuration layers: each layer can
+	// add patterns, but cannot remove built-in or higher-scope denials.
+	DeniedCommands []string `json:"denied_commands,omitempty"`
 	// Rules are ordered allow/prompt/deny decisions matched before the
 	// autonomy mode's defaults. See internal/policy.
 	Rules []Rule `json:"rules,omitempty"`
@@ -219,9 +221,7 @@ func Defaults() Config {
 			SandboxAllowNetwork: true,
 			DeniedCommands: []string{
 				`(?i)(^|[;&|]\s*)(rm\s+-[^\s]*(rf|fr)[^\s]*|rmdir\s+/s)\s+([/~]|\.{1,2}|\*|[a-z]:\\)($|\s)`,
-				`(?i)(^|[;&|]\s*)git\s+(reset\s+--hard|clean\s+-[^\s]*f[^\s]*)($|\s)`,
-				`(?i)(^|[;&|]\s*)(del|erase)\s+/[^\s]*[sq][^\s]*\s+[a-z]:\\($|\s)`,
-				`(?i)(^|[;&|]\s*)(shutdown|reboot|mkfs|diskpart)(\s|$)`,
+				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
 			},
 		},
 		MCP:     map[string]MCPServer{},
@@ -319,9 +319,11 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 	if strict {
 		decoder.DisallowUnknownFields()
 	}
+	inheritedDeniedCommands := append([]string(nil), c.Permissions.DeniedCommands...)
 	if err := decoder.Decode(c); err != nil {
 		return fmt.Errorf("parse config %s: %w", path, err)
 	}
+	c.Permissions.DeniedCommands = additiveStrings(inheritedDeniedCommands, c.Permissions.DeniedCommands)
 	keys := flattenJSON(data)
 	for _, key := range keys {
 		c.Origins[key] = layer
@@ -329,6 +331,24 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 	c.Layers = append(c.Layers, Layer{Name: layer, Path: path, Applied: true, Keys: keys})
 	c.Source = path
 	return nil
+}
+
+// additiveStrings preserves inherited safety policy while allowing a lower
+// configuration layer to add entries. Exact duplicates are retained once in
+// first-seen order so built-ins always precede user and project additions.
+func additiveStrings(inherited, additions []string) []string {
+	merged := make([]string, 0, len(inherited)+len(additions))
+	seen := make(map[string]struct{}, len(inherited)+len(additions))
+	for _, values := range [][]string{inherited, additions} {
+		for _, value := range values {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			merged = append(merged, value)
+		}
+	}
+	return merged
 }
 
 func (c *Config) applyEnv() {

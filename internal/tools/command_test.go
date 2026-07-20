@@ -24,6 +24,25 @@ func TestRunCommandHardDenial(t *testing.T) {
 	}
 }
 
+func TestRunCommandBuiltInCatastrophicDenial(t *testing.T) {
+	workspace := t.TempDir()
+	tool, err := NewRunCommandTool(workspace, nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := json.RawMessage(`{"command":"rm -rf ."}`)
+	action, err := tool.Assess(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(action.HardDenyReasons) == 0 {
+		t.Fatalf("assessment did not report catastrophic target: %+v", action)
+	}
+	if _, err := tool.Execute(t.Context(), raw); err == nil || !strings.Contains(err.Error(), "catastrophic-command protection") {
+		t.Fatalf("execution must repeat built-in protection, got %v", err)
+	}
+}
+
 func TestAssessCarriesCommandAnalysis(t *testing.T) {
 	tool, err := NewRunCommandTool(t.TempDir(), nil, 1024)
 	if err != nil {

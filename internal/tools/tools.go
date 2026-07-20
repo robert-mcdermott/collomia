@@ -33,6 +33,12 @@ type Action struct {
 	// interactive approval.
 	Uninspectable   bool
 	AnalysisReasons []string
+	// HardDenyReasons are catastrophic outcomes that cannot be approved or
+	// overridden by autonomy mode, rules, or session grants.
+	HardDenyReasons []string
+	// ConfirmReasons are destructive but potentially legitimate operations
+	// that require a fresh interactive decision for each invocation.
+	ConfirmReasons []string
 	// Preview carries a human-reviewable rendering of the proposed change
 	// (typically a unified diff) for approval prompts.
 	Preview string

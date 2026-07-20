@@ -97,7 +97,7 @@ Collomia builds the effective configuration in this order:
 3. Trusted project `.collomia.json`.
 4. `COLLO_PROVIDER` and `COLLO_MODEL` environment overrides.
 
-Each later layer overrides settings supplied by an earlier layer. Settings omitted from a later file continue to inherit their earlier values, so project configuration should contain only intentional overrides. The generated global starter deliberately includes common safe defaults to make them easy to discover and edit. Object fields such as `permissions.mode` can be overridden independently. Lists are replaced when specified, and a same-named entry in a named map such as `providers`, `mcp`, or `agents` should be treated as a complete replacement definition.
+Each later layer overrides settings supplied by an earlier layer. Settings omitted from a later file continue to inherit their earlier values, so project configuration should contain only intentional overrides. The generated global starter deliberately includes common safe defaults to make them easy to discover and edit. Object fields such as `permissions.mode` can be overridden independently. Lists are replaced when specified, except `permissions.denied_commands`: regex denials are additive, so built-in patterns are mandatory, global patterns extend them, and project patterns extend both. Collomia's structural catastrophic-command checks are built into the executable and cannot be disabled by configuration. A same-named entry in a named map such as `providers`, `mcp`, or `agents` should be treated as a complete replacement definition.
 
 For example, a global file can define a personal OpenRouter setup:
 
@@ -644,8 +644,7 @@ Example:
     "allowed_tools": ["mcp_context7_query-docs"],
     "denied_tools": [],
     "denied_commands": [
-      "(?i)(^|[;\u0026|]\\s*)rm\\s+-[^\\n]*r[^\\n]*f\\s+[/~]($|\\s)",
-      "(?i)(^|[;\u0026|]\\s*)(shutdown|reboot|mkfs|diskpart)(\\s|$)"
+      "(?i)(^|[;&|]\\s*)rm(?:\\s+[^;&|\\s]+)*\\s+(--recursive|-[^;&|\\s]*r[^;&|\\s]*)($|\\s)"
     ],
     "sandbox": "auto",
     "sandbox_allow_network": true,
@@ -654,7 +653,9 @@ Example:
 }
 ```
 
-`allowed_tools` is a persistent explicit grant. Interactive approval with `a` grants a tool for the remainder of the current process. Hard command-denial patterns are checked again at execution time and cannot be bypassed by autopilot.
+`allowed_tools` is a persistent explicit grant. Interactive approval with `a` normally grants a tool for the remainder of the current process. The example `denied_commands` entry adds all direct recursive `rm` invocations to Collomia's mandatory protections. Global and trusted project patterns only add to the effective set; no subordinate configuration can remove an inherited command denial.
+
+Shell safety has three outcomes. Routine scoped operations such as `rm -rf node_modules`, `rm -rf /tmp/example`, and formatting a workspace disk-image file follow the selected autonomy mode. Destructive but legitimate operations—such as `git reset --hard`, machine shutdown, bulk cloud/IaC deletion, or a recursive target that cannot be resolved statically—require a fresh one-time approval; allow rules, autopilot, and “always allow” cannot skip it. Catastrophic outcomes—such as recursively deleting `/`, the home or workspace root, `.git`, `~/.collomia`, Windows drive/system roots, or writing a physical disk—are refused and cannot be approved. Both structural checks and regex denials are repeated immediately before foreground or background execution. Use `collo policy check '<command>'` to inspect the result without running it. See the [security model](docs/SECURITY.md#command-safety-tiers) for the complete categories and limitations.
 
 Path tools canonicalize paths and existing symlinks before checking containment. Outside access requires both `allow_outside_workspace: true` and an applicable permission decision. Tool output, file reads, and commands are size- and time-bounded, and every command runs in its own process group so cancellation and timeouts kill all descendants — including detached [background processes](#background-processes), which are additionally stopped at session exit regardless of how they were started.
 
@@ -944,7 +945,7 @@ internal/diffmodel                unified diff, hunk parse/apply, checkpoint/und
 internal/permission             autonomy policy, scoped rules, external reviewer hook
 internal/sandbox                  OS sandbox backends (Seatbelt, Landlock)
 internal/policy                    scoped allow/prompt/deny rule matching
-internal/shell                      conservative command analysis
+internal/shell                      outcome-aware command safety analysis
 internal/audit                       permission-decision and outcome ledger
 internal/session                      durable session store, resume/fork, compaction
 internal/plan                          structured plan artifact

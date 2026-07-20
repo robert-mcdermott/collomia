@@ -3,11 +3,35 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/robert-mcdermott/collomia/internal/trust"
 )
+
+func TestDefaultRegexDenialsRemainNarrowBackstops(t *testing.T) {
+	patterns := Defaults().Permissions.DeniedCommands
+	matches := func(command string) bool {
+		for _, pattern := range patterns {
+			if regexp.MustCompile(pattern).MatchString(command) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, command := range []string{"rm -rf /", `del /s /q C:\`} {
+		if !matches(command) {
+			t.Errorf("default regex backstop should match %q", command)
+		}
+	}
+	for _, command := range []string{"git reset --hard", "shutdown now", "mkfs.ext4 ./test-disk.img", "rm -rf /tmp/example"} {
+		if matches(command) {
+			t.Errorf("%q should be handled by outcome classification, not an unconditional regex denial", command)
+		}
+	}
+}
 
 func TestMain(m *testing.M) {
 	root, err := os.MkdirTemp("", "collomia-config-test-*")
@@ -184,6 +208,56 @@ func TestLoadAppliesGlobalPath(t *testing.T) {
 	}
 	if cfg.DefaultProvider != "global" || cfg.Source != path {
 		t.Fatalf("global config not applied: provider=%q source=%q", cfg.DefaultProvider, cfg.Source)
+	}
+}
+
+func TestDeniedCommandsAreAdditiveAcrossConfigurationLayers(t *testing.T) {
+	globalPath, err := GlobalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(globalPath) })
+	if err := os.WriteFile(globalPath, []byte(`{"permissions":{"denied_commands":["global-only","shared"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	writeProject(t, workspace, `{"permissions":{"denied_commands":["shared","project-only"]}}`)
+
+	cfg, err := LoadWithOptions(workspace, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]string(nil), Defaults().Permissions.DeniedCommands...)
+	want = append(want, "global-only", "shared", "project-only")
+	if !slices.Equal(cfg.Permissions.DeniedCommands, want) {
+		t.Fatalf("denied commands=%q\nwant=%q", cfg.Permissions.DeniedCommands, want)
+	}
+}
+
+func TestEmptyOrNullDeniedCommandsCannotRemoveInheritedDenials(t *testing.T) {
+	globalPath, err := GlobalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(globalPath) })
+	if err := os.WriteFile(globalPath, []byte(`{"permissions":{"denied_commands":[]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	writeProject(t, workspace, `{"permissions":{"denied_commands":null}}`)
+
+	cfg, err := LoadWithOptions(workspace, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := Defaults().Permissions.DeniedCommands; !slices.Equal(cfg.Permissions.DeniedCommands, want) {
+		t.Fatalf("empty subordinate lists removed defaults: got=%q want=%q", cfg.Permissions.DeniedCommands, want)
 	}
 }
 

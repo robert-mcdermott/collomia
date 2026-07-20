@@ -29,11 +29,23 @@ started them.
 | `workspace` | auto-allowed | auto-allowed | prompt | prompt + `allow_outside_workspace` | uncontrolled once a command runs |
 | `autopilot` | auto-allowed | auto-allowed | auto-allowed¹ | auto-allowed only with `allow_outside_workspace` | uncontrolled unless sandboxed |
 
-¹ With two exceptions that hold in every mode:
+¹ With safety constraints that hold in every mode:
+
 - Commands matching `permissions.denied_commands` are always refused.
+- Commands with a classified catastrophic outcome are always refused.
+- Destructive commands classified for one-time confirmation always prompt.
 - Commands the static analyzer cannot fully read (substitutions, `eval`,
   inline interpreter payloads, variable commands) always require an
-  interactive approval, and "always allow" never sticks for them.
+  interactive approval.
+
+Allow rules, tool/session grants, autopilot, and an interactive "always allow"
+choice cannot bypass these constraints. "Always allow" never sticks for an
+uninspectable or one-time-confirmation command.
+
+Command denials are monotonic across configuration scopes. Built-in
+catastrophic-command patterns are mandatory, global patterns append to them,
+and trusted project patterns append to the combined set. A lower scope cannot
+remove inherited patterns, including by specifying an empty list.
 
 MCP tool calls (`external` risk) always prompt unless a rule or session
 grant allows them; they never ride along with autopilot.
@@ -46,11 +58,95 @@ grant allows them; they never ride along with autopilot.
   /etc/passwd` runs if the command itself is approved. This is why command
   approval exists, and why the sandbox matters.
 - **Command analysis** (`internal/shell`) is conservative by design: it
-  proves what it can and prompts for the rest. It is a policy aid. It is not
-  the boundary — a maliciously obfuscated but "inspectable-looking" command
-  is still bounded only by what the OS allows your user to do.
-- **Denied-command regexes** are defense in depth against catastrophic
-  accidents (`rm -rf /`), nothing more. Regexes cannot enumerate harm.
+  identifies common catastrophic outcomes, requires confirmation for known
+  destructive operations, and prompts when it cannot resolve an effect. It is
+  an accident-prevention policy aid, not a shell security boundary. A novel or
+  maliciously obfuscated command is still bounded only by what the OS allows
+  your user to do.
+- **Denied-command regexes** are an additive defense-in-depth layer for local
+  policy. Regexes cannot enumerate harm; the built-in structural checks do not
+  depend on users maintaining regex syntax.
+
+## Command safety tiers
+
+The same analyzer and execution-time check cover `run_command`, PTY commands,
+and `start_process`. Transparent wrappers such as `sudo`, `doas`, `env`,
+`command`, `timeout`, and `nohup` are unwrapped. Literal `sh -c`, `cmd /c`, and
+PowerShell `-Command` payloads are inspected recursively. Relative paths are
+resolved from the workspace while tracking straightforward `cd` segments.
+
+### Tier 1: non-overridable catastrophic denials
+
+These are refused without showing an approval dialog:
+
+- Recursive deletion or recursive permission/ownership changes aimed at a
+  protected root: filesystem/drive roots, the user's home, the workspace
+  root, the repository `.git` state, `~/.collomia`, important OS roots, and
+  detected mount/volume roots. Broad forms such as `/*`, `$HOME/*`, and a
+  workspace-root `*` are included.
+- Direct destruction or overwrite of Collomia safety configuration,
+  repository metadata, critical account files, `/proc/sysrq-trigger`, or raw
+  kernel-memory targets.
+- Filesystem creation, wiping, partitioning, raw copying, redirection, or
+  similar destructive writes aimed at physical block devices, macOS disk
+  identifiers, or Windows physical drives/volumes. Ordinary disk-image files
+  inside the workspace are not classified as physical devices.
+- Any command matching an effective `permissions.denied_commands` regex.
+
+There is intentionally no approval flag or lower-scope override for this tier.
+When a user genuinely intends to administer a physical disk or destroy a
+protected root, they must run that operation themselves outside Collomia.
+
+### Tier 2: mandatory one-time confirmation
+
+These can be legitimate, so they remain available, but every invocation needs
+a new human decision—even in autopilot and even when an allow rule matches:
+
+- Destructive Git operations such as hard reset/restore/clean, forced push or
+  worktree removal, history rewriting, stash/reflog deletion, and aggressive
+  pruning. Dry-run Git cleanup remains routine.
+- Shutdown/reboot and similar machine-lifecycle operations.
+- Bulk or high-impact Terraform, Pulumi, Kubernetes, Helm, Docker/Podman,
+  AWS, Azure, Google Cloud, SQL database, and logical-storage deletions.
+- Recursive deletion whose target contains unresolved variables or other
+  dynamic path syntax, plus `find`-driven dynamic deletion.
+- Commands whose complete effect the analyzer cannot inspect.
+
+The approval dialog does not offer a persistent grant for this tier. In a
+headless run, the operation fails closed because no human approver is present.
+
+### Tier 3: normal permission flow
+
+Scoped cleanup and ordinary development operations continue through the
+configured `ask`, `workspace`, or `autopilot` flow. Examples include:
+
+```sh
+rm -r directory
+rm -rf node_modules
+rm -rf /tmp/example
+cd build && rm -rf -- *
+git clean --dry-run
+mkfs.ext4 ./test-disk.img
+dd if=/dev/zero of=./test-disk.img count=1
+```
+
+The `*` in the `build` directory is recognized as scoped because Collomia
+tracks the preceding `cd`. Test a decision without executing it:
+
+```sh
+collo policy check 'rm -rf /*'          # deny, source: safety
+collo policy check 'git reset --hard'   # prompt, source: safety
+collo --autonomy autopilot policy check 'rm -rf node_modules'  # allow
+```
+
+### Configuration denials remain additive
+
+`permissions.denied_commands` augments the classifier with organization- or
+project-specific regular expressions. Built-in regexes are always present;
+global patterns append to them, and trusted project patterns append to that
+combined set. Empty or `null` lists cannot clear inherited denials, and exact
+duplicates are collapsed. A project can therefore tighten global policy but
+cannot weaken it.
 
 ## The OS sandbox
 

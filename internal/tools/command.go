@@ -65,12 +65,14 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	if strings.TrimSpace(a.Command) == "" {
 		return Action{}, errors.New("command must not be empty")
 	}
-	analysis := shell.Analyze(a.Command)
+	analysis := shell.AnalyzeInWorkspace(a.Command, t.Workspace)
 	return Action{
 		Risk: RiskExecute, Summary: "run: " + a.Command,
 		Executables:     analysis.Executables,
 		Uninspectable:   !analysis.Inspectable,
 		AnalysisReasons: analysis.Reasons,
+		HardDenyReasons: analysis.HardDenyReasons,
+		ConfirmReasons:  analysis.ConfirmReasons,
 	}, nil
 }
 func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -95,10 +97,8 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	if a.PTY && !ptySupported {
 		return "", errors.New("pty execution is not supported on this platform; run the command without pty")
 	}
-	for _, re := range t.DeniedPatterns {
-		if re.MatchString(a.Command) {
-			return "", fmt.Errorf("command denied by safety policy (%s)", re.String())
-		}
+	if err := t.checkCommandSafety(a.Command); err != nil {
+		return "", err
 	}
 	if a.Timeout <= 0 {
 		a.Timeout = 120
@@ -159,6 +159,22 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		out = "(command completed with no output)"
 	}
 	return out, nil
+}
+
+// checkCommandSafety repeats non-overridable checks immediately before
+// execution. Authorization and execution are deliberately separate; this
+// closes any future call path that might execute a command without Assess.
+func (t RunCommandTool) checkCommandSafety(command string) error {
+	analysis := shell.AnalyzeInWorkspace(command, t.Workspace)
+	if len(analysis.HardDenyReasons) > 0 {
+		return fmt.Errorf("command denied by built-in catastrophic-command protection: %s", strings.Join(analysis.HardDenyReasons, "; "))
+	}
+	for _, re := range t.DeniedPatterns {
+		if re.MatchString(command) {
+			return fmt.Errorf("command denied by safety policy (%s)", re.String())
+		}
+	}
+	return nil
 }
 
 func (t RunCommandTool) resolvedWritableRoots() []string {

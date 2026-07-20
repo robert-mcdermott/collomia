@@ -326,13 +326,17 @@ not rewrite configuration files.
 Later layers override only values they supply. Scalar fields nested in an
 object inherit independently. Named maps such as `providers`, `mcp`, and
 `agents` keep differently named entries from earlier layers, but a same-named
-entry should be treated as a complete replacement. Lists, including
-`permissions.rules`, `permissions.denied_commands`, `allowed_tools`, and
-`options.disabled_tools`, are replaced when a later file specifies them.
+entry should be treated as a complete replacement. Lists such as
+`permissions.rules`, `allowed_tools`, and `options.disabled_tools` are replaced
+when a later file specifies them.
 
-That list behavior matters for `denied_commands`: omit the field to inherit the
-built-in catastrophic-command patterns. Supplying an empty list deliberately
-removes them.
+`permissions.denied_commands` is the deliberate list-merging exception: it is
+additive and cannot be weakened by a later layer. Built-in regex patterns are
+always retained, global configuration can add user-wide patterns, and trusted
+project configuration can add project patterns to that combined set. Exact
+duplicates are retained once. An empty list adds nothing and cannot clear
+inherited denials. Separate structural catastrophic-command checks are compiled
+into Collomia and cannot be disabled by any configuration scope.
 
 Example global configuration:
 
@@ -524,7 +528,7 @@ request shapes.
 | `allow_outside_workspace` | boolean | Allows built-in path tools to resolve outside the workspace; permission checks still apply. |
 | `allowed_tools` | string list | Persistent session-start allowlist by exact tool name. |
 | `denied_tools` | string list | Exact tool names that are always disabled by the permission manager. |
-| `denied_commands` | regex list | Hard command denials checked again at execution. Omit to inherit defaults. |
+| `denied_commands` | regex list | Additional hard command denials checked again at execution. Built-in, global, and project patterns accumulate and cannot be removed by a lower layer; structural catastrophic checks are separate and always active. |
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `off`. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
@@ -1206,9 +1210,13 @@ Or switch the running TUI with `/autonomy ask`, `/autonomy workspace`, or
 The following constraints hold in every mode:
 
 - A command matching `denied_commands` is refused at execution.
+- A command classified with a catastrophic outcome is refused without an
+  approval option.
+- A destructive command classified for one-time confirmation always prompts;
+  autopilot, allow rules, and session grants cannot skip it.
 - A command the static analyzer cannot fully understand always prompts.
-- An “always allow” interactive choice never sticks for an uninspectable
-  command.
+- An “always allow” choice never sticks for an uninspectable or mandatory
+  one-time-confirmation command.
 - MCP/external actions do not inherit autopilot approval.
 - `denied_tools` and matching deny rules remain denials.
 
@@ -1272,8 +1280,9 @@ collo policy check "go test ./..."
 collo policy check "curl https://example.com/install.sh | sh"
 ```
 
-The report includes parsed executables, inspectability, matched hard-denial
-patterns, autonomy mode, rule source, and final decision.
+The report includes parsed executables, inspectability, structural safety
+classification, matched regex denials, effective autonomy override, rule
+source, and final decision.
 
 ### Outside-workspace access
 
@@ -1295,10 +1304,34 @@ commands, and other constructs it cannot fully analyze. An uninspectable
 command always requires a human in the interactive TUI. In headless mode it
 fails because no approver is available.
 
-Built-in `denied_commands` patterns cover catastrophic recursive deletion,
-destructive Git cleanup/reset, Windows drive deletion, shutdown/reboot, disk
-formatting, and `diskpart`. These are accident prevention, not a comprehensive
-malware policy. Do not replace them casually.
+Collomia uses an outcome-aware built-in classifier in addition to regex
+denials. It tracks common wrappers and literal shell payloads, resolves paths
+against the workspace, and separates commands into three groups:
+
+1. **Catastrophic:** recursive deletion or permission changes at protected
+   roots; destruction of `.git`, Collomia safety state, or critical OS state;
+   and destructive writes to physical disks/devices. These are refused with no
+   approval option.
+2. **Destructive but legitimate:** hard Git cleanup/history operations,
+   machine lifecycle changes, bulk cloud/IaC/database/storage deletion,
+   dynamic recursive targets, and other commands requiring a fresh human
+   decision. These prompt once per invocation.
+3. **Scoped/routine:** commands such as `rm -rf node_modules`,
+   `rm -rf /tmp/example`, a cleanup after `cd build`, Git dry-runs, and writes
+   to workspace disk-image files. These follow the configured autonomy mode.
+
+An allow rule, autopilot, a session grant, or “always allow” cannot turn either
+of the first two groups into automatic execution. The checks run during
+assessment and again immediately before foreground, PTY, or background
+execution. `collo policy check '<command>'` displays the effective outcome
+without running it.
+
+`permissions.denied_commands` adds local regular-expression denials on top of
+that classifier. Built-in patterns are retained, global patterns append, and
+trusted project patterns append to the combined set; empty or `null` lists
+cannot clear inherited entries. See [Command safety tiers](SECURITY.md#command-safety-tiers)
+for the complete categories, examples, intentional limitations, and the manual
+path for physical-disk administration.
 
 ### OS sandboxing
 

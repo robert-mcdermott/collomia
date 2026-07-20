@@ -212,12 +212,14 @@ func (t StartProcessTool) Assess(raw json.RawMessage) (Action, error) {
 	if strings.TrimSpace(a.Command) == "" {
 		return Action{}, errors.New("command must not be empty")
 	}
-	analysis := shell.Analyze(a.Command)
+	analysis := shell.AnalyzeInWorkspace(a.Command, t.Runner.Workspace)
 	return Action{
 		Risk: RiskExecute, Summary: "start background process: " + a.Command,
 		Executables:     analysis.Executables,
 		Uninspectable:   !analysis.Inspectable,
 		AnalysisReasons: analysis.Reasons,
+		HardDenyReasons: analysis.HardDenyReasons,
+		ConfirmReasons:  analysis.ConfirmReasons,
 	}, nil
 }
 
@@ -228,10 +230,8 @@ func (t StartProcessTool) Execute(_ context.Context, raw json.RawMessage) (strin
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
 	}
-	for _, re := range t.Runner.DeniedPatterns {
-		if re.MatchString(a.Command) {
-			return "", fmt.Errorf("command denied by safety policy (%s)", re.String())
-		}
+	if err := t.Runner.checkCommandSafety(a.Command); err != nil {
+		return "", err
 	}
 	p, err := t.Manager.start(t.Runner, a.Command)
 	if err != nil {
