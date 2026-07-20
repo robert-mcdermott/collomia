@@ -157,6 +157,18 @@ remote-access policy, or idle-session authentication. The server shuts down
 with the TUI. Windows web-terminal mode is rejected until a real ConPTY backend
 can preserve equivalent terminal and process-lifecycle behavior.
 
+## Provider streams
+
+Provider requests can be retried only before a response begins, using a
+replayable request body and the bounded retry policy. Once any text,
+reasoning, or tool-call fragment may have reached the runtime, an in-stream
+exception is returned without replaying the request. This avoids duplicate
+visible output and repeat billing. Streamed tool arguments are never trusted
+as executable input: the adapter must receive, assemble, and validate the
+complete JSON document before the normal permission pipeline can see the tool
+call. Truncated Responses and Bedrock streams fail closed instead of accepting
+their partial content as a completed model response.
+
 ## Secrets
 
 Configured provider keys, MCP headers/env values, and common credential

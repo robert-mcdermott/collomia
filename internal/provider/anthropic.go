@@ -219,6 +219,7 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 			Delta *struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -227,13 +228,14 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 			} `json:"usage"`
 			Error *struct {
 				Message string `json:"message"`
+				Type    string `json:"type"`
 			} `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 			return fmt.Errorf("decode Anthropic stream event %s: %w", event, err)
 		}
 		if envelope.Error != nil {
-			return fmt.Errorf("Anthropic stream: %s", envelope.Error.Message)
+			return &Error{Kind: streamErrorKind(envelope.Error.Type), Retryable: false, Message: sanitizeProviderText(envelope.Error.Message, 2048)}
 		}
 		if envelope.Message != nil {
 			out.Usage.InputTokens = envelope.Message.Usage.InputTokens
@@ -258,6 +260,9 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 					acc.args.Write(envelope.ContentBlock.Input)
 				}
 				tools[envelope.Index] = acc
+				if onDelta != nil {
+					onDelta(Delta{ToolCall: &ToolCallDelta{Index: envelope.Index, ID: acc.id, Name: acc.name}})
+				}
 			}
 		}
 		if envelope.Delta != nil {
@@ -272,6 +277,12 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 					tools[envelope.Index] = &toolAccumulator{}
 				}
 				tools[envelope.Index].args.WriteString(envelope.Delta.PartialJSON)
+				if onDelta != nil {
+					onDelta(Delta{ToolCall: &ToolCallDelta{Index: envelope.Index, Arguments: envelope.Delta.PartialJSON}})
+				}
+			}
+			if envelope.Delta.Thinking != "" && onDelta != nil {
+				onDelta(Delta{Reasoning: envelope.Delta.Thinking})
 			}
 			if envelope.Delta.StopReason != "" {
 				out.Stop = envelope.Delta.StopReason
@@ -297,6 +308,13 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 			return Response{}, fmt.Errorf("tool %s returned invalid JSON arguments", acc.name)
 		}
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: acc.id, Name: acc.name, Arguments: json.RawMessage(args)})
+		if onDelta != nil {
+			onDelta(Delta{ToolCall: &ToolCallDelta{Index: i, ID: acc.id, Name: acc.name, Done: true}})
+		}
+	}
+	if onDelta != nil && (out.Usage.InputTokens > 0 || out.Usage.OutputTokens > 0) {
+		usage := out.Usage
+		onDelta(Delta{Usage: &usage})
 	}
 	return out, nil
 }

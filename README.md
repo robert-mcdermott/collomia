@@ -10,7 +10,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 - Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, and a status bar with live context, task-progress, active-agent, and background-process gauges.
 - Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
-- Streaming OpenAI-compatible and Anthropic-compatible conversations with native tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
+- Streaming OpenAI-compatible, Anthropic-compatible, Responses-style, and native Bedrock ConverseStream conversations with tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
 - Azure OpenAI, Microsoft Foundry OpenAI/v1, and Microsoft Foundry Anthropic endpoint support.
 - Local Ollama, vLLM, LM Studio, Phlox-GW, and other OpenAI-compatible endpoints.
@@ -194,7 +194,7 @@ collo run --resume <session-id> "Continue where we left off"
 collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
 ```
 
-With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors. Provider failures add a classified `provider` object to the preceding `error` event (for example, `{"kind":"rate_limit","status_code":429,"retryable":true,"retry_after_ms":3000,"request_id":"…"}`):
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors. Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event (for example, `{"kind":"rate_limit","status_code":429,"retryable":true,"retry_after_ms":3000,"request_id":"…"}`):
 
 ```json
 {"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
@@ -331,6 +331,8 @@ Collomia keeps an effective capability declaration for every provider/model sele
 
 The declaration describes what Collomia's current adapter can send and consume, which may be smaller than the vendor API's complete feature set. Before any provider request, Collomia rejects a known contradiction (for example, sending tools through an adapter declared not to support them, or configuring a maximum output larger than the context window). Unknown and partial capabilities remain visible but do not cause speculative failures.
 
+Streaming adapters normalize upstream events before they reach the agent: text, provider-supplied reasoning text/summaries, incremental tool-call arguments, complete usage snapshots, warnings, and classified errors all follow one contract. Tool arguments may be incomplete JSON while they stream; Collomia assembles and validates the final document before approval or execution. An HTTP failure before streaming starts can use the normal retry policy. An error carried inside a stream is returned without replaying the request, preventing duplicate deltas and surprise repeat billing.
+
 All built-in HTTP adapters use the same resilience policy. Network failures and HTTP 408, 429, 5xx, and 529 responses are retried up to three attempts with bounded exponential backoff, jitter, and `Retry-After`; authentication, permission, not-found, and other ordinary 4xx failures are not retried. A request is retried only when its body can be replayed. Failures are classified as `authentication`, `permission`, `rate_limit`, `invalid_request`, `not_found`, `timeout`, `unavailable`, `protocol`, `cancelled`, or `unknown`; status, retry timing, and request IDs are included when the provider supplies them. In `--jsonl` mode the same fields appear under `provider` on the `error` event.
 
 Three consecutive transient request failures open a 30-second circuit so a broken endpoint is not hammered; one recovery probe closes it. `/status` shows the active provider as `not checked yet`, `healthy`, `degraded`, `circuit open`, or `testing recovery`. Switching provider/model starts a fresh health state. Timeouts are configured per provider (values shown are the defaults):
@@ -415,7 +417,7 @@ Set `"auth": "bearer"` when a compatible endpoint expects an OAuth bearer token 
 
 ### AWS Bedrock
 
-Native Bedrock uses the Converse API and supports both AWS SigV4 credentials and the newer Amazon Bedrock bearer API keys. `auth` controls the credential family:
+Native Bedrock uses the `ConverseStream` API and supports both AWS SigV4 credentials and the newer Amazon Bedrock bearer API keys. Text, tool arguments, provider-supplied reasoning, and token usage arrive through AWS event-stream framing; in-stream throttling/service/validation exceptions keep their provider classification and request ID. `auth` controls the credential family:
 
 - `auto` (the default) uses `api_key`/`api_key_env` or `AWS_BEARER_TOKEN_BEDROCK` when present; otherwise it uses the AWS credential chain.
 - `sigv4` requires the AWS credential chain even if a bearer token is present.
@@ -468,7 +470,7 @@ export AWS_BEARER_TOKEN_BEDROCK="..."
 
 Collomia consumes an already-generated Bedrock API key; it does not currently mint or refresh short-term keys. Replace the environment value and restart Collomia before an expiring key becomes invalid. AWS recommends short-term keys for production and long-term keys only for exploration. Bearer keys are limited to supported Bedrock/Bedrock Runtime operations; they do not grant Agents or bidirectional-stream operations. `collo doctor` reports the selected authentication family and missing bearer-token variables without printing credential values.
 
-Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key:
+Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key. Collomia requests SSE and also accepts a synchronous JSON response from a compatible endpoint; incomplete Responses runs produce an explicit warning instead of being mistaken for a complete answer:
 
 ```json
 {

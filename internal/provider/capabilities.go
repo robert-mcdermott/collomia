@@ -71,7 +71,8 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 		c.Reasoning = CapabilityPartial
 		c.Constraints = []string{"compatible endpoints may implement a smaller model-specific subset"}
 	case "anthropic", "anthropic-compatible":
-		c.Constraints = []string{"Messages adapter; thinking blocks and cache creation are not yet exposed"}
+		c.Reasoning = CapabilityPartial
+		c.Constraints = []string{"Messages adapter; provider reasoning deltas are surfaced, but signed thinking blocks and cache creation are not yet round-tripped"}
 	case "azure-openai":
 		c.Reasoning = CapabilityPartial
 		c.ModelDiscovery = CapabilityUnsupported
@@ -80,17 +81,18 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 		c.Reasoning = CapabilityPartial
 		c.Constraints = []string{"OpenAI v1 Chat Completions route; caller supplies API key or bearer token"}
 	case "azure-foundry-anthropic":
-		c.Constraints = []string{"Anthropic Messages route; caller supplies API key or bearer token"}
+		c.Reasoning = CapabilityPartial
+		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; caller supplies API key or bearer token"}
 	case "bedrock":
-		c.Streaming = CapabilityUnsupported
+		c.Reasoning = CapabilityPartial
 		c.PromptCaching = CapabilityUnsupported
 		c.ModelDiscovery = CapabilityUnsupported
-		c.Constraints = []string{"non-streaming Converse route; SigV4 AWS credentials or Bedrock bearer API key; model access is governed by the AWS account and region"}
+		c.Constraints = []string{"ConverseStream route; SigV4 AWS credentials or Bedrock bearer API key; model access and streaming support are governed by the AWS account, model, and region"}
 	case "bedrock-mantle":
-		c.Streaming = CapabilityUnsupported
+		c.Reasoning = CapabilityPartial
 		c.PromptCaching = CapabilityUnsupported
 		c.ModelDiscovery = CapabilityUnsupported
-		c.Constraints = []string{"non-streaming Responses-style route"}
+		c.Constraints = []string{"Responses-style route; requests SSE and accepts synchronous JSON fallback"}
 	default:
 		return Capabilities{}, fmt.Errorf("unsupported provider type %q", providerType)
 	}

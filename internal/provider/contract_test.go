@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 )
 
 func contractRequest() Request {
@@ -91,14 +94,26 @@ func TestResponsesContract(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body["store"] != false || len(body["tools"].([]any)) != 1 {
+		if body["store"] != false || body["stream"] != true || len(body["tools"].([]any)) != 1 {
 			t.Errorf("body=%+v", body)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"checked"}]},{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}],"usage":{"input_tokens":11,"output_tokens":5}}`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"\"}}\n\n")
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"checked\"}\n\n")
+		fmt.Fprint(w, "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"item_1\",\"output_index\":1,\"delta\":\"{\\\"path\\\":\\\"README.md\\\"}\"}\n\n")
+		fmt.Fprint(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"checked\"}]},{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}],\"usage\":{\"input_tokens\":11,\"output_tokens\":5}}}\n\n")
 	}))
 	defer server.Close()
 	assertContractResponse(t, &ResponsesClient{Label: "responses-contract", BaseURL: server.URL, APIKey: "secret"}, "checked", Usage{InputTokens: 11, OutputTokens: 5})
+}
+
+func TestResponsesSynchronousJSONFallback(t *testing.T) {
+	payload := `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"checked"}]},{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}],"usage":{"input_tokens":11,"output_tokens":5}}`
+	response, err := parseResponsesResponse(strings.NewReader(payload), "responses-contract", nil)
+	if err != nil || response.Content != "checked" || len(response.ToolCalls) != 1 || response.Usage != (Usage{InputTokens: 11, OutputTokens: 5}) {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
 }
 
 func TestResponsesRetriesTransientFailure(t *testing.T) {
@@ -122,7 +137,7 @@ func TestResponsesRetriesTransientFailure(t *testing.T) {
 	}
 }
 
-func TestBedrockConverseContract(t *testing.T) {
+func TestBedrockConverseStreamContract(t *testing.T) {
 	body, err := bedrockRequest(contractRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -131,15 +146,66 @@ func TestBedrockConverseContract(t *testing.T) {
 	if !ok || len(toolConfig["tools"].([]any)) != 1 {
 		t.Fatalf("request body=%+v", body)
 	}
-	payload := `{"output":{"message":{"content":[{"text":"checked"},{"toolUse":{"toolUseId":"tool_1","name":"read_file","input":{"path":"README.md"}}}]}},"usage":{"inputTokens":8,"outputTokens":2},"stopReason":"tool_use"}`
+	payload := bedrockEventStream(t,
+		bedrockEvent{"messageStart", `{"role":"assistant"}`},
+		bedrockEvent{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"checked"}}`},
+		bedrockEvent{"contentBlockStart", `{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"tool_1","name":"read_file"}}}`},
+		bedrockEvent{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"path\":\"README.md\"}"}}}`},
+		bedrockEvent{"contentBlockStop", `{"contentBlockIndex":1}`},
+		bedrockEvent{"messageStop", `{"stopReason":"tool_use"}`},
+		bedrockEvent{"metadata", `{"usage":{"inputTokens":8,"outputTokens":2}}`},
+	)
 	var streamed strings.Builder
-	response, err := parseBedrockResponse(strings.NewReader(payload), func(delta Delta) { streamed.WriteString(delta.Text) })
+	response, err := parseBedrockStream(bytes.NewReader(payload), "bedrock-contract", "req-1", func(delta Delta) { streamed.WriteString(delta.Text) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if response.Content != "checked" || streamed.String() != "checked" || len(response.ToolCalls) != 1 || response.ToolCalls[0].Name != "read_file" || string(response.ToolCalls[0].Arguments) != `{"path":"README.md"}` || response.Usage != (Usage{InputTokens: 8, OutputTokens: 2}) {
 		t.Fatalf("response=%+v streamed=%q", response, streamed.String())
 	}
+	client := &BedrockClient{
+		Label: "bedrock-contract", Region: "us-east-1", Auth: "bearer", APIKey: "secret",
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/model/contract-model/converse-stream" || req.Header.Get("Accept") != "application/vnd.amazon.eventstream" || req.Header.Get("Authorization") != "Bearer secret" {
+				t.Errorf("path=%q headers=%v", req.URL.Path, req.Header)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/vnd.amazon.eventstream"}, "x-amzn-requestid": []string{"req-1"}}, Body: io.NopCloser(bytes.NewReader(payload)), Request: req}, nil
+		})},
+	}
+	assertContractResponse(t, client, "checked", Usage{InputTokens: 8, OutputTokens: 2})
+}
+
+type bedrockEvent struct {
+	typ     string
+	payload string
+}
+
+func bedrockEventStream(t *testing.T, events ...bedrockEvent) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	encoder := eventstream.NewEncoder()
+	for _, item := range events {
+		headers := eventstream.Headers{}
+		headers.Set(":message-type", eventstream.StringValue("event"))
+		headers.Set(":event-type", eventstream.StringValue(item.typ))
+		headers.Set(":content-type", eventstream.StringValue("application/json"))
+		if err := encoder.Encode(&out, eventstream.Message{Headers: headers, Payload: []byte(item.payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out.Bytes()
+}
+
+func bedrockExceptionStream(t *testing.T, code, payload string) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	headers := eventstream.Headers{}
+	headers.Set(":message-type", eventstream.StringValue("exception"))
+	headers.Set(":exception-type", eventstream.StringValue(code))
+	if err := eventstream.NewEncoder().Encode(&out, eventstream.Message{Headers: headers, Payload: []byte(payload)}); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
 
 func TestBedrockConverseRetriesTransientFailure(t *testing.T) {

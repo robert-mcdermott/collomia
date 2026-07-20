@@ -28,6 +28,9 @@ func TestEveryProviderTypeDeclaresCapabilities(t *testing.T) {
 			if capabilities.ContextWindow != 128_000 {
 				t.Fatalf("context=%d", capabilities.ContextWindow)
 			}
+			if (providerType == "bedrock" || providerType == "bedrock-mantle") && capabilities.Streaming != CapabilitySupported {
+				t.Fatalf("streaming=%s", capabilities.Streaming)
+			}
 		})
 	}
 }
@@ -62,8 +65,11 @@ func TestCapabilityDeclarationsPreserveImportantDifferences(t *testing.T) {
 	if openAI.Streaming != CapabilitySupported || openAI.ModelDiscovery != CapabilitySupported {
 		t.Fatalf("openai=%+v", openAI)
 	}
-	if bedrock.Streaming != CapabilityUnsupported || bedrock.ModelDiscovery != CapabilityUnsupported {
+	if bedrock.Streaming != CapabilitySupported || bedrock.ModelDiscovery != CapabilityUnsupported {
 		t.Fatalf("bedrock=%+v", bedrock)
+	}
+	if bedrock.Reasoning != CapabilityPartial {
+		t.Fatalf("bedrock reasoning=%s", bedrock.Reasoning)
 	}
 	if openAI.Images != CapabilityUnsupported {
 		t.Fatal("the current text-only adapter must not claim vendor image support")

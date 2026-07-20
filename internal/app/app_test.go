@@ -249,7 +249,7 @@ func TestProviderInspectionCombinesCapabilitiesAndAvailability(t *testing.T) {
 	if len(statuses) != 2 || statuses[0].Name != "aws" || statuses[1].Name != "live" {
 		t.Fatalf("statuses=%+v", statuses)
 	}
-	if statuses[0].Availability != ProviderUnverified || statuses[0].Capabilities.Streaming != provider.CapabilityUnsupported {
+	if statuses[0].Availability != ProviderUnverified || statuses[0].Capabilities.Streaming != provider.CapabilitySupported {
 		t.Fatalf("aws=%+v", statuses[0])
 	}
 	if statuses[1].Availability != ProviderAvailable || len(statuses[1].Models) != 1 || statuses[1].Models[0].Capabilities.ContextWindow != 64_000 {

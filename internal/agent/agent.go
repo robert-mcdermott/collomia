@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/audit"
@@ -167,10 +168,32 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 				return "", wrapped
 			}
 		}
+		var streamedUsage atomic.Bool
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" {
 				e := event.New(event.KindTextDelta)
 				e.Text = delta.Text
+				send(e)
+			}
+			if delta.Reasoning != "" {
+				e := event.New(event.KindReasoningDelta)
+				e.Text = delta.Reasoning
+				send(e)
+			}
+			if delta.ToolCall != nil {
+				e := event.New(event.KindToolCallDelta)
+				e.ToolCall = &event.ToolCallDelta{Index: delta.ToolCall.Index, ID: delta.ToolCall.ID, Name: delta.ToolCall.Name, ArgumentsDelta: delta.ToolCall.Arguments, Done: delta.ToolCall.Done}
+				send(e)
+			}
+			if delta.Usage != nil {
+				streamedUsage.Store(true)
+				e := event.New(event.KindUsage)
+				e.Usage = &event.Usage{InputTokens: delta.Usage.InputTokens, OutputTokens: delta.Usage.OutputTokens, CachedTokens: delta.Usage.CachedTokens, ReasoningTokens: delta.Usage.ReasoningTokens}
+				send(e)
+			}
+			if delta.Warning != "" {
+				e := event.New(event.KindWarning)
+				e.Text = delta.Warning
 				send(e)
 			}
 		})
@@ -189,7 +212,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		}
 		a.mu.Unlock()
 		a.appendMessage(provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls})
-		if response.Usage.InputTokens > 0 || response.Usage.OutputTokens > 0 {
+		if !streamedUsage.Load() && (response.Usage.InputTokens > 0 || response.Usage.OutputTokens > 0) {
 			e := event.New(event.KindUsage)
 			e.Usage = &event.Usage{InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, CachedTokens: response.Usage.CachedTokens, ReasoningTokens: response.Usage.ReasoningTokens}
 			send(e)

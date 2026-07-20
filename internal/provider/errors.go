@@ -146,12 +146,43 @@ func protocolError(providerName, operation string, err error) error {
 		return nil
 	}
 	if providerErr, ok := AsError(err); ok {
-		return providerErr
+		copy := *providerErr
+		if copy.Provider == "" {
+			copy.Provider = providerName
+		}
+		if copy.Operation == "" {
+			copy.Operation = operation
+		}
+		return &copy
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errStreamIdleTimeout) {
 		return classifyTransportError(context.Background(), providerName, operation, err)
 	}
 	return &Error{Provider: providerName, Operation: operation, Kind: ErrorProtocol, Message: sanitizeProviderText(err.Error(), 2048), Err: err}
+}
+
+// streamErrorKind classifies an error code carried inside an otherwise
+// successful HTTP streaming response. Retryable remains false at the call
+// site: once deltas may have reached the user, adapters never replay the
+// request automatically.
+func streamErrorKind(code string) ErrorKind {
+	code = strings.ToLower(code)
+	switch {
+	case strings.Contains(code, "rate") || strings.Contains(code, "throttl"):
+		return ErrorRateLimit
+	case strings.Contains(code, "auth") || strings.Contains(code, "api_key") || strings.Contains(code, "unauthorized"):
+		return ErrorAuthentication
+	case strings.Contains(code, "permission") || strings.Contains(code, "forbidden"):
+		return ErrorPermission
+	case strings.Contains(code, "timeout"):
+		return ErrorTimeout
+	case strings.Contains(code, "server") || strings.Contains(code, "unavailable") || strings.Contains(code, "overload"):
+		return ErrorUnavailable
+	case strings.Contains(code, "invalid") || strings.Contains(code, "validation") || strings.Contains(code, "unsupported"):
+		return ErrorInvalidRequest
+	default:
+		return ErrorProtocol
+	}
 }
 
 func responseMessage(body []byte, fallback string) string {

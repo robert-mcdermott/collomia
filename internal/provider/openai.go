@@ -186,11 +186,15 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 		var chunk struct {
 			Error *struct {
 				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
 			} `json:"error"`
 			Choices []struct {
 				Delta struct {
-					Content   string            `json:"content"`
-					ToolCalls []openAIToolDelta `json:"tool_calls"`
+					Content          string            `json:"content"`
+					Reasoning        string            `json:"reasoning"`
+					ReasoningContent string            `json:"reasoning_content"`
+					ToolCalls        []openAIToolDelta `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
@@ -209,10 +213,14 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 			return fmt.Errorf("decode OpenAI stream event: %w", err)
 		}
 		if chunk.Error != nil {
-			return fmt.Errorf("OpenAI stream: %s", chunk.Error.Message)
+			return &Error{Kind: streamErrorKind(chunk.Error.Type + " " + chunk.Error.Code), Retryable: false, Message: sanitizeProviderText(chunk.Error.Message, 2048)}
 		}
 		if chunk.Usage != nil {
 			out.Usage = Usage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, CachedTokens: chunk.Usage.PromptDetails.CachedTokens, ReasoningTokens: chunk.Usage.CompletionDetails.ReasoningTokens}
+			if onDelta != nil {
+				usage := out.Usage
+				onDelta(Delta{Usage: &usage})
+			}
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
@@ -220,6 +228,13 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 				if onDelta != nil {
 					onDelta(Delta{Text: choice.Delta.Content})
 				}
+			}
+			reasoning := choice.Delta.ReasoningContent
+			if reasoning == "" {
+				reasoning = choice.Delta.Reasoning
+			}
+			if reasoning != "" && onDelta != nil {
+				onDelta(Delta{Reasoning: reasoning})
 			}
 			if choice.FinishReason != "" {
 				out.Stop = choice.FinishReason
@@ -236,7 +251,11 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 				if td.Function.Name != "" {
 					acc.name += td.Function.Name
 				}
-				acc.args.WriteString(openAIArgumentFragment(td.Function.Arguments))
+				fragment := openAIArgumentFragment(td.Function.Arguments)
+				acc.args.WriteString(fragment)
+				if onDelta != nil {
+					onDelta(Delta{ToolCall: &ToolCallDelta{Index: td.Index, ID: acc.id, Name: acc.name, Arguments: fragment}})
+				}
 			}
 		}
 		return nil
@@ -263,6 +282,9 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 			id = "call_" + strconv.Itoa(index)
 		}
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: id, Name: acc.name, Arguments: json.RawMessage(args)})
+		if onDelta != nil {
+			onDelta(Delta{ToolCall: &ToolCallDelta{Index: index, ID: id, Name: acc.name, Done: true}})
+		}
 	}
 	return out, nil
 }

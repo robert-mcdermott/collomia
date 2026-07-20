@@ -12,7 +12,7 @@ import (
 
 func TestParseOpenAIStreamTextUsageAndToolFragments(t *testing.T) {
 	stream := strings.Join([]string{
-		`data: {"choices":[{"delta":{"content":"Hi "}}]}`,
+		`data: {"choices":[{"delta":{"content":"Hi ","reasoning_content":"checking"}}]}`,
 		"",
 		`data: {"choices":[{"delta":{"content":"there","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_","arguments":"{\"pa"}}]}}]}`,
 		"",
@@ -21,8 +21,18 @@ func TestParseOpenAIStreamTextUsageAndToolFragments(t *testing.T) {
 		`data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4}}`,
 		"", `data: [DONE]`, "",
 	}, "\n")
-	var deltas string
-	response, err := parseOpenAIStream(strings.NewReader(stream), func(delta Delta) { deltas += delta.Text })
+	var deltas, reasoning string
+	var toolDeltas, usageEvents int
+	response, err := parseOpenAIStream(strings.NewReader(stream), func(delta Delta) {
+		deltas += delta.Text
+		reasoning += delta.Reasoning
+		if delta.ToolCall != nil {
+			toolDeltas++
+		}
+		if delta.Usage != nil {
+			usageEvents++
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +44,9 @@ func TestParseOpenAIStreamTextUsageAndToolFragments(t *testing.T) {
 	}
 	if response.Usage.InputTokens != 12 || response.Usage.OutputTokens != 4 {
 		t.Fatalf("usage=%+v", response.Usage)
+	}
+	if reasoning != "checking" || toolDeltas != 3 || usageEvents != 1 {
+		t.Fatalf("reasoning=%q toolDeltas=%d usageEvents=%d", reasoning, toolDeltas, usageEvents)
 	}
 }
 

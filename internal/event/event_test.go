@@ -68,6 +68,22 @@ func TestProviderFailureRoundTrips(t *testing.T) {
 	}
 }
 
+func TestToolCallDeltaRoundTrips(t *testing.T) {
+	e := New(KindToolCallDelta)
+	e.ToolCall = &ToolCallDelta{Index: 2, ID: "call-2", Name: "read_file", ArgumentsDelta: `{"path":`, Done: false}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ToolCall == nil || decoded.ToolCall.Index != 2 || decoded.ToolCall.ID != "call-2" || decoded.ToolCall.Name != "read_file" || decoded.ToolCall.ArgumentsDelta != `{"path":` || decoded.ToolCall.Done {
+		t.Fatalf("tool call delta round trip mismatch: %+v", decoded.ToolCall)
+	}
+}
+
 func TestJSONLWriterAppliesRedaction(t *testing.T) {
 	var out strings.Builder
 	w := NewJSONLWriter(&out)
