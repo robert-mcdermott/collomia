@@ -335,6 +335,8 @@ Streaming adapters normalize upstream events before they reach the agent: text, 
 
 All built-in HTTP adapters use the same resilience policy. Network failures and HTTP 408, 429, 5xx, and 529 responses are retried up to three attempts with bounded exponential backoff, jitter, and `Retry-After`; authentication, permission, not-found, and other ordinary 4xx failures are not retried. A request is retried only when its body can be replayed. Failures are classified as `authentication`, `permission`, `rate_limit`, `invalid_request`, `not_found`, `timeout`, `unavailable`, `protocol`, `cancelled`, or `unknown`; status, retry timing, and request IDs are included when the provider supplies them. In `--jsonl` mode the same fields appear under `provider` on the `error` event.
 
+OpenAI-protocol models do not all accept the same Chat Completions fields. Collomia sends the backward-compatible `max_tokens` field first. Only when an upstream HTTP 400 explicitly rejects that field and directs the caller to `max_completion_tokens` does Collomia rebuild and resend the request; a similarly explicit rejection of a configured `temperature` retries with the provider default and emits a warning. Those choices are remembered for the active provider/model client, so later turns avoid the failed probe. Successful requests, unrelated 400 responses, and providers that accept the original fields are never rewritten. The configured `max_tokens` remains Collomia's provider-neutral output budget; for reasoning models the upstream `max_completion_tokens` interpretation includes hidden reasoning tokens as well as visible output.
+
 Three consecutive transient request failures open a 30-second circuit so a broken endpoint is not hammered; one recovery probe closes it. `/status` shows the active provider as `not checked yet`, `healthy`, `degraded`, `circuit open`, or `testing recovery`. Switching provider/model starts a fresh health state. Timeouts are configured per provider (values shown are the defaults):
 
 ```json
@@ -561,6 +563,14 @@ scope guidance without exposing a token. `collo doctor` reports the credential
 chain selector, effective scope, tenant, authority, and required role, but never
 acquires or prints a token.
 
+Azure reasoning deployments such as GPT-5 require `max_completion_tokens`
+instead of the legacy `max_tokens`, while some older Azure deployments reject
+the newer field. Collomia therefore does not guess from a deployment name or
+change every Azure request. It reacts only to the provider's structured 400,
+retries before any stream data is emitted, and remembers the accepted shape for
+the active model. If the model explicitly rejects a configured `temperature`,
+Collomia also retries with the model default and reports that adjustment.
+
 For a different tenant or a sovereign/private cloud, override only the values
 your Azure environment documents:
 
@@ -608,7 +618,9 @@ authentication](https://learn.microsoft.com/azure/developer/ai/get-started-secur
 [Foundry Models keyless
 authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/configure-entra-id),
 and [Claude on Foundry
-authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-claude).
+authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-claude),
+and [Azure OpenAI reasoning-model request
+requirements](https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning).
 
 ## Permissions and safety
 

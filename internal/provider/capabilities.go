@@ -66,20 +66,20 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 	switch providerType {
 	case "openai":
 		c.Reasoning = CapabilityPartial
-		c.Constraints = []string{"Chat Completions adapter; model-specific features may be unknown"}
+		c.Constraints = []string{"Chat Completions adapter; model-specific features may be unknown; explicit max_tokens/temperature rejections are negotiated and remembered for the active model"}
 	case "openai-compatible":
 		c.Reasoning = CapabilityPartial
-		c.Constraints = []string{"compatible endpoints may implement a smaller model-specific subset"}
+		c.Constraints = []string{"compatible endpoints may implement a smaller model-specific subset; accepted request parameters remain unchanged, while explicit max_tokens/temperature rejections are negotiated for the active model"}
 	case "anthropic", "anthropic-compatible":
 		c.Reasoning = CapabilityPartial
 		c.Constraints = []string{"Messages adapter; provider reasoning deltas are surfaced, but signed thinking blocks and cache creation are not yet round-tripped"}
 	case "azure-openai":
 		c.Reasoning = CapabilityPartial
 		c.ModelDiscovery = CapabilityUnsupported
-		c.Constraints = []string{"deployment-scoped Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
+		c.Constraints = []string{"deployment-scoped Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication; reasoning-model max_completion_tokens/default-temperature requirements are negotiated from explicit provider rejections"}
 	case "azure-foundry":
 		c.Reasoning = CapabilityPartial
-		c.Constraints = []string{"OpenAI v1 Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
+		c.Constraints = []string{"OpenAI v1 Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication; reasoning-model max_completion_tokens/default-temperature requirements are negotiated from explicit provider rejections"}
 	case "azure-foundry-anthropic":
 		c.Reasoning = CapabilityPartial
 		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}

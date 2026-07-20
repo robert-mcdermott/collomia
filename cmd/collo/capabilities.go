@@ -28,7 +28,7 @@ func capabilityMatrix() []capabilityRow {
 		{"provider", "anthropic / anthropic-compatible", "implemented", "streaming messages + tool use"},
 		{"provider", "aws bedrock (ConverseStream)", "implemented", "native event-stream text/tool/reasoning/usage; auto/sigv4/bearer auth supports the AWS credential chain and Bedrock API keys"},
 		{"provider", "aws bedrock mantle", "implemented", "Responses-style SSE with synchronous JSON fallback"},
-		{"provider", "azure openai / azure ai foundry", "implemented", "API key, static bearer, or DefaultAzureCredential with in-memory caching/proactive refresh; Azure OpenAI and Foundry scopes, tenant/sovereign authority overrides, and RBAC diagnostics"},
+		{"provider", "azure openai / azure ai foundry", "implemented", "API key, static bearer, or DefaultAzureCredential with in-memory caching/proactive refresh; Azure OpenAI and Foundry scopes, tenant/sovereign authority overrides, RBAC diagnostics, and reactive reasoning-model parameter negotiation"},
 		{"provider", "model discovery", "implemented", "live OpenAI-compatible and Anthropic catalogs feed /model; /models reports capabilities plus available/unavailable/unverified status"},
 		{"provider", "retry/resilience", "implemented", "classified failures; replay-safe 3-attempt backoff+jitter with Retry-After across all HTTP adapters; configurable connect/request/idle timeouts; circuit health in /status"},
 		{"provider", "normalized streaming events", "implemented", "text, reasoning, tool-argument fragments, usage, warnings, and classified errors; tool execution waits for complete valid JSON"},

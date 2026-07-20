@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type OpenAIClient struct {
@@ -22,7 +23,16 @@ type OpenAIClient struct {
 	AuthHint     string
 	HTTP         *http.Client
 	Declared     Capabilities
+	parameters   openAIChatParameterProfile
 }
+
+type openAIChatParameterProfile struct {
+	mu                     sync.RWMutex
+	useMaxCompletionTokens bool
+	omitTemperature        bool
+}
+
+const maxOpenAIParameterAdjustments = 2
 
 func (c *OpenAIClient) Name() string { return c.Label }
 
@@ -83,14 +93,61 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
+	url := c.ChatURL
+	if url == "" {
+		url = strings.TrimRight(c.BaseURL, "/") + "/chat/completions"
+	}
+	for adjustments := 0; ; {
+		body, err := c.chatBody(in)
+		if err != nil {
+			return Response{}, err
+		}
+		resp, err := c.sendChatRequest(ctx, url, body)
+		if err != nil {
+			return Response{}, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+			resp.Body.Close()
+			if readErr != nil {
+				return Response{}, protocolError(c.Label, "read chat error response", readErr)
+			}
+			if adjustments < maxOpenAIParameterAdjustments {
+				rejected := openAIRejectedChatParameter(resp.StatusCode, errorBody)
+				if retry, warning := c.parameters.learn(rejected, body); retry {
+					adjustments++
+					if warning != "" && onDelta != nil {
+						onDelta(Delta{Warning: warning})
+					}
+					continue
+				}
+			}
+			return Response{}, withAzureRBACHint(responseError(resp, c.Label, "chat", errorBody), c.AuthHint)
+		}
+		defer resp.Body.Close()
+		if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			response, err := parseOpenAINonStream(resp.Body, onDelta)
+			return response, protocolError(c.Label, "decode chat response", err)
+		}
+		response, err := parseOpenAIStream(resp.Body, onDelta)
+		return response, protocolError(c.Label, "read chat stream", err)
+	}
+}
+
+func (c *OpenAIClient) chatBody(in Request) (map[string]any, error) {
+	useMaxCompletionTokens, omitTemperature := c.parameters.snapshot()
 	body := map[string]any{
 		"model": in.Model, "messages": openAIMessages(in), "stream": true,
 		"stream_options": map[string]bool{"include_usage": true},
 	}
 	if in.MaxTokens > 0 {
-		body["max_tokens"] = in.MaxTokens
+		parameter := "max_tokens"
+		if useMaxCompletionTokens {
+			parameter = "max_completion_tokens"
+		}
+		body[parameter] = in.MaxTokens
 	}
-	if in.Temperature != nil {
+	if in.Temperature != nil && !omitTemperature {
 		body["temperature"] = *in.Temperature
 	}
 	if len(in.Tools) > 0 {
@@ -98,7 +155,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 		for _, tool := range in.Tools {
 			var schema any
 			if err := json.Unmarshal(rawObject(tool.InputSchema), &schema); err != nil {
-				return Response{}, fmt.Errorf("tool %s schema: %w", tool.Name, err)
+				return nil, fmt.Errorf("tool %s schema: %w", tool.Name, err)
 			}
 			tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
 				"name": tool.Name, "description": tool.Description, "parameters": schema,
@@ -107,14 +164,13 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
+	return body, nil
+}
 
-	url := c.ChatURL
-	if url == "" {
-		url = strings.TrimRight(c.BaseURL, "/") + "/chat/completions"
-	}
+func (c *OpenAIClient) sendChatRequest(ctx context.Context, url string, body map[string]any) (*http.Response, error) {
 	req, err := newJSONRequest(ctx, http.MethodPost, url, body)
 	if err != nil {
-		return Response{}, err
+		return nil, err
 	}
 	if c.APIKey != "" && c.APIKeyHeader != "" {
 		req.Header.Set(c.APIKeyHeader, c.APIKey)
@@ -123,26 +179,106 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 	}
 	applyHeaders(req, c.Headers)
 	if err := authorizeWithBearerSource(ctx, req.Header, c.BearerSource, c.Label); err != nil {
-		return Response{}, err
+		return nil, err
 	}
 	client := c.HTTP
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := doWithRetry(client, req, c.Label, "chat")
-	if err != nil {
-		return Response{}, err
+	return doWithRetry(client, req, c.Label, "chat")
+}
+
+func (p *openAIChatParameterProfile) snapshot() (useMaxCompletionTokens, omitTemperature bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.useMaxCompletionTokens, p.omitTemperature
+}
+
+func (p *openAIChatParameterProfile) learn(rejected string, sent map[string]any) (retry bool, warning string) {
+	switch rejected {
+	case "max_tokens":
+		if _, ok := sent["max_tokens"]; !ok {
+			return false, ""
+		}
+		p.mu.Lock()
+		p.useMaxCompletionTokens = true
+		p.mu.Unlock()
+		return true, ""
+	case "temperature":
+		if _, ok := sent["temperature"]; !ok {
+			return false, ""
+		}
+		p.mu.Lock()
+		p.omitTemperature = true
+		p.mu.Unlock()
+		return true, "provider rejected the configured temperature; retrying with its default and remembering that choice for this active model"
+	default:
+		return false, ""
 	}
-	defer resp.Body.Close()
-	if err := checkResponse(resp, c.Label, "chat"); err != nil {
-		return Response{}, withAzureRBACHint(err, c.AuthHint)
+}
+
+// openAIRejectedChatParameter recognizes only an explicit HTTP 400 rejection
+// of parameters Collomia owns. This keeps successful and unrelated invalid
+// requests byte-for-byte unchanged for OpenAI-compatible providers.
+func openAIRejectedChatParameter(status int, body []byte) string {
+	if status != http.StatusBadRequest {
+		return ""
 	}
-	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		response, err := parseOpenAINonStream(resp.Body, onDelta)
-		return response, protocolError(c.Label, "decode chat response", err)
+	var envelope struct {
+		Message string `json:"message"`
+		Error   *struct {
+			Message string `json:"message"`
+			Param   any    `json:"param"`
+			Code    any    `json:"code"`
+		} `json:"error"`
 	}
-	response, err := parseOpenAIStream(resp.Body, onDelta)
-	return response, protocolError(c.Label, "read chat stream", err)
+	_ = json.Unmarshal(body, &envelope)
+	message := envelope.Message
+	parameter, code := "", ""
+	if envelope.Error != nil {
+		if envelope.Error.Message != "" {
+			message = envelope.Error.Message
+		}
+		parameter, _ = envelope.Error.Param.(string)
+		code, _ = envelope.Error.Code.(string)
+	}
+	message = strings.ToLower(message)
+	parameter = strings.ToLower(strings.TrimSpace(parameter))
+	code = strings.ToLower(strings.TrimSpace(code))
+	if message == "" {
+		message = strings.ToLower(strings.TrimSpace(string(body)))
+	}
+	unsupportedMessage := strings.Contains(message, "unsupported") || strings.Contains(message, "not supported") ||
+		strings.Contains(message, "deprecated") || strings.Contains(message, "only the default")
+	switch parameter {
+	case "max_tokens":
+		if strings.Contains(message, "max_completion_tokens") && (code == "unsupported_parameter" || unsupportedMessage) {
+			return "max_tokens"
+		}
+		return ""
+	case "temperature":
+		if code == "unsupported_parameter" || unsupportedMessage {
+			return "temperature"
+		}
+		return ""
+	case "":
+		// A few compatible services omit error.param. Their message must still
+		// name both the rejected field and its replacement (or explicitly name
+		// temperature) before Collomia changes the authored request.
+		if unsupportedMessage && strings.Contains(message, "max_tokens") && strings.Contains(message, "max_completion_tokens") {
+			return "max_tokens"
+		}
+		if unsupportedMessage && mentionsQuotedParameter(message, "temperature") {
+			return "temperature"
+		}
+	}
+	return ""
+}
+
+func mentionsQuotedParameter(message, parameter string) bool {
+	return strings.Contains(message, "'"+parameter+"'") ||
+		strings.Contains(message, "`"+parameter+"`") ||
+		strings.Contains(message, `"`+parameter+`"`)
 }
 
 func openAIMessages(in Request) []any {
