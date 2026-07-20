@@ -266,3 +266,15 @@ func TestNewRedactorIncludesStandardBedrockBearerToken(t *testing.T) {
 		t.Fatalf("token was not redacted: %q", got)
 	}
 }
+
+func TestNewRedactorIncludesAzureEnvironmentCredentials(t *testing.T) {
+	t.Setenv("AZURE_CLIENT_SECRET", "azure-client-secret-value")
+	t.Setenv("AZURE_CLIENT_CERTIFICATE_PASSWORD", "azure-certificate-password")
+	cfg := appconfig.Defaults()
+	cfg.Providers["azure"] = appconfig.Provider{Type: "azure-foundry", Auth: "entra", BaseURL: "https://example.services.ai.azure.com", Model: "model"}
+	redactor := NewRedactor(cfg)
+	got := redactor.Redact("client=azure-client-secret-value certificate=azure-certificate-password")
+	if strings.Contains(got, "azure-client-secret-value") || strings.Contains(got, "azure-certificate-password") {
+		t.Fatalf("Azure environment credential was not redacted: %q", got)
+	}
+}

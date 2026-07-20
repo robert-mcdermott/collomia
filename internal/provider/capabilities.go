@@ -76,13 +76,13 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 	case "azure-openai":
 		c.Reasoning = CapabilityPartial
 		c.ModelDiscovery = CapabilityUnsupported
-		c.Constraints = []string{"deployment-scoped Chat Completions route; caller supplies API key or bearer token"}
+		c.Constraints = []string{"deployment-scoped Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
 	case "azure-foundry":
 		c.Reasoning = CapabilityPartial
-		c.Constraints = []string{"OpenAI v1 Chat Completions route; caller supplies API key or bearer token"}
+		c.Constraints = []string{"OpenAI v1 Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
 	case "azure-foundry-anthropic":
 		c.Reasoning = CapabilityPartial
-		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; caller supplies API key or bearer token"}
+		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
 	case "bedrock":
 		c.Reasoning = CapabilityPartial
 		c.PromptCaching = CapabilityUnsupported

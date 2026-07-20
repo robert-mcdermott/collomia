@@ -278,6 +278,55 @@ func TestValidateAzureProviderTypes(t *testing.T) {
 	}
 }
 
+func TestValidateAzureAuthenticationModes(t *testing.T) {
+	for _, providerType := range []string{"azure-openai", "azure-foundry", "azure-foundry-anthropic"} {
+		for _, auth := range []string{"", "api_key", "bearer", "entra"} {
+			cfg := Defaults()
+			cfg.Providers["azure"] = Provider{Type: providerType, Auth: auth, BaseURL: "https://example.services.ai.azure.com", Model: "deployment"}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("type=%s auth=%q should validate: %v", providerType, auth, err)
+			}
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider Provider
+		field    string
+	}{
+		{"unknown auth", Provider{Type: "azure-openai", Auth: "managed", BaseURL: "https://example.openai.azure.com"}, "providers.azure.auth"},
+		{"Entra with key", Provider{Type: "azure-openai", Auth: "entra", BaseURL: "https://example.openai.azure.com", APIKeyEnv: "AZURE_OPENAI_API_KEY"}, "providers.azure.api_key_env"},
+		{"Entra with auth header", Provider{Type: "azure-foundry", Auth: "entra", BaseURL: "https://example.services.ai.azure.com", Headers: map[string]string{"Authorization": "Bearer value"}}, "providers.azure.headers.Authorization"},
+		{"invalid scope", Provider{Type: "azure-foundry", Auth: "entra", BaseURL: "https://example.services.ai.azure.com", EntraScope: "https://ai.azure.com/token"}, "providers.azure.entra_scope"},
+		{"invalid authority", Provider{Type: "azure-foundry", Auth: "entra", BaseURL: "https://example.services.ai.azure.com", EntraAuthorityHost: "http://login.example"}, "providers.azure.entra_authority_host"},
+		{"unused Entra setting", Provider{Type: "azure-openai", BaseURL: "https://example.openai.azure.com", EntraTenantID: "tenant"}, "providers.azure.auth"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Providers["azure"] = test.provider
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("validation error=%v, want field %s", err, test.field)
+			}
+		})
+	}
+}
+
+func TestNormalizeAzureEntraSettings(t *testing.T) {
+	t.Setenv("COLLO_TEST_ENTRA_SCOPE", "https://ai.azure.com/.default")
+	cfg := Defaults()
+	cfg.Providers["azure"] = Provider{
+		Type: " AZURE-FOUNDRY ", Auth: " EnTrA ", BaseURL: "https://example.services.ai.azure.com",
+		EntraScope: " ${COLLO_TEST_ENTRA_SCOPE} ", EntraTenantID: " tenant-id ", EntraAuthorityHost: " https://login.microsoftonline.us/ ",
+	}
+	cfg.normalize()
+	provider := cfg.Providers["azure"]
+	if provider.Type != "azure-foundry" || provider.Auth != "entra" || provider.EntraScope != "https://ai.azure.com/.default" || provider.EntraTenantID != "tenant-id" || provider.EntraAuthorityHost != "https://login.microsoftonline.us/" {
+		t.Fatalf("provider=%+v", provider)
+	}
+}
+
 func TestValidateBedrockAuthenticationModes(t *testing.T) {
 	for _, auth := range []string{"", "auto", "sigv4", "bearer"} {
 		cfg := Defaults()

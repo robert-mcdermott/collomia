@@ -487,7 +487,19 @@ Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key. Collomia req
 
 ### Azure OpenAI and Microsoft Foundry
 
-The Azure OpenAI adapter supports the deployment-scoped GA API:
+Azure providers accept three explicit authentication modes:
+
+- `api_key` (also the backward-compatible default when `auth` is omitted)
+  reads `api_key`/`api_key_env` and sends the Azure `api-key` header.
+- `bearer` sends a token from `api_key`/`api_key_env`. This compatibility mode
+  cannot refresh the token; use it only when another process rotates the value
+  and Collomia is restarted.
+- `entra` uses the official Azure Identity SDK's `DefaultAzureCredential`.
+  Tokens are held only in memory and refreshed proactively before the SDK's
+  `RefreshOn` time or expiration. Do not configure an API key in this mode.
+
+The Azure OpenAI adapter supports the deployment-scoped GA API. This keyless
+example uses the documented Cognitive Services scope:
 
 ```json
 {
@@ -495,7 +507,7 @@ The Azure OpenAI adapter supports the deployment-scoped GA API:
     "azure-openai": {
       "type": "azure-openai",
       "base_url": "https://my-resource.openai.azure.com",
-      "api_key_env": "AZURE_OPENAI_API_KEY",
+      "auth": "entra",
       "deployment": "my-code-model",
       "api_version": "2024-10-21",
       "model": "my-code-model"
@@ -504,28 +516,99 @@ The Azure OpenAI adapter supports the deployment-scoped GA API:
 }
 ```
 
-Microsoft Foundry's current OpenAI/v1 endpoint is also supported:
+Microsoft Foundry's OpenAI/v1 and Claude Messages endpoints use the Azure AI
+scope and are both supported by the same refreshable credential path:
 
 ```json
 {
   "providers": {
     "foundry": {
       "type": "azure-foundry",
-      "base_url": "https://my-resource.services.ai.azure.com/openai/v1",
-      "api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "base_url": "https://my-resource.openai.azure.com/openai/v1",
+      "auth": "entra",
       "model": "my-deployment"
     },
     "foundry-claude": {
       "type": "azure-foundry-anthropic",
       "base_url": "https://my-resource.services.ai.azure.com/anthropic",
-      "api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "auth": "entra",
       "model": "claude-sonnet-4-6"
     }
   }
 }
 ```
 
-For Microsoft Entra tokens, set `"auth": "bearer"` and point `api_key_env` to the environment variable containing the current token.
+`DefaultAzureCredential` checks environment service-principal credentials,
+workload identity, managed identity, Azure CLI (`az login`), Azure Developer CLI
+(`azd auth login`), and Azure PowerShell. For a service principal with a secret,
+set `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`; for a
+user-assigned managed identity, set `AZURE_CLIENT_ID`. In deployed environments,
+set `AZURE_TOKEN_CREDENTIALS=prod` to restrict the chain to environment,
+workload, and managed identities. During local development, `dev` restricts it
+to developer tools; an individual credential name such as
+`AzureCLICredential` is also accepted.
+
+The default scopes are:
+
+| Provider type | Default `entra_scope` | Typical data-plane role |
+| --- | --- | --- |
+| `azure-openai` | `https://cognitiveservices.azure.com/.default` | Cognitive Services OpenAI User |
+| `azure-foundry`, `azure-foundry-anthropic` | `https://ai.azure.com/.default` | Cognitive Services User |
+
+RBAC assignments apply to the target resource and can take several minutes to
+propagate. A 401/403 returned in `entra` mode includes the relevant role and
+scope guidance without exposing a token. `collo doctor` reports the credential
+chain selector, effective scope, tenant, authority, and required role, but never
+acquires or prints a token.
+
+For a different tenant or a sovereign/private cloud, override only the values
+your Azure environment documents:
+
+```json
+{
+  "providers": {
+    "foundry-government": {
+      "type": "azure-foundry",
+      "base_url": "https://your-private-or-sovereign-endpoint/openai/v1",
+      "auth": "entra",
+      "entra_tenant_id": "your-tenant-id",
+      "entra_authority_host": "https://login.microsoftonline.us/",
+      "entra_scope": "https://your-documented-audience/.default",
+      "model": "your-deployment"
+    }
+  }
+}
+```
+
+The authority must be an HTTPS origin and the scope must be an HTTPS `/.default`
+audience. Collomia does not guess sovereign-cloud audiences. Private DNS
+endpoints work through `base_url` as long as the host is reachable and its TLS
+certificate is trusted by the operating system.
+
+API-key mode remains available for either provider family:
+
+```json
+{
+  "providers": {
+    "foundry-key": {
+      "type": "azure-foundry",
+      "base_url": "https://my-resource.openai.azure.com/openai/v1",
+      "auth": "api_key",
+      "api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "model": "my-deployment"
+    }
+  }
+}
+```
+
+Microsoft references: [Go credential
+chains](https://learn.microsoft.com/azure/developer/go/sdk/authentication/credential-chains),
+[Azure OpenAI keyless
+authentication](https://learn.microsoft.com/azure/developer/ai/get-started-securing-your-ai-app),
+[Foundry Models keyless
+authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/configure-entra-id),
+and [Claude on Foundry
+authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-claude).
 
 ## Permissions and safety
 

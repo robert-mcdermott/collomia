@@ -202,6 +202,39 @@ not mint or refresh short-term bearer keys; replace an expiring token and
 restart the process. AWS SDK-managed temporary SigV4 credentials retain the
 SDK's normal refresh behavior.
 
+### Microsoft Entra credentials
+
+Azure OpenAI and Microsoft Foundry providers use Microsoft Entra only when the
+configuration explicitly selects `auth: "entra"`. Collomia never treats an
+ambient Azure CLI session, managed identity, or service-principal environment
+as permission to replace an API key implicitly.
+
+Entra mode constructs the official Azure Identity SDK's
+`DefaultAzureCredential`. The resulting access token is kept in process memory,
+never written to configuration, sessions, debug logs, or the audit ledger, and
+is refreshed before the SDK's `RefreshOn` time or expiry. Concurrent requests
+share one refresh. A token-acquisition failure is classified as authentication
+and stops before provider HTTP; a partially obtained or invalid token is never
+sent. Standard `AZURE_CLIENT_SECRET` and
+`AZURE_CLIENT_CERTIFICATE_PASSWORD` values are registered with the redactor as
+defense in depth.
+
+The mode is intentionally deterministic at the configuration boundary:
+
+- `auth: "api_key"` (or omitted) uses the `api-key` header.
+- `auth: "bearer"` uses a caller-supplied static token and cannot refresh it.
+- `auth: "entra"` rejects `api_key`, `api_key_env`, and custom authentication
+  headers, then writes the current SDK token after all other custom headers.
+
+Traditional Azure OpenAI and current Foundry endpoints use different default
+audiences. `entra_scope` can override that choice, and
+`entra_authority_host` can select a sovereign/private Entra authority. Both are
+validated as HTTPS values; authority URLs cannot contain credentials, paths,
+queries, or fragments, and scopes must end in `/.default`. Collomia does not
+disable Entra instance discovery or infer sovereign audiences. Use
+`AZURE_TOKEN_CREDENTIALS` to restrict `DefaultAzureCredential` to the intended
+development or production credential set.
+
 By default, agent commands (including background processes and PTY runs)
 inherit your full environment, which may include unrelated secrets from
 your shell. Set `permissions.command_env: "minimal"` to strip commands down

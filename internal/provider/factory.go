@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,20 +33,32 @@ func New(name string, p appconfig.Provider, model string) (Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &OpenAIClient{Label: label, APIKey: p.APIKey, Headers: p.Headers, ChatURL: endpoint, APIKeyHeader: azureKeyHeader(p), HTTP: httpClient, Declared: capabilities}, nil
+		tokenSource, authHint, err := azureAuthentication(p)
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIClient{Label: label, APIKey: p.APIKey, Headers: p.Headers, ChatURL: endpoint, APIKeyHeader: azureKeyHeader(p), BearerSource: tokenSource, AuthHint: authHint, HTTP: httpClient, Declared: capabilities}, nil
 	case "azure-foundry":
 		base := strings.TrimRight(p.BaseURL, "/")
 		if !strings.Contains(base, "/openai/v1") {
 			base += "/openai/v1"
 		}
+		tokenSource, authHint, err := azureAuthentication(p)
+		if err != nil {
+			return nil, err
+		}
 		keyHeader := azureKeyHeader(p)
-		return &OpenAIClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, APIKeyHeader: keyHeader, HTTP: httpClient, Declared: capabilities}, nil
+		return &OpenAIClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, APIKeyHeader: keyHeader, BearerSource: tokenSource, AuthHint: authHint, HTTP: httpClient, Declared: capabilities}, nil
 	case "azure-foundry-anthropic":
 		base := strings.TrimRight(p.BaseURL, "/")
 		if !strings.HasSuffix(base, "/anthropic") {
 			base += "/anthropic"
 		}
-		return &AnthropicClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, BearerAuth: p.Auth == "bearer", HTTP: httpClient, Declared: capabilities}, nil
+		tokenSource, authHint, err := azureAuthentication(p)
+		if err != nil {
+			return nil, err
+		}
+		return &AnthropicClient{Label: label, BaseURL: base, APIKey: p.APIKey, Headers: p.Headers, BearerAuth: p.Auth == "bearer" || p.Auth == "entra", BearerSource: tokenSource, AuthHint: authHint, HTTP: httpClient, Declared: capabilities}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", p.Type)
 	}
@@ -68,10 +81,24 @@ func configuredHTTPClient(p appconfig.Provider) *http.Client {
 }
 
 func azureKeyHeader(p appconfig.Provider) string {
-	if p.Auth == "bearer" {
+	if p.Auth == "bearer" || p.Auth == "entra" {
 		return ""
 	}
 	return "api-key"
+}
+
+func azureAuthentication(p appconfig.Provider) (BearerTokenSource, string, error) {
+	if p.Auth != "entra" {
+		return nil, "", nil
+	}
+	if p.APIKey != "" || p.APIKeyEnv != "" {
+		return nil, "", errors.New("auth=entra cannot be combined with api_key or api_key_env")
+	}
+	tokenSource, err := newAzureTokenSource(p)
+	if err != nil {
+		return nil, "", err
+	}
+	return tokenSource, azureRBACHint(p.Type), nil
 }
 
 func azureOpenAIChatURL(p appconfig.Provider, model string) (string, error) {

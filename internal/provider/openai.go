@@ -18,6 +18,8 @@ type OpenAIClient struct {
 	Headers      map[string]string
 	ChatURL      string
 	APIKeyHeader string
+	BearerSource BearerTokenSource
+	AuthHint     string
 	HTTP         *http.Client
 	Declared     Capabilities
 }
@@ -47,6 +49,9 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 	applyHeaders(req, c.Headers)
+	if err := authorizeWithBearerSource(ctx, req.Header, c.BearerSource, c.Label); err != nil {
+		return nil, err
+	}
 	client := c.HTTP
 	if client == nil {
 		client = httpClient()
@@ -57,7 +62,7 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 	defer resp.Body.Close()
 	if err := checkResponse(resp, c.Label, "list models"); err != nil {
-		return nil, err
+		return nil, withAzureRBACHint(err, c.AuthHint)
 	}
 	var payload struct {
 		Data []struct {
@@ -117,6 +122,9 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 	applyHeaders(req, c.Headers)
+	if err := authorizeWithBearerSource(ctx, req.Header, c.BearerSource, c.Label); err != nil {
+		return Response{}, err
+	}
 	client := c.HTTP
 	if client == nil {
 		client = httpClient()
@@ -127,7 +135,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 	}
 	defer resp.Body.Close()
 	if err := checkResponse(resp, c.Label, "chat"); err != nil {
-		return Response{}, err
+		return Response{}, withAzureRBACHint(err, c.AuthHint)
 	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		response, err := parseOpenAINonStream(resp.Body, onDelta)

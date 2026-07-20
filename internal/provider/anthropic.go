@@ -10,13 +10,15 @@ import (
 )
 
 type AnthropicClient struct {
-	Label      string
-	BaseURL    string
-	APIKey     string
-	Headers    map[string]string
-	BearerAuth bool
-	HTTP       *http.Client
-	Declared   Capabilities
+	Label        string
+	BaseURL      string
+	APIKey       string
+	Headers      map[string]string
+	BearerAuth   bool
+	BearerSource BearerTokenSource
+	AuthHint     string
+	HTTP         *http.Client
+	Declared     Capabilities
 }
 
 func (c *AnthropicClient) Name() string { return c.Label }
@@ -47,6 +49,9 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Accept", "application/json")
 	applyHeaders(req, c.Headers)
+	if err := authorizeWithBearerSource(ctx, req.Header, c.BearerSource, c.Label); err != nil {
+		return nil, err
+	}
 	client := c.HTTP
 	if client == nil {
 		client = httpClient()
@@ -57,7 +62,7 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 	defer resp.Body.Close()
 	if err := checkResponse(resp, c.Label, "list models"); err != nil {
-		return nil, err
+		return nil, withAzureRBACHint(err, c.AuthHint)
 	}
 	var payload struct {
 		Data []struct {
@@ -114,6 +119,9 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	}
 	req.Header.Set("anthropic-version", "2023-06-01")
 	applyHeaders(req, c.Headers)
+	if err := authorizeWithBearerSource(ctx, req.Header, c.BearerSource, c.Label); err != nil {
+		return Response{}, err
+	}
 	client := c.HTTP
 	if client == nil {
 		client = httpClient()
@@ -124,7 +132,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	}
 	defer resp.Body.Close()
 	if err := checkResponse(resp, c.Label, "chat"); err != nil {
-		return Response{}, err
+		return Response{}, withAzureRBACHint(err, c.AuthHint)
 	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		response, err := parseAnthropicNonStream(resp.Body, onDelta)

@@ -74,6 +74,13 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 		if p.Type == "bedrock" {
 			r.AddSecret(os.Getenv(provider.BedrockBearerTokenEnv))
 		}
+		if p.Auth == "entra" && (p.Type == "azure-openai" || p.Type == "azure-foundry" || p.Type == "azure-foundry-anthropic") {
+			// DefaultAzureCredential reads these standard environment secrets.
+			// The SDK should never echo them, but register them as defense in
+			// depth for debug logs and structured error events.
+			r.AddSecret(os.Getenv("AZURE_CLIENT_SECRET"))
+			r.AddSecret(os.Getenv("AZURE_CLIENT_CERTIFICATE_PASSWORD"))
+		}
 		for _, v := range p.Headers {
 			r.AddSecret(v)
 		}
