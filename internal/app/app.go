@@ -23,6 +23,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
+	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/skills"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -548,5 +549,29 @@ func (r *Runtime) Select(providerName, model string) error {
 }
 func (r *Runtime) Summary() string {
 	p, m := r.Agent.Selection()
-	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.Agent.Plan(), r.Config.Source)
+	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nsandbox: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.sandboxSummary(), r.Agent.Plan(), r.Config.Source)
+}
+
+func (r *Runtime) sandboxSummary() string {
+	mode := sandbox.Mode(r.Config.Permissions.Sandbox)
+	if mode == "" {
+		mode = sandbox.ModeOff
+	}
+	if mode == sandbox.ModeOff {
+		return "off (commands use normal user privileges)"
+	}
+	backend := sandbox.ForPlatform()
+	if err := backend.Available(); err != nil {
+		return fmt.Sprintf("%s; unavailable: %v", mode, err)
+	}
+	policy := sandbox.Policy{WorkspaceRoot: r.Workspace, AllowNetwork: r.Config.Permissions.SandboxAllowNetwork}
+	network := "denied"
+	if policy.AllowNetwork {
+		network = "allowed"
+	}
+	detail := fmt.Sprintf("%s; %s; command network %s", mode, backend.Name(), network)
+	if missing := backend.Capabilities().Missing(policy); len(missing) > 0 {
+		detail += "; degraded: missing " + strings.Join(missing, " and ")
+	}
+	return detail
 }

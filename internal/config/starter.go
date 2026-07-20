@@ -20,10 +20,11 @@ func ReferencePath(configPath string) string {
 // safe permission and runtime defaults alongside provider examples.
 func WriteStarter(path string, global bool) error {
 	type starterPermissions struct {
-		Mode                  string `json:"mode"`
-		AllowOutsideWorkspace *bool  `json:"allow_outside_workspace,omitempty"`
-		Sandbox               string `json:"sandbox,omitempty"`
-		SandboxAllowNetwork   *bool  `json:"sandbox_allow_network,omitempty"`
+		Mode                  string   `json:"mode"`
+		AllowOutsideWorkspace *bool    `json:"allow_outside_workspace,omitempty"`
+		Sandbox               string   `json:"sandbox,omitempty"`
+		SandboxAllowNetwork   *bool    `json:"sandbox_allow_network,omitempty"`
+		SandboxWritableRoots  []string `json:"sandbox_writable_roots,omitempty"`
 	}
 	type starterOptions struct {
 		MaxIterations      int `json:"max_iterations"`
@@ -55,11 +56,15 @@ func WriteStarter(path string, global bool) error {
 			},
 		}
 		inactive := false
+		commandNetwork := true
 		cfg.Permissions = &starterPermissions{
 			Mode:                  "ask",
 			AllowOutsideWorkspace: &inactive,
 			Sandbox:               "off",
-			SandboxAllowNetwork:   &inactive,
+			// Network stays available if the user later enables the sandbox by
+			// changing only sandbox=auto. Users who prefer fail-closed command
+			// networking can set this to false explicitly.
+			SandboxAllowNetwork: &commandNetwork,
 		}
 		cfg.Options = &starterOptions{
 			MaxIterations:      24,
@@ -254,8 +259,13 @@ const configReferenceJSONC = `
     ],
     // off | auto | require. auto uses the platform backend when available.
     "sandbox": "off",
-    // false denies TCP network access where the sandbox backend supports it.
+    // The compatibility default is true. This reference shows the explicit
+    // offline override: false denies sandboxed command network access. It does
+    // not affect providers or remote MCP, which run in the Collomia process.
     "sandbox_allow_network": false,
+    // Optional extra write locations for build/package caches. Relative paths
+    // resolve from the workspace. Keep this list narrow.
+    "sandbox_writable_roots": [],
     // full | minimal. minimal keeps secrets out of child command environments.
     "command_env": "full",
     // Optional executable receiving approval requests as JSON on stdin.

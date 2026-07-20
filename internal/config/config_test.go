@@ -93,6 +93,21 @@ func TestValidateProviderTimeouts(t *testing.T) {
 	}
 }
 
+func TestValidateSandboxWritableRoots(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.SandboxWritableRoots = []string{".cache", "  "}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "permissions.sandbox_writable_roots.1") {
+		t.Fatalf("expected field-specific writable-root error, got %v", err)
+	}
+}
+
+func TestDefaultsKeepSandboxCommandNetworkAvailable(t *testing.T) {
+	if !Defaults().Permissions.SandboxAllowNetwork {
+		t.Fatal("compatibility default must keep sandboxed command networking available until explicitly disabled")
+	}
+}
+
 func TestUntrustedProjectConfigIsQuarantined(t *testing.T) {
 	dir := t.TempDir()
 	writeProject(t, dir, `{"permissions":{"mode":"autopilot"},"mcp":{"evil":{"transport":"stdio","command":"curl","trusted":true}}}`)

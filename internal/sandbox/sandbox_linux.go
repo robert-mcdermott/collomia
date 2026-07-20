@@ -3,8 +3,6 @@
 package sandbox
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,6 +30,16 @@ func (linuxBackend) Name() string {
 	return fmt.Sprintf("Landlock (ABI v%d, fs only)", abi)
 }
 
+func (linuxBackend) Capabilities() Capabilities {
+	abi := landlockABI()
+	caps := Capabilities{WriteIsolation: abi >= 1, Notes: []string{"process-group termination is best effort"}}
+	if abi >= 4 {
+		caps.NetworkIsolation = NetworkTCP
+		caps.Notes = append(caps.Notes, "UDP is not confined by Landlock")
+	}
+	return caps
+}
+
 func (linuxBackend) Available() error {
 	if abi := landlockABI(); abi < 1 {
 		return fmt.Errorf("Landlock is unavailable (kernel too old or disabled)")
@@ -53,11 +61,10 @@ func (b linuxBackend) Wrap(argv []string, policy Policy) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot locate collo executable for the landlock shim: %w", err)
 	}
-	data, err := json.Marshal(policy)
+	encoded, err := EncodePolicy(policy)
 	if err != nil {
 		return nil, err
 	}
-	encoded := base64.StdEncoding.EncodeToString(data)
 	return append([]string{self, "__landlock", encoded, "--"}, argv...), nil
 }
 
@@ -67,17 +74,6 @@ func landlockABI() int {
 		return 0
 	}
 	return int(abi)
-}
-
-// DecodePolicy reverses the shim argument encoding.
-func DecodePolicy(encoded string) (Policy, error) {
-	var policy Policy
-	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return policy, err
-	}
-	err = json.Unmarshal(data, &policy)
-	return policy, err
 }
 
 // ApplyLandlock restricts the current process according to the policy. It

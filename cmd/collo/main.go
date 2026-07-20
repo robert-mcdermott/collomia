@@ -48,6 +48,9 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "__landlock" {
 		return runLandlockShim(args[1:])
 	}
+	if len(args) > 0 && args[0] == "__appcontainer" {
+		return runAppContainerShim(args[1:])
+	}
 	opts, err := parse(args)
 	if err != nil {
 		return err

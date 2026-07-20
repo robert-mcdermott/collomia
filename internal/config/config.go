@@ -115,6 +115,10 @@ type Permissions struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxAllowNetwork permits network egress inside the sandbox.
 	SandboxAllowNetwork bool `json:"sandbox_allow_network,omitempty"`
+	// SandboxWritableRoots grants sandboxed commands write access to
+	// additional explicit roots (for example a package-manager cache). Relative
+	// paths are resolved from the workspace.
+	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"`
 	// CommandEnv controls the environment passed to agent commands: "full"
 	// (inherit everything, the default) or "minimal" (PATH, HOME, and other
 	// basics only, keeping parent secrets out of child processes).
@@ -211,7 +215,8 @@ func Defaults() Config {
 			},
 		},
 		Permissions: Permissions{
-			Mode: "ask",
+			Mode:                "ask",
+			SandboxAllowNetwork: true,
 			DeniedCommands: []string{
 				`(?i)(^|[;&|]\s*)(rm\s+-[^\s]*(rf|fr)[^\s]*|rmdir\s+/s)\s+([/~]|\.{1,2}|\*|[a-z]:\\)($|\s)`,
 				`(?i)(^|[;&|]\s*)git\s+(reset\s+--hard|clean\s+-[^\s]*f[^\s]*)($|\s)`,
@@ -492,6 +497,11 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "full", "minimal":
 	default:
 		errs = append(errs, FieldError{"permissions.command_env", fmt.Sprintf("must be full or minimal (got %q)", c.Permissions.CommandEnv)})
+	}
+	for i, root := range c.Permissions.SandboxWritableRoots {
+		if strings.TrimSpace(root) == "" {
+			errs = append(errs, FieldError{fmt.Sprintf("permissions.sandbox_writable_roots.%d", i), "must not be empty"})
+		}
 	}
 	for name, provider := range c.Providers {
 		field := "providers." + name

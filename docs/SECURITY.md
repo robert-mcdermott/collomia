@@ -9,9 +9,10 @@ required before advertising any unattended use.
 Collomia's permission prompts and rules are **in-process policy checks**, not
 an operating-system security boundary, unless the OS sandbox is enabled. A
 command approved by you — or auto-approved by autopilot mode — runs with
-your normal user privileges. macOS and Linux can additionally enable OS-level
-enforcement (`permissions.sandbox`); on Windows no sandbox backend exists
-yet, and `collo doctor` says so.
+your normal user privileges. macOS, Linux, and Windows 11 can additionally
+enable OS-level enforcement (`permissions.sandbox`). The Windows backend uses
+only inbox AppContainer and Job Object APIs; it does not require Windows
+Sandbox, Hyper-V, an administrator-installed driver, or another runtime.
 
 Do not point autopilot mode at untrusted code or untrusted instructions and
 walk away, on any platform, without the sandbox in `require` mode — and even
@@ -51,12 +52,21 @@ grant allows them; they never ride along with autopilot.
 - **Denied-command regexes** are defense in depth against catastrophic
   accidents (`rm -rf /`), nothing more. Regexes cannot enumerate harm.
 
-## The OS sandbox (macOS and Linux)
+## The OS sandbox
 
 `permissions.sandbox: "auto" | "require"` wraps every agent command —
 including background processes started with `start_process`, and commands
 run under a pseudo-terminal (`run_command` with `pty: true`) — in the
 platform's containment mechanism.
+
+Sandboxing is currently opt-in (`off` is the runtime default), and
+`sandbox_allow_network` defaults to `true`. Changing only `sandbox` from `off`
+to `auto` therefore preserves the network access used by package installation
+and online CLIs. Users who want network-denied commands set that value to
+`false` explicitly.
+This switch controls only `run_command`, PTY commands, and `start_process`.
+Provider HTTP, remote MCP, hooks, and language servers run in the Collomia
+process and are not blocked by command-sandbox networking.
 
 **macOS: Seatbelt** (`sandbox-exec`):
 
@@ -80,19 +90,56 @@ execs the real command):
   unenforced. **UDP — including DNS — cannot be restricted by Landlock at
   all**, on any kernel version; treat DNS-based exfiltration as always
   possible even with the sandbox enabled.
-- `require` fails closed on both platforms: if Landlock is unavailable
-  (kernel too old or disabled), commands refuse to run rather than running
-  unconfined. `auto` degrades with a visible doctor warning.
+- `require` checks capabilities rather than merely checking that Landlock
+  exists. With `sandbox_allow_network: false`, Linux fails closed because UDP
+  cannot be denied completely. `auto` still applies write confinement and TCP
+  denial while reporting the UDP limitation in `collo doctor`, `/status`, and
+  command output.
+
+**Windows 11: AppContainer + Job Object**:
+
+- A workspace-specific AppContainer SID provides low-integrity filesystem,
+  registry, credential, device, network, and cross-process isolation.
+- Collomia grants that SID access to the workspace, the user temp directory,
+  and explicit `permissions.sandbox_writable_roots`. User-local executable
+  directories on `PATH` receive read/execute access, not write access. The
+  normal user's existing access checks still apply as well.
+- With `sandbox_allow_network: false`, no Internet or private-network
+  capabilities are placed in the process token. With it set to `true`,
+  Collomia grants the `internetClient` and `privateNetworkClientServer`
+  capabilities. Windows still blocks AppContainer loopback to ordinary local
+  processes by default; Collomia does not request an administrator-only
+  loopback exemption. Use `sandbox: off` for a command that must connect to an
+  unpackaged localhost development server.
+- The initial process is created suspended, assigned to a Job Object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and then resumed. Descendants inherit
+  the job so cancellation, timeout, or shim termination closes the job and
+  kills the tree.
+- Windows stores a small per-workspace AppContainer profile and an inheritable
+  ACE naming that container SID on granted roots. The ACE gives no access to
+  ordinary users or unrelated AppContainers and is reused on later commands.
+
+Microsoft's [AppContainer launch documentation](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)
+describes the inbox profile, SID/DACL, capability, low-integrity, and process
+attribute APIs used here. Its [loopback guidance](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication)
+documents why access to an unpackaged localhost process needs an administrator
+exemption that Collomia deliberately does not create.
 
 Shared limitations, stated plainly:
 
-- Reads are not confined on either backend: a sandboxed command can still
-  read any file your user can. Write (and, where supported, network)
-  containment are the enforced properties.
-- **Windows**: no sandbox backend exists yet (AppContainer is roadmap
-  work). `off` runs after the in-process approval checks, `auto` degrades to
-  those same checks because no backend is available, and fail-closed `require`
-  refuses agent commands.
+- Reads are not confined on macOS or Linux: a sandboxed command can still read
+  any file your user can. AppContainer restricts Windows user-data reads while
+  allowing the Windows runtime and explicitly granted locations.
+- `auto` never silently equates partial enforcement with a complete sandbox:
+  it emits an actionable degradation warning. `require` refuses a command if
+  any requested write or network protection is unavailable.
+- Network policy remains all-or-nothing for a command. Domain-scoped egress is
+  roadmap work; environment-only proxy settings would not be a security
+  boundary because a hostile command could bypass them.
+- Package managers and build tools may need write access to caches outside the
+  workspace. Prefer a narrow `sandbox_writable_roots` entry. `command_env:
+  "minimal"` can also hide proxy variables or registry credentials; switch to
+  `full` only when that tradeoff is intended.
 
 ## Repository trust
 
@@ -112,8 +159,9 @@ to be bound to an explicit `collo trust` decision.
 
 Commands run in their own process group with a hard timeout; cancellation
 and timeout kill the whole group (Unix `SIGKILL` to the group, Windows
-`taskkill /T`). A command cannot leave grandchildren running past a timeout
-— this is tested. Detached daemons that re-parent before the kill are the
+`taskkill /T`). Sandboxed Windows commands additionally live in a kill-on-close
+Job Object. Ordinary descendants are terminated on timeout — this is tested.
+Detached Unix daemons that re-parent before the process-group kill are the
 known residual gap.
 
 **Background processes** (`start_process`) are a deliberate exception to

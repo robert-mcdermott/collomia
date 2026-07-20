@@ -33,6 +33,9 @@ type Process struct {
 	done     bool
 	exitErr  error
 	finished time.Time
+	// sandboxWarning is returned when auto mode could apply only part of the
+	// requested policy or had to run without OS enforcement.
+	sandboxWarning string
 }
 
 func (p *Process) status() string {
@@ -134,18 +137,14 @@ func (m *ProcessManager) StopAll() {
 // run_command exactly.
 func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process, error) {
 	argv := shellArgv(command)
+	sandboxWarning := ""
 	if runner.SandboxMode == sandbox.ModeAuto || runner.SandboxMode == sandbox.ModeRequire {
-		if err := runner.Backend.Available(); err != nil {
-			if runner.SandboxMode == sandbox.ModeRequire {
-				return nil, fmt.Errorf("sandbox required but unavailable: %w", err)
-			}
-		} else if wrapped, err := runner.Backend.Wrap(argv, sandbox.Policy{WorkspaceRoot: runner.Workspace, AllowNetwork: runner.AllowNetwork}); err != nil {
-			if runner.SandboxMode == sandbox.ModeRequire {
-				return nil, fmt.Errorf("sandbox required: %w", err)
-			}
-		} else {
-			argv = wrapped
+		prepared, err := sandbox.Prepare(runner.Backend, runner.SandboxMode, argv, sandbox.Policy{WorkspaceRoot: runner.Workspace, ExtraWritableRoots: runner.resolvedWritableRoots(), AllowNetwork: runner.AllowNetwork})
+		if err != nil {
+			return nil, err
 		}
+		argv = prepared.Argv
+		sandboxWarning = prepared.Degraded
 	}
 	// The process lifetime is owned by the manager, not the tool call's
 	// context: cancelling the turn must not kill a deliberately-started
@@ -157,7 +156,7 @@ func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process
 		cmd.Env = minimalEnv()
 	}
 	setProcessGroup(cmd)
-	p := &Process{Command: command, Started: time.Now(), output: &limitedBuffer{limit: procOutputCap}, cancel: cancel}
+	p := &Process{Command: command, Started: time.Now(), output: &limitedBuffer{limit: procOutputCap}, cancel: cancel, sandboxWarning: sandboxWarning}
 	cmd.Stdout = syncWriter{p}
 	cmd.Stderr = syncWriter{p}
 	if err := cmd.Start(); err != nil {
@@ -238,7 +237,11 @@ func (t StartProcessTool) Execute(_ context.Context, raw json.RawMessage) (strin
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("started background process %d: %s\nUse process_output with id %d to read its output; stop_process to stop it.", p.ID, a.Command, p.ID), nil
+	result := fmt.Sprintf("started background process %d: %s\nUse process_output with id %d to read its output; stop_process to stop it.", p.ID, a.Command, p.ID)
+	if p.sandboxWarning != "" {
+		result += "\nSandbox warning: " + p.sandboxWarning
+	}
+	return result, nil
 }
 
 // ListProcessesTool reports every background process and its status.

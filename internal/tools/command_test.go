@@ -124,6 +124,22 @@ func TestSandboxRequireFailsClosedWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestSandboxAutoReportsUnavailableBackend(t *testing.T) {
+	tool, err := NewRunCommandTool(t.TempDir(), nil, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.SandboxMode = sandbox.ModeAuto
+	tool.Backend = failingBackend{}
+	out, err := tool.Execute(t.Context(), []byte(`{"command":"echo hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "sandbox warning:") || !strings.Contains(out, "normal user privileges") {
+		t.Fatalf("auto mode must visibly report degraded execution, got %q", out)
+	}
+}
+
 func TestExecuteStreamDeliversLiveChunks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix shell test")
@@ -170,10 +186,36 @@ func TestMinimalEnvStripsSecrets(t *testing.T) {
 	}
 }
 
+func TestResolvedWritableRootsAreWorkspaceRelativeAndExpanded(t *testing.T) {
+	workspace := t.TempDir()
+	external := t.TempDir()
+	t.Setenv("COLLO_TEST_CACHE", external)
+	tool, err := NewRunCommandTool(workspace, nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.ExtraWritableRoots = []string{".cache/build", "${COLLO_TEST_CACHE}"}
+	got := tool.resolvedWritableRoots()
+	if len(got) != 2 {
+		t.Fatalf("roots=%v", got)
+	}
+	if got[0] != filepath.Join(workspace, ".cache", "build") {
+		t.Fatalf("relative root=%q", got[0])
+	}
+	canonicalExternal, err := filepath.EvalSymlinks(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[1] != canonicalExternal {
+		t.Fatalf("expanded root=%q, want %q", got[1], canonicalExternal)
+	}
+}
+
 type failingBackend struct{}
 
-func (failingBackend) Name() string     { return "failing" }
-func (failingBackend) Available() error { return fmt.Errorf("not available") }
+func (failingBackend) Name() string                       { return "failing" }
+func (failingBackend) Capabilities() sandbox.Capabilities { return sandbox.Capabilities{} }
+func (failingBackend) Available() error                   { return fmt.Errorf("not available") }
 func (failingBackend) Wrap([]string, sandbox.Policy) ([]string, error) {
 	return nil, fmt.Errorf("not available")
 }

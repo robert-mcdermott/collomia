@@ -17,11 +17,11 @@ type capabilityRow struct {
 
 func capabilityMatrix() []capabilityRow {
 	sandboxStatus := "unsupported"
-	sandboxNote := "no OS backend on " + runtime.GOOS + "; approval checks only"
+	sandboxNote := "macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; no OS backend active on " + runtime.GOOS
 	backend := sandbox.ForPlatform()
 	if backend.Available() == nil {
 		sandboxStatus = "experimental"
-		sandboxNote = backend.Name() + "; enable with permissions.sandbox=auto|require"
+		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; enable with permissions.sandbox=auto|require"
 	}
 	return []capabilityRow{
 		{"provider", "openai / openai-compatible (Ollama, vLLM, LM Studio)", "implemented", "streaming chat completions + function tools"},
@@ -36,7 +36,7 @@ func capabilityMatrix() []capabilityRow {
 		{"provider", "protocol contract suite", "implemented", "credential-free CI fixtures plus a secret-safe, double-opt-in live tool/stream/usage round trip for OpenAI, Anthropic, Responses/Mantle, and Bedrock; cancellation covered across every family"},
 		{"tools", "read_file / list_files / search_files", "implemented", "workspace-contained, symlink-aware path guard"},
 		{"tools", "write_file / edit_file", "implemented", "unique-match edits; diff preview shown at approval; /diff and /undo"},
-		{"tools", "run_command", "implemented", "live streamed output, process-group kill, timeout, output caps, conservative command analysis; pty=true on Unix for terminal-dependent programs"},
+		{"tools", "run_command", "implemented", "live streamed output, process-group termination on Unix and Job Object ownership on sandboxed Windows, timeout, output caps, conservative command analysis; pty=true on Unix; sandbox degradation is never silent"},
 		{"tools", "search_symbols", "implemented", "incremental ignore-aware definition index for Go/Python/JS/TS/Rust; exact/prefix ranked"},
 		{"tools", "diagnostics (LSP)", "implemented", "real language-server client (gopls, pyright, typescript-language-server, rust-analyzer auto-detected; lsp config map overrides); per-file severities and lines"},
 		{"tools", "background processes", "implemented", "start_process/list_processes/process_output/stop_process with the same safety analysis and sandbox as run_command; /ps in the TUI; all stopped at session exit"},

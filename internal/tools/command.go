@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -27,6 +28,9 @@ type RunCommandTool struct {
 	SandboxMode sandbox.Mode
 	// AllowNetwork permits network egress inside the sandbox.
 	AllowNetwork bool
+	// ExtraWritableRoots grants explicit additional write locations to the OS
+	// sandbox, commonly for build or package-manager caches.
+	ExtraWritableRoots []string
 	// MinimalEnv strips the parent environment down to basics so parent
 	// secrets are not inherited by agent commands.
 	MinimalEnv bool
@@ -49,7 +53,7 @@ func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*Run
 }
 
 func (t RunCommandTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. Set pty=true (Unix only) for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal (Unix only)"}},"required":["command"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. When OS sandbox networking is disabled, package installs and online CLIs may fail; the user can enable command networking with permissions.sandbox_allow_network. Provider and remote MCP traffic are unaffected. Set pty=true (Unix only) for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal (Unix only)"}},"required":["command"],"additionalProperties":false}`)}
 }
 func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -104,26 +108,22 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	argv := shellArgv(a.Command)
 	sandboxed := false
+	sandboxWarning := ""
 	if t.SandboxMode == sandbox.ModeAuto || t.SandboxMode == sandbox.ModeRequire {
-		if err := t.Backend.Available(); err != nil {
-			if t.SandboxMode == sandbox.ModeRequire {
-				return "", fmt.Errorf("sandbox required but unavailable: %w", err)
-			}
-		} else {
-			wrapped, err := t.Backend.Wrap(argv, sandbox.Policy{WorkspaceRoot: t.Workspace, AllowNetwork: t.AllowNetwork})
-			if err != nil {
-				if t.SandboxMode == sandbox.ModeRequire {
-					return "", fmt.Errorf("sandbox required: %w", err)
-				}
-			} else {
-				argv = wrapped
-				sandboxed = true
-			}
+		prepared, err := sandbox.Prepare(t.Backend, t.SandboxMode, argv, sandbox.Policy{WorkspaceRoot: t.Workspace, ExtraWritableRoots: t.resolvedWritableRoots(), AllowNetwork: t.AllowNetwork})
+		if err != nil {
+			return "", err
 		}
+		argv = prepared.Argv
+		sandboxed = prepared.Active
+		sandboxWarning = prepared.Degraded
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
 	defer cancel()
 	buffer := &limitedBuffer{limit: t.MaxOutputBytes, onChunk: onOutput}
+	if sandboxWarning != "" {
+		_, _ = buffer.Write([]byte("sandbox warning: " + sandboxWarning + "\n"))
+	}
 	var err error
 	if a.PTY {
 		var env []string
@@ -138,7 +138,7 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 			cmd.Env = minimalEnv()
 		}
 		// The command runs in its own process group so cancellation and
-		// timeout terminate every descendant, not only the shell.
+		// timeout target the group, not only the shell.
 		setProcessGroup(cmd)
 		// One writer instance serves both streams so os/exec serializes writes.
 		cmd.Stdout = buffer
@@ -147,7 +147,7 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	out := buffer.String()
 	if sandboxed && err != nil {
-		out += "\n(command ran inside the OS sandbox; denied file or network access can cause failures — see docs/SECURITY.md)"
+		out += "\n(command ran inside the OS sandbox; denied file or network access can cause failures — set permissions.sandbox_allow_network=true for commands that need outbound access, or see docs/SECURITY.md)"
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
@@ -159,6 +159,27 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		out = "(command completed with no output)"
 	}
 	return out, nil
+}
+
+func (t RunCommandTool) resolvedWritableRoots() []string {
+	roots := make([]string, 0, len(t.ExtraWritableRoots))
+	for _, root := range t.ExtraWritableRoots {
+		root = os.ExpandEnv(strings.TrimSpace(root))
+		if root == "" {
+			continue
+		}
+		if !filepath.IsAbs(root) {
+			root = filepath.Join(t.Workspace, root)
+		}
+		if abs, err := filepath.Abs(root); err == nil {
+			root = abs
+		}
+		if real, err := filepath.EvalSymlinks(root); err == nil {
+			root = real
+		}
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 // minimalEnv keeps only the variables a build needs, so credentials in the

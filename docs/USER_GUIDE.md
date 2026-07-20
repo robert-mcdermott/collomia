@@ -353,7 +353,7 @@ Example global configuration:
   "permissions": {
     "mode": "ask",
     "sandbox": "auto",
-    "sandbox_allow_network": false
+    "sandbox_allow_network": true
   }
 }
 ```
@@ -528,7 +528,8 @@ request shapes.
 | `denied_commands` | regex list | Hard command denials checked again at execution. Omit to inherit defaults. |
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `off`. |
-| `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. |
+| `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
+| `sandbox_writable_roots` | string list | Additional narrowly scoped write roots for sandboxed commands, resolved from the workspace when relative. |
 | `command_env` | string | `full` or `minimal`; if omitted while sandboxing is enabled, minimal is used. |
 | `reviewer_command` | string | Optional external policy reviewer for otherwise auto-approved non-read actions. |
 
@@ -1302,22 +1303,31 @@ malware policy. Do not replace them casually.
 
 ### OS sandboxing
 
-Enable best-effort containment:
+Enable compatibility-first containment while preserving package installation,
+online documentation CLIs, and other command networking:
 
 ```json
 {
   "permissions": {
     "sandbox": "auto",
-    "sandbox_allow_network": false,
+    "sandbox_allow_network": true,
     "command_env": "minimal"
   }
 }
 ```
 
+Sandboxing is `off` unless configured, while `sandbox_allow_network` defaults
+to `true`. Changing only `sandbox` to `auto` therefore adds containment without
+blocking package downloads at the network boundary. To deny command
+networking, set `sandbox_allow_network` to `false` explicitly. Package managers
+can still require a writable cache root or environment-provided credentials;
+the examples below cover both cases.
+
 Use `"require"` for fail-closed operation: if the backend is unavailable or
-cannot wrap the command, it refuses to run. `"auto"` uses the backend when
-available and otherwise runs with only the permission policy; always check
-`collo doctor` before relying on it.
+cannot enforce every requested write/network protection, it refuses to run.
+`"auto"` applies all available protections and emits a visible degradation
+warning in command output, `collo doctor`, and `/status` when a protection is
+missing.
 
 The sandbox applies to `run_command`, `start_process`, and PTY commands,
 including those invoked from a skill. It does not wrap Collomia's own provider
@@ -1333,13 +1343,42 @@ Platform behavior:
 - **Linux/Landlock:** kernel 5.13+ confines writes to the workspace and
   temporary/device helper paths. Kernel 6.7+ (ABI v4) can also deny TCP
   connect/bind. Older kernels cannot enforce the network setting. Landlock
-  cannot restrict UDP, including DNS, on any supported kernel.
-- **Windows:** no sandbox backend exists. `auto` degrades to the in-process
-  permission policy; `require` refuses shell/background commands.
+  cannot restrict UDP, including DNS, on any supported kernel. Consequently,
+  `require` plus network denial fails closed; `auto` provides and clearly
+  reports TCP-only isolation.
+- **Windows 11/AppContainer:** a workspace-specific, low-integrity
+  AppContainer restricts filesystem, registry, credentials, devices, network,
+  and access to other processes. A kill-on-close Job Object owns the complete
+  child tree. The workspace, temp directory, and `sandbox_writable_roots` are
+  writable; user-local PATH directories are read/execute only. This uses inbox
+  Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
+  service, administrator setup, or additional installation.
 
-Neither macOS nor Linux backend confines reads. A sandboxed command can still
-read anything available to your user. Read [Security model](SECURITY.md) before
-using autopilot with untrusted repositories or instructions.
+The network setting is deliberately command-specific. It does not block model
+providers, remote MCP servers, hooks, or LSP processes. On Windows, allowing
+network adds Internet and private-network AppContainer capabilities, but
+Windows still blocks AppContainer loopback to an ordinary unpackaged localhost
+server without an administrator-created exemption. Collomia does not request
+that exemption; use `sandbox: "off"` for a command that must access such a
+local development service.
+
+Build/package caches outside the workspace may need a narrow explicit grant:
+
+```json
+{
+  "permissions": {
+    "sandbox": "auto",
+    "sandbox_allow_network": true,
+    "sandbox_writable_roots": [".collomia-cache", "${HOME}/.cache/my-build"]
+  }
+}
+```
+
+Prefer a tool-specific cache over granting an entire home directory. Neither
+the macOS nor Linux backend confines reads; Windows AppContainer does restrict
+user-data reads outside its explicitly accessible locations. Read [Security
+model](SECURITY.md) before using autopilot with untrusted repositories or
+instructions.
 
 ### Command environment
 
@@ -2607,19 +2646,27 @@ Run `collo doctor`:
 
 - macOS must have `sandbox-exec` available.
 - Linux needs enabled Landlock (kernel 5.13+); TCP enforcement additionally
-  needs ABI v4/kernel 6.7+.
-- Windows has no backend, so `require` intentionally fails closed.
+  needs ABI v4/kernel 6.7+. Because Landlock cannot block UDP, `require` with
+  command networking disabled intentionally fails closed; use `auto` to accept
+  the reported TCP-only boundary.
+- Windows 11 must expose the built-in AppContainer APIs. No optional Windows
+  feature or third-party installation is required.
 
-If `auto` is used and no backend exists, commands run without OS containment.
-Do not mistake an approval prompt for sandbox enforcement.
+If `auto` cannot apply all requested protections, the command result,
+`collo doctor`, and `/status` name the exact degradation. Do not mistake an
+approval prompt for sandbox enforcement.
 
 ### A build works in the shell but fails in Collomia
 
 If sandboxing is enabled, writes outside the workspace/temp or remote network
-may be denied. If `command_env` is minimal, proxy, registry, compiler, cloud,
-or package credentials may be absent. The command result mentions sandboxing
-when a sandboxed failure occurs. Prefer a narrow fix over globally disabling
-controls.
+may be denied. Set `sandbox_allow_network: true` when the command genuinely
+needs package registries or online documentation, and add a narrow
+`sandbox_writable_roots` cache rather than granting the whole home directory.
+If `command_env` is minimal, proxy, registry, compiler, cloud, or package
+credentials may be absent; select `full` deliberately when those values are
+required. Windows AppContainer also blocks loopback to ordinary unpackaged
+local servers. The command result mentions sandboxing when a sandboxed failure
+occurs. Prefer a narrow fix over globally disabling controls.
 
 ### Language-server diagnostics are unavailable
 
