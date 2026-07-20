@@ -26,7 +26,7 @@ func capabilityMatrix() []capabilityRow {
 	return []capabilityRow{
 		{"provider", "openai / openai-compatible (Ollama, vLLM, LM Studio)", "implemented", "streaming chat completions + function tools"},
 		{"provider", "anthropic / anthropic-compatible", "implemented", "streaming messages + tool use"},
-		{"provider", "aws bedrock (Converse)", "implemented", "non-streaming; SigV4 via AWS credential chain"},
+		{"provider", "aws bedrock (Converse)", "implemented", "non-streaming; auto/sigv4/bearer auth supports the AWS credential chain (including temporary session credentials) and short-/long-term Bedrock API keys"},
 		{"provider", "aws bedrock mantle", "implemented", "responses-style; non-streaming"},
 		{"provider", "azure openai / azure ai foundry", "implemented", "API key or caller-supplied bearer token; no Entra refresh"},
 		{"provider", "model discovery", "implemented", "live OpenAI-compatible and Anthropic catalogs feed /model; /models reports capabilities plus available/unavailable/unverified status"},

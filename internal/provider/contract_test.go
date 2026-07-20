@@ -119,3 +119,39 @@ func TestBedrockConverseContract(t *testing.T) {
 		t.Fatalf("response=%+v streamed=%q", response, streamed.String())
 	}
 }
+
+func TestBedrockConverseGroupsParallelToolResults(t *testing.T) {
+	request := contractRequest()
+	request.Messages = []Message{
+		{Role: "user", Content: "Inspect two files"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "tool_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)},
+			{ID: "tool_2", Name: "read_file", Arguments: json.RawMessage(`{"path":"go.mod"}`)},
+		}},
+		{Role: "tool", ToolCallID: "tool_1", Content: "README contents"},
+		{Role: "tool", ToolCallID: "tool_2", Content: "module contents"},
+	}
+
+	body, err := bedrockRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := body["messages"].([]any)
+	if len(messages) != 3 {
+		t.Fatalf("messages=%#v", messages)
+	}
+	resultMessage := messages[2].(map[string]any)
+	if resultMessage["role"] != "user" {
+		t.Fatalf("tool-result role=%#v", resultMessage["role"])
+	}
+	content := resultMessage["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("tool-result content=%#v", content)
+	}
+	for i, wantID := range []string{"tool_1", "tool_2"} {
+		block := content[i].(map[string]any)["toolResult"].(map[string]any)
+		if block["toolUseId"] != wantID {
+			t.Fatalf("tool result %d=%#v", i, block)
+		}
+	}
+}

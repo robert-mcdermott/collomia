@@ -10,6 +10,7 @@ import (
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/logging"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/trust"
 	"github.com/robert-mcdermott/collomia/internal/version"
@@ -76,19 +77,7 @@ func runDoctorCommand(opts options) error {
 	if err == nil {
 		for _, name := range cfg.ProviderNames() {
 			p := cfg.Providers[name]
-			detail := p.Type
-			status := "ok"
-			switch {
-			case p.Type == "bedrock":
-				detail += "; uses AWS credential chain"
-			case p.APIKey != "":
-				detail += "; credential resolved"
-			case p.APIKeyEnv != "":
-				status = "warn"
-				detail += fmt.Sprintf("; credential env %s is not set", p.APIKeyEnv)
-			default:
-				detail += "; no credential configured (fine for local endpoints)"
-			}
+			status, detail := providerDiagnostic(p)
 			add("provider "+name, status, detail)
 		}
 		// MCP.
@@ -145,4 +134,47 @@ func runDoctorCommand(opts options) error {
 		return errors.New("doctor found failing checks")
 	}
 	return nil
+}
+
+func providerDiagnostic(p appconfig.Provider) (status, detail string) {
+	status, detail = "ok", p.Type
+	if p.Type == "bedrock" {
+		auth := strings.ToLower(strings.TrimSpace(p.Auth))
+		if auth == "" {
+			auth = "auto"
+		}
+		bearerAvailable := p.APIKey != "" || os.Getenv(provider.BedrockBearerTokenEnv) != ""
+		if p.APIKeyEnv != "" && p.APIKey == "" {
+			if auth == "bearer" || auth == "auto" {
+				return "warn", fmt.Sprintf("%s; bearer credential env %s is not set", detail, p.APIKeyEnv)
+			}
+		}
+		if auth == "bearer" || (auth == "auto" && (bearerAvailable || p.APIKeyEnv != "")) {
+			source := provider.BedrockBearerTokenEnv
+			if p.APIKeyEnv != "" {
+				source = p.APIKeyEnv
+			} else if p.APIKey != "" {
+				source = "configured api_key"
+			}
+			if !bearerAvailable {
+				return "warn", fmt.Sprintf("%s; bearer auth selected but %s is not set", detail, source)
+			}
+			return status, fmt.Sprintf("%s; Bedrock bearer API key resolved from %s", detail, source)
+		}
+		profile := "default chain"
+		if p.Profile != "" {
+			profile = "profile " + p.Profile
+		}
+		return status, fmt.Sprintf("%s; SigV4 via AWS credential chain (%s; access/secret/session, SSO, roles, or workload identity)", detail, profile)
+	}
+	switch {
+	case p.APIKey != "":
+		detail += "; credential resolved"
+	case p.APIKeyEnv != "":
+		status = "warn"
+		detail += fmt.Sprintf("; credential env %s is not set", p.APIKeyEnv)
+	default:
+		detail += "; no credential configured (fine for local endpoints)"
+	}
+	return status, detail
 }

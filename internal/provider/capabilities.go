@@ -85,7 +85,7 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 		c.Streaming = CapabilityUnsupported
 		c.PromptCaching = CapabilityUnsupported
 		c.ModelDiscovery = CapabilityUnsupported
-		c.Constraints = []string{"non-streaming Converse route; model access is governed by the AWS account and region"}
+		c.Constraints = []string{"non-streaming Converse route; SigV4 AWS credentials or Bedrock bearer API key; model access is governed by the AWS account and region"}
 	case "bedrock-mantle":
 		c.Streaming = CapabilityUnsupported
 		c.PromptCaching = CapabilityUnsupported

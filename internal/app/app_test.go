@@ -256,3 +256,13 @@ func TestProviderInspectionCombinesCapabilitiesAndAvailability(t *testing.T) {
 		t.Fatalf("live=%+v", statuses[1])
 	}
 }
+
+func TestNewRedactorIncludesStandardBedrockBearerToken(t *testing.T) {
+	t.Setenv(provider.BedrockBearerTokenEnv, "bedrock-bearer-token-secret")
+	cfg := appconfig.Defaults()
+	cfg.Providers["bedrock"] = appconfig.Provider{Type: "bedrock", Model: "model"}
+	redactor := NewRedactor(cfg)
+	if got := redactor.Redact("Authorization: Bearer bedrock-bearer-token-secret"); strings.Contains(got, "bedrock-bearer-token-secret") {
+		t.Fatalf("token was not redacted: %q", got)
+	}
+}

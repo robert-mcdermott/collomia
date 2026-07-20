@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -70,6 +71,9 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 	r := redact.New()
 	for _, p := range cfg.Providers {
 		r.AddSecret(p.APIKey)
+		if p.Type == "bedrock" {
+			r.AddSecret(os.Getenv(provider.BedrockBearerTokenEnv))
+		}
 		for _, v := range p.Headers {
 			r.AddSecret(v)
 		}

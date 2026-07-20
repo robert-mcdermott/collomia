@@ -394,13 +394,20 @@ Set `"auth": "bearer"` when a compatible endpoint expects an OAuth bearer token 
 
 ### AWS Bedrock
 
-Native Bedrock uses the Converse API, standard AWS credential resolution, and SigV4 signing:
+Native Bedrock uses the Converse API and supports both AWS SigV4 credentials and the newer Amazon Bedrock bearer API keys. `auth` controls the credential family:
+
+- `auto` (the default) uses `api_key`/`api_key_env` or `AWS_BEARER_TOKEN_BEDROCK` when present; otherwise it uses the AWS credential chain.
+- `sigv4` requires the AWS credential chain even if a bearer token is present.
+- `bearer` requires a short- or long-term Bedrock API key and never attempts SigV4.
+
+For production and human development, prefer temporary SigV4 credentials obtained through an IAM role or IAM Identity Center. The SDK chain supports long-term IAM access/secret pairs, temporary access/secret/session-token credentials, shared profiles, SSO, assume-role/web-identity flows, and ECS/EKS/EC2 workload roles:
 
 ```json
 {
   "providers": {
     "bedrock": {
       "type": "bedrock",
+      "auth": "sigv4",
       "region": "us-west-2",
       "profile": "development",
       "model": "your-bedrock-model-id"
@@ -409,7 +416,36 @@ Native Bedrock uses the Converse API, standard AWS credential resolution, and Si
 }
 ```
 
-The profile is optional. Environment credentials, shared AWS configuration, SSO, and instance roles are resolved by the AWS SDK.
+The profile is optional. With no profile, the SDK uses its default chain. Environment-based temporary credentials use all three standard values:
+
+```bash
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_SESSION_TOKEN="..." # required for STS/temporary credentials
+export AWS_REGION="us-west-2"
+```
+
+For either a short-term or long-term Amazon Bedrock API key, use bearer mode. The key type is encoded by AWS; Collomia sends both forms identically and never writes the key into session data:
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK="..."
+```
+
+```json
+{
+  "providers": {
+    "bedrock-key": {
+      "type": "bedrock",
+      "auth": "bearer",
+      "api_key_env": "AWS_BEARER_TOKEN_BEDROCK",
+      "region": "us-west-2",
+      "model": "us.anthropic.claude-sonnet-4-6"
+    }
+  }
+}
+```
+
+Collomia consumes an already-generated Bedrock API key; it does not currently mint or refresh short-term keys. Replace the environment value and restart Collomia before an expiring key becomes invalid. AWS recommends short-term keys for production and long-term keys only for exploration. Bearer keys are limited to supported Bedrock/Bedrock Runtime operations; they do not grant Agents or bidirectional-stream operations. `collo doctor` reports the selected authentication family and missing bearer-token variables without printing credential values.
 
 Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key:
 
@@ -419,7 +455,7 @@ Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key:
     "mantle": {
       "type": "bedrock-mantle",
       "base_url": "https://bedrock-mantle.us-west-2.api.aws/v1",
-      "api_key_env": "AWS_BEDROCK_API_KEY",
+      "api_key_env": "AWS_BEARER_TOKEN_BEDROCK",
       "model": "openai.gpt-oss-120b"
     }
   }

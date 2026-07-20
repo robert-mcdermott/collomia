@@ -154,15 +154,27 @@ const configReferenceJSONC = `
     },
     "bedrock": {
       "type": "bedrock",
+      // auto (default) uses a configured/standard Bedrock bearer token when
+      // present, otherwise the AWS SDK credential chain. Use sigv4 or bearer
+      // to require one family explicitly.
+      "auth": "sigv4",
       "region": "us-west-2",
       "profile": "development",
+      "model": "your-bedrock-model-id",
+      "max_tokens": 8192
+    },
+    "bedrock-api-key": {
+      "type": "bedrock",
+      "auth": "bearer",
+      "api_key_env": "AWS_BEARER_TOKEN_BEDROCK",
+      "region": "us-west-2",
       "model": "your-bedrock-model-id",
       "max_tokens": 8192
     },
     "bedrock-mantle": {
       "type": "bedrock-mantle",
       "base_url": "https://bedrock-mantle.us-west-2.api.aws/v1",
-      "api_key_env": "AWS_BEDROCK_API_KEY",
+      "api_key_env": "AWS_BEARER_TOKEN_BEDROCK",
       "model": "openai.gpt-oss-120b",
       "max_tokens": 8192
     },

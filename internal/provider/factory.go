@@ -23,7 +23,7 @@ func New(name string, p appconfig.Provider, model string) (Client, error) {
 	case "bedrock-mantle":
 		return &ResponsesClient{Label: label, BaseURL: p.BaseURL, APIKey: p.APIKey, Headers: p.Headers, Declared: capabilities}, nil
 	case "bedrock":
-		return &BedrockClient{Label: label, Region: p.Region, Profile: p.Profile, Declared: capabilities}, nil
+		return &BedrockClient{Label: label, Region: p.Region, Profile: p.Profile, Auth: p.Auth, APIKey: p.APIKey, APIKeyEnv: p.APIKeyEnv, Declared: capabilities}, nil
 	case "azure-openai":
 		endpoint, err := azureOpenAIChatURL(p, model)
 		if err != nil {

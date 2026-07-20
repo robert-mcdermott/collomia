@@ -387,6 +387,7 @@ func (c *Config) normalize() {
 	}
 	for name, p := range c.Providers {
 		p.Type = strings.ToLower(strings.TrimSpace(p.Type))
+		p.Auth = strings.ToLower(strings.TrimSpace(p.Auth))
 		p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
 		p.APIKey = expandEnv(p.APIKey)
 		if p.APIKey == "" && p.APIKeyEnv != "" {
@@ -474,6 +475,19 @@ func (c Config) ValidateFields() []FieldError {
 		}
 		if provider.Type != "bedrock" && provider.BaseURL == "" {
 			errs = append(errs, FieldError{field + ".base_url", "required for this provider type"})
+		}
+		if provider.Type == "bedrock" {
+			switch provider.Auth {
+			case "", "auto", "sigv4", "bearer":
+			default:
+				errs = append(errs, FieldError{field + ".auth", fmt.Sprintf("must be auto, sigv4, or bearer for Bedrock (got %q)", provider.Auth)})
+			}
+			if provider.Auth == "sigv4" && (provider.APIKey != "" || provider.APIKeyEnv != "") {
+				errs = append(errs, FieldError{field + ".api_key_env", "is not used with auth=sigv4; use the AWS credential chain or change auth to bearer/auto"})
+			}
+			if provider.Auth == "bearer" && provider.Profile != "" {
+				errs = append(errs, FieldError{field + ".profile", "is not used with auth=bearer; remove it or change auth to sigv4/auto"})
+			}
 		}
 	}
 	for i, pattern := range c.Permissions.DeniedCommands {

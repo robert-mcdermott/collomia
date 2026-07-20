@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 func TestParseFlagsBeforeSubcommandAndTerminator(t *testing.T) {
@@ -112,5 +113,24 @@ func TestConfigValidateInspectsUntrustedProject(t *testing.T) {
 	err := runConfigCommand(options{cwd: dir, command: "config", strict: true, args: []string{"validate"}})
 	if err == nil || !strings.Contains(err.Error(), "unknown_setting") {
 		t.Fatalf("strict validation should inspect the untrusted project file, got %v", err)
+	}
+}
+
+func TestProviderDiagnosticExplainsBedrockAuthentication(t *testing.T) {
+	t.Setenv(provider.BedrockBearerTokenEnv, "")
+	status, detail := providerDiagnostic(appconfig.Provider{Type: "bedrock", Auth: "sigv4", Profile: "development"})
+	if status != "ok" || !strings.Contains(detail, "SigV4") || !strings.Contains(detail, "profile development") || !strings.Contains(detail, "session") {
+		t.Fatalf("sigv4 diagnostic=%q %q", status, detail)
+	}
+
+	status, detail = providerDiagnostic(appconfig.Provider{Type: "bedrock", Auth: "bearer", APIKeyEnv: "MISSING_BEDROCK_KEY"})
+	if status != "warn" || !strings.Contains(detail, "MISSING_BEDROCK_KEY") {
+		t.Fatalf("missing bearer diagnostic=%q %q", status, detail)
+	}
+
+	t.Setenv(provider.BedrockBearerTokenEnv, "bedrock-api-key")
+	status, detail = providerDiagnostic(appconfig.Provider{Type: "bedrock"})
+	if status != "ok" || !strings.Contains(detail, "bearer") || !strings.Contains(detail, provider.BedrockBearerTokenEnv) {
+		t.Fatalf("auto bearer diagnostic=%q %q", status, detail)
 	}
 }
