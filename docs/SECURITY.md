@@ -169,6 +169,14 @@ complete JSON document before the normal permission pipeline can see the tool
 call. Truncated Responses and Bedrock streams fail closed instead of accepting
 their partial content as a completed model response.
 
+Recorded provider contracts run in the ordinary credential-free CI suite.
+Real-endpoint qualification is separately double-gated by
+`COLLO_LIVE_PROVIDER_TESTS=1` and a manifest path. The live manifest rejects
+literal API keys and embedded URL credentials, resolves keys and sensitive
+headers from named environment variables, and redacts resolved values from
+reported failures. The synthetic tool returned by a model is inspected but
+never executed. See [Live provider contract tests](LIVE_PROVIDER_CONTRACTS.md).
+
 ## Secrets
 
 Configured provider keys, MCP headers/env values, and common credential

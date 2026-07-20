@@ -880,4 +880,11 @@ go test -race ./...
 go vet ./...
 ```
 
+These commands run the recorded provider contracts used by CI and never need
+cloud credentials. Maintainers can additionally qualify real OpenAI,
+Anthropic, Responses/Mantle, and Bedrock endpoints with the double-opt-in,
+credential-safe [live provider contract suite](docs/LIVE_PROVIDER_CONTRACTS.md).
+It makes two model requests per configured endpoint and is not enabled by the
+ordinary test suite.
+
 The implementation follows the MCP security recommendation to keep a human able to inspect and deny tool calls, and uses protocol-native JSON Schema tool definitions throughout.

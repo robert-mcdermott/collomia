@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -161,5 +162,133 @@ func TestResponseBodyIdleTimeoutInterruptsBlockedRead(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("idle timeout did not interrupt the blocked read")
+	}
+}
+
+type cancellableStreamBody struct {
+	prefix bytes.Reader
+	ctx    context.Context
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newCancellableStreamBody(ctx context.Context, prefix []byte) *cancellableStreamBody {
+	return &cancellableStreamBody{prefix: *bytes.NewReader(prefix), ctx: ctx, closed: make(chan struct{})}
+}
+
+func (b *cancellableStreamBody) Read(dst []byte) (int, error) {
+	if b.prefix.Len() > 0 {
+		return b.prefix.Read(dst)
+	}
+	select {
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	case <-b.closed:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (b *cancellableStreamBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func TestProviderStreamsHonorCancellation(t *testing.T) {
+	bedrockPrefix := bedrockEventStream(t,
+		bedrockEvent{"messageStart", `{"role":"assistant"}`},
+		bedrockEvent{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"partial"}}`},
+	)
+	tests := []struct {
+		name        string
+		contentType string
+		prefix      []byte
+		client      func(*http.Client) Client
+	}{
+		{
+			name: "openai", contentType: "text/event-stream",
+			prefix: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"),
+			client: func(httpClient *http.Client) Client {
+				return &OpenAIClient{Label: "openai-cancel", BaseURL: "https://example.invalid", APIKey: "secret", HTTP: httpClient}
+			},
+		},
+		{
+			name: "anthropic", contentType: "text/event-stream",
+			prefix: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"),
+			client: func(httpClient *http.Client) Client {
+				return &AnthropicClient{Label: "anthropic-cancel", BaseURL: "https://example.invalid", APIKey: "secret", HTTP: httpClient}
+			},
+		},
+		{
+			name: "responses", contentType: "text/event-stream",
+			prefix: []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"partial\"}\n\n"),
+			client: func(httpClient *http.Client) Client {
+				return &ResponsesClient{Label: "responses-cancel", BaseURL: "https://example.invalid", APIKey: "secret", HTTP: httpClient}
+			},
+		},
+		{
+			name: "bedrock", contentType: "application/vnd.amazon.eventstream", prefix: bedrockPrefix,
+			client: func(httpClient *http.Client) Client {
+				return &BedrockClient{Label: "bedrock-cancel", Region: "us-east-1", Auth: "bearer", APIKey: "secret", HTTP: httpClient}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var body *cancellableStreamBody
+			calls := 0
+			httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				body = newCancellableStreamBody(req.Context(), test.prefix)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{test.contentType}},
+					Body:       body,
+					Request:    req,
+				}, nil
+			})}
+			client := test.client(httpClient)
+			streamed := make(chan struct{}, 1)
+			done := make(chan error, 1)
+			go func() {
+				_, err := client.Chat(ctx, contractRequest(), func(delta Delta) {
+					if delta.Text == "partial" {
+						select {
+						case streamed <- struct{}{}:
+						default:
+						}
+					}
+				})
+				done <- err
+			}()
+
+			select {
+			case <-streamed:
+				cancel()
+			case <-time.After(time.Second):
+				t.Fatal("provider did not emit the initial stream delta")
+			}
+
+			select {
+			case err := <-done:
+				providerErr, ok := AsError(err)
+				if !ok || providerErr.Kind != ErrorCancelled || providerErr.Retryable {
+					t.Fatalf("cancellation error=%+v raw=%v", providerErr, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("provider stream did not stop after cancellation")
+			}
+			if calls != 1 {
+				t.Fatalf("cancelled stream was replayed: calls=%d", calls)
+			}
+			select {
+			case <-body.closed:
+			case <-time.After(time.Second):
+				t.Fatal("cancelled response body was not closed")
+			}
+		})
 	}
 }
