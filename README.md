@@ -10,7 +10,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 - Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, and a status bar with live context, task-progress, active-agent, and background-process gauges.
 - Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
-- Streaming OpenAI-compatible and Anthropic-compatible conversations with native tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
+- Streaming OpenAI-compatible, Anthropic-compatible, Responses-style, and native Bedrock ConverseStream conversations with tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
 - Azure OpenAI, Microsoft Foundry OpenAI/v1, and Microsoft Foundry Anthropic endpoint support.
 - Local Ollama, vLLM, LM Studio, Phlox-GW, and other OpenAI-compatible endpoints.
@@ -194,7 +194,7 @@ collo run --resume <session-id> "Continue where we left off"
 collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
 ```
 
-With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors:
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors. Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event (for example, `{"kind":"rate_limit","status_code":429,"retryable":true,"retry_after_ms":3000,"request_id":"…"}`):
 
 ```json
 {"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
@@ -331,6 +331,31 @@ Collomia keeps an effective capability declaration for every provider/model sele
 
 The declaration describes what Collomia's current adapter can send and consume, which may be smaller than the vendor API's complete feature set. Before any provider request, Collomia rejects a known contradiction (for example, sending tools through an adapter declared not to support them, or configuring a maximum output larger than the context window). Unknown and partial capabilities remain visible but do not cause speculative failures.
 
+Streaming adapters normalize upstream events before they reach the agent: text, provider-supplied reasoning text/summaries, incremental tool-call arguments, complete usage snapshots, warnings, and classified errors all follow one contract. Tool arguments may be incomplete JSON while they stream; Collomia assembles and validates the final document before approval or execution. An HTTP failure before streaming starts can use the normal retry policy. An error carried inside a stream is returned without replaying the request, preventing duplicate deltas and surprise repeat billing.
+
+All built-in HTTP adapters use the same resilience policy. Network failures and HTTP 408, 429, 5xx, and 529 responses are retried up to three attempts with bounded exponential backoff, jitter, and `Retry-After`; authentication, permission, not-found, and other ordinary 4xx failures are not retried. A request is retried only when its body can be replayed. Failures are classified as `authentication`, `permission`, `rate_limit`, `invalid_request`, `not_found`, `timeout`, `unavailable`, `protocol`, `cancelled`, or `unknown`; status, retry timing, and request IDs are included when the provider supplies them. In `--jsonl` mode the same fields appear under `provider` on the `error` event.
+
+OpenAI-protocol models do not all accept the same Chat Completions fields. Collomia sends the backward-compatible `max_tokens` field first. Only when an upstream HTTP 400 explicitly rejects that field and directs the caller to `max_completion_tokens` does Collomia rebuild and resend the request; a similarly explicit rejection of a configured `temperature` retries with the provider default and emits a warning. Those choices are remembered for the active provider/model client, so later turns avoid the failed probe. Successful requests, unrelated 400 responses, and providers that accept the original fields are never rewritten. The configured `max_tokens` remains Collomia's provider-neutral output budget; for reasoning models the upstream `max_completion_tokens` interpretation includes hidden reasoning tokens as well as visible output.
+
+Three consecutive transient request failures open a 30-second circuit so a broken endpoint is not hammered; one recovery probe closes it. `/status` shows the active provider as `not checked yet`, `healthy`, `degraded`, `circuit open`, or `testing recovery`. Switching provider/model starts a fresh health state. Timeouts are configured per provider (values shown are the defaults):
+
+```json
+{
+  "providers": {
+    "example": {
+      "type": "openai-compatible",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "qwen3-coder",
+      "connect_timeout_seconds": 10,
+      "request_timeout_seconds": 1800,
+      "stream_idle_timeout_seconds": 300
+    }
+  }
+}
+```
+
+`connect_timeout_seconds` bounds connection establishment, `request_timeout_seconds` bounds the complete request, and `stream_idle_timeout_seconds` bounds the silence between response chunks. Increase the idle timeout for models that legitimately spend more than five minutes without emitting data; do not disable these bounds for an unattended run.
+
 ### OpenAI-compatible services
 
 This adapter works with OpenAI, Ollama, vLLM, LM Studio, Phlox-GW, and compatible gateways. It uses `/chat/completions`, streaming SSE, and function tools. Picking a provider in `/model` queries its live `GET /models` catalog when supported.
@@ -394,7 +419,7 @@ Set `"auth": "bearer"` when a compatible endpoint expects an OAuth bearer token 
 
 ### AWS Bedrock
 
-Native Bedrock uses the Converse API and supports both AWS SigV4 credentials and the newer Amazon Bedrock bearer API keys. `auth` controls the credential family:
+Native Bedrock uses the `ConverseStream` API and supports both AWS SigV4 credentials and the newer Amazon Bedrock bearer API keys. Text, tool arguments, provider-supplied reasoning, and token usage arrive through AWS event-stream framing; in-stream throttling/service/validation exceptions keep their provider classification and request ID. `auth` controls the credential family:
 
 - `auto` (the default) uses `api_key`/`api_key_env` or `AWS_BEARER_TOKEN_BEDROCK` when present; otherwise it uses the AWS credential chain.
 - `sigv4` requires the AWS credential chain even if a bearer token is present.
@@ -447,7 +472,7 @@ export AWS_BEARER_TOKEN_BEDROCK="..."
 
 Collomia consumes an already-generated Bedrock API key; it does not currently mint or refresh short-term keys. Replace the environment value and restart Collomia before an expiring key becomes invalid. AWS recommends short-term keys for production and long-term keys only for exploration. Bearer keys are limited to supported Bedrock/Bedrock Runtime operations; they do not grant Agents or bidirectional-stream operations. `collo doctor` reports the selected authentication family and missing bearer-token variables without printing credential values.
 
-Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key:
+Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key. Collomia requests SSE and also accepts a synchronous JSON response from a compatible endpoint; incomplete Responses runs produce an explicit warning instead of being mistaken for a complete answer:
 
 ```json
 {
@@ -464,7 +489,19 @@ Bedrock Mantle uses the OpenAI Responses API and a Bedrock API key:
 
 ### Azure OpenAI and Microsoft Foundry
 
-The Azure OpenAI adapter supports the deployment-scoped GA API:
+Azure providers accept three explicit authentication modes:
+
+- `api_key` (also the backward-compatible default when `auth` is omitted)
+  reads `api_key`/`api_key_env` and sends the Azure `api-key` header.
+- `bearer` sends a token from `api_key`/`api_key_env`. This compatibility mode
+  cannot refresh the token; use it only when another process rotates the value
+  and Collomia is restarted.
+- `entra` uses the official Azure Identity SDK's `DefaultAzureCredential`.
+  Tokens are held only in memory and refreshed proactively before the SDK's
+  `RefreshOn` time or expiration. Do not configure an API key in this mode.
+
+The Azure OpenAI adapter supports the deployment-scoped GA API. This keyless
+example uses the documented Cognitive Services scope:
 
 ```json
 {
@@ -472,7 +509,7 @@ The Azure OpenAI adapter supports the deployment-scoped GA API:
     "azure-openai": {
       "type": "azure-openai",
       "base_url": "https://my-resource.openai.azure.com",
-      "api_key_env": "AZURE_OPENAI_API_KEY",
+      "auth": "entra",
       "deployment": "my-code-model",
       "api_version": "2024-10-21",
       "model": "my-code-model"
@@ -481,28 +518,109 @@ The Azure OpenAI adapter supports the deployment-scoped GA API:
 }
 ```
 
-Microsoft Foundry's current OpenAI/v1 endpoint is also supported:
+Microsoft Foundry's OpenAI/v1 and Claude Messages endpoints use the Azure AI
+scope and are both supported by the same refreshable credential path:
 
 ```json
 {
   "providers": {
     "foundry": {
       "type": "azure-foundry",
-      "base_url": "https://my-resource.services.ai.azure.com/openai/v1",
-      "api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "base_url": "https://my-resource.openai.azure.com/openai/v1",
+      "auth": "entra",
       "model": "my-deployment"
     },
     "foundry-claude": {
       "type": "azure-foundry-anthropic",
       "base_url": "https://my-resource.services.ai.azure.com/anthropic",
-      "api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "auth": "entra",
       "model": "claude-sonnet-4-6"
     }
   }
 }
 ```
 
-For Microsoft Entra tokens, set `"auth": "bearer"` and point `api_key_env` to the environment variable containing the current token.
+`DefaultAzureCredential` checks environment service-principal credentials,
+workload identity, managed identity, Azure CLI (`az login`), Azure Developer CLI
+(`azd auth login`), and Azure PowerShell. For a service principal with a secret,
+set `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`; for a
+user-assigned managed identity, set `AZURE_CLIENT_ID`. In deployed environments,
+set `AZURE_TOKEN_CREDENTIALS=prod` to restrict the chain to environment,
+workload, and managed identities. During local development, `dev` restricts it
+to developer tools; an individual credential name such as
+`AzureCLICredential` is also accepted.
+
+The default scopes are:
+
+| Provider type | Default `entra_scope` | Typical data-plane role |
+| --- | --- | --- |
+| `azure-openai` | `https://cognitiveservices.azure.com/.default` | Cognitive Services OpenAI User |
+| `azure-foundry`, `azure-foundry-anthropic` | `https://ai.azure.com/.default` | Cognitive Services User |
+
+RBAC assignments apply to the target resource and can take several minutes to
+propagate. A 401/403 returned in `entra` mode includes the relevant role and
+scope guidance without exposing a token. `collo doctor` reports the credential
+chain selector, effective scope, tenant, authority, and required role, but never
+acquires or prints a token.
+
+Azure reasoning deployments such as GPT-5 require `max_completion_tokens`
+instead of the legacy `max_tokens`, while some older Azure deployments reject
+the newer field. Collomia therefore does not guess from a deployment name or
+change every Azure request. It reacts only to the provider's structured 400,
+retries before any stream data is emitted, and remembers the accepted shape for
+the active model. If the model explicitly rejects a configured `temperature`,
+Collomia also retries with the model default and reports that adjustment.
+
+For a different tenant or a sovereign/private cloud, override only the values
+your Azure environment documents:
+
+```json
+{
+  "providers": {
+    "foundry-government": {
+      "type": "azure-foundry",
+      "base_url": "https://your-private-or-sovereign-endpoint/openai/v1",
+      "auth": "entra",
+      "entra_tenant_id": "your-tenant-id",
+      "entra_authority_host": "https://login.microsoftonline.us/",
+      "entra_scope": "https://your-documented-audience/.default",
+      "model": "your-deployment"
+    }
+  }
+}
+```
+
+The authority must be an HTTPS origin and the scope must be an HTTPS `/.default`
+audience. Collomia does not guess sovereign-cloud audiences. Private DNS
+endpoints work through `base_url` as long as the host is reachable and its TLS
+certificate is trusted by the operating system.
+
+API-key mode remains available for either provider family:
+
+```json
+{
+  "providers": {
+    "foundry-key": {
+      "type": "azure-foundry",
+      "base_url": "https://my-resource.openai.azure.com/openai/v1",
+      "auth": "api_key",
+      "api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "model": "my-deployment"
+    }
+  }
+}
+```
+
+Microsoft references: [Go credential
+chains](https://learn.microsoft.com/azure/developer/go/sdk/authentication/credential-chains),
+[Azure OpenAI keyless
+authentication](https://learn.microsoft.com/azure/developer/ai/get-started-securing-your-ai-app),
+[Foundry Models keyless
+authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/configure-entra-id),
+and [Claude on Foundry
+authentication](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-claude),
+and [Azure OpenAI reasoning-model request
+requirements](https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning).
 
 ## Permissions and safety
 
@@ -856,5 +974,12 @@ go test ./...
 go test -race ./...
 go vet ./...
 ```
+
+These commands run the recorded provider contracts used by CI and never need
+cloud credentials. Maintainers can additionally qualify real OpenAI,
+Anthropic, Responses/Mantle, and Bedrock endpoints with the double-opt-in,
+credential-safe [live provider contract suite](docs/LIVE_PROVIDER_CONTRACTS.md).
+It makes two model requests per configured endpoint and is not enabled by the
+ordinary test suite.
 
 The implementation follows the MCP security recommendation to keep a human able to inspect and deny tool calls, and uses protocol-native JSON Schema tool definitions throughout.

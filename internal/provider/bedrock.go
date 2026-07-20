@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
@@ -25,6 +27,10 @@ const (
 	bedrockAuthAuto       = "auto"
 	bedrockAuthSigV4      = "sigv4"
 	bedrockAuthBearer     = "bearer"
+	// Bedrock events are normally tiny token/tool fragments. Bound a single
+	// frame so a corrupt or hostile endpoint cannot force an unbounded decoder
+	// allocation while still allowing unusually large tool-argument chunks.
+	maxBedrockEventMessage = 4 * 1024 * 1024
 )
 
 type BedrockClient struct {
@@ -61,28 +67,37 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 	if err != nil {
 		return Response{}, err
 	}
-	endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse", region, url.PathEscape(in.Model))
+	endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse-stream", region, url.PathEscape(in.Model))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return Response{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	if err := c.authenticate(ctx, req, data, region); err != nil {
-		return Response{}, err
+		return Response{}, &Error{Provider: c.Label, Operation: "authenticate", Kind: ErrorAuthentication, Message: sanitizeProviderText(err.Error(), 2048), Err: err}
 	}
 	client := c.HTTP
 	if client == nil {
 		client = httpClient()
 	}
-	resp, err := client.Do(req)
+	resp, err := doWithRetry(client, req, c.Label, "converse-stream")
 	if err != nil {
-		return Response{}, fmt.Errorf("Bedrock request: %w", err)
-	}
-	defer resp.Body.Close()
-	if err := checkResponse(resp, "Bedrock"); err != nil {
 		return Response{}, err
 	}
-	return parseBedrockResponse(resp.Body, onDelta)
+	defer resp.Body.Close()
+	if err := checkResponse(resp, c.Label, "converse-stream"); err != nil {
+		return Response{}, err
+	}
+	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/vnd.amazon.eventstream") {
+		response, err := parseBedrockStream(resp.Body, c.Label, requestID(resp.Header), onDelta)
+		return response, protocolError(c.Label, "read converse stream", err)
+	}
+	// Some compatible test/proxy endpoints return the ordinary Converse JSON
+	// envelope even on the streaming route. Accept it without weakening the
+	// advertised AWS path, which always uses event-stream framing.
+	response, err := parseBedrockResponse(resp.Body, onDelta)
+	return response, protocolError(c.Label, "decode converse response", err)
 }
 
 func (c *BedrockClient) authenticate(ctx context.Context, req *http.Request, body []byte, region string) error {
@@ -254,4 +269,176 @@ func parseBedrockResponse(r io.Reader, onDelta func(Delta)) (Response, error) {
 		}
 	}
 	return out, nil
+}
+
+func parseBedrockStream(r io.Reader, label, requestID string, onDelta func(Delta)) (Response, error) {
+	decoder := eventstream.NewDecoder()
+	tools := map[int]*toolAccumulator{}
+	var out Response
+	terminal := false
+	for {
+		limited := &io.LimitedReader{R: r, N: maxBedrockEventMessage}
+		message, err := decoder.Decode(limited, nil)
+		if err == io.EOF {
+			if limited.N == 0 {
+				return Response{}, fmt.Errorf("Bedrock stream event exceeds %d-byte limit", maxBedrockEventMessage)
+			}
+			break
+		}
+		if err != nil {
+			return Response{}, err
+		}
+		messageType := bedrockHeader(message.Headers, ":message-type")
+		switch messageType {
+		case "exception", "error":
+			code := bedrockHeader(message.Headers, ":exception-type")
+			if code == "" {
+				code = bedrockHeader(message.Headers, ":error-code")
+			}
+			return Response{}, bedrockStreamError(label, requestID, code, message.Payload)
+		case "event":
+		default:
+			return Response{}, fmt.Errorf("Bedrock stream message has unsupported type %q", messageType)
+		}
+
+		eventType := bedrockHeader(message.Headers, ":event-type")
+		switch eventType {
+		case "messageStart":
+			// Role is always assistant for a ConverseStream response.
+		case "contentBlockStart":
+			var payload struct {
+				ContentBlockIndex int `json:"contentBlockIndex"`
+				Start             struct {
+					ToolUse *struct {
+						ToolUseID string `json:"toolUseId"`
+						Name      string `json:"name"`
+					} `json:"toolUse"`
+				} `json:"start"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				return Response{}, fmt.Errorf("decode Bedrock contentBlockStart: %w", err)
+			}
+			if payload.Start.ToolUse != nil {
+				acc := &toolAccumulator{id: payload.Start.ToolUse.ToolUseID, name: payload.Start.ToolUse.Name}
+				tools[payload.ContentBlockIndex] = acc
+				if onDelta != nil {
+					onDelta(Delta{ToolCall: &ToolCallDelta{Index: payload.ContentBlockIndex, ID: acc.id, Name: acc.name}})
+				}
+			}
+		case "contentBlockDelta":
+			var payload struct {
+				ContentBlockIndex int `json:"contentBlockIndex"`
+				Delta             struct {
+					Text    string `json:"text"`
+					ToolUse *struct {
+						Input string `json:"input"`
+					} `json:"toolUse"`
+					ReasoningContent *struct {
+						Text string `json:"text"`
+					} `json:"reasoningContent"`
+				} `json:"delta"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				return Response{}, fmt.Errorf("decode Bedrock contentBlockDelta: %w", err)
+			}
+			if payload.Delta.Text != "" {
+				out.Content += payload.Delta.Text
+				if onDelta != nil {
+					onDelta(Delta{Text: payload.Delta.Text})
+				}
+			}
+			if payload.Delta.ReasoningContent != nil && payload.Delta.ReasoningContent.Text != "" && onDelta != nil {
+				onDelta(Delta{Reasoning: payload.Delta.ReasoningContent.Text})
+			}
+			if payload.Delta.ToolUse != nil {
+				acc := tools[payload.ContentBlockIndex]
+				if acc == nil {
+					acc = &toolAccumulator{}
+					tools[payload.ContentBlockIndex] = acc
+				}
+				acc.args.WriteString(payload.Delta.ToolUse.Input)
+				if onDelta != nil {
+					onDelta(Delta{ToolCall: &ToolCallDelta{Index: payload.ContentBlockIndex, ID: acc.id, Name: acc.name, Arguments: payload.Delta.ToolUse.Input}})
+				}
+			}
+		case "contentBlockStop":
+			var payload struct {
+				ContentBlockIndex int `json:"contentBlockIndex"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				return Response{}, fmt.Errorf("decode Bedrock contentBlockStop: %w", err)
+			}
+			if acc := tools[payload.ContentBlockIndex]; acc != nil && onDelta != nil {
+				onDelta(Delta{ToolCall: &ToolCallDelta{Index: payload.ContentBlockIndex, ID: acc.id, Name: acc.name, Done: true}})
+			}
+		case "messageStop":
+			var payload struct {
+				StopReason string `json:"stopReason"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				return Response{}, fmt.Errorf("decode Bedrock messageStop: %w", err)
+			}
+			out.Stop = payload.StopReason
+			terminal = true
+		case "metadata":
+			var payload struct {
+				Usage struct {
+					InputTokens          int `json:"inputTokens"`
+					OutputTokens         int `json:"outputTokens"`
+					CacheReadInputTokens int `json:"cacheReadInputTokens"`
+				} `json:"usage"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				return Response{}, fmt.Errorf("decode Bedrock metadata: %w", err)
+			}
+			out.Usage = Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens, CachedTokens: payload.Usage.CacheReadInputTokens}
+			if onDelta != nil {
+				usage := out.Usage
+				onDelta(Delta{Usage: &usage})
+			}
+		default:
+			if onDelta != nil {
+				onDelta(Delta{Warning: fmt.Sprintf("Bedrock stream ignored unknown event %q", eventType)})
+			}
+		}
+	}
+	if !terminal {
+		return Response{}, fmt.Errorf("Bedrock stream ended without messageStop")
+	}
+	indexes := make([]int, 0, len(tools))
+	for index := range tools {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	for _, index := range indexes {
+		acc := tools[index]
+		args := strings.TrimSpace(acc.args.String())
+		if args == "" {
+			args = "{}"
+		}
+		if !json.Valid([]byte(args)) {
+			return Response{}, fmt.Errorf("tool %s returned invalid JSON arguments", acc.name)
+		}
+		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: acc.id, Name: acc.name, Arguments: json.RawMessage(args)})
+	}
+	return out, nil
+}
+
+func bedrockHeader(headers eventstream.Headers, name string) string {
+	value := headers.Get(name)
+	if value == nil {
+		return ""
+	}
+	return value.String()
+}
+
+func bedrockStreamError(label, requestID, code string, payload []byte) error {
+	var detail struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(payload, &detail)
+	if detail.Message == "" {
+		detail.Message = code
+	}
+	return &Error{Provider: label, Operation: "converse stream", Kind: streamErrorKind(code), Retryable: false, RequestID: requestID, Message: sanitizeProviderText(detail.Message, 2048)}
 }

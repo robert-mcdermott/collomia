@@ -134,3 +134,41 @@ func TestProviderDiagnosticExplainsBedrockAuthentication(t *testing.T) {
 		t.Fatalf("auto bearer diagnostic=%q %q", status, detail)
 	}
 }
+
+func TestProviderDiagnosticShowsTimeoutPolicy(t *testing.T) {
+	status, detail := providerDiagnostic(appconfig.Provider{
+		Type: "openai", APIKey: "resolved",
+		ConnectTimeoutSeconds: 4, RequestTimeoutSeconds: 90, StreamIdleTimeoutSeconds: 15,
+	})
+	if status != "ok" || !strings.Contains(detail, "connect=4s") || !strings.Contains(detail, "request=90s") || !strings.Contains(detail, "idle=15s") {
+		t.Fatalf("diagnostic=%q %q", status, detail)
+	}
+}
+
+func TestProviderDiagnosticExplainsAzureEntraAuthentication(t *testing.T) {
+	t.Setenv("AZURE_TOKEN_CREDENTIALS", "dev")
+	t.Setenv("AZURE_TENANT_ID", "environment-tenant")
+	status, detail := providerDiagnostic(appconfig.Provider{Type: "azure-openai", Auth: "entra"})
+	for _, want := range []string{"DefaultAzureCredential", "AZURE_TOKEN_CREDENTIALS=dev", provider.AzureOpenAIEntraScope, "environment-tenant", "automatically", "Cognitive Services OpenAI User"} {
+		if status != "ok" || !strings.Contains(detail, want) {
+			t.Fatalf("Azure OpenAI diagnostic=%q %q; missing %q", status, detail, want)
+		}
+	}
+
+	status, detail = providerDiagnostic(appconfig.Provider{
+		Type: "azure-foundry-anthropic", Auth: "entra",
+		EntraScope: "https://custom.example/.default", EntraTenantID: "configured-tenant", EntraAuthorityHost: "https://login.microsoftonline.us/",
+	})
+	for _, want := range []string{"https://custom.example/.default", "configured-tenant", "login.microsoftonline.us", "Cognitive Services User"} {
+		if status != "ok" || !strings.Contains(detail, want) {
+			t.Fatalf("Foundry diagnostic=%q %q; missing %q", status, detail, want)
+		}
+	}
+}
+
+func TestProviderDiagnosticWarnsThatStaticAzureBearerDoesNotRefresh(t *testing.T) {
+	status, detail := providerDiagnostic(appconfig.Provider{Type: "azure-foundry", Auth: "bearer", APIKey: "resolved-token"})
+	if status != "ok" || !strings.Contains(detail, "cannot refresh") || !strings.Contains(detail, "auth=entra") {
+		t.Fatalf("static bearer diagnostic=%q %q", status, detail)
+	}
+}

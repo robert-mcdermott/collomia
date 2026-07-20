@@ -137,7 +137,35 @@ func runDoctorCommand(opts options) error {
 }
 
 func providerDiagnostic(p appconfig.Provider) (status, detail string) {
-	status, detail = "ok", p.Type
+	status, detail = "ok", p.Type+providerTimeoutDiagnostic(p)
+	if isAzureProvider(p.Type) && p.Auth == "entra" {
+		scope := provider.AzureEntraScope(p.Type, p.EntraScope)
+		tenant := p.EntraTenantID
+		if tenant == "" {
+			tenant = os.Getenv("AZURE_TENANT_ID")
+		}
+		if tenant == "" {
+			tenant = "credential default"
+		}
+		authority := p.EntraAuthorityHost
+		if authority == "" {
+			authority = os.Getenv("AZURE_AUTHORITY_HOST")
+		}
+		if authority == "" {
+			authority = "Azure Public Cloud"
+		}
+		chain := os.Getenv("AZURE_TOKEN_CREDENTIALS")
+		if chain == "" {
+			chain = "default chain: environment, workload identity, managed identity, Azure CLI, azd, Azure PowerShell"
+		} else {
+			chain = "AZURE_TOKEN_CREDENTIALS=" + chain
+		}
+		role := "Cognitive Services User"
+		if p.Type == "azure-openai" {
+			role = "Cognitive Services OpenAI User"
+		}
+		return status, fmt.Sprintf("%s; Microsoft Entra via DefaultAzureCredential (%s; scope %s; tenant %s; authority %s); requests refresh tokens automatically; required data-plane role: %s", detail, chain, scope, tenant, authority, role)
+	}
 	if p.Type == "bedrock" {
 		auth := strings.ToLower(strings.TrimSpace(p.Auth))
 		if auth == "" {
@@ -176,5 +204,26 @@ func providerDiagnostic(p appconfig.Provider) (status, detail string) {
 	default:
 		detail += "; no credential configured (fine for local endpoints)"
 	}
+	if isAzureProvider(p.Type) && p.Auth == "bearer" {
+		detail += "; caller-supplied bearer token; Collomia cannot refresh it (prefer auth=entra)"
+	}
 	return status, detail
+}
+
+func isAzureProvider(providerType string) bool {
+	return providerType == "azure-openai" || providerType == "azure-foundry" || providerType == "azure-foundry-anthropic"
+}
+
+func providerTimeoutDiagnostic(p appconfig.Provider) string {
+	connect, request, idle := p.ConnectTimeoutSeconds, p.RequestTimeoutSeconds, p.StreamIdleTimeoutSeconds
+	if connect <= 0 {
+		connect = 10
+	}
+	if request <= 0 {
+		request = 30 * 60
+	}
+	if idle <= 0 {
+		idle = 5 * 60
+	}
+	return fmt.Sprintf("; timeouts connect=%ds request=%ds idle=%ds", connect, request, idle)
 }

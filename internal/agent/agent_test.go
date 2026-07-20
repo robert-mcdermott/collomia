@@ -32,6 +32,21 @@ type capabilityClient struct {
 	capabilities provider.Capabilities
 }
 
+type streamingClient struct{}
+
+func (streamingClient) Name() string { return "streaming-fixture" }
+func (streamingClient) Chat(_ context.Context, _ provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
+	usage := provider.Usage{InputTokens: 7, OutputTokens: 3}
+	onDelta(provider.Delta{Reasoning: "checking"})
+	onDelta(provider.Delta{ToolCall: &provider.ToolCallDelta{Index: 0, ID: "call_1", Name: "read_file"}})
+	onDelta(provider.Delta{ToolCall: &provider.ToolCallDelta{Index: 0, Arguments: `{"path":"README.md"}`}})
+	onDelta(provider.Delta{ToolCall: &provider.ToolCallDelta{Index: 0, ID: "call_1", Name: "read_file", Done: true}})
+	onDelta(provider.Delta{Warning: "fixture warning"})
+	onDelta(provider.Delta{Text: "finished"})
+	onDelta(provider.Delta{Usage: &usage})
+	return provider.Response{Content: "finished", Usage: usage}, nil
+}
+
 func (c *capabilityClient) Name() string { return "capability-fixture" }
 func (c *capabilityClient) Capabilities() provider.Capabilities {
 	return c.capabilities
@@ -75,6 +90,33 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	}
 	if result != "finished" || delta != "finished" || client.calls != 2 {
 		t.Fatalf("result=%q delta=%q calls=%d", result, delta, client.calls)
+	}
+}
+
+func TestAgentMapsNormalizedProviderDeltasWithoutDuplicatingUsage(t *testing.T) {
+	a := New(Options{Client: streamingClient{}, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil)})
+	var reasoning, warning string
+	var toolDeltas, usageEvents int
+	result, err := a.Run(t.Context(), "do it", func(e event.Event) {
+		switch e.Kind {
+		case event.KindReasoningDelta:
+			reasoning += e.Text
+		case event.KindToolCallDelta:
+			if e.ToolCall == nil {
+				t.Fatal("tool-call delta missing payload")
+			}
+			toolDeltas++
+		case event.KindWarning:
+			warning += e.Text
+		case event.KindUsage:
+			usageEvents++
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "finished" || reasoning != "checking" || warning != "fixture warning" || toolDeltas != 3 || usageEvents != 1 {
+		t.Fatalf("result=%q reasoning=%q warning=%q toolDeltas=%d usageEvents=%d", result, reasoning, warning, toolDeltas, usageEvents)
 	}
 }
 
@@ -510,5 +552,20 @@ func TestUserPromptHookBlocksTurn(t *testing.T) {
 	}
 	if a.MessageCount() != 0 {
 		t.Fatalf("blocked prompt must not enter the conversation, got %d messages", a.MessageCount())
+	}
+}
+
+func TestProviderErrorEventIncludesMachineReadableClassification(t *testing.T) {
+	err := &provider.Error{
+		Provider: "openrouter/glm", Operation: "chat", Kind: provider.ErrorRateLimit,
+		StatusCode: 429, Retryable: true, RetryAfter: 3 * time.Second, RequestID: "req-123",
+		Message: "rate limited",
+	}
+	e := errorEvent(err)
+	if e.Provider == nil {
+		t.Fatal("provider classification missing from error event")
+	}
+	if e.Provider.Name != "openrouter/glm" || e.Provider.Operation != "chat" || e.Provider.Kind != "rate_limit" || e.Provider.StatusCode != 429 || !e.Provider.Retryable || e.Provider.RetryAfterMS != 3000 || e.Provider.RequestID != "req-123" {
+		t.Fatalf("provider failure=%+v", e.Provider)
 	}
 }

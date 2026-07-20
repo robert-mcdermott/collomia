@@ -25,6 +25,7 @@ const (
 	KindTurnStart          Kind = "turn.start"
 	KindTextDelta          Kind = "text.delta"
 	KindReasoningDelta     Kind = "reasoning.delta"
+	KindToolCallDelta      Kind = "tool.call.delta"
 	KindToolStart          Kind = "tool.start"
 	KindToolOutput         Kind = "tool.output"
 	KindToolResult         Kind = "tool.result"
@@ -50,13 +51,39 @@ type Event struct {
 	Kind   Kind      `json:"kind"`
 	Turn   int       `json:"turn,omitempty"`
 	// Text carries streamed deltas, notices, warnings, and plan text.
-	Text       string      `json:"text,omitempty"`
-	Tool       *Tool       `json:"tool,omitempty"`
-	Permission *Permission `json:"permission,omitempty"`
-	File       *FileChange `json:"file,omitempty"`
-	Usage      *Usage      `json:"usage,omitempty"`
-	Result     *RunResult  `json:"result,omitempty"`
-	Error      string      `json:"error,omitempty"`
+	Text       string           `json:"text,omitempty"`
+	Tool       *Tool            `json:"tool,omitempty"`
+	Permission *Permission      `json:"permission,omitempty"`
+	File       *FileChange      `json:"file,omitempty"`
+	Usage      *Usage           `json:"usage,omitempty"`
+	ToolCall   *ToolCallDelta   `json:"tool_call,omitempty"`
+	Result     *RunResult       `json:"result,omitempty"`
+	Provider   *ProviderFailure `json:"provider,omitempty"`
+	Error      string           `json:"error,omitempty"`
+}
+
+// ToolCallDelta carries an incremental provider tool request. ArgumentsDelta
+// can be incomplete JSON until Done is true. It is intended for JSONL clients
+// and diagnostics; tool execution still waits for the provider's final,
+// validated ToolCall.
+type ToolCallDelta struct {
+	Index          int    `json:"index"`
+	ID             string `json:"id,omitempty"`
+	Name           string `json:"name,omitempty"`
+	ArgumentsDelta string `json:"arguments_delta,omitempty"`
+	Done           bool   `json:"done,omitempty"`
+}
+
+// ProviderFailure is the machine-readable classification attached to an
+// error event when the failure came from a built-in provider adapter.
+type ProviderFailure struct {
+	Name         string `json:"name"`
+	Operation    string `json:"operation,omitempty"`
+	Kind         string `json:"kind"`
+	StatusCode   int    `json:"status_code,omitempty"`
+	Retryable    bool   `json:"retryable"`
+	RetryAfterMS int64  `json:"retry_after_ms,omitempty"`
+	RequestID    string `json:"request_id,omitempty"`
 }
 
 // Tool describes one tool invocation's lifecycle.

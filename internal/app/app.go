@@ -74,6 +74,13 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 		if p.Type == "bedrock" {
 			r.AddSecret(os.Getenv(provider.BedrockBearerTokenEnv))
 		}
+		if p.Auth == "entra" && (p.Type == "azure-openai" || p.Type == "azure-foundry" || p.Type == "azure-foundry-anthropic") {
+			// DefaultAzureCredential reads these standard environment secrets.
+			// The SDK should never echo them, but register them as defense in
+			// depth for debug logs and structured error events.
+			r.AddSecret(os.Getenv("AZURE_CLIENT_SECRET"))
+			r.AddSecret(os.Getenv("AZURE_CLIENT_CERTIFICATE_PASSWORD"))
+		}
 		for _, v := range p.Headers {
 			r.AddSecret(v)
 		}
@@ -122,6 +129,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	client = provider.WithResilience(client)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		return nil, err
@@ -285,6 +293,7 @@ func (r *Runtime) ListModels(ctx context.Context, providerName string) ([]provid
 	if err != nil {
 		return nil, err
 	}
+	client = provider.WithResilience(client)
 	capabilities, err := provider.CapabilitiesFor(p.Type, model, p.Context)
 	if err != nil {
 		return nil, err
@@ -533,10 +542,11 @@ func (r *Runtime) Select(providerName, model string) error {
 	if err != nil {
 		return err
 	}
+	client = provider.WithResilience(client)
 	r.Agent.SetProvider(providerName, resolved, p, client)
 	return nil
 }
 func (r *Runtime) Summary() string {
 	p, m := r.Agent.Selection()
-	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\ncapabilities: %s\nautonomy: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.Agent.Plan(), r.Config.Source)
+	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.Agent.Plan(), r.Config.Source)
 }

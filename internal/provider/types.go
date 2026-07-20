@@ -50,8 +50,27 @@ type Response struct {
 	Stop      string
 }
 
+// ToolCallDelta is the provider-neutral streaming representation of a tool
+// request. Arguments is an incremental JSON fragment, not necessarily a valid
+// document until Done is true. Index preserves provider ordering when several
+// tool calls are emitted in parallel.
+type ToolCallDelta struct {
+	Index     int
+	ID        string
+	Name      string
+	Arguments string
+	Done      bool
+}
+
+// Delta is one normalized provider stream event. Adapters populate only the
+// fields represented by the upstream event. Usage is a complete snapshot, not
+// an increment, so consumers can replace a displayed counter without guessing.
 type Delta struct {
-	Text string
+	Text      string
+	Reasoning string
+	Warning   string
+	ToolCall  *ToolCallDelta
+	Usage     *Usage
 }
 
 type Client interface {

@@ -39,8 +39,11 @@ func TestBedrockBearerAuthenticationFromConfiguredEnvironment(t *testing.T) {
 			if req.Header.Get("X-Amz-Date") != "" || req.Header.Get("X-Amz-Security-Token") != "" {
 				t.Errorf("bearer request was also SigV4-signed: %v", req.Header)
 			}
-			if !strings.Contains(req.URL.Path, "/model/contract-model/converse") {
+			if !strings.Contains(req.URL.Path, "/model/contract-model/converse-stream") {
 				t.Errorf("path=%q", req.URL.Path)
+			}
+			if req.Header.Get("Accept") != "application/vnd.amazon.eventstream" {
+				t.Errorf("accept=%q", req.Header.Get("Accept"))
 			}
 		}),
 	}

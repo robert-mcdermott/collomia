@@ -46,10 +46,12 @@ func WriteStarter(path string, global bool) error {
 			"ollama": {
 				Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1",
 				Model: "qwen3-coder", Context: 32768, MaxTokens: 8192,
+				ConnectTimeoutSeconds: 10, RequestTimeoutSeconds: 1800, StreamIdleTimeoutSeconds: 300,
 			},
 			"openrouter": {
 				Type: "openai", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "OR_API_KEY",
 				Model: "z-ai/glm-5.2", MaxTokens: 128000, Context: 500000,
+				ConnectTimeoutSeconds: 10, RequestTimeoutSeconds: 1800, StreamIdleTimeoutSeconds: 300,
 			},
 		}
 		inactive := false
@@ -119,7 +121,12 @@ const configReferenceJSONC = `
       "api_key_env": "OR_API_KEY",
       "model": "z-ai/glm-5.2",
       "max_tokens": 128000,
-      "context_window": 500000
+      "context_window": 500000,
+      // Connection establishment, whole request, and time between response
+      // chunks are bounded independently. Zero/omitted uses these defaults.
+      "connect_timeout_seconds": 10,
+      "request_timeout_seconds": 1800,
+      "stream_idle_timeout_seconds": 300
     },
     "openai": {
       "type": "openai",
@@ -181,7 +188,16 @@ const configReferenceJSONC = `
     "azure-openai": {
       "type": "azure-openai",
       "base_url": "https://your-resource.openai.azure.com",
-      "api_key_env": "AZURE_OPENAI_API_KEY",
+      // entra uses DefaultAzureCredential and refreshes short-lived tokens.
+      // It checks service-principal/workload/managed identity first, then
+      // developer sign-ins such as az login and azd auth login.
+      "auth": "entra",
+      // These three settings are optional. The scope below is the default for
+      // traditional Azure OpenAI; set tenant/authority for multi-tenant or
+      // sovereign-cloud environments.
+      "entra_scope": "https://cognitiveservices.azure.com/.default",
+      "entra_tenant_id": "your-tenant-id",
+      "entra_authority_host": "https://login.microsoftonline.com/",
       "deployment": "your-deployment",
       "api_version": "2024-10-21",
       "model": "your-deployment",
@@ -189,7 +205,8 @@ const configReferenceJSONC = `
     },
     "azure-foundry": {
       "type": "azure-foundry",
-      "base_url": "https://your-resource.services.ai.azure.com/openai/v1",
+      "base_url": "https://your-resource.openai.azure.com/openai/v1",
+      "auth": "api_key",
       "api_key_env": "AZURE_FOUNDRY_API_KEY",
       "model": "your-deployment",
       "max_tokens": 8192
@@ -197,7 +214,9 @@ const configReferenceJSONC = `
     "azure-foundry-claude": {
       "type": "azure-foundry-anthropic",
       "base_url": "https://your-resource.services.ai.azure.com/anthropic",
-      "api_key_env": "AZURE_FOUNDRY_API_KEY",
+      // Foundry OpenAI/v1 and Claude use https://ai.azure.com/.default by
+      // default when auth=entra.
+      "auth": "entra",
       "model": "your-claude-deployment",
       "max_tokens": 8192
     }

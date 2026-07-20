@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/audit"
@@ -167,10 +168,32 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 				return "", wrapped
 			}
 		}
+		var streamedUsage atomic.Bool
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" {
 				e := event.New(event.KindTextDelta)
 				e.Text = delta.Text
+				send(e)
+			}
+			if delta.Reasoning != "" {
+				e := event.New(event.KindReasoningDelta)
+				e.Text = delta.Reasoning
+				send(e)
+			}
+			if delta.ToolCall != nil {
+				e := event.New(event.KindToolCallDelta)
+				e.ToolCall = &event.ToolCallDelta{Index: delta.ToolCall.Index, ID: delta.ToolCall.ID, Name: delta.ToolCall.Name, ArgumentsDelta: delta.ToolCall.Arguments, Done: delta.ToolCall.Done}
+				send(e)
+			}
+			if delta.Usage != nil {
+				streamedUsage.Store(true)
+				e := event.New(event.KindUsage)
+				e.Usage = &event.Usage{InputTokens: delta.Usage.InputTokens, OutputTokens: delta.Usage.OutputTokens, CachedTokens: delta.Usage.CachedTokens, ReasoningTokens: delta.Usage.ReasoningTokens}
+				send(e)
+			}
+			if delta.Warning != "" {
+				e := event.New(event.KindWarning)
+				e.Text = delta.Warning
 				send(e)
 			}
 		})
@@ -189,7 +212,7 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		}
 		a.mu.Unlock()
 		a.appendMessage(provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls})
-		if response.Usage.InputTokens > 0 || response.Usage.OutputTokens > 0 {
+		if !streamedUsage.Load() && (response.Usage.InputTokens > 0 || response.Usage.OutputTokens > 0) {
 			e := event.New(event.KindUsage)
 			e.Usage = &event.Usage{InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, CachedTokens: response.Usage.CachedTokens, ReasoningTokens: response.Usage.ReasoningTokens}
 			send(e)
@@ -227,6 +250,14 @@ func withOverriddenContent(toolName string, args json.RawMessage, content string
 func errorEvent(err error) event.Event {
 	e := event.New(event.KindError)
 	e.Error = err.Error()
+	if providerErr, ok := provider.AsError(err); ok {
+		e.Provider = &event.ProviderFailure{
+			Name: providerErr.Provider, Operation: providerErr.Operation,
+			Kind: string(providerErr.Kind), StatusCode: providerErr.StatusCode,
+			Retryable: providerErr.Retryable, RetryAfterMS: providerErr.RetryAfter.Milliseconds(),
+			RequestID: providerErr.RequestID,
+		}
+	}
 	return e
 }
 
@@ -629,6 +660,18 @@ func (a *Agent) Capabilities() provider.Capabilities {
 		return reporter.Capabilities()
 	}
 	return provider.Capabilities{Model: a.model, ContextWindow: a.providerConfig.Context}
+}
+
+// ProviderHealth reports process-local health for the active provider. Test
+// doubles and custom clients that do not implement health reporting remain
+// usable and start in the explicit unknown state.
+func (a *Agent) ProviderHealth() provider.Health {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if reporter, ok := a.client.(provider.HealthReporter); ok {
+		return reporter.Health()
+	}
+	return provider.Health{State: provider.HealthUnknown}
 }
 
 func (a *Agent) Usage() provider.Usage { a.mu.RLock(); defer a.mu.RUnlock(); return a.usage }

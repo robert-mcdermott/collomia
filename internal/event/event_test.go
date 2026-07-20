@@ -51,6 +51,39 @@ func TestRunResultRoundTrips(t *testing.T) {
 	}
 }
 
+func TestProviderFailureRoundTrips(t *testing.T) {
+	e := New(KindError)
+	e.Error = "rate limited"
+	e.Provider = &ProviderFailure{Name: "openrouter/glm", Operation: "chat", Kind: "rate_limit", StatusCode: 429, Retryable: true, RetryAfterMS: 3000, RequestID: "req-123"}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Provider == nil || decoded.Provider.Kind != "rate_limit" || decoded.Provider.StatusCode != 429 || !decoded.Provider.Retryable || decoded.Provider.RetryAfterMS != 3000 || decoded.Provider.RequestID != "req-123" {
+		t.Fatalf("provider failure round trip mismatch: %+v", decoded.Provider)
+	}
+}
+
+func TestToolCallDeltaRoundTrips(t *testing.T) {
+	e := New(KindToolCallDelta)
+	e.ToolCall = &ToolCallDelta{Index: 2, ID: "call-2", Name: "read_file", ArgumentsDelta: `{"path":`, Done: false}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ToolCall == nil || decoded.ToolCall.Index != 2 || decoded.ToolCall.ID != "call-2" || decoded.ToolCall.Name != "read_file" || decoded.ToolCall.ArgumentsDelta != `{"path":` || decoded.ToolCall.Done {
+		t.Fatalf("tool call delta round trip mismatch: %+v", decoded.ToolCall)
+	}
+}
+
 func TestJSONLWriterAppliesRedaction(t *testing.T) {
 	var out strings.Builder
 	w := NewJSONLWriter(&out)

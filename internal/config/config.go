@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,20 +72,34 @@ type Layer struct {
 }
 
 type Provider struct {
-	Type        string            `json:"type"`
-	BaseURL     string            `json:"base_url,omitempty"`
-	APIKey      string            `json:"api_key,omitempty"`
-	APIKeyEnv   string            `json:"api_key_env,omitempty"`
-	Model       string            `json:"model,omitempty"`
-	Region      string            `json:"region,omitempty"`
-	Profile     string            `json:"profile,omitempty"`
-	Deployment  string            `json:"deployment,omitempty"`
-	APIVersion  string            `json:"api_version,omitempty"`
-	Auth        string            `json:"auth,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
-	Context     int               `json:"context_window,omitempty"`
-	Temperature *float64          `json:"temperature,omitempty"`
+	Type       string `json:"type"`
+	BaseURL    string `json:"base_url,omitempty"`
+	APIKey     string `json:"api_key,omitempty"`
+	APIKeyEnv  string `json:"api_key_env,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Region     string `json:"region,omitempty"`
+	Profile    string `json:"profile,omitempty"`
+	Deployment string `json:"deployment,omitempty"`
+	APIVersion string `json:"api_version,omitempty"`
+	Auth       string `json:"auth,omitempty"`
+	// EntraScope overrides the provider-family token audience when auth=entra.
+	// Traditional Azure OpenAI and current Foundry endpoints use different
+	// documented defaults.
+	EntraScope string `json:"entra_scope,omitempty"`
+	// EntraTenantID selects the tenant for developer CLI and workload identity
+	// credentials in DefaultAzureCredential. EnvironmentCredential continues to
+	// honor the standard AZURE_TENANT_ID variable.
+	EntraTenantID string `json:"entra_tenant_id,omitempty"`
+	// EntraAuthorityHost selects a sovereign/private Microsoft Entra authority.
+	// The empty value uses Azure Public Cloud.
+	EntraAuthorityHost       string            `json:"entra_authority_host,omitempty"`
+	Headers                  map[string]string `json:"headers,omitempty"`
+	MaxTokens                int               `json:"max_tokens,omitempty"`
+	Context                  int               `json:"context_window,omitempty"`
+	Temperature              *float64          `json:"temperature,omitempty"`
+	ConnectTimeoutSeconds    int               `json:"connect_timeout_seconds,omitempty"`
+	RequestTimeoutSeconds    int               `json:"request_timeout_seconds,omitempty"`
+	StreamIdleTimeoutSeconds int               `json:"stream_idle_timeout_seconds,omitempty"`
 }
 
 type Permissions struct {
@@ -396,8 +411,20 @@ func (c *Config) normalize() {
 		for key, value := range p.Headers {
 			p.Headers[key] = expandEnv(value)
 		}
+		p.EntraScope = strings.TrimSpace(expandEnv(p.EntraScope))
+		p.EntraTenantID = strings.TrimSpace(expandEnv(p.EntraTenantID))
+		p.EntraAuthorityHost = strings.TrimSpace(expandEnv(p.EntraAuthorityHost))
 		if p.MaxTokens <= 0 {
 			p.MaxTokens = 8192
+		}
+		if p.ConnectTimeoutSeconds == 0 {
+			p.ConnectTimeoutSeconds = 10
+		}
+		if p.RequestTimeoutSeconds == 0 {
+			p.RequestTimeoutSeconds = 30 * 60
+		}
+		if p.StreamIdleTimeoutSeconds == 0 {
+			p.StreamIdleTimeoutSeconds = 5 * 60
 		}
 		c.Providers[name] = p
 	}
@@ -487,6 +514,48 @@ func (c Config) ValidateFields() []FieldError {
 			}
 			if provider.Auth == "bearer" && provider.Profile != "" {
 				errs = append(errs, FieldError{field + ".profile", "is not used with auth=bearer; remove it or change auth to sigv4/auto"})
+			}
+		}
+		if provider.Type == "azure-openai" || provider.Type == "azure-foundry" || provider.Type == "azure-foundry-anthropic" {
+			switch provider.Auth {
+			case "", "api_key", "bearer", "entra":
+			default:
+				errs = append(errs, FieldError{field + ".auth", fmt.Sprintf("must be api_key, bearer, or entra for Azure providers (got %q)", provider.Auth)})
+			}
+			if provider.Auth == "entra" {
+				if provider.APIKey != "" || provider.APIKeyEnv != "" {
+					errs = append(errs, FieldError{field + ".api_key_env", "must be omitted with auth=entra; DefaultAzureCredential supplies short-lived tokens"})
+				}
+				for header := range provider.Headers {
+					switch strings.ToLower(strings.TrimSpace(header)) {
+					case "authorization", "api-key", "x-api-key":
+						errs = append(errs, FieldError{field + ".headers." + header, "conflicts with auth=entra"})
+					}
+				}
+				if provider.EntraScope != "" {
+					if err := validateEntraScope(provider.EntraScope); err != nil {
+						errs = append(errs, FieldError{field + ".entra_scope", err.Error()})
+					}
+				}
+				if provider.EntraAuthorityHost != "" {
+					if err := validateEntraAuthorityHost(provider.EntraAuthorityHost); err != nil {
+						errs = append(errs, FieldError{field + ".entra_authority_host", err.Error()})
+					}
+				}
+			} else if provider.EntraScope != "" || provider.EntraTenantID != "" || provider.EntraAuthorityHost != "" {
+				errs = append(errs, FieldError{field + ".auth", "must be entra when entra_scope, entra_tenant_id, or entra_authority_host is configured"})
+			}
+		}
+		for _, timeout := range []struct {
+			key   string
+			value int
+		}{
+			{"connect_timeout_seconds", provider.ConnectTimeoutSeconds},
+			{"request_timeout_seconds", provider.RequestTimeoutSeconds},
+			{"stream_idle_timeout_seconds", provider.StreamIdleTimeoutSeconds},
+		} {
+			if timeout.value < 0 {
+				errs = append(errs, FieldError{field + "." + timeout.key, "must not be negative"})
 			}
 		}
 	}
@@ -618,6 +687,25 @@ func expandEnv(value string) string {
 		return ""
 	}
 	return os.Expand(value, func(key string) string { return os.Getenv(key) })
+}
+
+func validateEntraScope(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("must be an absolute HTTPS scope without credentials, query, or fragment")
+	}
+	if !strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/.default") {
+		return errors.New("must end in /.default")
+	}
+	return nil
+}
+
+func validateEntraAuthorityHost(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return errors.New("must be an absolute HTTPS origin without credentials, path, query, or fragment")
+	}
+	return nil
 }
 
 // flattenJSON lists the dotted key paths present in a JSON object, so layer

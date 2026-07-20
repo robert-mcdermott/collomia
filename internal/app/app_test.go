@@ -249,7 +249,7 @@ func TestProviderInspectionCombinesCapabilitiesAndAvailability(t *testing.T) {
 	if len(statuses) != 2 || statuses[0].Name != "aws" || statuses[1].Name != "live" {
 		t.Fatalf("statuses=%+v", statuses)
 	}
-	if statuses[0].Availability != ProviderUnverified || statuses[0].Capabilities.Streaming != provider.CapabilityUnsupported {
+	if statuses[0].Availability != ProviderUnverified || statuses[0].Capabilities.Streaming != provider.CapabilitySupported {
 		t.Fatalf("aws=%+v", statuses[0])
 	}
 	if statuses[1].Availability != ProviderAvailable || len(statuses[1].Models) != 1 || statuses[1].Models[0].Capabilities.ContextWindow != 64_000 {
@@ -264,5 +264,17 @@ func TestNewRedactorIncludesStandardBedrockBearerToken(t *testing.T) {
 	redactor := NewRedactor(cfg)
 	if got := redactor.Redact("Authorization: Bearer bedrock-bearer-token-secret"); strings.Contains(got, "bedrock-bearer-token-secret") {
 		t.Fatalf("token was not redacted: %q", got)
+	}
+}
+
+func TestNewRedactorIncludesAzureEnvironmentCredentials(t *testing.T) {
+	t.Setenv("AZURE_CLIENT_SECRET", "azure-client-secret-value")
+	t.Setenv("AZURE_CLIENT_CERTIFICATE_PASSWORD", "azure-certificate-password")
+	cfg := appconfig.Defaults()
+	cfg.Providers["azure"] = appconfig.Provider{Type: "azure-foundry", Auth: "entra", BaseURL: "https://example.services.ai.azure.com", Model: "model"}
+	redactor := NewRedactor(cfg)
+	got := redactor.Redact("client=azure-client-secret-value certificate=azure-certificate-password")
+	if strings.Contains(got, "azure-client-secret-value") || strings.Contains(got, "azure-certificate-password") {
+		t.Fatalf("Azure environment credential was not redacted: %q", got)
 	}
 }
