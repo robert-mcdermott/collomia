@@ -590,3 +590,12 @@ func (r *Runtime) SandboxSummary() string {
 	}
 	return detail
 }
+
+// PersistenceError reports a durable-session write failure, if one occurred.
+// Ephemeral runs and runtimes without a session have no persistence error.
+func (r *Runtime) PersistenceError() error {
+	if r == nil || r.Session == nil {
+		return nil
+	}
+	return r.Session.Err()
+}

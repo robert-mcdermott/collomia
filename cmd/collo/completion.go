@@ -7,7 +7,7 @@ import (
 
 var completionCommands = []string{
 	"tui", "run", "init", "config", "trust", "doctor", "capabilities",
-	"policy", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "replay", "version",
+	"support", "policy", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "replay", "version",
 }
 
 var completionFlags = []string{
@@ -15,7 +15,7 @@ var completionFlags = []string{
 	"--autopilot", "--workspace", "--plan", "--resume", "--continue", "--web",
 	"--web-port", "--no-open", "--alt-screen", "--no-alt-screen", "--jsonl", "--ephemeral",
 	"--debug", "--global", "--strict", "--yes", "--with-reference",
-	"--check",
+	"--check", "--output", "--include-logs",
 }
 
 func runCompletionCommand(opts options) error {
@@ -49,6 +49,7 @@ _collo() {
     skills) COMPREPLY=( $(compgen -W "list show new install update remove enable disable" -- "$cur") ); return ;;
     mcp) COMPREPLY=( $(compgen -W "list show add remove enable disable test" -- "$cur") ); return ;;
     policy) COMPREPLY=( $(compgen -W "check" -- "$cur") ); return ;;
+    support) COMPREPLY=( $(compgen -W "bundle" -- "$cur") ); return ;;
     replay) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
   esac
   if [[ "$cur" == -* ]]; then

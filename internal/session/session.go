@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -95,6 +96,7 @@ func (s *Store) New(providerName, model string) (*Session, error) {
 		return nil, err
 	}
 	if err := sess.append(Record{Type: "meta", Meta: &sess.Meta}); err != nil {
+		sess.Close()
 		return nil, err
 	}
 	return sess, nil
@@ -238,8 +240,14 @@ type Session struct {
 
 	store              *Store
 	mu                 sync.Mutex
-	file               *os.File
+	file               recordFile
+	writeErr           error
 	pendingInterrupted []provider.Message
+}
+
+type recordFile interface {
+	Write([]byte) (int, error)
+	Close() error
 }
 
 func (sess *Session) open() error {
@@ -309,8 +317,31 @@ func (sess *Session) append(record Record) error {
 	if sess.file == nil {
 		return errors.New("session is closed")
 	}
-	_, err = sess.file.Write(append(data, '\n'))
-	return err
+	if sess.writeErr != nil {
+		return sess.writeErr
+	}
+	payload := append(data, '\n')
+	written, err := sess.file.Write(payload)
+	if err == nil && written != len(payload) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		// Once a record is partially written, later records would turn the torn
+		// tail into corruption in the middle of the file. Latch the failure and
+		// stop appending; Load can safely discard the final torn line.
+		sess.writeErr = fmt.Errorf("append durable session record: %w", err)
+		return sess.writeErr
+	}
+	return nil
+}
+
+// Err reports the first durable-write failure observed by this session. The
+// error is latched so callers can fail visibly instead of claiming a turn was
+// persisted when the disk returned an error or short write.
+func (sess *Session) Err() error {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.writeErr
 }
 
 // Active returns the model-visible message context.

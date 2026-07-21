@@ -268,6 +268,11 @@ func GlobalPath() (string, error) {
 type LoadOptions struct {
 	// Strict rejects unknown fields and treats warnings as errors.
 	Strict bool
+	// SkipEnvironmentExpansion keeps ${VAR}, api_key_env, and MCP environment
+	// references unresolved. It is intended for privacy-conscious local
+	// diagnostics that need configuration shape but do not initialize a
+	// runtime or consume credentials.
+	SkipEnvironmentExpansion bool
 	// TrustStatus overrides the trust lookup for the project layer; used by
 	// tests. nil consults the default trust store.
 	TrustStatus func(workspace string, configData []byte) trust.Status
@@ -323,7 +328,7 @@ func LoadWithOptions(workspace string, opts LoadOptions) (Config, error) {
 	}
 
 	cfg.applyEnv()
-	cfg.normalize()
+	cfg.normalizeWithOptions(opts.SkipEnvironmentExpansion)
 	if errs := cfg.ValidateFields(); len(errs) > 0 {
 		return cfg, ValidationError{Errors: errs}
 	}
@@ -401,6 +406,10 @@ func (c *Config) applyEnv() {
 }
 
 func (c *Config) normalize() {
+	c.normalizeWithOptions(false)
+}
+
+func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	if c.SchemaVersion == 0 {
 		c.SchemaVersion = CurrentSchemaVersion
 	}
@@ -435,17 +444,24 @@ func (c *Config) normalize() {
 	for name, p := range c.Providers {
 		p.Type = strings.ToLower(strings.TrimSpace(p.Type))
 		p.Auth = strings.ToLower(strings.TrimSpace(p.Auth))
-		p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
-		p.APIKey = expandEnv(p.APIKey)
-		if p.APIKey == "" && p.APIKeyEnv != "" {
-			p.APIKey = os.Getenv(p.APIKeyEnv)
+		if skipEnvironmentExpansion {
+			p.BaseURL = strings.TrimRight(p.BaseURL, "/")
+			p.EntraScope = strings.TrimSpace(p.EntraScope)
+			p.EntraTenantID = strings.TrimSpace(p.EntraTenantID)
+			p.EntraAuthorityHost = strings.TrimSpace(p.EntraAuthorityHost)
+		} else {
+			p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
+			p.APIKey = expandEnv(p.APIKey)
+			if p.APIKey == "" && p.APIKeyEnv != "" {
+				p.APIKey = os.Getenv(p.APIKeyEnv)
+			}
+			for key, value := range p.Headers {
+				p.Headers[key] = expandEnv(value)
+			}
+			p.EntraScope = strings.TrimSpace(expandEnv(p.EntraScope))
+			p.EntraTenantID = strings.TrimSpace(expandEnv(p.EntraTenantID))
+			p.EntraAuthorityHost = strings.TrimSpace(expandEnv(p.EntraAuthorityHost))
 		}
-		for key, value := range p.Headers {
-			p.Headers[key] = expandEnv(value)
-		}
-		p.EntraScope = strings.TrimSpace(expandEnv(p.EntraScope))
-		p.EntraTenantID = strings.TrimSpace(expandEnv(p.EntraTenantID))
-		p.EntraAuthorityHost = strings.TrimSpace(expandEnv(p.EntraAuthorityHost))
 		if p.MaxTokens <= 0 {
 			p.MaxTokens = 8192
 		}
@@ -461,7 +477,7 @@ func (c *Config) normalize() {
 		c.Providers[name] = p
 	}
 	for name, server := range c.MCP {
-		c.MCP[name] = ResolveMCPServer(server)
+		c.MCP[name] = normalizeMCPServer(server, !skipEnvironmentExpansion)
 	}
 }
 
@@ -470,13 +486,19 @@ func (c *Config) normalize() {
 // as `collo mcp test --global`, which deliberately inspect one configuration
 // layer rather than loading the merged project configuration.
 func ResolveMCPServer(server MCPServer) MCPServer {
+	return normalizeMCPServer(server, true)
+}
+
+func normalizeMCPServer(server MCPServer, expandEnvironment bool) MCPServer {
 	server.Transport = strings.ToLower(strings.TrimSpace(server.Transport))
-	server.URL = expandEnv(server.URL)
-	for key, value := range server.Env {
-		server.Env[key] = expandEnv(value)
-	}
-	for key, value := range server.Headers {
-		server.Headers[key] = expandEnv(value)
+	if expandEnvironment {
+		server.URL = expandEnv(server.URL)
+		for key, value := range server.Env {
+			server.Env[key] = expandEnv(value)
+		}
+		for key, value := range server.Headers {
+			server.Headers[key] = expandEnv(value)
+		}
 	}
 	if server.Timeout == 0 {
 		server.Timeout = 30

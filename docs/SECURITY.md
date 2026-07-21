@@ -449,6 +449,31 @@ decision, source, matched rule) and every execution outcome is appended to
 a per-workspace JSONL ledger under the user configuration directory —
 outside the workspace, so agent-writable files cannot rewrite history.
 
+## Support-bundle privacy boundary
+
+`collo support bundle` performs local, read-only inspection without creating
+the application runtime, contacting providers or MCP servers, opening
+sessions, executing tools, or making network requests. Its default manifest
+uses aggregate counts and anonymous configuration keys. It excludes
+configuration values, environment variable names and values, credential
+references, provider and MCP names/definitions, endpoint/model/deployment
+details, workspace paths and files, prompts, transcripts, sessions, audit
+records, and logs. Configuration validation failures are represented by a
+generic status because detailed validator errors can echo user-defined names,
+paths, patterns, or values. Default collection also suppresses environment
+expansion, so `api_key_env` and MCP environment references are not fetched.
+
+Logs require the explicit `--include-logs` flag and are bounded to five files,
+1 MiB per file, and 3 MiB total. Configured/common credential values are
+redacted, exact home/workspace paths are normalized, and terminal controls are
+removed. This explicit mode resolves configured secret references locally only
+to register their values with the redactor; it never writes those values to the
+manifest. Those transforms are defense in depth: arbitrary source/tool output
+can contain sensitive material no pattern matcher recognizes. Inspect every
+archive before sharing it. Bundles are created with owner-only permissions
+where the operating system supports them, use same-directory atomic publish,
+and refuse to overwrite an existing path even if it appears during creation.
+
 ## Prompt injection
 
 Tool output, repository text, skills, and MCP responses are declared

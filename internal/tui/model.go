@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -462,6 +463,14 @@ func (m *Model) startTurn(value string) tea.Cmd {
 			runtime.LogEvent(e)
 			events <- runMsg{event: &e}
 		})
+		if persistenceErr := runtime.PersistenceError(); persistenceErr != nil {
+			persistenceErr = fmt.Errorf("session persistence failed: %w", persistenceErr)
+			if err == nil {
+				err = persistenceErr
+			} else {
+				err = errors.Join(err, persistenceErr)
+			}
+		}
 		events <- runMsg{done: true, final: final, err: err}
 		close(events)
 	}()
@@ -767,7 +776,14 @@ func (m *Model) sessionContent() string {
 	b.WriteString(h("Runtime health") + "\n")
 	b.WriteString(kv("provider", m.runtime.Agent.ProviderHealth().Summary()) + "\n")
 	b.WriteString(kv("sandbox", m.runtime.SandboxSummary()) + "\n")
-	b.WriteString(kv("MCP", m.mcpHealthText()) + "\n\n")
+	b.WriteString(kv("MCP", m.mcpHealthText()) + "\n")
+	persistence := "healthy"
+	if m.runtime.Session == nil {
+		persistence = "ephemeral or unavailable"
+	} else if err := m.runtime.PersistenceError(); err != nil {
+		persistence = "failed · " + err.Error()
+	}
+	b.WriteString(kv("persistence", persistence) + "\n\n")
 
 	b.WriteString(h("Context") + "\n")
 	usageText := fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)
