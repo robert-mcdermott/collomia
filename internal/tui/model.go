@@ -85,6 +85,11 @@ type Model struct {
 	tabOffsets [tabCount]int
 	transcript *transcriptState
 	diffView   *diffViewState
+
+	promptHistory []string
+	historyIndex  int
+	historyDraft  string
+	sessionDrafts map[string]string
 }
 
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
@@ -105,13 +110,17 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	in.Focus()
 	spin := spinner.New()
 	spin.Spinner = spinner.Points
-	m := Model{runtime: runtime, broker: broker, input: in, spinner: spin, started: time.Now(), chatFollow: true}
+	m := Model{
+		runtime: runtime, broker: broker, input: in, spinner: spin,
+		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{},
+	}
 	m.applyTheme(theme)
+	m.rebuildTranscript()
 	for _, warning := range runtime.Warnings {
 		m.blocks = append(m.blocks, block{role: "error", content: warning.Error()})
 	}
 	if initial != "" {
-		m.input.SetValue(initial)
+		m.setComposerValue(initial)
 	}
 	return m
 }
@@ -238,6 +247,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.switchTab((m.tab + 1) % tabCount)
 			return m, nil
 		}
+		if m.keyIs("session_picker", key) {
+			if m.busy {
+				m.addError(fmt.Errorf("wait for the current turn to finish before switching sessions"))
+				m.refresh()
+				return m, nil
+			}
+			m.openSessionPicker()
+			return m, nil
+		}
 		if m.keyIs("toggle_tool_output", key) {
 			m.expandTools = !m.expandTools
 			m.refresh()
@@ -299,8 +317,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "tab":
 				chosen := m.palette[m.paletteSel]
-				m.input.SetValue(chosen.name + " ")
-				m.input.CursorEnd()
+				m.setComposerValue(chosen.name + " ")
 				if m.updatePalette() {
 					m.layout()
 				}
@@ -334,6 +351,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 			}
+		}
+		if (key == "up" || key == "down") && !m.busy && m.navigatePromptHistory(key == "up") {
+			m.updatePalette()
+			m.layout()
+			m.refresh()
+			return m, nil
 		}
 		if key == "enter" && !m.busy && !msg.Alt {
 			value := strings.TrimSpace(m.input.Value())
@@ -371,6 +394,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 	if !m.busy && m.pending == nil {
+		if key, isKey := msg.(tea.KeyMsg); isKey && key.String() != "up" && key.String() != "down" {
+			m.leavePromptHistory()
+		}
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		// Typing "@" at a word boundary opens the file-mention picker; the
@@ -391,6 +417,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // startTurn submits one prompt to the agent and begins streaming events.
 func (m *Model) startTurn(value string) tea.Cmd {
+	m.recordPrompt(value)
 	m.blocks = append(m.blocks, block{role: "user", content: value})
 	m.busy = true
 	m.turnStarted = time.Now()
@@ -827,9 +854,11 @@ func (m *Model) helpContent() string {
 		{"↑ ↓ (palette)", "select a command or completion"},
 		{"tab (palette)", "complete the selected command"},
 		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
+		{m.binding("session_picker"), "open saved sessions without replacing the draft"},
 		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
+		{"↑ / ↓ (composer)", "previous / next prompt at the first or last line"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
 		{"h (approval)", "review a multi-hunk file write and approve only some hunks"},
 		{"esc", "cancel turn · dismiss palette or picker"},

@@ -166,8 +166,7 @@ func (m *Model) loadPromptFile(requested string) error {
 	if rel, relErr := filepath.Rel(guard.Workspace, resolved); relErr == nil {
 		display = filepath.ToSlash(rel)
 	}
-	m.input.SetValue("[Prompt loaded from " + quoteComposerPath(display) + "]\n\n" + string(data))
-	m.input.CursorEnd()
+	m.setComposerValue("[Prompt loaded from " + quoteComposerPath(display) + "]\n\n" + string(data))
 	m.input.Focus()
 	m.addSystem(fmt.Sprintf("Loaded %s into the composer (%d bytes). Review or edit it, then press enter.", quoteComposerPath(display), len(data)))
 	return nil

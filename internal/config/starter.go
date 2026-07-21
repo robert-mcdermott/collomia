@@ -329,6 +329,7 @@ const configReferenceJSONC = `
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
+      "session_picker": "alt+s",
       "page_up": "pgup",
       "page_down": "pgdown",
       "scroll_top": "home",

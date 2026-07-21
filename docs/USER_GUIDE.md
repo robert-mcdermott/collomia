@@ -1545,9 +1545,10 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `alt+enter` | Insert a newline in the prompt. |
 | `/` | Open/filter the slash-command palette. |
 | `@` | Fuzzy-pick a workspace file or folder and insert its safely quoted path. |
-| `up` / `down` | Move in palettes, pickers, and completion lists. |
+| `up` / `down` | Move in palettes/pickers; at the first or last composer line, navigate this session's prompt history. Multiline input retains normal cursor movement. |
 | `tab` | Complete the selected command/palette value. |
 | `ctrl+t` | Cycle Chat, Session, and Help. |
+| `alt+s` | Open the saved-session picker without replacing the current draft. |
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
@@ -1592,6 +1593,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
 | `/sessions` | Fuzzy-pick and switch to another durable session in place. |
+| `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
 | `/config` | Show the active configuration source. |
@@ -1743,6 +1745,7 @@ unambiguous.
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
+      "session_picker": "alt+s",
       "page_up": "pgup",
       "page_down": "pgdown",
       "scroll_top": "home",
@@ -2940,8 +2943,25 @@ copies history into an independent session that can diverge. Archive hides a
 session from `--continue` selection but does not delete it. Delete is permanent
 and requires `--yes`.
 
-Within the TUI, `/sessions` switches transcript, plan, and persistence hooks in
-place. `/new` creates a fresh session while leaving the current one saved.
+Within the TUI, `/sessions` or the configurable `alt+s` shortcut switches the
+transcript, plan, prompt history, unsent draft, and persistence hooks in place.
+The shortcut is useful when a draft is already in the composer because opening
+the picker does not replace it. `/new` creates a fresh session while leaving
+the current one saved. Drafts are retained per session only while this TUI
+process remains open; unsent text is not added to durable history.
+
+On initial `--resume`/`--continue` and in-TUI switches, Collomia reconstructs
+the complete visible conversation from the durable transcript, including tool
+calls, tool results, and interruption warnings. This is presentation only:
+restoration never executes a saved tool. Context compaction can shorten what
+the model receives without hiding the complete transcript from the user.
+
+At the first or last visual line of the composer, up/down navigates the active
+session's prior user prompts and restores the exact in-progress draft when you
+move past the newest entry. Inside multiline or soft-wrapped input, up/down
+continues to move the cursor normally. `/retry` is the explicit equivalent for
+the most recent prompt: it loads editable text into the composer and never
+submits anything automatically.
 
 Session loading tolerates a torn final JSONL line after a crash. A tool call
 without a recorded result is marked interrupted and is not replayed

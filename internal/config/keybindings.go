@@ -17,6 +17,7 @@ var KeybindingActions = []string{
 	"page_up",
 	"scroll_bottom",
 	"scroll_top",
+	"session_picker",
 	"toggle_tool_output",
 	"transcript_view",
 }
@@ -30,6 +31,7 @@ func DefaultKeybindings() map[string]string {
 		"page_up":            "pgup",
 		"scroll_bottom":      "end",
 		"scroll_top":         "home",
+		"session_picker":     "alt+s",
 		"toggle_tool_output": "ctrl+o",
 		"transcript_view":    "ctrl+y",
 	}

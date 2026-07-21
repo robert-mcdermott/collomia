@@ -505,4 +505,7 @@ func TestPartialKeybindingOverrideInheritsDefaults(t *testing.T) {
 	if got := cfg.Options.Keybindings["diff_view"]; got != "ctrl+d" {
 		t.Fatalf("omitted keybinding did not inherit default: %q", got)
 	}
+	if got := cfg.Options.Keybindings["session_picker"]; got != "alt+s" {
+		t.Fatalf("new session-picker binding did not inherit default: %q", got)
+	}
 }

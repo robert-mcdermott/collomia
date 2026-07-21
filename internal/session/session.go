@@ -320,6 +320,16 @@ func (sess *Session) Active() []provider.Message {
 	return append([]provider.Message(nil), sess.active...)
 }
 
+// TranscriptMessages returns a snapshot of the complete durable conversation.
+// Unlike Active, it is never shortened by context compaction. Presentation
+// layers use this copy so a resumed session can show the user's full history
+// without racing an in-progress append or exposing the backing slice.
+func (sess *Session) TranscriptMessages() []provider.Message {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return append([]provider.Message(nil), sess.Transcript...)
+}
+
 // AppendMessage persists one transcript message.
 func (sess *Session) AppendMessage(message provider.Message) {
 	sess.mu.Lock()
