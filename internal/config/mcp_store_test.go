@@ -69,9 +69,7 @@ func TestMCPStoreLifecyclePreservesUnrelatedAndUnknownFields(t *testing.T) {
 	if err != nil || removed {
 		t.Fatalf("missing removal removed=%v err=%v", removed, err)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o640 {
-		t.Fatalf("mode=%v err=%v", info.Mode().Perm(), err)
-	}
+	assertConfigFileMode(t, path, 0o640)
 }
 
 func TestMCPStoreCreatesMinimalConfigAtomically(t *testing.T) {
@@ -96,9 +94,7 @@ func TestMCPStoreCreatesMinimalConfigAtomically(t *testing.T) {
 	if root.SchemaVersion != CurrentSchemaVersion || root.MCP["docs"].URL != "https://example.com/mcp" {
 		t.Fatalf("config=%+v", root)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode=%v err=%v", info.Mode().Perm(), err)
-	}
+	assertConfigFileMode(t, path, 0o600)
 }
 
 func TestMCPStoreRefusesNewerSchemaWithoutChangingFile(t *testing.T) {

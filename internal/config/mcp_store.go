@@ -229,6 +229,9 @@ func writeConfigAtomically(path string, data []byte) (err error) {
 	}
 	tempPath := temp.Name()
 	defer func() { _ = os.Remove(tempPath) }()
+	// On Unix this preserves the complete permission mode. Go maps only the
+	// owner-write bit to Windows' read-only attribute; Windows access remains
+	// governed by the ACL inherited from the containing user/project directory.
 	if err = temp.Chmod(mode); err == nil {
 		_, err = temp.Write(data)
 	}
