@@ -21,6 +21,8 @@ var slashCommands = []commandInfo{
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
+	{name: "/agents", args: "", desc: "search delegated agents and inspect their outcomes"},
+	{name: "/prompt", args: "[workspace-file]", desc: "load a UTF-8 text file into the composer"},
 	{name: "/mcp", args: "[list|prompts|resources|ping|refresh|reconnect|enable|disable|add|remove]", desc: "browse and manage MCP servers, prompts, and resources"},
 	{name: "/tools", args: "", desc: "list tools visible to the agent"},
 	{name: "/review", args: "[ref] [instructions…]", desc: "review changes; '-' = uncommitted; extra words focus the review"},

@@ -1521,7 +1521,8 @@ collo --cwd /path/to/repository
 
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
-files, delegated-agent status, and background processes. Help lists commands,
+files, delegated-agent status, and background processes. `/agents` provides a
+searchable view of each retained delegated outcome. Help lists commands,
 providers, tools, skills, MCP servers, themes, and keybindings.
 
 Markdown is rendered in the active theme. Fenced source code, expanded
@@ -1543,7 +1544,7 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `enter` | Send the prompt or run the selected palette item. |
 | `alt+enter` | Insert a newline in the prompt. |
 | `/` | Open/filter the slash-command palette. |
-| `@` | Fuzzy-pick a workspace file and insert its path. |
+| `@` | Fuzzy-pick a workspace file or folder and insert its safely quoted path. |
 | `up` / `down` | Move in palettes, pickers, and completion lists. |
 | `tab` | Complete the selected command/palette value. |
 | `ctrl+t` | Cycle Chat, Session, and Help. |
@@ -1579,6 +1580,8 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/theme [name]` | Pick or switch themes for this process. |
 | `/skills` | Pick a skill and prefill a prompt that asks the agent to use it. |
 | `/skills list` | List active and disabled skills. |
+| `/agents` | Fuzzy-search delegated tasks and inspect status, task, duration, outcome, changed files, and retained worktree/branch details. |
+| `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
 | `/mcp ...` | Browse/manage MCP servers, resources, and prompts. |
 | `/tools` | List every tool currently registered. |
 | `/review [ref] [instructions...]` | Review uncommitted changes or changes relative to a ref, with an optional focus. |
@@ -1594,6 +1597,40 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/config` | Show the active configuration source. |
 | `/clear` | Clear active conversation context. It does not delete the durable session file. |
 | `/quit` or `/exit` | Exit. |
+
+### Workspace paths and prompt files
+
+Typing `@` at a word boundary opens one fuzzy picker containing workspace
+files and folders. Selecting a path inserts it into the prompt; paths with
+spaces or quotes are quoted automatically, and folders end in `/`. This is a
+reference for the model, not an eager attachment: the agent reads only the
+files it needs through normal workspace tools, with their output bounds and
+permission policy.
+
+`/prompt` is for a text file whose contents should become the prompt itself.
+With no argument it opens a file picker. With an argument it accepts a
+workspace-relative or absolute-within-workspace path, including the common
+forms pasted by terminals:
+
+```text
+/prompt prompts/review.md
+/prompt "prompt files/release review.md"
+/prompt prompt\ files/release\ review.md
+/prompt file:///workspace/prompt%20files/release%20review.md
+```
+
+You can also type `/prompt ` and drag a workspace file into a terminal that
+pastes dropped paths. Collomia resolves symlinks and refuses paths outside the
+active workspace. It reads only regular UTF-8 text files, refuses terminal
+control characters, strips an optional UTF-8 byte-order mark, and caps input
+at 256 KiB. The composer receives a
+source header plus the file contents; review or edit both before pressing
+enter. For a larger source file, mention it with `@` and let the agent inspect
+bounded portions instead.
+
+Current provider adapters accept text messages only. Image, audio, and binary
+files therefore produce a clear unsupported-input error instead of being
+silently flattened or sent to a provider that cannot represent them.
 
 ### Approval dialogs
 
@@ -2794,7 +2831,10 @@ Named profiles specialize a sub-agent without defining another provider:
 
 The model override stays on the parent's provider. Omitted fields inherit the
 parent. A non-empty `tools` list restricts the child to those names. The
-Session tab and status bar show delegated work and retained outcomes.
+Session tab and status bar show delegated work and retained outcomes. Run
+`/agents` to fuzzy-search those tasks; selecting one shows its task, mode,
+duration, redacted outcome, changed files, and any retained worktree/branch.
+Running agents are snapshots, so reopen the picker to refresh their status.
 
 ## Sessions and context
 

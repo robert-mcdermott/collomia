@@ -160,6 +160,21 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			break
 		}
 		m.openSkillPicker()
+	case "/agents":
+		m.openAgentPicker()
+	case "/prompt":
+		path, err := promptPathArgument(line)
+		if err != nil {
+			m.addError(fmt.Errorf("usage: /prompt [workspace-file]: %w", err))
+			break
+		}
+		if path == "" {
+			m.openPromptFilePicker()
+			break
+		}
+		if err := m.loadPromptFile(path); err != nil {
+			m.addError(err)
+		}
 	case "/mcp":
 		if len(args) > 0 {
 			m.mcpCommand(args)

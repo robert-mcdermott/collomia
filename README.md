@@ -10,7 +10,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 ## Highlights
 
-- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, searchable/copyable transcript mode, responsive full-screen diff review, configurable global keys, and a status bar with live context, task-progress, active-agent, and background-process gauges.
+- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions/delegated agents, `@` file/folder mentions, prompt-from-file, collapsible tool output, searchable/copyable transcript mode, responsive full-screen diff review, configurable global keys, and a status bar with live context, task-progress, active-agent, and background-process gauges.
 - Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
 - Streaming OpenAI-compatible, Anthropic-compatible, Responses-style, and native Bedrock ConverseStream conversations with tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
@@ -272,6 +272,8 @@ Inside the TUI:
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one (fuzzy picker with no argument). |
 | `/skills [list]` | Fuzzy-pick a skill to use — choosing one pre-fills the prompt — or `list` to print them. |
+| `/agents` | Fuzzy-search delegated tasks from this session and inspect status, outcome, changed files, and retained worktree details. |
+| `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; with no path, open a fuzzy file picker. |
 | `/mcp [subcommand]` | Browse MCP servers with a fuzzy picker, or manage them at runtime: `list`/`status` (health, identity, negotiated capabilities), `ping`, `reconnect`, `enable`/`disable`, `add`, `remove`. |
 | `/tools` | List the complete tool surface. |
 | `/config` | Show the active configuration source. |
@@ -280,7 +282,7 @@ Inside the TUI:
 
 Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/tools`, `/skills list`, `/mcp list`, `/config`, `/help`) render their output in a titled, theme-colored panel — the command's subject sits in the box border, body text is tinted with a readable shade derived from the theme (not the terminal's raw default color), and content wraps cleanly to the terminal width. Quick acknowledgements ("Theme switched…") stay as subtle one-line notes.
 
-Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
+Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace file/folder picker and safely quotes paths containing spaces. `/prompt` opens a text-file picker; `/prompt "docs/review prompt.md"` loads a named file into the composer, and you can type `/prompt ` then drag a workspace file into terminals that paste its path. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
 
 `ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, and `ctrl+d` opens the session diff browser. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
 

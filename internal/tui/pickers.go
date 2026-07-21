@@ -308,9 +308,11 @@ func (m *Model) serverTools(server string) []provider.ToolDefinition {
 
 const filePickerCap = 4000
 
-// workspaceFiles lists workspace-relative file paths for the @ mention
-// picker, skipping VCS and dependency directories.
-func (m *Model) workspaceFiles() []pickerItem {
+// workspaceEntries lists workspace-relative paths for the @ mention and
+// prompt-file pickers, skipping VCS and dependency directories. Directories
+// are optional because /prompt accepts files only while @ mentions are useful
+// for asking the agent to inspect an entire subtree.
+func (m *Model) workspaceEntries(includeDirectories bool) []pickerItem {
 	var items []pickerItem
 	root := m.runtime.Workspace
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -322,6 +324,18 @@ func (m *Model) workspaceFiles() []pickerItem {
 			if name == ".git" || name == "node_modules" || name == "vendor" || name == ".cache" || name == "__pycache__" || name == ".venv" {
 				return filepath.SkipDir
 			}
+			if !includeDirectories || path == root {
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return nil
+			}
+			rel = filepath.ToSlash(rel) + "/"
+			items = append(items, pickerItem{id: rel, title: quoteComposerPath(rel), desc: "folder"})
+			if len(items) >= filePickerCap {
+				return fmt.Errorf("capped")
+			}
 			return nil
 		}
 		rel, relErr := filepath.Rel(root, path)
@@ -329,7 +343,7 @@ func (m *Model) workspaceFiles() []pickerItem {
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
-		items = append(items, pickerItem{id: rel, title: rel})
+		items = append(items, pickerItem{id: rel, title: quoteComposerPath(rel), desc: "file"})
 		if len(items) >= filePickerCap {
 			return fmt.Errorf("capped")
 		}
@@ -338,19 +352,21 @@ func (m *Model) workspaceFiles() []pickerItem {
 	return items
 }
 
+func (m *Model) workspaceFiles() []pickerItem { return m.workspaceEntries(false) }
+
 // openFilePicker powers @ mentions: the chosen path replaces the trailing
 // "@token" in the prompt. Cancelling leaves the typed text untouched.
 func (m *Model) openFilePicker() {
-	items := m.workspaceFiles()
+	items := m.workspaceEntries(true)
 	if len(items) == 0 {
 		return
 	}
-	m.picker = newPicker("Mention file", items, func(m *Model, item pickerItem) tea.Cmd {
+	m.picker = newPicker("Mention file or folder", items, func(m *Model, item pickerItem) tea.Cmd {
 		value := m.input.Value()
 		if at := strings.LastIndex(value, "@"); at >= 0 {
 			value = value[:at]
 		}
-		m.input.SetValue(value + item.id + " ")
+		m.input.SetValue(value + quoteComposerPath(item.id) + " ")
 		m.input.CursorEnd()
 		m.input.Focus()
 		return nil
