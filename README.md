@@ -782,9 +782,32 @@ MCP servers are configured by name. Collomia supports the current `stdio` and St
 }
 ```
 
+Persistent definitions can also be managed without hand-editing JSON. Project
+scope is the default; `--global` targets the user-wide configuration:
+
+```sh
+collo mcp list
+collo mcp add time -- uvx mcp-server-time
+collo mcp add time --global -- uvx mcp-server-time
+collo mcp add docs --global --url https://example.com/mcp \
+  --header 'Authorization=Bearer ${DOCS_MCP_TOKEN}'
+collo mcp show docs --global
+collo mcp test time
+collo mcp disable time
+collo mcp enable time
+collo mcp remove time
+```
+
+`list` labels effective, shadowed, and quarantined layers; `show` redacts
+literal sensitive values while keeping environment references readable.
+Replacing an existing entry requires `--yes`. A project edit invalidates the
+workspace trust hash, so review `.collomia.json` and run `collo trust` before
+the entry becomes active. `test` connects, negotiates, pings, and validates
+advertised catalogs without invoking a tool or changing the MCP pin store.
+
 Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. `/mcp` opens a picker of connected servers; choosing one lists its tools with descriptions.
 
-Servers are managed at runtime without restarting:
+Servers are also managed for the current TUI session without restarting:
 
 ```
 /mcp status                 every server: health, transport, protocol, server identity,
@@ -799,7 +822,7 @@ Servers are managed at runtime without restarting:
 /mcp remove time            disconnect and forget (configured servers return next start)
 ```
 
-Untrusted, disabled, and failed servers stay visible in `/mcp status` with their exact initialization errors instead of silently disappearing, so a misconfigured server is diagnosable from inside the session. Servers added with `/mcp add` are session-scoped and user-initiated (the trust gate quarantines *repository-supplied* configuration, not your own commands); add them to the configuration file to keep them.
+Untrusted, disabled, and failed servers stay visible in `/mcp status` with their exact initialization errors instead of silently disappearing, so a misconfigured server is diagnosable from inside the session. Servers added with `/mcp add` are session-scoped and user-initiated (the trust gate quarantines *repository-supplied* configuration, not your own commands); use the command-line `collo mcp add` lifecycle to keep them.
 
 For a quick functional test, install [uv](https://docs.astral.sh/uv/), run the
 `/mcp add time …` command above, and ask: `Use the time MCP server to tell me

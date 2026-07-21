@@ -422,18 +422,27 @@ func (c *Config) normalize() {
 		c.Providers[name] = p
 	}
 	for name, server := range c.MCP {
-		server.URL = expandEnv(server.URL)
-		for key, value := range server.Env {
-			server.Env[key] = expandEnv(value)
-		}
-		for key, value := range server.Headers {
-			server.Headers[key] = expandEnv(value)
-		}
-		if server.Timeout <= 0 {
-			server.Timeout = 30
-		}
-		c.MCP[name] = server
+		c.MCP[name] = ResolveMCPServer(server)
 	}
+}
+
+// ResolveMCPServer expands environment references and applies runtime
+// defaults to one MCP definition. It is exported for scoped diagnostics such
+// as `collo mcp test --global`, which deliberately inspect one configuration
+// layer rather than loading the merged project configuration.
+func ResolveMCPServer(server MCPServer) MCPServer {
+	server.Transport = strings.ToLower(strings.TrimSpace(server.Transport))
+	server.URL = expandEnv(server.URL)
+	for key, value := range server.Env {
+		server.Env[key] = expandEnv(value)
+	}
+	for key, value := range server.Headers {
+		server.Headers[key] = expandEnv(value)
+	}
+	if server.Timeout == 0 {
+		server.Timeout = 30
+	}
+	return server
 }
 
 // FieldError ties a validation failure to the configuration key that caused it.
@@ -580,6 +589,9 @@ func (c Config) ValidateFields() []FieldError {
 				errs = append(errs, FieldError{field, fmt.Sprintf("invalid pattern %q: %v", glob, err)})
 			}
 		}
+	}
+	for name, server := range c.MCP {
+		errs = append(errs, ValidateMCPServer(name, server)...)
 	}
 	for name, a := range c.Agents {
 		if a.MaxIterations < 0 {

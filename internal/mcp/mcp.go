@@ -86,6 +86,9 @@ type Options struct {
 	// questions to the user. When nil (headless), elicitation is not
 	// advertised and servers requesting it receive a decline.
 	Asker func(ctx context.Context, question string, options []string) (string, error)
+	// DisablePinning makes short-lived diagnostics connection-only: they do
+	// not read or update the persistent server identity/definition pin store.
+	DisablePinning bool
 }
 
 // Manager owns every MCP server session for the process lifetime and
@@ -111,8 +114,10 @@ type Manager struct {
 // can report and repair them instead of forgetting they exist.
 func ConnectAll(ctx context.Context, configured map[string]appconfig.MCPServer, registry *tools.Registry, opts Options) (*Manager, []error) {
 	manager := &Manager{registry: registry, servers: map[string]*serverState{}, opts: opts, progress: map[string]func(string){}}
-	if pins, err := loadPins(); err == nil {
-		manager.pins = pins
+	if !opts.DisablePinning {
+		if pins, err := loadPins(); err == nil {
+			manager.pins = pins
+		}
 	}
 	var errs []error
 	for name, cfg := range configured {

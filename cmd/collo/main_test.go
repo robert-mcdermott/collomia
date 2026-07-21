@@ -34,6 +34,103 @@ func TestParseInitWithReference(t *testing.T) {
 	}
 }
 
+func TestParsePersistentMCPAddOptionsAndCommandTerminator(t *testing.T) {
+	opts, err := parse([]string{"mcp", "add", "time", "--global", "--timeout", "12", "--env", "TOKEN=${MCP_TOKEN}", "--", "uvx", "mcp-server-time", "--local-timezone", "America/Los_Angeles"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "mcp" || !opts.global || opts.mcpTimeout != 12 || !opts.mcpTimeoutSet {
+		t.Fatalf("options=%+v", opts)
+	}
+	if !slices.Equal(opts.mcpEnv, []string{"TOKEN=${MCP_TOKEN}"}) || !slices.Equal(opts.args, []string{"add", "time", "uvx", "mcp-server-time", "--local-timezone", "America/Los_Angeles"}) {
+		t.Fatalf("mcp env=%v args=%v", opts.mcpEnv, opts.args)
+	}
+	server, warnings, err := mcpServerFromOptions(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.Command != "uvx" || !slices.Equal(server.Args, []string{"mcp-server-time", "--local-timezone", "America/Los_Angeles"}) || server.Env["TOKEN"] != "${MCP_TOKEN}" || len(warnings) != 0 {
+		t.Fatalf("server=%+v warnings=%v", server, warnings)
+	}
+}
+
+func TestParsePersistentMCPHTTPOptions(t *testing.T) {
+	opts, err := parse([]string{"mcp", "add", "docs", "--url=https://example.com/mcp", "--header", "Authorization=Bearer ${MCP_TOKEN}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, warnings, err := mcpServerFromOptions(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.Transport != "streamable-http" || server.URL != "https://example.com/mcp" || server.Headers["Authorization"] != "Bearer ${MCP_TOKEN}" || len(warnings) != 0 {
+		t.Fatalf("server=%+v warnings=%v", server, warnings)
+	}
+	if _, err := parse([]string{"run", "--url", "https://example.com/mcp", "prompt"}); err == nil {
+		t.Fatal("MCP-only option accepted for run")
+	}
+}
+
+func TestMCPAddWarnsAboutLiteralSecretsAndRedactsShowValues(t *testing.T) {
+	opts, err := parse([]string{"mcp", "add", "docs", "--url", "https://example.com/mcp?api_key=literal-query-secret", "--header", "Authorization=Bearer literal-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, warnings, err := mcpServerFromOptions(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 2 || !strings.Contains(strings.Join(warnings, "\n"), "URL query parameter") {
+		t.Fatalf("warnings=%v", warnings)
+	}
+	redacted := redactMCPServer(server)
+	if redacted.Headers["Authorization"] != "[redacted]" || !strings.Contains(redacted.URL, "%5Bredacted%5D") || server.Headers["Authorization"] == "[redacted]" || !strings.Contains(server.URL, "literal-query-secret") {
+		t.Fatalf("redacted=%+v original=%+v", redacted, server)
+	}
+}
+
+func TestPersistentMCPCLIProjectLifecycle(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := run([]string{"mcp", "add", "time", "--cwd", workspace, "--", "uvx", "mcp-server-time"}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(workspace, appconfig.ProjectFile)
+	entries, exists, err := appconfig.ReadMCPFile(path)
+	if err != nil || !exists {
+		t.Fatalf("exists=%v err=%v", exists, err)
+	}
+	server := entries["time"]
+	if server.Command != "uvx" || !server.Trusted || !slices.Equal(server.Args, []string{"mcp-server-time"}) {
+		t.Fatalf("server=%+v", server)
+	}
+	if err := run([]string{"mcp", "add", "time", "--cwd", workspace, "--", "other"}); err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("duplicate error=%v", err)
+	}
+	if err := run([]string{"mcp", "disable", "time", "--cwd", workspace}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, _ = appconfig.ReadMCPFile(path)
+	if !entries["time"].Disabled {
+		t.Fatal("disable was not persisted")
+	}
+	if err := run([]string{"mcp", "enable", "time", "--cwd", workspace}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, _ = appconfig.ReadMCPFile(path)
+	if entries["time"].Disabled {
+		t.Fatal("enable was not persisted")
+	}
+	if err := run([]string{"mcp", "remove", "time", "--cwd", workspace}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, _ = appconfig.ReadMCPFile(path)
+	if _, ok := entries["time"]; ok {
+		t.Fatal("remove was not persisted")
+	}
+}
+
 func TestParseWebTerminalFlags(t *testing.T) {
 	opts, err := parse([]string{"tui", "--web", "--web-port", "8765", "--no-open", "--provider", "openrouter", "--", "start", "here"})
 	if err != nil {

@@ -2183,6 +2183,76 @@ A configured MCP server starts only when:
 These gates are separate. A trusted project does not make an MCP entry with
 `trusted: false` executable.
 
+### Persistent MCP management from the command line
+
+`collo mcp` edits MCP definitions without requiring users to hand-copy JSON.
+Project scope is the default; add `--global` to target
+`~/.collomia/config.json` on macOS/Linux or
+`%USERPROFILE%\.collomia\config.json` on Windows:
+
+```text
+collo mcp list
+collo mcp list --global
+collo mcp show time
+collo mcp show time --global
+
+# Persistent stdio server for this project.
+collo mcp add time -- uvx mcp-server-time
+
+# Persistent stdio server for every workspace.
+collo mcp add time --global -- uvx mcp-server-time
+
+# Persistent Streamable HTTP server. Quote ${...} so your shell does not
+# expand it while the definition is being written.
+collo mcp add docs --global \
+  --url https://docs.example.com/mcp \
+  --header 'Authorization=Bearer ${DOCS_MCP_TOKEN}' \
+  --timeout 30
+
+# Stdio environment values are repeatable too.
+collo mcp add database \
+  --env 'DATABASE_TOKEN=${DATABASE_MCP_TOKEN}' \
+  -- database-mcp --read-only
+
+collo mcp test time
+collo mcp disable time
+collo mcp enable time
+collo mcp remove time
+```
+
+`add` creates a reviewed, enabled definition with `trusted: true`. If the same
+name already exists in the selected scope, Collomia refuses to overwrite it;
+inspect it with `show`, then add `--yes` only when replacement is intentional.
+`enable`, `disable`, and `remove` also modify only the selected scope. For
+example, removing a project entry may reveal a same-named global entry that it
+previously shadowed.
+
+Without `--global`, `list` shows both layers and labels each entry `effective`,
+`shadowed by project`, or `quarantined`. A project entry shadows the global
+entry of the same name only after project trust is active. `list --global` and
+`show --global` inspect only the user-wide file.
+
+Every project-config edit changes the file's trust hash. Review the updated
+`.collomia.json` and run `collo trust` before Collomia will apply any project
+entry. Global entries do not need repository trust, but the per-server
+`trusted` field still applies.
+
+`show` leaves environment references visible but redacts literal values in
+sensitive environment variables and headers. `add` warns when a likely secret
+is literal; prefer `${NAME}` references so credentials remain in the process
+environment rather than the JSON file.
+
+`collo mcp test <name>` tests the effective entry; `--global` tests the exact
+global entry even if a project entry shadows it. It connects, negotiates the
+protocol, pings the server, validates the tool catalog, and lists advertised
+resource/prompt catalogs. It closes the connection afterward, invokes no MCP
+tool, and does not read or update the persistent MCP pin store.
+
+Configuration writes use an atomic same-directory replacement, preserve the
+file's permissions, and retain unrelated configuration plus unknown fields.
+The active configuration is strict JSON, so comments belong in the non-loaded
+`.example.jsonc` reference rather than `config.json` or `.collomia.json`.
+
 ### Runtime MCP management
 
 Inside the TUI:
@@ -2201,8 +2271,9 @@ Inside the TUI:
 ```
 
 Runtime-added servers are an explicit user action, session-scoped, and not
-written to configuration. Add a reviewed definition to JSON to persist one.
-Removing a configured server lasts only until the next Collomia start.
+written to configuration. Use `collo mcp add` outside the TUI to persist one.
+Removing or disabling a configured server with the slash command lasts only
+until the next Collomia start; the command-line lifecycle edits configuration.
 
 Untrusted, disabled, and failed definitions remain visible in `/mcp status`
 with their error instead of disappearing.
@@ -2266,8 +2337,16 @@ permission policy. Remove the test server when finished:
 ```
 
 Because `/mcp add` is session-scoped, exiting Collomia also removes it. To make
-the server available in future sessions, put the equivalent reviewed entry in
-the global or project configuration:
+the server available in future sessions, exit the TUI and run either:
+
+```text
+collo mcp add time -- uvx mcp-server-time
+collo mcp add time --global -- uvx mcp-server-time
+```
+
+The first command writes the project configuration and requires a subsequent
+`collo trust`; the second writes the user-wide configuration. Their equivalent
+JSON is:
 
 ```json
 {

@@ -37,10 +37,13 @@ func main() {
 type options struct {
 	command, cwd, provider, model, autonomy      string
 	resume                                       string
-	webPort                                      int
+	mcpURL                                       string
+	webPort, mcpTimeout                          int
 	plan, global, help, version, jsonl           bool
 	strict, revoke, status, debug, markdown, yes bool
 	cont, withReference, web, webPortSet, noOpen bool
+	mcpTimeoutSet                                bool
+	mcpEnv, mcpHeaders                           []string
 	args                                         []string
 }
 
@@ -127,6 +130,8 @@ func run(args []string) error {
 		return runSessionsCommand(opts)
 	case "skills":
 		return runSkillsCommand(opts)
+	case "mcp":
+		return runMCPCommand(opts)
 	}
 	if opts.web {
 		executable, err := os.Executable()
@@ -261,7 +266,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "review" || arg == "verify") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify") {
 			opts.command = arg
 			continue
 		}
@@ -328,6 +333,47 @@ func parse(args []string) (options, error) {
 			opts.global = true
 		case arg == "--with-reference":
 			opts.withReference = true
+		case strings.HasPrefix(arg, "--url="):
+			opts.mcpURL = strings.TrimPrefix(arg, "--url=")
+		case arg == "--url":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--url requires an MCP endpoint")
+			}
+			i++
+			opts.mcpURL = args[i]
+		case strings.HasPrefix(arg, "--timeout="):
+			value := strings.TrimPrefix(arg, "--timeout=")
+			timeout, parseErr := strconv.Atoi(value)
+			if parseErr != nil || timeout <= 0 {
+				return opts, fmt.Errorf("--timeout requires a positive number of seconds")
+			}
+			opts.mcpTimeout, opts.mcpTimeoutSet = timeout, true
+		case arg == "--timeout":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--timeout requires a positive number of seconds")
+			}
+			i++
+			timeout, parseErr := strconv.Atoi(args[i])
+			if parseErr != nil || timeout <= 0 {
+				return opts, fmt.Errorf("--timeout requires a positive number of seconds")
+			}
+			opts.mcpTimeout, opts.mcpTimeoutSet = timeout, true
+		case strings.HasPrefix(arg, "--env="):
+			opts.mcpEnv = append(opts.mcpEnv, strings.TrimPrefix(arg, "--env="))
+		case arg == "--env":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--env requires KEY=VALUE")
+			}
+			i++
+			opts.mcpEnv = append(opts.mcpEnv, args[i])
+		case strings.HasPrefix(arg, "--header="):
+			opts.mcpHeaders = append(opts.mcpHeaders, strings.TrimPrefix(arg, "--header="))
+		case arg == "--header":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--header requires KEY=VALUE")
+			}
+			i++
+			opts.mcpHeaders = append(opts.mcpHeaders, args[i])
 		case strings.HasPrefix(arg, "--cwd="):
 			opts.cwd = strings.TrimPrefix(arg, "--cwd=")
 		case strings.HasPrefix(arg, "--provider="):
@@ -363,6 +409,9 @@ func parse(args []string) (options, error) {
 	}
 	if !opts.web && (opts.webPortSet || opts.noOpen) {
 		return opts, fmt.Errorf("--web-port and --no-open require --web")
+	}
+	if opts.command != "mcp" && (opts.mcpURL != "" || opts.mcpTimeoutSet || len(opts.mcpEnv) > 0 || len(opts.mcpHeaders) > 0) {
+		return opts, fmt.Errorf("--url, --env, --header, and --timeout are only available for `collo mcp add`")
 	}
 	return opts, nil
 }
@@ -416,6 +465,7 @@ Usage:
   collo verify [focus]                detect and run this project's build/lint/test commands headlessly
   collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
   collo skills [list|show|new|install|update|remove|enable|disable]  manage agent skills (project and --global scopes)
+  collo mcp [list|show|add|remove|enable|disable|test]  manage persistent MCP servers (project and --global scopes)
   collo version                       print build information
 
 Flags:
@@ -432,7 +482,11 @@ Flags:
   --no-open                            (web) print the URL without opening the default browser
   --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled)
   --debug                              write a redacted debug log (see collo doctor for path)
-  --global                             (init) write the home-directory config instead of project configuration
+  --global                             target the user-wide config for init, skills, or MCP management
+  --url <endpoint>                     (mcp add) configure a Streamable HTTP server
+  --env KEY=VALUE                      (mcp add) add a stdio environment value; repeatable
+  --header KEY=VALUE                   (mcp add) add an HTTP header; repeatable
+  --timeout <seconds>                  (mcp add) connection and catalog timeout (default: 30)
   --with-reference                     (init) also write the non-loaded annotated JSONC reference
   -h, --help                           show help
   -v, --version                        show version
