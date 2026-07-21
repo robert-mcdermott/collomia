@@ -27,11 +27,12 @@ func (windowsBackend) Name() string { return "AppContainer + Job Object" }
 
 func (windowsBackend) Capabilities() Capabilities {
 	return Capabilities{
-		WriteIsolation:   true,
-		ReadIsolation:    true,
-		NetworkIsolation: NetworkFull,
-		ProcessIsolation: true,
-		Notes:            []string{"built into Windows 11; no optional feature required", "loopback to unpackaged local services remains blocked"},
+		WriteIsolation:      true,
+		ReadIsolation:       true,
+		ReadIsolationAlways: true,
+		NetworkIsolation:    NetworkFull,
+		ProcessIsolation:    true,
+		Notes:               []string{"built into Windows 11; no optional feature required", "loopback to unpackaged local services remains blocked"},
 	}
 }
 
@@ -118,6 +119,23 @@ func RunAppContainer(policy Policy, argv []string) error {
 		seen[key] = true
 		if err := grantAppContainerAccess(abs, appSID, windows.GENERIC_ALL); err != nil {
 			return fmt.Errorf("grant AppContainer access to %s: %w", abs, err)
+		}
+	}
+	for _, root := range policy.ExtraReadableRoots {
+		abs, absErr := filepath.Abs(root)
+		if absErr != nil {
+			return fmt.Errorf("resolve readable root %q: %w", root, absErr)
+		}
+		if real, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+			abs = real
+		}
+		key := strings.ToLower(filepath.Clean(abs))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if err := grantAppContainerAccess(abs, appSID, windows.GENERIC_READ|windows.GENERIC_EXECUTE); err != nil {
+			return fmt.Errorf("grant AppContainer read access to %s: %w", abs, err)
 		}
 	}
 

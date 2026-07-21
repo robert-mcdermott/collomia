@@ -357,7 +357,8 @@ Example global configuration:
   "permissions": {
     "mode": "ask",
     "sandbox": "auto",
-    "sandbox_allow_network": true
+    "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": true
   }
 }
 ```
@@ -532,7 +533,9 @@ request shapes.
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `off`. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
-| `sandbox_writable_roots` | string list | Additional narrowly scoped write roots for sandboxed commands, resolved from the workspace when relative. |
+| `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
+| `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
+| `sandbox_writable_roots` | string list | Additional narrowly scoped read/write roots for sandboxed commands, resolved from the workspace when relative. Every writable root is implicitly readable. |
 | `command_env` | string | `full` or `minimal`; if omitted while sandboxing is enabled, minimal is used. |
 | `reviewer_command` | string | Optional external policy reviewer for otherwise auto-approved non-read actions. |
 
@@ -1336,27 +1339,31 @@ path for physical-disk administration.
 ### OS sandboxing
 
 Enable compatibility-first containment while preserving package installation,
-online documentation CLIs, and other command networking:
+online documentation CLIs, command networking, and dependency reads outside
+the workspace:
 
 ```json
 {
   "permissions": {
     "sandbox": "auto",
     "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": true,
     "command_env": "minimal"
   }
 }
 ```
 
-Sandboxing is `off` unless configured, while `sandbox_allow_network` defaults
-to `true`. Changing only `sandbox` to `auto` therefore adds containment without
-blocking package downloads at the network boundary. To deny command
-networking, set `sandbox_allow_network` to `false` explicitly. Package managers
-can still require a writable cache root or environment-provided credentials;
-the examples below cover both cases.
+Sandboxing is `off` unless configured. `sandbox_allow_network` and
+`sandbox_allow_read_outside_workspace` default to `true`. Changing only
+`sandbox` to `auto` therefore adds write/process containment without blocking
+package downloads or dependencies stored in a user cache. Set either switch
+to `false` to deliberately request network denial or user-data read
+confinement. Package managers can still require a readable dependency store,
+writable cache, or environment-provided credentials; the examples below cover
+all three cases.
 
 Use `"require"` for fail-closed operation: if the backend is unavailable or
-cannot enforce every requested write/network protection, it refuses to run.
+cannot enforce every requested write/read/network protection, it refuses to run.
 `"auto"` applies all available protections and emits a visible degradation
 warning in command output, `collo doctor`, and `/status` when a protection is
 missing.
@@ -1369,21 +1376,34 @@ servers. Those are separately controlled through configuration trust,
 
 Platform behavior:
 
-- **macOS/Seatbelt:** reads remain open; writes are limited to the workspace,
-  temporary directories, and `/dev`. With network disabled, remote egress is
-  denied but loopback remains available.
-- **Linux/Landlock:** kernel 5.13+ confines writes to the workspace and
-  temporary/device helper paths. Kernel 6.7+ (ABI v4) can also deny TCP
-  connect/bind. Older kernels cannot enforce the network setting. Landlock
-  cannot restrict UDP, including DNS, on any supported kernel. Consequently,
-  `require` plus network denial fails closed; `auto` provides and clearly
-  reports TCP-only isolation.
+- **macOS/Seatbelt:** writes are limited to the workspace, temporary
+  directories, and `/dev`. When outside-workspace reads are disabled,
+  file-content reads in user homes and mounted volumes are denied except for
+  the workspace, temp/writable roots, PATH entries, and explicit readable
+  roots. Public system runtime files and path metadata remain visible. With
+  network disabled, remote egress is denied but loopback remains available.
+- **Linux/Landlock:** kernel 5.13+/ABI v1 applies filesystem rules, but ABI v3
+  (Linux 6.2) is recommended because ABI v1–v2 cannot deny standalone
+  truncation. Writes are otherwise confined to the workspace and
+  temporary/device helper paths. Read confinement adds a deny-by-default
+  Landlock view with grants for the workspace, temp/writable roots,
+  conventional system runtime/configuration paths, PATH entries, and explicit
+  readable roots. ABI v4+ can deny TCP connect/bind; ABI v10+ can also deny UDP
+  bind/connect/send, including DNS. Older kernels cannot enforce the network
+  setting, and ABI v4–v9 remains TCP-only. Consequently, `require` plus network
+  denial fails closed on ABI v4–v9 but succeeds with full TCP/UDP isolation on
+  ABI v10+; `auto` applies and clearly reports the capability available. See
+  [Linux sandbox setup and Landlock compatibility](LINUX_SANDBOX.md) for the
+  ABI feature matrix, Ubuntu 26.04 specifics, verification and custom-kernel
+  steps, configuration recipes, and container/WSL troubleshooting.
 - **Windows 11/AppContainer:** a workspace-specific, low-integrity
   AppContainer restricts filesystem, registry, credentials, devices, network,
   and access to other processes. A kill-on-close Job Object owns the complete
   child tree. The workspace, temp directory, and `sandbox_writable_roots` are
-  writable; user-local PATH directories are read/execute only. This uses inbox
-  Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
+  writable; `sandbox_readable_roots` and user-local PATH directories are
+  read/execute only. AppContainer always confines user-data reads even though
+  the compatibility switch defaults to broad reads on macOS/Linux. This uses
+  inbox Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
   service, administrator setup, or additional installation.
 
 The network setting is deliberately command-specific. It does not block model
@@ -1394,22 +1414,27 @@ server without an administrator-created exemption. Collomia does not request
 that exemption; use `sandbox: "off"` for a command that must access such a
 local development service.
 
-Build/package caches outside the workspace may need a narrow explicit grant:
+Dependency stores and build/package caches outside the workspace may need
+narrow explicit grants:
 
 ```json
 {
   "permissions": {
     "sandbox": "auto",
     "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": false,
+    "sandbox_readable_roots": ["${HOME}/go/pkg/mod"],
     "sandbox_writable_roots": [".collomia-cache", "${HOME}/.cache/my-build"]
   }
 }
 ```
 
-Prefer a tool-specific cache over granting an entire home directory. Neither
-the macOS nor Linux backend confines reads; Windows AppContainer does restrict
-user-data reads outside its explicitly accessible locations. Read [Security
-model](SECURITY.md) before using autopilot with untrusted repositories or
+Relative entries resolve from the workspace and environment references expand
+at command time. Writable roots are automatically readable. Prefer an
+immutable dependency root or tool-specific cache over granting an entire home
+directory. Read [Security model](SECURITY.md) for the precise platform
+boundary—including macOS metadata/system-runtime visibility and Linux
+pseudo-filesystem limits—before using autopilot with untrusted repositories or
 instructions.
 
 ### Command environment
@@ -2852,10 +2877,13 @@ persisted-history issue from the provider configuration.
 Run `collo doctor`:
 
 - macOS must have `sandbox-exec` available.
-- Linux needs enabled Landlock (kernel 5.13+); TCP enforcement additionally
-  needs ABI v4/kernel 6.7+. Because Landlock cannot block UDP, `require` with
-  command networking disabled intentionally fails closed; use `auto` to accept
-  the reported TCP-only boundary.
+- Linux needs enabled Landlock (kernel 5.13+). Network denial requires ABI v4+
+  for TCP and ABI v10+ for UDP. On ABI v4–v9, `require` with command networking
+  disabled intentionally fails closed; use `auto` to accept the reported
+  TCP-only boundary. ABI v3 (Linux 6.2) is the recommended minimum for robust
+  filesystem confinement because earlier ABIs cannot mediate standalone
+  truncation. The complete Linux setup procedure is in
+  [Linux sandbox setup and Landlock compatibility](LINUX_SANDBOX.md).
 - Windows 11 must expose the built-in AppContainer APIs. No optional Windows
   feature or third-party installation is required.
 
@@ -2865,10 +2893,12 @@ approval prompt for sandbox enforcement.
 
 ### A build works in the shell but fails in Collomia
 
-If sandboxing is enabled, writes outside the workspace/temp or remote network
-may be denied. Set `sandbox_allow_network: true` when the command genuinely
-needs package registries or online documentation, and add a narrow
-`sandbox_writable_roots` cache rather than granting the whole home directory.
+If sandboxing is enabled, reads/writes outside the granted roots or remote
+network access may be denied. Set `sandbox_allow_network: true` when the
+command genuinely needs package registries or online documentation. When read
+confinement is enabled, add immutable dependencies or SDKs to
+`sandbox_readable_roots`; add only caches that must change to
+`sandbox_writable_roots`. Avoid granting the whole home directory.
 If `command_env` is minimal, proxy, registry, compiler, cloud, or package
 credentials may be absent; select `full` deliberately when those values are
 required. Windows AppContainer also blocks loopback to ordinary unpackaged

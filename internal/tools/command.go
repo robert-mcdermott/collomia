@@ -28,6 +28,12 @@ type RunCommandTool struct {
 	SandboxMode sandbox.Mode
 	// AllowNetwork permits network egress inside the sandbox.
 	AllowNetwork bool
+	// AllowReadOutsideWorkspace preserves broad command reads. Set false to
+	// request OS-enforced user-data read confinement.
+	AllowReadOutsideWorkspace bool
+	// ExtraReadableRoots grants explicit additional read locations to the OS
+	// sandbox, commonly for dependency stores or read-only SDKs.
+	ExtraReadableRoots []string
 	// ExtraWritableRoots grants explicit additional write locations to the OS
 	// sandbox, commonly for build or package-manager caches.
 	ExtraWritableRoots []string
@@ -38,7 +44,7 @@ type RunCommandTool struct {
 }
 
 func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*RunCommandTool, error) {
-	t := &RunCommandTool{Workspace: workspace, MaxOutputBytes: maxOutput, SandboxMode: sandbox.ModeOff, Backend: sandbox.ForPlatform()}
+	t := &RunCommandTool{Workspace: workspace, MaxOutputBytes: maxOutput, SandboxMode: sandbox.ModeOff, AllowReadOutsideWorkspace: true, Backend: sandbox.ForPlatform()}
 	if t.MaxOutputBytes <= 0 {
 		t.MaxOutputBytes = 64 * 1024
 	}
@@ -53,7 +59,7 @@ func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*Run
 }
 
 func (t RunCommandTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. When OS sandbox networking is disabled, package installs and online CLIs may fail; the user can enable command networking with permissions.sandbox_allow_network. Provider and remote MCP traffic are unaffected. Set pty=true (Unix only) for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal (Unix only)"}},"required":["command"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. OS sandbox policy may deny outside-workspace reads or writes and command networking; required read-only dependencies belong in permissions.sandbox_readable_roots, writable caches in sandbox_writable_roots, and outbound access is controlled by sandbox_allow_network. Provider and remote MCP traffic are unaffected. Set pty=true (Unix only) for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal (Unix only)"}},"required":["command"],"additionalProperties":false}`)}
 }
 func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -110,7 +116,7 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	sandboxed := false
 	sandboxWarning := ""
 	if t.SandboxMode == sandbox.ModeAuto || t.SandboxMode == sandbox.ModeRequire {
-		prepared, err := sandbox.Prepare(t.Backend, t.SandboxMode, argv, sandbox.Policy{WorkspaceRoot: t.Workspace, ExtraWritableRoots: t.resolvedWritableRoots(), AllowNetwork: t.AllowNetwork})
+		prepared, err := sandbox.Prepare(t.Backend, t.SandboxMode, argv, t.sandboxPolicy())
 		if err != nil {
 			return "", err
 		}
@@ -147,7 +153,7 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	out := buffer.String()
 	if sandboxed && err != nil {
-		out += "\n(command ran inside the OS sandbox; denied file or network access can cause failures — set permissions.sandbox_allow_network=true for commands that need outbound access, or see docs/SECURITY.md)"
+		out += "\n(command ran inside the OS sandbox; denied file or network access can cause failures — use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, or permissions.sandbox_allow_network=true for outbound access; see docs/SECURITY.md)"
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
@@ -178,8 +184,16 @@ func (t RunCommandTool) checkCommandSafety(command string) error {
 }
 
 func (t RunCommandTool) resolvedWritableRoots() []string {
-	roots := make([]string, 0, len(t.ExtraWritableRoots))
-	for _, root := range t.ExtraWritableRoots {
+	return t.resolvedRoots(t.ExtraWritableRoots)
+}
+
+func (t RunCommandTool) resolvedReadableRoots() []string {
+	return t.resolvedRoots(t.ExtraReadableRoots)
+}
+
+func (t RunCommandTool) resolvedRoots(configured []string) []string {
+	roots := make([]string, 0, len(configured))
+	for _, root := range configured {
 		root = os.ExpandEnv(strings.TrimSpace(root))
 		if root == "" {
 			continue
@@ -196,6 +210,16 @@ func (t RunCommandTool) resolvedWritableRoots() []string {
 		roots = append(roots, root)
 	}
 	return roots
+}
+
+func (t RunCommandTool) sandboxPolicy() sandbox.Policy {
+	return sandbox.Policy{
+		WorkspaceRoot:      t.Workspace,
+		ExtraReadableRoots: t.resolvedReadableRoots(),
+		ExtraWritableRoots: t.resolvedWritableRoots(),
+		AllowNetwork:       t.AllowNetwork,
+		ConstrainReads:     !t.AllowReadOutsideWorkspace,
+	}
 }
 
 // minimalEnv keeps only the variables a build needs, so credentials in the

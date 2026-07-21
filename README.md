@@ -2,7 +2,7 @@
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with built-in OS sandbox backends on all three platforms — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
-New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting.
+New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
@@ -19,7 +19,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Three autonomy levels: `ask`, `workspace`, and `autopilot`, refined by ordered scoped permission rules (`allow`/`prompt`/`deny` on tool, path, command, host, or MCP server).
 - Conservative static command analysis: commands that cannot be fully read (substitutions, `eval`, inline interpreters) always require interactive approval, in every mode.
 - Workspace containment, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
-- OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem (and, on newer kernels, TCP) containment on Linux, both with `auto` and fail-closed `require` modes.
+- OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem plus kernel-dependent TCP/UDP containment on Linux, both with `auto` and fail-closed `require` modes.
 - Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
@@ -82,7 +82,7 @@ Collomia supports both user-wide defaults and per-project overrides. You do not 
 
 The global file applies to every workspace for that user. The same `.collomia` directory is the single root for every persistent user-level Collomia file: the generated `config.example.jsonc` reference, optional `AGENTS.md`/`COLLOMIA.md` instructions, skills, sessions, logs, audit ledgers, repository trust decisions, and MCP server pins. Collomia does not search additional platform configuration or cache directories.
 
-It is a good place for personal provider definitions, preferred models, permissions, and user-wide options. Collomia uses compatibility-friendly defaults: sandboxing is `off`, and command networking is `true`, so changing only `permissions.sandbox` to `auto` adds containment without blocking package downloads or online command-line tools at the network boundary. Set `sandbox_allow_network` to `false` when you intentionally want sandboxed commands offline. Package managers may also need a writable cache or environment-provided registry credentials, as described under [Permissions and safety](#permissions-and-safety). Store API keys in environment variables and refer to them with `api_key_env`; avoid putting secret values directly in either configuration file.
+It is a good place for personal provider definitions, preferred models, permissions, and user-wide options. Collomia uses compatibility-friendly defaults: sandboxing is `off`, command networking is enabled, and command reads remain broad, so changing only `permissions.sandbox` to `auto` adds write/process containment without unexpectedly breaking package managers and developer toolchains. Set `sandbox_allow_network` to `false` when you intentionally want sandboxed commands offline, and set `sandbox_allow_read_outside_workspace` to `false` when you want OS-enforced user-data read confinement. Package managers may also need a narrow readable dependency root, writable cache, or environment-provided registry credentials, as described under [Permissions and safety](#permissions-and-safety). Store API keys in environment variables and refer to them with `api_key_env`; avoid putting secret values directly in either configuration file.
 
 Running `collo init` without `--global` creates `.collomia.json` in the current workspace (or the directory selected by `--cwd`). This file applies only to that project. It is a good place for project-specific permission rules, sandbox policy, agents, MCP servers, language servers, and other settings that should travel with the repository.
 
@@ -119,7 +119,8 @@ For example, a global file can define a personal OpenRouter setup:
     "mode": "ask",
     "allow_outside_workspace": false,
     "sandbox": "off",
-    "sandbox_allow_network": true
+    "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": true
   },
   "options": {
     "max_iterations": 24,
@@ -648,6 +649,8 @@ Example:
     ],
     "sandbox": "auto",
     "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": false,
+    "sandbox_readable_roots": ["${HOME}/go/pkg/mod"],
     "command_env": "minimal"
   }
 }
@@ -661,15 +664,15 @@ Path tools canonicalize paths and existing symlinks before checking containment.
 
 **What these checks are — and are not.** Approval prompts, rules, and denial patterns are in-process policy checks, not an operating-system security boundary, unless the OS sandbox is enabled. An approved (or autopilot-approved) command runs with your normal user privileges. Shell commands are statically analyzed before approval; commands whose effect cannot be determined (substitutions, `eval`, inline interpreter payloads) always require interactive approval, in every mode.
 
-`"permissions": {"sandbox": "auto"}` (or `"require"` to fail closed) enables real OS enforcement. Sandboxing remains `off` unless you select it, while `sandbox_allow_network` defaults to `true`; this compatibility-first combination means changing only `sandbox` to `auto` does not block package installation or online command-line tools at the network boundary. Set `sandbox_allow_network` to `false` when you want command traffic denied. A package manager may still need an explicit cache root or environment credentials as described below.
+`"permissions": {"sandbox": "auto"}` (or `"require"` to fail closed) enables real OS enforcement. Sandboxing remains `off` unless you select it. `sandbox_allow_network` and `sandbox_allow_read_outside_workspace` both default to `true`; this compatibility-first combination means changing only `sandbox` to `auto` does not block package installation, online CLIs, or dependencies stored outside the workspace. Set either switch to `false` when you deliberately want that boundary enforced.
 
-- **macOS**: Seatbelt (`sandbox-exec`) confines file writes to the workspace and denies network egress unless `sandbox_allow_network` is set.
-- **Linux**: Landlock confines file writes to the workspace (kernel 5.13+); on kernel 6.7+ (Landlock ABI v4) it also denies TCP connect/bind unless `sandbox_allow_network` is set. UDP, including DNS, cannot be restricted by Landlock yet.
-- **Windows 11**: the built-in AppContainer security boundary confines filesystem/registry/credential/process access, with a Job Object owning the descendant tree. The workspace, temp directory, and any `sandbox_writable_roots` are granted to a workspace-specific container. No Hyper-V feature, administrator setup, driver, service, or separate installation is required.
+- **macOS**: Seatbelt (`sandbox-exec`) confines file writes. With `sandbox_allow_read_outside_workspace: false`, it denies file-content reads in user homes and mounted data volumes except for the workspace, PATH entries, temporary paths, and explicit roots; metadata remains visible so path lookup fails cleanly. Network egress is denied unless `sandbox_allow_network` is set.
+- **Linux**: Landlock applies filesystem rules on kernel 5.13+/ABI v1; ABI v3 (Linux 6.2) is recommended because ABI v1–v2 cannot deny standalone truncation. The read switch adds a deny-by-default user-data read ruleset with explicit workspace/system-runtime/PATH/readable-root grants. ABI v4+ denies TCP connect/bind when command networking is off; ABI v10+ also denies UDP bind/connect/send, including DNS.
+- **Windows 11**: the built-in AppContainer security boundary always confines user-data reads as well as filesystem/registry/credential/process access, with a Job Object owning the descendant tree. The workspace, temp directory, `sandbox_readable_roots`, and `sandbox_writable_roots` are granted to a workspace-specific container. No Hyper-V feature, administrator setup, driver, service, or separate installation is required.
 
-The network switch applies only to sandboxed `run_command`, PTY, and background-process traffic. Collomia's provider HTTP, remote MCP connections, hooks, and language servers are not routed through this command sandbox. If a build needs an external cache, add only that directory to `sandbox_writable_roots`. If it needs proxy variables or registry credentials, use `command_env: "full"` deliberately; sandboxed commands otherwise receive the minimal environment by default.
+Both switches apply only to sandboxed `run_command`, PTY, and background processes. Collomia's own provider HTTP, remote MCP connections, hooks, language servers, configuration, and session storage remain outside this command sandbox. A writable root is implicitly readable. If a build only needs to consume an external SDK, dependency store, or source tree, grant it with `sandbox_readable_roots`; use `sandbox_writable_roots` only for a cache or output location that must change. Relative roots resolve from the workspace, environment references expand at runtime, and narrow entries are safer than granting the whole home directory. If a tool needs proxy variables or registry credentials, use `command_env: "full"` deliberately; sandboxed commands otherwise receive the minimal environment by default.
 
-`auto` applies every protection the platform has and prints a warning when a requested capability is missing. `require` refuses the command instead. For example, Linux Landlock cannot deny UDP, so `require` plus `sandbox_allow_network: false` fails closed rather than claiming complete network isolation; use `auto` to accept the prominently reported TCP-only boundary. `collo doctor` and `/status` show the backend, effective command-network setting, and any missing protection.
+`auto` applies every protection the platform has and prints a warning when a requested capability is missing. `require` refuses the command instead. On Linux ABI v4–v9, `require` plus `sandbox_allow_network: false` fails closed because only TCP can be denied; ABI v10+ satisfies full TCP/UDP denial. Use `auto` on older kernels to accept the prominently reported TCP-only boundary. `collo doctor` and `/status` show the backend, effective command-read and network settings, and any missing protection. Linux users should follow the dedicated [Linux sandbox and Landlock setup guide](docs/LINUX_SANDBOX.md) for kernel/ABI requirements, Ubuntu 26.04 behavior, verification commands, configuration recipes, container/WSL notes, and troubleshooting.
 
 Two more knobs narrow the blast radius further: `command_env: "minimal"` strips agent commands down to `PATH`/`HOME`/basics instead of inheriting your full environment, and `reviewer_command` runs an external program of your choosing before any non-read action is auto-approved — a non-zero exit or a `{"decision":"deny"}` reply escalates it to an interactive prompt instead of silently allowing it. The exact guarantees and limitations of every mode and backend are documented in [docs/SECURITY.md](docs/SECURITY.md).
 

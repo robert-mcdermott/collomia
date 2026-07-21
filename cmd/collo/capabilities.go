@@ -21,7 +21,7 @@ func capabilityMatrix() []capabilityRow {
 	backend := sandbox.ForPlatform()
 	if backend.Available() == nil {
 		sandboxStatus = "experimental"
-		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; enable with permissions.sandbox=auto|require"
+		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; optional workspace-scoped command user-data reads use sandbox_allow_read_outside_workspace=false; enable with permissions.sandbox=auto|require"
 	}
 	return []capabilityRow{
 		{"provider", "openai / openai-compatible (Ollama, vLLM, LM Studio)", "implemented", "streaming chat completions + function tools"},

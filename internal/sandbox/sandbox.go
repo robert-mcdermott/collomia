@@ -13,18 +13,27 @@ import (
 )
 
 // Policy describes what a sandboxed command may do. The default is
-// read-mostly: reads are allowed, writes are limited to the workspace and
-// temporary directories, and network egress is denied unless granted.
+// compatibility-oriented: reads and network are allowed unless the caller
+// explicitly requests confinement, while writes are limited to the workspace,
+// temporary directories, and explicit grants.
 type Policy struct {
 	WorkspaceRoot string
+	// ExtraReadableRoots lists additional files or directories the command may
+	// read when ConstrainReads is true. Writable roots are also
+	// readable.
+	ExtraReadableRoots []string
 	// ExtraWritableRoots lists additional directories the command may write.
 	ExtraWritableRoots []string
 	AllowNetwork       bool
+	// ConstrainReads asks capable backends to limit user-data reads to the
+	// workspace and explicit grants while retaining the system runtime paths
+	// needed to launch tools. Its zero value preserves broad reads.
+	ConstrainReads bool
 }
 
 // NetworkIsolation describes how completely a backend can deny outbound
-// network traffic. Landlock currently controls TCP only; Seatbelt and
-// AppContainer can deny both TCP and UDP.
+// network traffic. Landlock controls TCP from ABI v4 and UDP from ABI v10;
+// Seatbelt and AppContainer can deny both TCP and UDP.
 type NetworkIsolation string
 
 const (
@@ -37,11 +46,15 @@ const (
 // the current machine. Keeping this separate from availability prevents a
 // partially capable backend from being reported as a complete sandbox.
 type Capabilities struct {
-	WriteIsolation   bool
-	ReadIsolation    bool
-	NetworkIsolation NetworkIsolation
-	ProcessIsolation bool
-	Notes            []string
+	WriteIsolation bool
+	ReadIsolation  bool
+	// ReadIsolationAlways means the backend inherently confines user-data
+	// reads even when the compatibility policy does not request it. Windows
+	// AppContainer has this property; macOS and Linux make it opt-in.
+	ReadIsolationAlways bool
+	NetworkIsolation    NetworkIsolation
+	ProcessIsolation    bool
+	Notes               []string
 }
 
 // Summary is a compact, user-facing capability report used by doctor and the
@@ -51,8 +64,10 @@ func (c Capabilities) Summary() string {
 	if c.WriteIsolation {
 		parts = append(parts, "workspace write confinement")
 	}
-	if c.ReadIsolation {
-		parts = append(parts, "read confinement")
+	if c.ReadIsolationAlways {
+		parts = append(parts, "user-data read confinement always on")
+	} else if c.ReadIsolation {
+		parts = append(parts, "user-data read confinement available")
 	} else {
 		parts = append(parts, "broad reads")
 	}
@@ -71,6 +86,22 @@ func (c Capabilities) Summary() string {
 	return strings.Join(parts, "; ")
 }
 
+// ReadPolicySummary reports the effective user-data read stance rather than
+// only echoing the requested switch. Some backends enforce a stricter boundary
+// than the compatibility policy asks for.
+func (c Capabilities) ReadPolicySummary(policy Policy) string {
+	if c.ReadIsolationAlways {
+		return "confined (backend-enforced)"
+	}
+	if policy.ConstrainReads {
+		if c.ReadIsolation {
+			return "workspace-scoped"
+		}
+		return "requested but unavailable"
+	}
+	return "broad"
+}
+
 // Missing returns the requested protections that this backend cannot fully
 // enforce. Write confinement is fundamental to every current sandbox policy;
 // network confinement is required only when AllowNetwork is false.
@@ -78,6 +109,9 @@ func (c Capabilities) Missing(policy Policy) []string {
 	var missing []string
 	if !c.WriteIsolation {
 		missing = append(missing, "filesystem write confinement")
+	}
+	if policy.ConstrainReads && !c.ReadIsolation {
+		missing = append(missing, "user-data read confinement")
 	}
 	if !policy.AllowNetwork && c.NetworkIsolation != NetworkFull {
 		switch c.NetworkIsolation {

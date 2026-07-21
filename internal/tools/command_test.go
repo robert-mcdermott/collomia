@@ -131,6 +131,54 @@ func TestSandboxBlocksWritesOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestSandboxCanConfineReadsOutsideWorkspace(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox backend is darwin-only")
+	}
+	backend := sandbox.ForPlatform()
+	if backend.Available() != nil {
+		t.Skip("sandbox-exec unavailable")
+	}
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "inside.txt"), []byte("inside-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	outsideDir, err := os.MkdirTemp(home, ".collomia-sandbox-read-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outsideDir) })
+	outside := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outside, []byte("outside-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tool, err := NewRunCommandTool(workspace, nil, 64*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.SandboxMode = sandbox.ModeRequire
+	tool.AllowReadOutsideWorkspace = false
+	if out, err := tool.Execute(t.Context(), []byte(`{"command":"cat inside.txt"}`)); err != nil || !strings.Contains(out, "inside-value") {
+		t.Fatalf("workspace read should succeed: out=%q err=%v", out, err)
+	}
+	readOutside, err := json.Marshal(map[string]string{"command": "cat " + outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := tool.Execute(t.Context(), readOutside); err == nil || strings.Contains(out, "outside-secret") {
+		t.Fatalf("ungranted outside read should fail without leaking content: out=%q err=%v", out, err)
+	}
+	tool.ExtraReadableRoots = []string{outsideDir}
+	if out, err := tool.Execute(t.Context(), readOutside); err != nil || !strings.Contains(out, "outside-secret") {
+		t.Fatalf("explicit readable root should succeed: out=%q err=%v", out, err)
+	}
+}
+
 func TestSandboxRequireFailsClosedWhenUnavailable(t *testing.T) {
 	tool, err := NewRunCommandTool(t.TempDir(), nil, 1024)
 	if err != nil {
@@ -228,6 +276,71 @@ func TestResolvedWritableRootsAreWorkspaceRelativeAndExpanded(t *testing.T) {
 	if got[1] != canonicalExternal {
 		t.Fatalf("expanded root=%q, want %q", got[1], canonicalExternal)
 	}
+}
+
+func TestResolvedReadableRootsAreWorkspaceRelativeAndExpanded(t *testing.T) {
+	workspace := t.TempDir()
+	external := t.TempDir()
+	t.Setenv("COLLO_TEST_SDK", external)
+	tool, err := NewRunCommandTool(workspace, nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.ExtraReadableRoots = []string{"vendor-sdk", "${COLLO_TEST_SDK}"}
+	got := tool.resolvedReadableRoots()
+	if len(got) != 2 || got[0] != filepath.Join(workspace, "vendor-sdk") {
+		t.Fatalf("roots=%v", got)
+	}
+	canonicalExternal, err := filepath.EvalSymlinks(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[1] != canonicalExternal {
+		t.Fatalf("expanded root=%q, want %q", got[1], canonicalExternal)
+	}
+}
+
+func TestRunCommandPropagatesIndependentSandboxReadPolicy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture command uses a Unix shell")
+	}
+	workspace := t.TempDir()
+	readable := t.TempDir()
+	backend := &recordingBackend{}
+	tool, err := NewRunCommandTool(workspace, nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.SandboxMode = sandbox.ModeRequire
+	tool.Backend = backend
+	tool.AllowNetwork = true
+	tool.AllowReadOutsideWorkspace = false
+	tool.ExtraReadableRoots = []string{readable}
+	if _, err := tool.Execute(t.Context(), []byte(`{"command":"echo ok"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !backend.policy.ConstrainReads || !backend.policy.AllowNetwork {
+		t.Fatalf("policy=%+v", backend.policy)
+	}
+	canonicalReadable, err := filepath.EvalSymlinks(readable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.policy.ExtraReadableRoots) != 1 || backend.policy.ExtraReadableRoots[0] != canonicalReadable {
+		t.Fatalf("readable roots=%v", backend.policy.ExtraReadableRoots)
+	}
+}
+
+type recordingBackend struct{ policy sandbox.Policy }
+
+func (*recordingBackend) Name() string { return "recording" }
+func (*recordingBackend) Capabilities() sandbox.Capabilities {
+	return sandbox.Capabilities{WriteIsolation: true, ReadIsolation: true, NetworkIsolation: sandbox.NetworkFull}
+}
+func (*recordingBackend) Available() error { return nil }
+func (b *recordingBackend) Wrap(argv []string, policy sandbox.Policy) ([]string, error) {
+	b.policy = policy
+	return argv, nil
 }
 
 type failingBackend struct{}

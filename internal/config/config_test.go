@@ -123,9 +123,24 @@ func TestValidateSandboxWritableRoots(t *testing.T) {
 	}
 }
 
+func TestValidateSandboxReadableRoots(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.SandboxReadableRoots = []string{".deps", "  "}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "permissions.sandbox_readable_roots.1") {
+		t.Fatalf("expected field-specific readable-root error, got %v", err)
+	}
+}
+
 func TestDefaultsKeepSandboxCommandNetworkAvailable(t *testing.T) {
 	if !Defaults().Permissions.SandboxAllowNetwork {
 		t.Fatal("compatibility default must keep sandboxed command networking available until explicitly disabled")
+	}
+}
+
+func TestDefaultsKeepSandboxCommandReadsBroad(t *testing.T) {
+	if !Defaults().Permissions.SandboxAllowReadOutsideWorkspace {
+		t.Fatal("compatibility default must keep sandboxed command reads broad until explicitly confined")
 	}
 }
 
@@ -160,6 +175,9 @@ func TestProjectLayerMergesOverDefaults(t *testing.T) {
 	if cfg.Permissions.Mode != "workspace" {
 		t.Fatalf("mode=%q", cfg.Permissions.Mode)
 	}
+	if !cfg.Permissions.SandboxAllowReadOutsideWorkspace {
+		t.Fatal("omitted project read policy must inherit the broad-read compatibility default")
+	}
 	// Defaults not mentioned by the project layer survive the merge.
 	if _, ok := cfg.Providers["ollama"]; !ok {
 		t.Fatal("default provider lost during merge")
@@ -172,6 +190,21 @@ func TestProjectLayerMergesOverDefaults(t *testing.T) {
 	}
 	if report := cfg.LayerReport(); !strings.Contains(report, "project") {
 		t.Fatalf("layer report missing project layer:\n%s", report)
+	}
+}
+
+func TestProjectCanOptIntoSandboxReadConfinement(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, `{"permissions":{"sandbox":"require","sandbox_allow_read_outside_workspace":false,"sandbox_readable_roots":["vendor-sdk"]}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Permissions.SandboxAllowReadOutsideWorkspace {
+		t.Fatal("explicit false read policy was not applied")
+	}
+	if len(cfg.Permissions.SandboxReadableRoots) != 1 || cfg.Permissions.SandboxReadableRoots[0] != "vendor-sdk" {
+		t.Fatalf("readable roots=%v", cfg.Permissions.SandboxReadableRoots)
 	}
 }
 
