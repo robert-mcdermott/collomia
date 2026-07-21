@@ -186,6 +186,56 @@ It does **not** make the run read-only or untracked:
 `--resume` or `--continue`. Use `--plan` as well when you want a read-only tool
 surface.
 
+## Validating and replaying saved traces
+
+Use the offline replay command to verify that a retained JSONL stream is a
+complete, internally consistent Collomia run:
+
+```sh
+collo replay --check run.jsonl
+```
+
+A valid check prints a compact summary and exits 0. A malformed line,
+unsupported schema or event kind, missing required payload, impossible
+turn/tool ordering, inconsistent final result, event after `run.result`, or
+missing final result exits 1 with the source line number. Missing or extra
+command arguments exit 2.
+
+Without `--check`, the same validation runs first and then Collomia renders a
+readable transcript:
+
+```sh
+collo replay run.jsonl
+cat run.jsonl | collo replay -
+```
+
+Replay is intentionally side-effect-free. It does not load user or project
+configuration, establish repository trust, create or resume a session, contact
+a provider or MCP server, or execute a recorded tool. The human renderer strips
+terminal control characters, forces identifiers onto one line, visibly frames
+untrusted payload text, normalizes CRLF output, limits an individual rendered
+payload to 64 Ki characters, and applies the common credential-shape redactor
+again. The source file is never rewritten.
+
+JSONL produced by `collo run --jsonl` was already scrubbed with both configured
+secrets and common credential patterns before being written. Because offline
+replay deliberately does not load configuration, its second pass cannot know
+arbitrary custom secrets. Review traces before sharing them and treat redaction
+as defense in depth rather than a proof that a file contains no sensitive
+data.
+
+Replay accepts additive fields within schema v1, matching the consumer
+compatibility rule. A binary rejects newer schema numbers or unknown event
+kinds it cannot interpret; use a matching or newer Collomia binary for those
+traces. Failed and cancelled traces may end with an interrupted turn or tool,
+while a successful result requires clean `turn.end` and tool completion.
+
+`collo replay` consumes completed headless run streams. Durable session JSONL
+and permission audit ledgers have different record envelopes and are not valid
+replay inputs. Replay verifies recorded structure; it does not prove that an
+upstream provider response was factually correct or that an external action
+actually had the claimed effect.
+
 ## Complete automation examples
 
 The examples below use `jq` to inspect the terminal `run.result`. They are

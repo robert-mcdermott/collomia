@@ -1962,6 +1962,42 @@ durable conversation session. It cannot be combined with `--resume` or
 the normal audit ledger; `--debug` still writes its explicitly requested log.
 Combine `--ephemeral` with `--plan` when the task should also be read-only.
 
+### Offline trace validation and replay
+
+Validate a saved, completed headless stream before using it for support or
+regression analysis:
+
+```sh
+collo replay --check run.jsonl
+```
+
+Render the same stream as a readable transcript, or read it from stdin:
+
+```sh
+collo replay run.jsonl
+cat run.jsonl | collo replay -
+```
+
+Replay is observational. It does not load global or project configuration,
+open a workspace session, connect to a provider or MCP server, or execute any
+recorded tool. It requires exactly one terminal `run.result` as the final
+event, validates known schema-v1 payloads plus turn/tool/result consistency,
+and reports malformed records with their JSONL line number. Additive fields
+are accepted; unsupported schema versions and event kinds are rejected rather
+than guessed at.
+
+Human rendering removes terminal control characters, keeps identifiers on one
+line, visibly frames untrusted payload text, normalizes Windows line endings,
+caps an individual rendered payload at 64 Ki characters, and applies
+best-effort common-secret redaction. Normal `collo run --jsonl` output was
+already scrubbed using configured secrets as well, but replay does not load
+configuration and therefore cannot recognize arbitrary custom credentials in
+an imported file. Inspect any trace before sharing it.
+
+This command is for completed headless run streams, not the differently shaped
+session-store or audit-ledger JSONL files. Full validation rules, exit behavior,
+and limitations are documented in the [automation guide](AUTOMATION.md#validating-and-replaying-saved-traces).
+
 ### CI and scheduled automation examples
 
 The [automation guide](AUTOMATION.md#complete-automation-examples) includes two
@@ -2038,6 +2074,7 @@ collo skills list|show|new|install|update|remove|enable|disable
 collo mcp list|show|add|remove|enable|disable|test
 collo completion bash|zsh|fish|powershell
 collo schema events
+collo replay [--check] <trace|->
 collo version
 ```
 
@@ -2060,6 +2097,7 @@ Common flags:
 --no-alt-screen                      retain the final TUI frame in scrollback
 --jsonl                              JSONL output for `run`
 --ephemeral                          skip durable session storage for `run`
+--check                              validate and summarize a `replay` trace
 --debug                              redacted debug log
 --strict                             strict config/doctor validation
 --global                             user scope for init/new/install/update

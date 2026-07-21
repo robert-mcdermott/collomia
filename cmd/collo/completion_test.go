@@ -11,7 +11,7 @@ func TestCompletionScriptsCoverSupportedShells(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", shell, err)
 		}
-		for _, want := range []string{"collo", "completion", "schema", "ephemeral"} {
+		for _, want := range []string{"collo", "completion", "schema", "ephemeral", "replay", "check"} {
 			if !strings.Contains(script, want) {
 				t.Errorf("%s completion missing %q", shell, want)
 			}

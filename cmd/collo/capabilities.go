@@ -85,6 +85,7 @@ func capabilityMatrix() []capabilityRow {
 		{"interface", "notifications", "implemented", "terminal bell + OSC 9 desktop notification for approvals, questions, and long turns; options.notifications on|bell|off"},
 		{"interface", "PTY-backed browser terminal", "implemented", "`collo --web`; loopback-only, token-authenticated, embedded xterm.js; macOS/Linux (Windows ConPTY pending)"},
 		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; embedded/published schema v1; exactly one final `run.result` with stable failure/refusal/partial metadata and exit codes; durable resume or session-free `--ephemeral`"},
+		{"interface", "offline trace replay", "implemented", "`collo replay [--check] <trace|->` validates completed schema-v1 JSONL lifecycle/result consistency and renders a control-safe, best-effort-redacted transcript without loading config, providers, sessions, or tools"},
 		{"platform", "macOS / Linux / Windows builds", "implemented", "CI-tested; browser terminal requires macOS/Linux until ConPTY support is added"},
 	}
 }

@@ -24,7 +24,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, and a maintained [capability matrix](docs/CAPABILITIES.md).
-- Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, and session-free `--ephemeral` runs.
+- Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
 - Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK.
 - **Multi-agent delegation**: the `delegate` tool runs up to six sub-agent tasks concurrently (bounded to four at once). Read-only tasks share the workspace; write-capable tasks get their own isolated git worktree so parallel agents never race on the same files, with sibling-conflict detection across a batch. Optional named agent profiles (model, role instructions, tool allowlist) live in configuration.
@@ -164,6 +164,7 @@ collo verify [focus]                detect and run this project's build/lint/tes
 collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
 collo completion bash|zsh|fish|powershell  generate shell completion
 collo schema events                 print the embedded JSON Schema for JSONL events
+collo replay [--check] <trace|->    validate and safely render a completed JSONL run trace
 collo version                       print build information
 ```
 
@@ -185,6 +186,7 @@ Useful flags:
 --no-alt-screen                      retain the final TUI frame in scrollback
 --jsonl                              (run) emit schema-versioned JSONL events on stdout
 --ephemeral                          (run) skip durable conversation/session storage
+--check                              (replay) validate and print only a compact summary
 --debug                              write a redacted debug log
 --global                             (init) create the user-wide config instead of a project config
 --with-reference                     (init) also write the non-loaded annotated JSONC reference
@@ -210,6 +212,23 @@ With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted)
 ```
 
 `status` remains `ok`, `error`, or `cancelled` for schema-v1 compatibility. Optional `failure`, `partial`, and `refused` fields make non-success and denied-action outcomes explicit. Exit codes are `0` success, `1` runtime/provider failure, `2` usage or configuration failure, and `130` cancellation. Pull just the verdict with `... --jsonl | tail -1 | jq .result`.
+
+Validate a retained stream, or render a readable offline transcript without
+loading configuration, contacting a provider, opening a session, or executing
+tools:
+
+```sh
+collo replay --check run.jsonl
+collo replay run.jsonl
+cat run.jsonl | collo replay -
+```
+
+Replay requires one complete headless stream ending in `run.result`; it is not
+for session-store or audit-ledger JSONL. It checks known schema-v1 payloads and
+lifecycle consistency, tolerates additive fields, strips terminal controls,
+and applies best-effort common-secret redaction while rendering. See the
+[automation guide](docs/AUTOMATION.md#validating-and-replaying-saved-traces)
+for its exact safety and compatibility boundary.
 
 ## Browser terminal
 

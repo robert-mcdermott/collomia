@@ -1,0 +1,9 @@
+ Diff review answer.go  file 1/1 · +1 -1 · side-by-side
+    1   package main                                      │     1   package main
+    2                                                     │     2
+    3   func answer() int {                               │     3   func answer() int {
+    4 -     return 41                                         │
+                                                          │     4 +     return 42
+    5   }                                                 │     5   }
+
+[ ] file · n/N hunk · ↑↓/page scroll · u unified · s side-by-side · f fold · esc close

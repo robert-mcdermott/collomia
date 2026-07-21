@@ -76,6 +76,37 @@ func TestParseEphemeralHeadlessRun(t *testing.T) {
 	}
 }
 
+func TestParseAndRenderReplay(t *testing.T) {
+	opts, err := parse([]string{"replay", "--check", "run.jsonl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "replay" || !opts.check || !slices.Equal(opts.args, []string{"run.jsonl"}) {
+		t.Fatalf("options=%+v", opts)
+	}
+	if _, err := parse([]string{"run", "--check", "prompt"}); err == nil {
+		t.Fatal("--check was accepted outside replay")
+	}
+	stdinOpts, err := parse([]string{"replay", "-"})
+	if err != nil || !slices.Equal(stdinOpts.args, []string{"-"}) {
+		t.Fatalf("stdin replay options=%+v err=%v", stdinOpts, err)
+	}
+
+	input := strings.Join([]string{
+		`{"schema":1,"time":"2026-07-21T12:00:00Z","kind":"turn.start"}`,
+		`{"schema":1,"time":"2026-07-21T12:00:01Z","kind":"text.delta","text":"done"}`,
+		`{"schema":1,"time":"2026-07-21T12:00:02Z","kind":"turn.end"}`,
+		`{"schema":1,"time":"2026-07-21T12:00:03Z","kind":"run.result","result":{"status":"ok","answer":"done","duration_ms":3}}`,
+	}, "\n")
+	var out strings.Builder
+	if err := writeReplay(strings.NewReader(input), &out, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "valid Collomia schema-v1 trace: 4 events, 1 turn, 0 tools, status ok" {
+		t.Fatalf("summary=%q", got)
+	}
+}
+
 func TestStableExitCodesAndFailureClassification(t *testing.T) {
 	usage := withCommandError(errors.New("bad flag"), exitUsage, event.FailureUsage)
 	if got := exitCode(usage); got != 2 || failureFor(usage).Kind != event.FailureUsage {

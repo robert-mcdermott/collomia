@@ -104,6 +104,7 @@ type options struct {
 	webPort, mcpTimeout                           int
 	plan, global, help, version, jsonl, ephemeral bool
 	strict, revoke, status, debug, markdown, yes  bool
+	check                                         bool
 	cont, withReference, web, webPortSet, noOpen  bool
 	mcpTimeoutSet                                 bool
 	altScreen                                     *bool
@@ -130,6 +131,9 @@ func run(args []string) error {
 	if opts.version || opts.command == "version" {
 		fmt.Println(version.String())
 		return nil
+	}
+	if opts.command == "replay" {
+		return runReplayCommand(opts)
 	}
 	if opts.cwd == "" {
 		opts.cwd, err = os.Getwd()
@@ -454,7 +458,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
 			opts.command = arg
 			continue
 		}
@@ -462,6 +466,8 @@ func parse(args []string) (options, error) {
 		case arg == "--":
 			opts.args = append(opts.args, args[i+1:]...)
 			i = len(args)
+		case arg == "-" && opts.command == "replay":
+			opts.args = append(opts.args, arg)
 		case arg == "-h" || arg == "--help":
 			opts.help = true
 		case arg == "-v" || arg == "--version":
@@ -484,6 +490,8 @@ func parse(args []string) (options, error) {
 			opts.markdown = true
 		case arg == "--yes":
 			opts.yes = true
+		case arg == "--check":
+			opts.check = true
 		case arg == "--continue":
 			opts.cont = true
 		case arg == "--web":
@@ -615,6 +623,9 @@ func parse(args []string) (options, error) {
 	if opts.ephemeral && (opts.resume != "" || opts.cont) {
 		return opts, fmt.Errorf("--ephemeral cannot be combined with --resume or --continue")
 	}
+	if opts.check && opts.command != "replay" {
+		return opts, fmt.Errorf("--check is only available for `collo replay`")
+	}
 	return opts, nil
 }
 
@@ -677,6 +688,7 @@ Usage:
   collo mcp [list|show|add|remove|enable|disable|test]  manage persistent MCP servers (project and --global scopes)
   collo completion bash|zsh|fish|powershell  generate shell completion
   collo schema events                 print the embedded JSON Schema for JSONL events
+  collo replay [--check] <trace|->    validate and safely render a completed JSONL run trace
   collo version                       print build information
 
 Flags:
@@ -695,6 +707,7 @@ Flags:
   --no-alt-screen                      keep the final TUI frame in terminal scrollback
   --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled)
   --ephemeral                          (run) do not create or update a durable conversation session; audit and workspace changes still apply
+  --check                              (replay) validate the trace and print only its summary
   --debug                              write a redacted debug log (see collo doctor for path)
   --global                             target the user-wide config for init, skills, or MCP management
   --url <endpoint>                     (mcp add) configure a Streamable HTTP server
