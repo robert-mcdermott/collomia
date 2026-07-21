@@ -99,7 +99,7 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 
 type Options struct {
 	Workspace, Provider, Model, Autonomy string
-	Plan, Debug                          bool
+	Plan, Debug, Ephemeral               bool
 	// Resume loads an existing session ID; Continue resumes the most
 	// recently updated session. Otherwise a new session is created.
 	Resume   string
@@ -182,25 +182,31 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if !cfg.ProjectTrusted {
 		warnings = append(warnings, fmt.Errorf("workspace is not trusted: project configuration, skills, and instructions were ignored; run `collo trust` after reviewing %s", appconfig.ProjectFile))
 	}
-	// Durable session: create, resume by ID, or continue the latest.
-	store, storeErr := session.Open(workspace)
+	// Durable session: create, resume by ID, or continue the latest. Ephemeral
+	// runs deliberately skip even opening the session store; audit records,
+	// logs explicitly requested with --debug, and workspace changes remain.
+	var store *session.Store
+	var storeErr error
 	var sess *session.Session
-	if storeErr != nil {
-		warnings = append(warnings, fmt.Errorf("session persistence unavailable: %w", storeErr))
-	} else {
-		switch {
-		case opts.Resume != "":
-			sess, storeErr = store.Load(opts.Resume)
-		case opts.Continue:
-			var latest string
-			if latest, storeErr = store.Latest(); storeErr == nil {
-				sess, storeErr = store.Load(latest)
-			}
-		default:
-			sess, storeErr = store.New(providerName, model)
-		}
+	if !opts.Ephemeral {
+		store, storeErr = session.Open(workspace)
 		if storeErr != nil {
-			return nil, fmt.Errorf("session: %w", storeErr)
+			warnings = append(warnings, fmt.Errorf("session persistence unavailable: %w", storeErr))
+		} else {
+			switch {
+			case opts.Resume != "":
+				sess, storeErr = store.Load(opts.Resume)
+			case opts.Continue:
+				var latest string
+				if latest, storeErr = store.Latest(); storeErr == nil {
+					sess, storeErr = store.Load(latest)
+				}
+			default:
+				sess, storeErr = store.New(providerName, model)
+			}
+			if storeErr != nil {
+				return nil, fmt.Errorf("session: %w", storeErr)
+			}
 		}
 	}
 	// Structured plan artifact, maintained by the agent via update_plan and

@@ -2,6 +2,7 @@ package event
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -35,7 +36,10 @@ func TestJSONLWriterEmitsOneLinePerEvent(t *testing.T) {
 
 func TestRunResultRoundTrips(t *testing.T) {
 	e := New(KindRunResult)
-	e.Result = &RunResult{Status: "cancelled", Error: "context canceled", SessionID: "abc123", ChangedFiles: []string{"main.go"}, DurationMS: 1500}
+	e.Result = &RunResult{
+		Status: "cancelled", Error: "context canceled", Failure: &Failure{Kind: FailureCancelled}, Partial: true,
+		Ephemeral: true, Refused: true, SessionID: "abc123", ChangedFiles: []string{"main.go"}, DurationMS: 1500,
+	}
 	e.Usage = &Usage{InputTokens: 10, OutputTokens: 4}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -46,8 +50,54 @@ func TestRunResultRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" ||
+		decoded.Result.Failure == nil || decoded.Result.Failure.Kind != FailureCancelled || !decoded.Result.Partial || !decoded.Result.Ephemeral || !decoded.Result.Refused ||
 		len(decoded.Result.ChangedFiles) != 1 || decoded.Usage == nil || decoded.Usage.InputTokens != 10 {
 		t.Fatalf("round trip mismatch: %+v", decoded)
+	}
+}
+
+func TestEmbeddedJSONSchemaPublishesEveryEventKind(t *testing.T) {
+	data := JSONSchema()
+	if !json.Valid(data) {
+		t.Fatal("embedded event schema is not valid JSON")
+	}
+	var schema struct {
+		Schema     string `json:"$schema"`
+		Properties struct {
+			Schema struct {
+				Const int `json:"const"`
+			} `json:"schema"`
+			Kind struct {
+				Enum []string `json:"enum"`
+			} `json:"kind"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.Schema != "https://json-schema.org/draft/2020-12/schema" || schema.Properties.Schema.Const != SchemaVersion {
+		t.Fatalf("schema metadata=%+v", schema)
+	}
+	wantKinds := []Kind{
+		KindSessionStart, KindTurnStart, KindTextDelta, KindReasoningDelta, KindToolCallDelta,
+		KindToolStart, KindToolOutput, KindToolResult, KindPermissionRequest, KindPermissionDecision,
+		KindFileChange, KindPlanUpdate, KindUsage, KindCompaction, KindWarning, KindError, KindTurnEnd, KindRunResult,
+	}
+	for _, kind := range wantKinds {
+		if !slices.Contains(schema.Properties.Kind.Enum, string(kind)) {
+			t.Errorf("published schema is missing event kind %q", kind)
+		}
+	}
+	if len(schema.Properties.Kind.Enum) != len(wantKinds) {
+		t.Fatalf("published kinds=%v; want exactly %v", schema.Properties.Kind.Enum, wantKinds)
+	}
+}
+
+func TestJSONSchemaReturnsDefensiveCopy(t *testing.T) {
+	first := JSONSchema()
+	first[0] = 'x'
+	if second := JSONSchema(); len(second) == 0 || second[0] != '{' {
+		t.Fatal("caller mutated the embedded schema")
 	}
 }
 

@@ -84,7 +84,7 @@ func capabilityMatrix() []capabilityRow {
 		{"interface", "terminal ergonomics", "implemented", "80x24/narrow responsive layouts, alternate-screen config/CLI override, validated named keybindings shown in Help, and generated Bash/Zsh/Fish/PowerShell completion"},
 		{"interface", "notifications", "implemented", "terminal bell + OSC 9 desktop notification for approvals, questions, and long turns; options.notifications on|bell|off"},
 		{"interface", "PTY-backed browser terminal", "implemented", "`collo --web`; loopback-only, token-authenticated, embedded xterm.js; macOS/Linux (Windows ConPTY pending)"},
-		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; schema v1; final `run.result` line carries status (ok/error/cancelled), answer, changed files, and usage"},
+		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; embedded/published schema v1; exactly one final `run.result` with stable failure/refusal/partial metadata and exit codes; durable resume or session-free `--ephemeral`"},
 		{"platform", "macOS / Linux / Windows builds", "implemented", "CI-tested; browser terminal requires macOS/Linux until ConPTY support is added"},
 	}
 }

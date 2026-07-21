@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
@@ -48,6 +53,92 @@ func TestParseAlternateScreenOverride(t *testing.T) {
 	}
 	if opts.altScreen == nil || !*opts.altScreen {
 		t.Fatalf("alt-screen override=%v", opts.altScreen)
+	}
+}
+
+func TestParseEphemeralHeadlessRun(t *testing.T) {
+	opts, err := parse([]string{"run", "--jsonl", "--ephemeral", "summarize"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "run" || !opts.jsonl || !opts.ephemeral {
+		t.Fatalf("options=%+v", opts)
+	}
+	for _, args := range [][]string{
+		{"--ephemeral"},
+		{"review", "--ephemeral"},
+		{"run", "--ephemeral", "--continue", "summarize"},
+		{"run", "--ephemeral", "--resume", "session-1", "summarize"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Errorf("parse(%v) accepted incompatible ephemeral options", args)
+		}
+	}
+}
+
+func TestStableExitCodesAndFailureClassification(t *testing.T) {
+	usage := withCommandError(errors.New("bad flag"), exitUsage, event.FailureUsage)
+	if got := exitCode(usage); got != 2 || failureFor(usage).Kind != event.FailureUsage {
+		t.Fatalf("usage exit=%d failure=%+v", got, failureFor(usage))
+	}
+	cancelled := classifyCommandError(context.Canceled)
+	if got := exitCode(cancelled); got != 130 || failureFor(cancelled).Kind != event.FailureCancelled {
+		t.Fatalf("cancel exit=%d failure=%+v", got, failureFor(cancelled))
+	}
+	configuration := classifyCommandError(appconfig.ValidationError{Errors: []appconfig.FieldError{{Field: "providers", Message: "required"}}})
+	if got := exitCode(configuration); got != 2 || failureFor(configuration).Kind != event.FailureConfiguration {
+		t.Fatalf("configuration exit=%d failure=%+v", got, failureFor(configuration))
+	}
+	providerErr := &provider.Error{Provider: "openrouter/glm", Operation: "chat", Kind: provider.ErrorRateLimit, StatusCode: 429, Retryable: true, RequestID: "req-1"}
+	failure := failureFor(providerErr)
+	if exitCode(providerErr) != 1 || failure.Kind != event.FailureProvider || !failure.Retryable || failure.Provider == nil || failure.Provider.StatusCode != 429 {
+		t.Fatalf("provider failure=%+v", failure)
+	}
+}
+
+func TestRunResultEmitterProducesOneTerminalVerdict(t *testing.T) {
+	var out strings.Builder
+	writer := event.NewJSONLWriter(&out)
+	err := withCommandError(errors.New("missing prompt"), exitUsage, event.FailureUsage)
+	emitRunResult(writer, nil, options{ephemeral: true}, "partial answer", true, true, err, time.Now())
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("run result lines=%d: %q", len(lines), out.String())
+	}
+	var final event.Event
+	if decodeErr := json.Unmarshal([]byte(lines[0]), &final); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if final.Kind != event.KindRunResult || final.Result == nil || final.Result.Status != "error" ||
+		final.Result.Failure == nil || final.Result.Failure.Kind != event.FailureUsage || !final.Result.Partial || !final.Result.Ephemeral || !final.Result.Refused || final.Result.SessionID != "" {
+		t.Fatalf("final=%+v", final)
+	}
+}
+
+func TestRunObservationTracksPartialTextAndRefusal(t *testing.T) {
+	var observation runObservation
+	textEvent := event.New(event.KindTextDelta)
+	textEvent.Text = "partial answer"
+	observation.Observe(textEvent)
+	permissionEvent := event.New(event.KindPermissionDecision)
+	permissionEvent.Permission = &event.Permission{Allowed: false}
+	observation.Observe(permissionEvent)
+	answer, refused, progressed := observation.Snapshot()
+	if answer != "partial answer" || !refused || !progressed {
+		t.Fatalf("observation answer=%q refused=%t progressed=%t", answer, refused, progressed)
+	}
+}
+
+func TestSchemaCommandPrintsEmbeddedContract(t *testing.T) {
+	var out strings.Builder
+	if err := writeEventSchema(&out, []string{"events"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), string(event.JSONSchema()); got != want || !json.Valid([]byte(got)) {
+		t.Fatal("schema command did not print the valid embedded contract verbatim")
+	}
+	if err := writeEventSchema(&out, nil); err == nil {
+		t.Fatal("schema command accepted a missing contract name")
 	}
 }
 

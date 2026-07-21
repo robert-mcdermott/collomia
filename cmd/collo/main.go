@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,7 +18,9 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/redact"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -30,22 +33,82 @@ func main() {
 			os.Exit(exitErr.Code)
 		}
 		fmt.Fprintln(os.Stderr, "collo:", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
+const (
+	exitFailure   = 1
+	exitUsage     = 2
+	exitCancelled = 130
+)
+
+// commandError carries the stable process exit code and final-result failure
+// classification without changing the underlying human-readable error.
+type commandError struct {
+	code int
+	kind event.FailureKind
+	err  error
+}
+
+func (e *commandError) Error() string { return e.err.Error() }
+func (e *commandError) Unwrap() error { return e.err }
+
+func withCommandError(err error, code int, kind event.FailureKind) error {
+	if err == nil {
+		return nil
+	}
+	var existing *commandError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &commandError{code: code, kind: kind, err: err}
+}
+
+func classifyCommandError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *commandError
+	if errors.As(err, &existing) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) {
+		return withCommandError(err, exitCancelled, event.FailureCancelled)
+	}
+	var validation appconfig.ValidationError
+	if errors.As(err, &validation) {
+		return withCommandError(err, exitUsage, event.FailureConfiguration)
+	}
+	return err
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var commandErr *commandError
+	if errors.As(err, &commandErr) && commandErr.code > 0 {
+		return commandErr.code
+	}
+	if errors.Is(err, context.Canceled) {
+		return exitCancelled
+	}
+	return exitFailure
+}
+
 type options struct {
-	command, cwd, provider, model, autonomy      string
-	resume                                       string
-	mcpURL                                       string
-	webPort, mcpTimeout                          int
-	plan, global, help, version, jsonl           bool
-	strict, revoke, status, debug, markdown, yes bool
-	cont, withReference, web, webPortSet, noOpen bool
-	mcpTimeoutSet                                bool
-	altScreen                                    *bool
-	mcpEnv, mcpHeaders                           []string
-	args                                         []string
+	command, cwd, provider, model, autonomy       string
+	resume                                        string
+	mcpURL                                        string
+	webPort, mcpTimeout                           int
+	plan, global, help, version, jsonl, ephemeral bool
+	strict, revoke, status, debug, markdown, yes  bool
+	cont, withReference, web, webPortSet, noOpen  bool
+	mcpTimeoutSet                                 bool
+	altScreen                                     *bool
+	mcpEnv, mcpHeaders                            []string
+	args                                          []string
 }
 
 func run(args []string) error {
@@ -57,8 +120,9 @@ func run(args []string) error {
 	}
 	opts, err := parse(args)
 	if err != nil {
-		return err
+		return withCommandError(err, exitUsage, event.FailureUsage)
 	}
+	runStarted := time.Now()
 	if opts.help {
 		fmt.Print(helpText)
 		return nil
@@ -70,12 +134,12 @@ func run(args []string) error {
 	if opts.cwd == "" {
 		opts.cwd, err = os.Getwd()
 		if err != nil {
-			return err
+			return headlessStartupFailure(opts, classifyCommandError(err), runStarted)
 		}
 	}
 	opts.cwd, err = filepath.Abs(opts.cwd)
 	if err != nil {
-		return err
+		return headlessStartupFailure(opts, classifyCommandError(err), runStarted)
 	}
 	if opts.command == "init" {
 		path := filepath.Join(opts.cwd, appconfig.ProjectFile)
@@ -135,6 +199,11 @@ func run(args []string) error {
 		return runMCPCommand(opts)
 	case "completion":
 		return runCompletionCommand(opts)
+	case "schema":
+		if err := runSchemaCommand(opts); err != nil {
+			return withCommandError(err, exitUsage, event.FailureUsage)
+		}
+		return nil
 	}
 	if opts.web {
 		executable, err := os.Executable()
@@ -202,53 +271,90 @@ func usagePtr(u provider.Usage) *event.Usage {
 	return &event.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CachedTokens: u.CachedTokens, ReasoningTokens: u.ReasoningTokens}
 }
 
-func runNonInteractive(ctx context.Context, opts options) error {
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont})
-	if err != nil {
-		return err
+// runObservation collects the small amount of cross-event state needed by
+// run.result. Emit callbacks may arrive concurrently (for example, process
+// stdout/stderr), so observation must be safe even though JSONLWriter already
+// serializes the lines themselves.
+type runObservation struct {
+	mu             sync.Mutex
+	streamedAnswer strings.Builder
+	refused        bool
+	progressed     bool
+}
+
+func (o *runObservation) Observe(e event.Event) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	switch e.Kind {
+	case event.KindTextDelta:
+		o.streamedAnswer.WriteString(e.Text)
+		o.progressed = true
+	case event.KindReasoningDelta, event.KindToolCallDelta, event.KindToolStart, event.KindToolOutput, event.KindToolResult:
+		o.progressed = true
+	case event.KindPermissionDecision:
+		o.progressed = true
+		if e.Permission != nil && !e.Permission.Allowed {
+			o.refused = true
+		}
 	}
-	defer runtime.Close()
+}
+
+func (o *runObservation) Snapshot() (streamedAnswer string, refused, progressed bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.streamedAnswer.String(), o.refused, o.progressed
+}
+
+func runNonInteractive(ctx context.Context, opts options) (runErr error) {
+	started := time.Now()
+	var runtime *app.Runtime
+	var answer string
+	var observation runObservation
+	var writer *event.JSONLWriter
+	if opts.jsonl {
+		writer = event.NewJSONLWriter(os.Stdout)
+		writer.Redact = redact.New().Redact
+	}
+	defer func() {
+		if writer != nil {
+			streamedAnswer, refused, progressed := observation.Snapshot()
+			if runErr != nil && answer == "" {
+				answer = streamedAnswer
+			}
+			emitRunResult(writer, runtime, opts, answer, refused, progressed, runErr, started)
+		}
+		if runtime != nil {
+			runtime.Close()
+		}
+	}()
+
 	prompt := strings.TrimSpace(strings.Join(opts.args, " "))
 	if prompt == "" {
 		data, readErr := io.ReadAll(io.LimitReader(os.Stdin, 4*1024*1024))
 		if readErr != nil {
-			return readErr
+			return classifyCommandError(readErr)
 		}
 		prompt = strings.TrimSpace(string(data))
 	}
 	if prompt == "" {
-		return errors.New("run requires a prompt argument or stdin")
+		return withCommandError(errors.New("run requires a prompt argument or stdin"), exitUsage, event.FailureUsage)
+	}
+
+	var err error
+	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
+	if err != nil {
+		return classifyCommandError(err)
 	}
 	if opts.jsonl {
-		writer := event.NewJSONLWriter(os.Stdout)
 		writer.Redact = runtime.Redactor.Redact
-		started := time.Now()
-		answer, err := runtime.Agent.Run(ctx, prompt, func(e event.Event) {
+		answer, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
 			runtime.LogEvent(e)
+			observation.Observe(e)
 			writer.Handle(e)
 		})
-		// The final run.result line is the machine-readable verdict: stable
-		// status, the answer, and what changed — consumers should not have to
-		// reassemble text deltas or scan for error events.
-		result := event.RunResult{Status: "ok", Answer: answer, ChangedFiles: runtime.Changes.Changed(), DurationMS: time.Since(started).Milliseconds()}
-		switch {
-		case err == nil:
-		case errors.Is(err, context.Canceled):
-			result.Status, result.Error = "cancelled", err.Error()
-		default:
-			result.Status, result.Error = "error", err.Error()
-		}
-		if runtime.Session != nil {
-			result.SessionID = runtime.Session.Meta.ID
-		}
-		final := event.New(event.KindRunResult)
-		final.Result = &result
-		final.Usage = usagePtr(runtime.Agent.Usage())
-		runtime.LogEvent(final)
-		writer.Handle(final)
-		return err
+		return classifyCommandError(err)
 	}
-	_, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
+	answer, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
 		runtime.LogEvent(e)
 		switch e.Kind {
 		case event.KindTextDelta:
@@ -270,6 +376,77 @@ func runNonInteractive(ctx context.Context, opts options) error {
 	if err == nil {
 		fmt.Println()
 	}
+	return classifyCommandError(err)
+}
+
+func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options, answer string, refused, progressed bool, runErr error, started time.Time) {
+	result := event.RunResult{Status: "ok", Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds()}
+	var usage *event.Usage
+	if runtime != nil {
+		result.ChangedFiles = runtime.Changes.Changed()
+		usage = usagePtr(runtime.Agent.Usage())
+		if runtime.Session != nil {
+			result.SessionID = runtime.Session.Meta.ID
+		}
+	}
+	if runErr != nil {
+		result.Status = "error"
+		result.Error = runErr.Error()
+		failure := failureFor(runErr)
+		result.Failure = &failure
+		if failure.Kind == event.FailureCancelled {
+			result.Status = "cancelled"
+		}
+		result.Partial = progressed || strings.TrimSpace(answer) != "" || len(result.ChangedFiles) > 0
+	}
+	final := event.New(event.KindRunResult)
+	final.Result = &result
+	final.Usage = usage
+	if runtime != nil {
+		runtime.LogEvent(final)
+	}
+	writer.Handle(final)
+}
+
+func failureFor(err error) event.Failure {
+	if providerErr, ok := provider.AsError(err); ok {
+		kind := event.FailureProvider
+		if providerErr.Kind == provider.ErrorCancelled {
+			kind = event.FailureCancelled
+		} else if providerErr.Kind == provider.ErrorTimeout {
+			kind = event.FailureTimeout
+		}
+		return event.Failure{Kind: kind, Retryable: providerErr.Retryable, Provider: &event.ProviderFailure{
+			Name: providerErr.Provider, Operation: providerErr.Operation, Kind: string(providerErr.Kind), StatusCode: providerErr.StatusCode,
+			Retryable: providerErr.Retryable, RetryAfterMS: providerErr.RetryAfter.Milliseconds(), RequestID: providerErr.RequestID,
+		}}
+	}
+	var commandErr *commandError
+	if errors.As(err, &commandErr) && commandErr.kind != "" {
+		return event.Failure{Kind: commandErr.kind}
+	}
+	if errors.Is(err, context.Canceled) {
+		return event.Failure{Kind: event.FailureCancelled}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return event.Failure{Kind: event.FailureTimeout, Retryable: true}
+	}
+	if errors.Is(err, permission.ErrDenied) {
+		return event.Failure{Kind: event.FailurePermission}
+	}
+	var validation appconfig.ValidationError
+	if errors.As(err, &validation) {
+		return event.Failure{Kind: event.FailureConfiguration}
+	}
+	return event.Failure{Kind: event.FailureRuntime}
+}
+
+func headlessStartupFailure(opts options, err error, started time.Time) error {
+	if opts.jsonl && (opts.command == "run" || opts.command == "review" || opts.command == "verify") {
+		writer := event.NewJSONLWriter(os.Stdout)
+		writer.Redact = redact.New().Redact
+		emitRunResult(writer, nil, opts, "", false, false, err, started)
+	}
 	return err
 }
 
@@ -277,7 +454,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema") {
 			opts.command = arg
 			continue
 		}
@@ -293,6 +470,8 @@ func parse(args []string) (options, error) {
 			opts.plan = true
 		case arg == "--jsonl":
 			opts.jsonl = true
+		case arg == "--ephemeral":
+			opts.ephemeral = true
 		case arg == "--strict":
 			opts.strict = true
 		case arg == "--revoke":
@@ -430,6 +609,12 @@ func parse(args []string) (options, error) {
 	if opts.command != "mcp" && (opts.mcpURL != "" || opts.mcpTimeoutSet || len(opts.mcpEnv) > 0 || len(opts.mcpHeaders) > 0) {
 		return opts, fmt.Errorf("--url, --env, --header, and --timeout are only available for `collo mcp add`")
 	}
+	if opts.ephemeral && opts.command != "run" {
+		return opts, fmt.Errorf("--ephemeral is only available for `collo run`")
+	}
+	if opts.ephemeral && (opts.resume != "" || opts.cont) {
+		return opts, fmt.Errorf("--ephemeral cannot be combined with --resume or --continue")
+	}
 	return opts, nil
 }
 
@@ -491,6 +676,7 @@ Usage:
   collo skills [list|show|new|install|update|remove|enable|disable]  manage agent skills (project and --global scopes)
   collo mcp [list|show|add|remove|enable|disable|test]  manage persistent MCP servers (project and --global scopes)
   collo completion bash|zsh|fish|powershell  generate shell completion
+  collo schema events                 print the embedded JSON Schema for JSONL events
   collo version                       print build information
 
 Flags:
@@ -508,6 +694,7 @@ Flags:
   --alt-screen                         force the interactive TUI to use the alternate screen
   --no-alt-screen                      keep the final TUI frame in terminal scrollback
   --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled)
+  --ephemeral                          (run) do not create or update a durable conversation session; audit and workspace changes still apply
   --debug                              write a redacted debug log (see collo doctor for path)
   --global                             target the user-wide config for init, skills, or MCP management
   --url <endpoint>                     (mcp add) configure a Streamable HTTP server

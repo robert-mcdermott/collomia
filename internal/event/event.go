@@ -116,12 +116,48 @@ type FileChange struct {
 // use Status — not the presence of an error event mid-stream — to decide how
 // the run ended: "ok", "error", or "cancelled".
 type RunResult struct {
-	Status       string   `json:"status"`
-	Answer       string   `json:"answer,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Status  string   `json:"status"`
+	Answer  string   `json:"answer,omitempty"`
+	Error   string   `json:"error,omitempty"`
+	Failure *Failure `json:"failure,omitempty"`
+	// Partial is true when a failed or cancelled run produced visible text,
+	// tool activity, or changed files before it stopped. It is intentionally
+	// independent of Status so automation does not have to infer progress.
+	Partial bool `json:"partial,omitempty"`
+	// Ephemeral reports that this run deliberately omitted durable
+	// conversation/session persistence. Audit records and workspace changes
+	// are unaffected.
+	Ephemeral bool `json:"ephemeral,omitempty"`
+	// Refused reports that at least one requested action was denied by policy
+	// or could not obtain interactive approval. A run may still end "ok" when
+	// the agent recovers and explains the refusal.
+	Refused      bool     `json:"refused,omitempty"`
 	SessionID    string   `json:"session_id,omitempty"`
 	ChangedFiles []string `json:"changed_files,omitempty"`
 	DurationMS   int64    `json:"duration_ms"`
+}
+
+// FailureKind is the stable, provider-neutral reason a non-interactive run
+// did not complete. Provider-specific detail, when available, is nested in
+// Failure.Provider without changing the top-level classification.
+type FailureKind string
+
+const (
+	FailureUsage         FailureKind = "usage"
+	FailureConfiguration FailureKind = "configuration"
+	FailurePermission    FailureKind = "permission"
+	FailureProvider      FailureKind = "provider"
+	FailureTimeout       FailureKind = "timeout"
+	FailureCancelled     FailureKind = "cancelled"
+	FailureRuntime       FailureKind = "runtime"
+)
+
+// Failure adds machine-readable error classification to run.result. Error
+// remains the human-readable message for schema-v1 compatibility.
+type Failure struct {
+	Kind      FailureKind      `json:"kind"`
+	Retryable bool             `json:"retryable,omitempty"`
+	Provider  *ProviderFailure `json:"provider,omitempty"`
 }
 
 // Usage carries provider-reported token accounting.

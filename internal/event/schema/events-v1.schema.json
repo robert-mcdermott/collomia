@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/robert-mcdermott/collomia/main/internal/event/schema/events-v1.schema.json",
+  "title": "Collomia JSONL event schema v1",
+  "description": "One line emitted by collo run --jsonl. Additive optional fields may be introduced without changing the schema number.",
+  "type": "object",
+  "required": ["schema", "time", "kind"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": 1 },
+    "time": { "type": "string", "format": "date-time" },
+    "kind": {
+      "enum": [
+        "session.start",
+        "turn.start",
+        "text.delta",
+        "reasoning.delta",
+        "tool.call.delta",
+        "tool.start",
+        "tool.output",
+        "tool.result",
+        "permission.request",
+        "permission.decision",
+        "file.change",
+        "plan.update",
+        "usage",
+        "context.compaction",
+        "warning",
+        "error",
+        "turn.end",
+        "run.result"
+      ]
+    },
+    "turn": { "type": "integer", "minimum": 1 },
+    "text": { "type": "string" },
+    "tool": { "$ref": "#/$defs/tool" },
+    "permission": { "$ref": "#/$defs/permission" },
+    "file": { "$ref": "#/$defs/fileChange" },
+    "usage": { "$ref": "#/$defs/usage" },
+    "tool_call": { "$ref": "#/$defs/toolCallDelta" },
+    "result": { "$ref": "#/$defs/runResult" },
+    "provider": { "$ref": "#/$defs/providerFailure" },
+    "error": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "enum": ["text.delta", "reasoning.delta", "plan.update", "context.compaction", "warning"] } }, "required": ["kind"] },
+      "then": { "required": ["text"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "tool.call.delta" } }, "required": ["kind"] },
+      "then": { "required": ["tool_call"] }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["tool.start", "tool.output", "tool.result"] } }, "required": ["kind"] },
+      "then": { "required": ["tool"] }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["permission.request", "permission.decision"] } }, "required": ["kind"] },
+      "then": { "required": ["permission"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "file.change" } }, "required": ["kind"] },
+      "then": { "required": ["file"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "usage" } }, "required": ["kind"] },
+      "then": { "required": ["usage"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "error" } }, "required": ["kind"] },
+      "then": { "required": ["error"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "run.result" } }, "required": ["kind"] },
+      "then": { "required": ["result"] }
+    }
+  ],
+  "$defs": {
+    "toolCallDelta": {
+      "type": "object",
+      "required": ["index"],
+      "additionalProperties": true,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "arguments_delta": { "type": "string" },
+        "done": { "type": "boolean" }
+      }
+    },
+    "providerFailure": {
+      "type": "object",
+      "required": ["name", "kind", "retryable"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "operation": { "type": "string" },
+        "kind": { "type": "string" },
+        "status_code": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "retryable": { "type": "boolean" },
+        "retry_after_ms": { "type": "integer", "minimum": 0 },
+        "request_id": { "type": "string" }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "summary": { "type": "string" },
+        "output": { "type": "string" },
+        "is_error": { "type": "boolean" }
+      }
+    },
+    "permission": {
+      "type": "object",
+      "required": ["tool", "summary", "risk", "allowed"],
+      "additionalProperties": true,
+      "properties": {
+        "tool": { "type": "string" },
+        "summary": { "type": "string" },
+        "risk": { "type": "string" },
+        "resources": { "type": "array", "items": { "type": "string" } },
+        "source": { "type": "string" },
+        "rule": { "type": "string" },
+        "allowed": { "type": "boolean" }
+      }
+    },
+    "fileChange": {
+      "type": "object",
+      "required": ["path", "operation"],
+      "additionalProperties": true,
+      "properties": {
+        "path": { "type": "string" },
+        "operation": { "enum": ["write", "edit", "delete"] }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "required": ["input_tokens", "output_tokens"],
+      "additionalProperties": true,
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "cached_tokens": { "type": "integer", "minimum": 0 },
+        "reasoning_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": { "enum": ["usage", "configuration", "permission", "provider", "timeout", "cancelled", "runtime"] },
+        "retryable": { "type": "boolean" },
+        "provider": { "$ref": "#/$defs/providerFailure" }
+      }
+    },
+    "runResult": {
+      "type": "object",
+      "required": ["status", "duration_ms"],
+      "additionalProperties": true,
+      "properties": {
+        "status": { "enum": ["ok", "error", "cancelled"] },
+        "answer": { "type": "string" },
+        "error": { "type": "string" },
+        "failure": { "$ref": "#/$defs/failure" },
+        "partial": { "type": "boolean" },
+        "ephemeral": { "type": "boolean" },
+        "refused": { "type": "boolean" },
+        "session_id": { "type": "string" },
+        "changed_files": { "type": "array", "items": { "type": "string" } },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

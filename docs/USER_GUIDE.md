@@ -1886,6 +1886,15 @@ so they fail headlessly. This is intentional.
 collo run --jsonl --plan "Summarize the architecture" | jq .
 ```
 
+The complete, integration-focused contract—including every field, stable exit
+codes, failure classifications, ephemeral semantics, Bash/PowerShell pipeline
+patterns, and compatibility rules—is in the [automation guide](AUTOMATION.md).
+Print the exact schema embedded in your installed binary with:
+
+```sh
+collo schema events
+```
+
 Current one-shot runs emit these kinds as applicable:
 
 ```text
@@ -1924,9 +1933,13 @@ The last line is always `run.result`:
 }
 ```
 
-`status` is `ok`, `error`, or `cancelled`. Error results make `collo` exit
-non-zero after writing the final record. In shell pipelines, enable `pipefail`
-if the pipeline's exit code must reflect Collomia rather than the final parser:
+`status` is `ok`, `error`, or `cancelled`. Schema v1 adds optional structured
+`failure`, `partial`, and `refused` fields without changing those established
+status values. Error results make `collo` exit non-zero after writing the final
+record. Exit codes are 0 for success, 1 for execution/provider failure, 2 for
+usage/configuration failure, and 130 for cancellation. In shell pipelines,
+enable `pipefail` if the pipeline's exit code must reflect Collomia rather than
+the final parser:
 
 ```sh
 set -o pipefail
@@ -1942,6 +1955,30 @@ tail -n 1 run.jsonl | jq '.result, .usage'
 Provider-originated error events include a `provider` object with kind, HTTP
 status, retryability, retry delay, operation, and request ID when available.
 Secret redaction is applied before lines leave the process.
+
+Use `collo run --ephemeral` for a one-shot run that must not create or append a
+durable conversation session. It cannot be combined with `--resume` or
+`--continue`. Ephemeral runs still make permitted workspace changes and retain
+the normal audit ledger; `--debug` still writes its explicitly requested log.
+Combine `--ephemeral` with `--plan` when the task should also be read-only.
+
+### CI and scheduled automation examples
+
+The [automation guide](AUTOMATION.md#complete-automation-examples) includes two
+copy-ready, defensive examples:
+
+- a GitHub Actions pull-request review that installs Collomia, runs a
+  read-only ephemeral agent, preserves stdout/stderr separately, validates the
+  final `run.result`, and fails CI on errors, partial work, or denied actions;
+- a weekly cron maintenance report that defines the minimal cron environment,
+  loads provider credentials from a mode-0600 file, retains JSONL and stderr,
+  and writes the final answer and execution metadata to Markdown.
+
+Both use `--plan` because unattended examples should not modify a checkout by
+default. A CI job may deliberately use `--autopilot` in a disposable checkout,
+but must still use narrow permission rules and retain the resulting diff for
+human review. `--ephemeral` suppresses conversation persistence only; it does
+not roll back changes or suppress the audit ledger.
 
 ### Code review
 
@@ -2000,6 +2037,7 @@ collo sessions list|show|fork|rename|archive|unarchive|delete
 collo skills list|show|new|install|update|remove|enable|disable
 collo mcp list|show|add|remove|enable|disable|test
 collo completion bash|zsh|fish|powershell
+collo schema events
 collo version
 ```
 
@@ -2021,6 +2059,7 @@ Common flags:
 --alt-screen                         force the alternate-screen TUI
 --no-alt-screen                      retain the final TUI frame in scrollback
 --jsonl                              JSONL output for `run`
+--ephemeral                          skip durable session storage for `run`
 --debug                              redacted debug log
 --strict                             strict config/doctor validation
 --global                             user scope for init/new/install/update

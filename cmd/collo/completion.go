@@ -7,13 +7,13 @@ import (
 
 var completionCommands = []string{
 	"tui", "run", "init", "config", "trust", "doctor", "capabilities",
-	"policy", "review", "verify", "sessions", "skills", "mcp", "completion", "version",
+	"policy", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "version",
 }
 
 var completionFlags = []string{
 	"--help", "--version", "--cwd", "--provider", "--model", "--autonomy",
 	"--autopilot", "--workspace", "--plan", "--resume", "--continue", "--web",
-	"--web-port", "--no-open", "--alt-screen", "--no-alt-screen", "--jsonl",
+	"--web-port", "--no-open", "--alt-screen", "--no-alt-screen", "--jsonl", "--ephemeral",
 	"--debug", "--global", "--strict", "--yes", "--with-reference",
 }
 
@@ -42,6 +42,7 @@ _collo() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   case "$prev" in
     completion) COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "$cur") ); return ;;
+    schema) COMPREPLY=( $(compgen -W "events" -- "$cur") ); return ;;
     config) COMPREPLY=( $(compgen -W "show validate reference" -- "$cur") ); return ;;
     sessions) COMPREPLY=( $(compgen -W "list show fork rename archive unarchive delete" -- "$cur") ); return ;;
     skills) COMPREPLY=( $(compgen -W "list show new install update remove enable disable" -- "$cur") ); return ;;

@@ -2,7 +2,7 @@
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with built-in OS sandbox backends on all three platforms — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
-New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
+New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. CI and integration authors can use the dedicated [automation and JSONL contract](docs/AUTOMATION.md). Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
@@ -24,7 +24,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, and a maintained [capability matrix](docs/CAPABILITIES.md).
-- Schema-versioned JSONL event stream for automation (`collo run --jsonl`), with `--resume`/`--continue` for headless runs.
+- Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, and session-free `--ephemeral` runs.
 - Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK.
 - **Multi-agent delegation**: the `delegate` tool runs up to six sub-agent tasks concurrently (bounded to four at once). Read-only tasks share the workspace; write-capable tasks get their own isolated git worktree so parallel agents never race on the same files, with sibling-conflict detection across a batch. Optional named agent profiles (model, role instructions, tool allowlist) live in configuration.
@@ -163,6 +163,7 @@ collo review [ref] [instructions…]  review pending changes ('-' = uncommitted)
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
 collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
 collo completion bash|zsh|fish|powershell  generate shell completion
+collo schema events                 print the embedded JSON Schema for JSONL events
 collo version                       print build information
 ```
 
@@ -183,6 +184,7 @@ Useful flags:
 --alt-screen                         force the alternate-screen TUI
 --no-alt-screen                      retain the final TUI frame in scrollback
 --jsonl                              (run) emit schema-versioned JSONL events on stdout
+--ephemeral                          (run) skip durable conversation/session storage
 --debug                              write a redacted debug log
 --global                             (init) create the user-wide config instead of a project config
 --with-reference                     (init) also write the non-loaded annotated JSONC reference
@@ -198,15 +200,16 @@ collo run --autopilot "Fix the failing Go tests and verify the result"
 git diff | collo run --plan "Review this patch"
 collo run --resume <session-id> "Continue where we left off"
 collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
+collo run --jsonl --ephemeral --plan "Inspect this checkout without saving a conversation" | jq .
 ```
 
-With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors. Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event (for example, `{"kind":"rate_limit","status_code":429,"retryable":true,"retry_after_ms":3000,"request_id":"…"}`):
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and an actual run always ends with a `run.result` record after successful argument parsing — including prompt, configuration, provider, permission, timeout, and cancellation failures (`--help`/`--version` remain informational commands). Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event and the final result. Print the exact contract with `collo schema events`; see the [automation guide](docs/AUTOMATION.md) for all fields, failure kinds, and pipeline patterns.
 
 ```json
 {"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
 ```
 
-`status` is `ok`, `error`, or `cancelled` (interrupt); on non-`ok` the record carries the error and the process exits non-zero. Pull just the verdict with `... --jsonl | tail -1 | jq .result`.
+`status` remains `ok`, `error`, or `cancelled` for schema-v1 compatibility. Optional `failure`, `partial`, and `refused` fields make non-success and denied-action outcomes explicit. Exit codes are `0` success, `1` runtime/provider failure, `2` usage or configuration failure, and `130` cancellation. Pull just the verdict with `... --jsonl | tail -1 | jq .result`.
 
 ## Browser terminal
 

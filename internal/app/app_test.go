@@ -30,6 +30,29 @@ func isolateGlobalFiles(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 }
 
+func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	runtime, err := New(context.Background(), Options{Workspace: workspace, Ephemeral: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if runtime.Sessions != nil || runtime.Session != nil {
+		t.Fatalf("ephemeral runtime opened durable session state: store=%v session=%v", runtime.Sessions, runtime.Session)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".collomia", "sessions")); !os.IsNotExist(err) {
+		t.Fatalf("ephemeral run created sessions directory: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(home, ".collomia", "audit")); err != nil || !info.IsDir() {
+		t.Fatalf("audit infrastructure should remain available: info=%v err=%v", info, err)
+	}
+}
+
 func (s *scriptedClient) Name() string { return "scripted" }
 func (s *scriptedClient) Chat(_ context.Context, _ provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
 	step := s.steps[min(s.calls, len(s.steps)-1)]
