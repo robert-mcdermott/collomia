@@ -2195,9 +2195,9 @@ Inside the TUI:
 /mcp reconnect docs          reconnect and refresh the tool catalog
 /mcp disable docs            disconnect for this session and withdraw tools
 /mcp enable docs             reconnect a trusted configured server
-/mcp add scratch npx -y @modelcontextprotocol/server-filesystem .
+/mcp add time uvx mcp-server-time
 /mcp add remote --url https://example.com/mcp
-/mcp remove scratch
+/mcp remove time
 ```
 
 Runtime-added servers are an explicit user action, session-scoped, and not
@@ -2211,6 +2211,83 @@ Status also shows the negotiated MCP protocol revision, catalogs that promised
 `list_changed` notifications, notification count, pending catalog reads, and
 the last catalog error. `refresh` is less disruptive than `reconnect`: it keeps
 the current transport/session and reloads only the tool definitions.
+
+### Quick MCP test: current time
+
+The official time server is a useful first MCP test because it adds timezone
+functionality that Collomia's built-in workspace tools do not already provide.
+It requires [`uvx`](https://docs.astral.sh/uv/), which is installed with `uv`.
+
+From inside the Collomia TUI, run:
+
+```text
+/mcp add time uvx mcp-server-time
+```
+
+On Windows, a normal `uv` installation makes `uvx.exe` directly available, so
+the same command should work. If `uvx` is available only through the command
+shell on that machine, use:
+
+```text
+/mcp add time cmd /c uvx mcp-server-time
+```
+
+The first run may use the network to download the official
+[`mcp-server-time`](https://github.com/modelcontextprotocol/servers/tree/main/src/time)
+package. Check the connection:
+
+```text
+/mcp status
+```
+
+A healthy entry looks conceptually like this; exact versions and tool counts
+may change with the server release:
+
+```text
+● time — connected (stdio, session-only)
+    server: mcp-time <version>
+    protocol: <negotiated revision>
+    capabilities: tools
+    tools: <count> registered
+```
+
+Now ask Collomia:
+
+```text
+Use the time MCP server to tell me the current time in Japan.
+```
+
+The transcript should show a tool such as `mcp_time_get_current_time` before
+the answer. The call is external-risk, so it may require approval under your
+permission policy. Remove the test server when finished:
+
+```text
+/mcp remove time
+```
+
+Because `/mcp add` is session-scoped, exiting Collomia also removes it. To make
+the server available in future sessions, put the equivalent reviewed entry in
+the global or project configuration:
+
+```json
+{
+  "mcp": {
+    "time": {
+      "transport": "stdio",
+      "trusted": true,
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "timeout_seconds": 30
+    }
+  }
+}
+```
+
+For this smoke test, prefer the time server over the filesystem server.
+Collomia already has native workspace-aware file tools, so adding a filesystem
+MCP server usually duplicates capabilities while adding another process and
+trust boundary. Filesystem MCP remains useful for MCP interoperability testing
+or deliberately exposing a separately constrained directory.
 
 ### MCP tools and permissions
 

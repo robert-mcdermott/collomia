@@ -794,12 +794,21 @@ Servers are managed at runtime without restarting:
 /mcp reconnect docs         tear down and re-establish the session, refreshing its tool catalog
 /mcp disable docs           close the server and withdraw its tools for this session
 /mcp enable docs            bring it back (cannot override missing trust)
-/mcp add scratch npx -y @modelcontextprotocol/server-filesystem .
+/mcp add time uvx mcp-server-time
 /mcp add remote --url https://example.com/mcp
-/mcp remove scratch         disconnect and forget (configured servers return next start)
+/mcp remove time            disconnect and forget (configured servers return next start)
 ```
 
 Untrusted, disabled, and failed servers stay visible in `/mcp status` with their exact initialization errors instead of silently disappearing, so a misconfigured server is diagnosable from inside the session. Servers added with `/mcp add` are session-scoped and user-initiated (the trust gate quarantines *repository-supplied* configuration, not your own commands); add them to the configuration file to keep them.
+
+For a quick functional test, install [uv](https://docs.astral.sh/uv/), run the
+`/mcp add time …` command above, and ask: `Use the time MCP server to tell me
+the current time in Japan.` The first launch may download the official
+[`mcp-server-time`](https://github.com/modelcontextprotocol/servers/tree/main/src/time)
+package. `/mcp status` should show `time` as connected and session-only with a
+negotiated protocol revision and registered tools. This demonstrates an MCP
+capability Collomia does not already provide; its native file tools are usually
+preferable to adding a redundant filesystem MCP server.
 
 Beyond tools, Collomia uses two more MCP capabilities when a server negotiates them:
 
