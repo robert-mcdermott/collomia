@@ -462,3 +462,47 @@ func TestValidateNotifications(t *testing.T) {
 		t.Fatal("expected options.notifications error")
 	}
 }
+
+func TestValidateKeybindings(t *testing.T) {
+	cfg := Defaults()
+	cfg.Options.Keybindings["next_tab"] = "alt+t"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid keybinding override: %v", err)
+	}
+
+	cfg = Defaults()
+	cfg.Options.Keybindings["unknown_action"] = "ctrl+u"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "options.keybindings.unknown_action") {
+		t.Fatalf("unknown action error=%v", err)
+	}
+
+	cfg = Defaults()
+	cfg.Options.Keybindings["next_tab"] = cfg.Options.Keybindings["diff_view"]
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "already assigned") {
+		t.Fatalf("duplicate key error=%v", err)
+	}
+
+	cfg = Defaults()
+	cfg.Options.Keybindings["next_tab"] = "shift+space"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported key") {
+		t.Fatalf("unsupported key error=%v", err)
+	}
+}
+
+func TestPartialKeybindingOverrideInheritsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, `{"options":{"alternate_screen":false,"keybindings":{"next_tab":"alt+t"}}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Options.AlternateScreen {
+		t.Fatal("project alternate_screen=false was not applied")
+	}
+	if got := cfg.Options.Keybindings["next_tab"]; got != "alt+t" {
+		t.Fatalf("next_tab=%q", got)
+	}
+	if got := cfg.Options.Keybindings["diff_view"]; got != "ctrl+d" {
+		t.Fatalf("omitted keybinding did not inherit default: %q", got)
+	}
+}

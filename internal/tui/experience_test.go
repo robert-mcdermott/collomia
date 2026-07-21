@@ -74,6 +74,37 @@ func TestSkillPickerWithoutSkills(t *testing.T) {
 	}
 }
 
+func TestAgentPickerShowsDelegatedOutcome(t *testing.T) {
+	m := newTestModel(t)
+	m.runtime.Team.Start("delegate-1", "security-audit", "Review authentication", false)
+	m.runtime.Team.Finish("delegate-1", "No critical findings; test token sk-1234567890abcdef", []string{"internal/auth.go"}, "", "", nil)
+	(&m).slash("/agents")
+	if m.picker == nil || len(m.picker.matches) != 1 {
+		t.Fatalf("agent picker missing: %+v", m.picker)
+	}
+	if got := m.picker.matches[0]; got.title != "security-audit" || !strings.Contains(got.desc, "done") {
+		t.Fatalf("unexpected agent item: %+v", got)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "panel" || last.title != "Agent · security-audit" || !strings.Contains(last.content, "No critical findings") || !strings.Contains(last.content, "[redacted]") || strings.Contains(last.content, "sk-1234567890abcdef") {
+		t.Fatalf("agent detail panel missing: %+v", last)
+	}
+}
+
+func TestAgentPickerWithoutDelegatesExplainsFeature(t *testing.T) {
+	m := newTestModel(t)
+	(&m).slash("/agents")
+	if m.picker != nil {
+		t.Fatal("empty agent list should not open a picker")
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "panel" || !strings.Contains(last.content, "delegate tool") {
+		t.Fatalf("expected delegated-agent guidance, got %+v", last)
+	}
+}
+
 func TestPanelTextIsThemedNotDefault(t *testing.T) {
 	for _, theme := range themes {
 		got := theme.panelText()

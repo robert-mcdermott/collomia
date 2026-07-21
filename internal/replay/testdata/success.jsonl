@@ -1,0 +1,9 @@
+{"schema":1,"time":"2026-07-21T12:00:00Z","kind":"turn.start"}
+{"schema":1,"time":"2026-07-21T12:00:01Z","kind":"permission.decision","permission":{"tool":"read_file","summary":"read hello.go","risk":"read","resources":["hello.go"],"source":"mode","allowed":true}}
+{"schema":1,"time":"2026-07-21T12:00:02Z","kind":"tool.start","tool":{"name":"read_file","summary":"read hello.go"}}
+{"schema":1,"time":"2026-07-21T12:00:03Z","kind":"tool.output","tool":{"name":"read_file","output":"package main\n"}}
+{"schema":1,"time":"2026-07-21T12:00:04Z","kind":"tool.result","tool":{"name":"read_file","summary":"read hello.go","output":"package main\n\nfunc main() {}"}}
+{"schema":1,"time":"2026-07-21T12:00:05Z","kind":"text.delta","text":"The program has an empty main function."}
+{"schema":1,"time":"2026-07-21T12:00:06Z","kind":"usage","usage":{"input_tokens":120,"output_tokens":18,"cached_tokens":40}}
+{"schema":1,"time":"2026-07-21T12:00:07Z","kind":"turn.end"}
+{"schema":1,"time":"2026-07-21T12:00:08Z","kind":"run.result","result":{"status":"ok","answer":"The program has an empty main function.","session_id":"fixture-session","changed_files":[],"duration_ms":8000},"usage":{"input_tokens":120,"output_tokens":18,"cached_tokens":40}}

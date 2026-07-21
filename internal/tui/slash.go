@@ -160,6 +160,21 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			break
 		}
 		m.openSkillPicker()
+	case "/agents":
+		m.openAgentPicker()
+	case "/prompt":
+		path, err := promptPathArgument(line)
+		if err != nil {
+			m.addError(fmt.Errorf("usage: /prompt [workspace-file]: %w", err))
+			break
+		}
+		if path == "" {
+			m.openPromptFilePicker()
+			break
+		}
+		if err := m.loadPromptFile(path); err != nil {
+			m.addError(err)
+		}
 	case "/mcp":
 		if len(args) > 0 {
 			m.mcpCommand(args)
@@ -181,12 +196,9 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.applyTheme(t)
 		m.addSystem("Theme switched to " + t.Name + ".")
 	case "/diff":
-		diff := m.runtime.Changes.Diff(m.runtime.Workspace)
-		if strings.TrimSpace(diff) == "" {
-			m.addSystem("No agent file changes this session.")
-			break
-		}
-		m.blocks = append(m.blocks, block{role: "tool-result", content: "```diff\n" + diff + "```"})
+		m.openDiffView()
+	case "/transcript":
+		m.openTranscriptView()
 	case "/undo":
 		snapshot, err := m.runtime.Changes.Undo()
 		if err != nil {

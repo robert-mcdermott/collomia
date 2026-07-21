@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -252,6 +253,122 @@ func TestFileMentionPickerInsertsPath(t *testing.T) {
 	m = typeKeys(t, m, "mail user@")
 	if m.picker != nil {
 		t.Fatal("@ inside a word must not open the picker")
+	}
+}
+
+func TestFileMentionPickerIncludesFoldersAndQuotesSpaces(t *testing.T) {
+	m := newTestModel(t)
+	dir := filepath.Join(m.runtime.Workspace, "docs and notes")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "guide.md"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m = typeKeys(t, m, "review @")
+	if m.picker == nil {
+		t.Fatal("typing @ should open the path picker")
+	}
+	m = typeKeys(t, m, "docs and notes/")
+	if len(m.picker.matches) == 0 || m.picker.matches[0].id != "docs and notes/" || m.picker.matches[0].desc != "folder" {
+		t.Fatalf("picker should match the folder, got %+v", m.picker.matches)
+	}
+	m = press(t, m, tea.KeyEnter)
+	if got := m.input.Value(); got != `review "docs and notes/" ` {
+		t.Fatalf("folder mention should be quoted as one path, got %q", got)
+	}
+}
+
+func TestPromptFileLoadsIntoComposer(t *testing.T) {
+	m := newTestModel(t)
+	dir := filepath.Join(m.runtime.Workspace, "prompt files")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "review.md"), []byte("Review this change.\nFocus on correctness."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, cmd := (&m).slash(`/prompt "prompt files/review.md"`); cmd != nil {
+		t.Fatal("loading a prompt file should not start a turn")
+	}
+	if got := m.input.Value(); !strings.Contains(got, "[Prompt loaded from") || !strings.Contains(got, "Focus on correctness") {
+		t.Fatalf("prompt was not loaded into composer: %q", got)
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "system" || !strings.Contains(last.content, "Review or edit it") {
+		t.Fatalf("missing review guidance: %+v", last)
+	}
+}
+
+func TestPromptWithoutPathOpensFilePicker(t *testing.T) {
+	m := newTestModel(t)
+	if err := os.WriteFile(filepath.Join(m.runtime.Workspace, "task.txt"), []byte("Do the task"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	(&m).slash("/prompt")
+	if m.picker == nil || m.picker.title != "Load prompt from file" {
+		t.Fatalf("/prompt should open a file picker, got %+v", m.picker)
+	}
+	m = typeKeys(t, m, "task")
+	m = press(t, m, tea.KeyEnter)
+	if !strings.Contains(m.input.Value(), "Do the task") {
+		t.Fatalf("picker did not load the selected prompt: %q", m.input.Value())
+	}
+}
+
+func TestPromptFileRejectsBinaryAndOutsideWorkspace(t *testing.T) {
+	m := newTestModel(t)
+	if err := os.WriteFile(filepath.Join(m.runtime.Workspace, "image.bin"), []byte{'P', 'N', 'G', 0, 1}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	(&m).slash("/prompt image.bin")
+	if last := m.blocks[len(m.blocks)-1]; last.role != "error" || !strings.Contains(last.content, "UTF-8 text") {
+		t.Fatalf("binary input should be rejected clearly, got %+v", last)
+	}
+	if err := os.WriteFile(filepath.Join(m.runtime.Workspace, "control.txt"), []byte("hello\x1b[2J"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	(&m).slash("/prompt control.txt")
+	if last := m.blocks[len(m.blocks)-1]; last.role != "error" || !strings.Contains(last.content, "terminal control") {
+		t.Fatalf("terminal controls should be rejected, got %+v", last)
+	}
+	if err := os.WriteFile(filepath.Join(m.runtime.Workspace, "huge.txt"), bytes.Repeat([]byte{'x'}, maxPromptFileBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	(&m).slash("/prompt huge.txt")
+	if last := m.blocks[len(m.blocks)-1]; last.role != "error" || !strings.Contains(last.content, "limit") {
+		t.Fatalf("oversized prompt should be rejected, got %+v", last)
+	}
+
+	external := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(external, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	(&m).slash("/prompt " + quoteComposerPath(external))
+	if last := m.blocks[len(m.blocks)-1]; last.role != "error" || !strings.Contains(last.content, "outside the active workspace") {
+		t.Fatalf("outside prompt input should be rejected, got %+v", last)
+	}
+}
+
+func TestParseTerminalPath(t *testing.T) {
+	tests := map[string]string{
+		`docs/review.md`:             `docs/review.md`,
+		`docs/review\ this.md`:       `docs/review this.md`,
+		`"docs/review this.md"`:      `docs/review this.md`,
+		`'docs/review this.md'`:      `docs/review this.md`,
+		`"C:\Users\me\review.md"`:    `C:\Users\me\review.md`,
+		`file:///tmp/review%20me.md`: filepath.FromSlash(`/tmp/review me.md`),
+	}
+	for raw, want := range tests {
+		got, err := parseTerminalPath(raw)
+		if err != nil || got != want {
+			t.Errorf("parseTerminalPath(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{`docs/review this.md`, `"unterminated`} {
+		if _, err := parseTerminalPath(raw); err == nil {
+			t.Errorf("parseTerminalPath(%q) should fail", raw)
+		}
 	}
 }
 

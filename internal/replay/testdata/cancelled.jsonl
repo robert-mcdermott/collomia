@@ -1,0 +1,6 @@
+{"schema":1,"time":"2026-07-21T13:00:00Z","kind":"turn.start"}
+{"schema":1,"time":"2026-07-21T13:00:01Z","kind":"permission.decision","permission":{"tool":"run_command","summary":"run the test suite","risk":"execute","source":"interactive","allowed":true}}
+{"schema":1,"time":"2026-07-21T13:00:02Z","kind":"tool.start","tool":{"name":"run_command","summary":"run the test suite"}}
+{"schema":1,"time":"2026-07-21T13:00:03Z","kind":"tool.output","tool":{"name":"run_command","output":"running package one\r\nrunning package two\r\n"}}
+{"schema":1,"time":"2026-07-21T13:00:04Z","kind":"error","error":"context canceled"}
+{"schema":1,"time":"2026-07-21T13:00:05Z","kind":"run.result","result":{"status":"cancelled","answer":"","error":"context canceled","failure":{"kind":"cancelled"},"partial":true,"ephemeral":true,"duration_ms":5000}}

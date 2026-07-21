@@ -21,6 +21,22 @@ func TestUnifiedDiff(t *testing.T) {
 	}
 }
 
+func TestAlignForSideBySideReview(t *testing.T) {
+	rows := Align("one\ntwo\nthree\n", "one\nTWO\nthree\nfour\n")
+	var deleted, added bool
+	for _, row := range rows {
+		if row.Kind == '-' && row.Left == "two" && row.LeftNumber == 2 && row.RightNumber == 0 {
+			deleted = true
+		}
+		if row.Kind == '+' && row.Right == "TWO" && row.RightNumber == 2 && row.LeftNumber == 0 {
+			added = true
+		}
+	}
+	if !deleted || !added {
+		t.Fatalf("aligned rows missing replacement: %+v", rows)
+	}
+}
+
 func TestTrackerDiffAndUndo(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a.txt")

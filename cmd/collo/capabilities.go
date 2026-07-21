@@ -77,9 +77,15 @@ func capabilityMatrix() []capabilityRow {
 		{"subagents", "named agent profiles", "implemented", "config `agents.<name>` sets model/role instructions/tool allowlist/iteration budget; selected per task via delegate's `agent` field"},
 		{"subagents", "sibling conflict detection", "implemented", "a delegate batch flags files touched by more than one sub-agent's worktree; nothing is auto-reconciled"},
 		{"interface", "TUI (themes, palette, tabs, status bar)", "implemented", "19 themes incl. `plain`; NO_COLOR honored; fuzzy pickers stay compact; approvals, hunk review, and questions use centered theme-aware dialogs; Markdown/read_file/diff source is syntax-highlighted"},
+		{"interface", "workspace input", "implemented", "@ fuzzy-picks files/folders with safe path quoting; /prompt loads a workspace UTF-8 file into the reviewable composer, including quoted, escaped, file-URL, and drag-and-drop paths; binary/multimodal attachments remain unsupported"},
+		{"interface", "delegated-agent browser", "implemented", "/agents fuzzy-searches current-session delegates and shows status, task, duration, redacted outcome, changed files, and retained worktree/branch details"},
+		{"interface", "transcript navigation and copy", "implemented", "full-screen raw transcript browser with message navigation, search, live scroll preservation, and bounded OSC 52 copy for one message or the complete transcript"},
+		{"interface", "interactive diff review", "implemented", "full-screen changed-file browser; responsive unified/side-by-side layouts, folded unchanged regions, file/hunk navigation, line numbers, and theme-aware additions/deletions"},
+		{"interface", "terminal ergonomics", "implemented", "80x24/narrow responsive layouts, alternate-screen config/CLI override, validated named keybindings shown in Help, and generated Bash/Zsh/Fish/PowerShell completion"},
 		{"interface", "notifications", "implemented", "terminal bell + OSC 9 desktop notification for approvals, questions, and long turns; options.notifications on|bell|off"},
 		{"interface", "PTY-backed browser terminal", "implemented", "`collo --web`; loopback-only, token-authenticated, embedded xterm.js; macOS/Linux (Windows ConPTY pending)"},
-		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; schema v1; final `run.result` line carries status (ok/error/cancelled), answer, changed files, and usage"},
+		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; embedded/published schema v1; exactly one final `run.result` with stable failure/refusal/partial metadata and exit codes; durable resume or session-free `--ephemeral`"},
+		{"interface", "offline trace replay", "implemented", "`collo replay [--check] <trace|->` validates completed schema-v1 JSONL lifecycle/result consistency and renders a control-safe, best-effort-redacted transcript without loading config, providers, sessions, or tools"},
 		{"platform", "macOS / Linux / Windows builds", "implemented", "CI-tested; browser terminal requires macOS/Linux until ConPTY support is added"},
 	}
 }

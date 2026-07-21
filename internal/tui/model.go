@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
@@ -79,6 +80,11 @@ type Model struct {
 
 	renderer      *glamour.TermRenderer
 	rendererWidth int
+
+	chatFollow bool
+	tabOffsets [tabCount]int
+	transcript *transcriptState
+	diffView   *diffViewState
 }
 
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
@@ -99,7 +105,7 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	in.Focus()
 	spin := spinner.New()
 	spin.Spinner = spinner.Points
-	m := Model{runtime: runtime, broker: broker, input: in, spinner: spin, started: time.Now()}
+	m := Model{runtime: runtime, broker: broker, input: in, spinner: spin, started: time.Now(), chatFollow: true}
 	m.applyTheme(theme)
 	for _, warning := range runtime.Warnings {
 		m.blocks = append(m.blocks, block{role: "error", content: warning.Error()})
@@ -133,11 +139,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		oldOffset := m.viewport.YOffset
+		wasBottom := !m.vpInit || m.viewport.AtBottom()
 		m.width, m.height = msg.Width, msg.Height
 		m.renderer = nil
 		m.ready = true
 		m.layout()
-		m.refresh()
+		m.refreshAt(oldOffset, wasBottom)
+		m.resizeFullScreenViews()
 	case approvalMsg:
 		env := msg.envelope
 		m.pending = &env
@@ -219,14 +228,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		}
-		if key == "ctrl+t" {
-			m.tab = (m.tab + 1) % tabCount
+		if m.transcript != nil {
+			return m.handleTranscriptKey(msg)
+		}
+		if m.diffView != nil {
+			return m.handleDiffViewKey(msg)
+		}
+		if m.keyIs("next_tab", key) {
+			m.switchTab((m.tab + 1) % tabCount)
+			return m, nil
+		}
+		if m.keyIs("toggle_tool_output", key) {
+			m.expandTools = !m.expandTools
 			m.refresh()
 			return m, nil
 		}
-		if key == "ctrl+o" {
-			m.expandTools = !m.expandTools
-			m.refresh()
+		if m.keyIs("transcript_view", key) {
+			m.openTranscriptView()
+			return m, nil
+		}
+		if m.keyIs("diff_view", key) {
+			m.openDiffView()
+			return m, nil
+		}
+		if m.keyIs("page_up", key) {
+			m.viewport.PageUp()
+			m.chatFollow = false
+			m.tabOffsets[m.tab] = m.viewport.YOffset
+			return m, nil
+		}
+		if m.keyIs("page_down", key) {
+			m.viewport.PageDown()
+			if m.tab == tabChat && m.viewport.AtBottom() {
+				m.chatFollow = true
+			}
+			m.tabOffsets[m.tab] = m.viewport.YOffset
+			return m, nil
+		}
+		if m.keyIs("scroll_top", key) {
+			m.viewport.GotoTop()
+			if m.tab == tabChat {
+				m.chatFollow = false
+			}
+			m.tabOffsets[m.tab] = m.viewport.YOffset
+			return m, nil
+		}
+		if m.keyIs("scroll_bottom", key) {
+			m.viewport.GotoBottom()
+			if m.tab == tabChat {
+				m.chatFollow = true
+			}
+			m.tabOffsets[m.tab] = m.viewport.YOffset
 			return m, nil
 		}
 		if key == "esc" && m.busy && m.cancel != nil {
@@ -272,7 +324,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.input.Reset()
 				m.paletteOn = false
-				m.tab = tabChat
+				m.switchTab(tabChat)
 				quit, cmd := m.slash(line)
 				m.updatePalette()
 				m.layout()
@@ -289,7 +341,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.Reset()
-			m.tab = tabChat
+			m.switchTab(tabChat)
 			if strings.HasPrefix(value, "/") {
 				quit, cmd := m.slash(value)
 				m.updatePalette()
@@ -309,10 +361,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	// The viewport's default keymap also binds letters (u/d, j/k, b/f), which
-	// would scroll the transcript while the user types a prompt. Only page
-	// keys reach the viewport; mouse wheel events pass through unaffected.
-	if key, isKey := msg.(tea.KeyMsg); !isKey || key.String() == "pgup" || key.String() == "pgdown" {
+	// would scroll the transcript while the user types a prompt. Keyboard
+	// scrolling is handled explicitly above; mouse events still pass through.
+	if _, isKey := msg.(tea.KeyMsg); !isKey {
 		m.viewport, cmd = m.viewport.Update(msg)
+		if m.tab == tabChat && !m.viewport.AtBottom() {
+			m.chatFollow = false
+		}
 		cmds = append(cmds, cmd)
 	}
 	if !m.busy && m.pending == nil {
@@ -412,6 +467,15 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 	case runtimeevent.KindWarning:
 		m.blocks = append(m.blocks, block{role: "system", content: e.Text})
 	}
+	if m.transcript != nil {
+		atBottom := m.transcript.viewport.AtBottom()
+		m.rebuildTranscriptView()
+		if atBottom {
+			m.transcript.cursor = len(m.blocks) - 1
+			m.rebuildTranscriptView()
+			m.transcript.viewport.GotoBottom()
+		}
+	}
 	m.refresh()
 }
 
@@ -503,17 +567,39 @@ func (m *Model) refresh() {
 	if !m.ready {
 		return
 	}
+	m.refreshAt(m.viewport.YOffset, m.viewport.AtBottom())
+}
+
+func (m *Model) refreshAt(offset int, wasBottom bool) {
+	if !m.ready {
+		return
+	}
 	switch m.tab {
 	case tabSession:
 		m.viewport.SetContent(m.sessionContent())
-		m.viewport.GotoTop()
+		m.viewport.SetYOffset(offset)
 	case tabHelp:
 		m.viewport.SetContent(m.helpContent())
-		m.viewport.GotoTop()
+		m.viewport.SetYOffset(offset)
 	default:
 		m.viewport.SetContent(m.chatContent())
-		m.viewport.GotoBottom()
+		if m.chatFollow || wasBottom {
+			m.viewport.GotoBottom()
+		} else {
+			m.viewport.SetYOffset(offset)
+		}
 	}
+	m.tabOffsets[m.tab] = m.viewport.YOffset
+}
+
+func (m *Model) switchTab(next int) {
+	m.tabOffsets[m.tab] = m.viewport.YOffset
+	m.tab = next
+	offset := m.tabOffsets[m.tab]
+	if m.tab == tabChat && m.chatFollow {
+		offset = 0
+	}
+	m.refreshAt(offset, m.tab == tabChat && m.chatFollow)
 }
 
 func (m *Model) chatContent() string {
@@ -575,7 +661,7 @@ func (m *Model) banner() string {
 	art := gradient(asciiBanner, m.theme.Primary, m.theme.Secondary)
 	provider, model := m.runtime.Agent.Selection()
 	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), provider, model, m.theme.Name))
-	tips := m.styles.system.Render("type a prompt · / commands · ctrl+t tabs · ctrl+o tool output")
+	tips := m.styles.system.Render(fmt.Sprintf("type a prompt · / commands · %s tabs · %s tool output", m.binding("next_tab"), m.binding("toggle_tool_output")))
 	return art + "\n" + sub + "\n" + tips
 }
 
@@ -740,12 +826,15 @@ func (m *Model) helpContent() string {
 		{"@", "fuzzy-pick a workspace file into the prompt"},
 		{"↑ ↓ (palette)", "select a command or completion"},
 		{"tab (palette)", "complete the selected command"},
-		{"ctrl+t", "cycle Chat / Session / Help tabs"},
-		{"ctrl+o", "expand / collapse finished tool output"},
+		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
+		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
+		{m.binding("transcript_view"), "open transcript search/copy mode"},
+		{m.binding("diff_view"), "open the interactive diff viewer"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
 		{"h (approval)", "review a multi-hunk file write and approve only some hunks"},
 		{"esc", "cancel turn · dismiss palette or picker"},
-		{"pgup/pgdn", "scroll the transcript"},
+		{m.binding("page_up") + "/" + m.binding("page_down"), "scroll without moving the prompt cursor"},
+		{m.binding("scroll_top") + "/" + m.binding("scroll_bottom"), "jump to top / resume live follow"},
 		{"ctrl+c", "cancel turn, again to quit"},
 	}
 	for _, k := range keys {
@@ -782,6 +871,12 @@ func (m Model) View() string {
 	if !m.ready {
 		return "Starting Collomia…"
 	}
+	if m.transcript != nil && !m.modalActive() {
+		return m.renderTranscriptView()
+	}
+	if m.diffView != nil && !m.modalActive() {
+		return m.renderDiffView()
+	}
 	sections := []string{m.renderHeader(), m.viewport.View()}
 	if m.picker != nil && !m.modalActive() {
 		sections = append(sections, m.renderPicker())
@@ -804,6 +899,11 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
+	if m.width < 44 {
+		active := m.styles.tabActive.Render(tabNames[m.tab])
+		left := m.styles.brand.Render(" ✿ ") + active
+		return fitLine(left, max(1, m.width)) + "\n" + m.styles.rule.Render(strings.Repeat("─", max(0, m.width)))
+	}
 	var tabs []string
 	for i, name := range tabNames {
 		if i == m.tab {
@@ -867,12 +967,12 @@ func (m Model) renderStatusBar() string {
 	default:
 		right = m.styles.statusBase.Render("enter send · ") +
 			m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +
-			m.styles.statusKey.Render("ctrl+t") + m.styles.statusBase.Render(" tabs · ") +
+			m.styles.statusKey.Render(m.binding("next_tab")) + m.styles.statusBase.Render(" tabs · ") +
 			m.styles.statusKey.Render("ctrl+c") + m.styles.statusBase.Render(" quit ")
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
-		return left
+		return ansi.Truncate(left, max(1, m.width), "")
 	}
 	return left + m.styles.statusBase.Render(strings.Repeat(" ", gap)) + right
 }

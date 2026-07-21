@@ -157,6 +157,23 @@ type Snapshot struct {
 	Time   time.Time
 }
 
+// FileDiff is one session-touched file rendered against its first-seen base.
+// Before and After support alternate review layouts; Unified remains the
+// canonical representation used by approvals and headless output.
+type FileDiff struct {
+	Path, Name    string
+	Before, After string
+	Unified       string
+}
+
+// AlignedLine is one row in a side-by-side comparison. A zero line number
+// means that side has no corresponding line. Kind is ' ', '-', or '+'.
+type AlignedLine struct {
+	LeftNumber, RightNumber int
+	Left, Right             string
+	Kind                    byte
+}
+
 // Tracker records mutations, keeps each file's base (first-seen) content for
 // session-level diffs, and supports undoing the most recent mutation.
 type Tracker struct {
@@ -196,7 +213,19 @@ func (t *Tracker) Changed() []string {
 // what is on disk now.
 func (t *Tracker) Diff(workspace string) string {
 	var out strings.Builder
-	for _, path := range t.Changed() {
+	for _, file := range t.FileDiffs(workspace) {
+		out.WriteString(file.Unified)
+	}
+	return out.String()
+}
+
+// FileDiffs returns structured per-file session diffs in first-touch order.
+// Reading current content is deliberately best-effort, matching Diff: a
+// deleted or unreadable current path compares as empty content.
+func (t *Tracker) FileDiffs(workspace string) []FileDiff {
+	paths := t.Changed()
+	files := make([]FileDiff, 0, len(paths))
+	for _, path := range paths {
 		t.mu.Lock()
 		basePtr := t.base[path]
 		t.mu.Unlock()
@@ -212,9 +241,47 @@ func (t *Tracker) Diff(workspace string) string {
 		if rel, err := filepath.Rel(workspace, path); err == nil && !strings.HasPrefix(rel, "..") {
 			name = filepath.ToSlash(rel)
 		}
-		out.WriteString(Unified(name, base, current))
+		unified := Unified(name, base, current)
+		if unified != "" {
+			files = append(files, FileDiff{Path: path, Name: name, Before: base, After: current, Unified: unified})
+		}
 	}
-	return out.String()
+	return files
+}
+
+// Align returns stable rows for a side-by-side viewer. It uses the same LCS
+// walk as Unified and falls back to a bounded whole-file replacement for very
+// large inputs rather than allocating an unbounded dynamic-programming table.
+func Align(before, after string) []AlignedLine {
+	a := splitLines(before)
+	b := splitLines(after)
+	const sizeGuard = 4000
+	var ops []diffOp
+	if len(a)*len(b) > sizeGuard*sizeGuard {
+		for i, line := range a {
+			ops = append(ops, diffOp{kind: '-', text: line, aLine: i})
+		}
+		for i, line := range b {
+			ops = append(ops, diffOp{kind: '+', text: line, aLine: len(a), bLine: i})
+		}
+	} else {
+		ops = lcsOps(a, b)
+	}
+	rows := make([]AlignedLine, 0, len(ops))
+	for _, op := range ops {
+		row := AlignedLine{Kind: op.kind}
+		switch op.kind {
+		case ' ':
+			row.LeftNumber, row.RightNumber = op.aLine+1, op.bLine+1
+			row.Left, row.Right = op.text, op.text
+		case '-':
+			row.LeftNumber, row.Left = op.aLine+1, op.text
+		case '+':
+			row.RightNumber, row.Right = op.bLine+1, op.text
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // Undo reverts the most recent mutation by restoring the file's prior state,

@@ -29,8 +29,10 @@ func WriteStarter(path string, global bool) error {
 		SandboxWritableRoots             []string `json:"sandbox_writable_roots,omitempty"`
 	}
 	type starterOptions struct {
-		MaxIterations      int `json:"max_iterations"`
-		MaxToolOutputBytes int `json:"max_tool_output_bytes"`
+		MaxIterations      int               `json:"max_iterations"`
+		MaxToolOutputBytes int               `json:"max_tool_output_bytes"`
+		AlternateScreen    bool              `json:"alternate_screen"`
+		Keybindings        map[string]string `json:"keybindings"`
 	}
 	type starterConfig struct {
 		SchemaVersion   int                 `json:"schema_version"`
@@ -73,6 +75,8 @@ func WriteStarter(path string, global bool) error {
 		cfg.Options = &starterOptions{
 			MaxIterations:      24,
 			MaxToolOutputBytes: 64 * 1024,
+			AlternateScreen:    true,
+			Keybindings:        DefaultKeybindings(),
 		}
 	} else {
 		cfg.Permissions = &starterPermissions{Mode: "ask"}
@@ -315,6 +319,21 @@ const configReferenceJSONC = `
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",
     "theme": "collomia",
+    // true uses a clean full-screen buffer. false keeps the final TUI frame
+    // in the terminal's native scrollback; --no-alt-screen overrides it.
+    "alternate_screen": true,
+    // Global TUI actions are remappable. Approval/question decision keys stay
+    // fixed and are always shown in their dialog.
+    "keybindings": {
+      "next_tab": "ctrl+t",
+      "toggle_tool_output": "ctrl+o",
+      "transcript_view": "ctrl+y",
+      "diff_view": "ctrl+d",
+      "page_up": "pgup",
+      "page_down": "pgdown",
+      "scroll_top": "home",
+      "scroll_bottom": "end"
+    },
     "notifications": "on",
     "debug": false
   },

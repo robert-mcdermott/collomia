@@ -2,7 +2,7 @@
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with built-in OS sandbox backends on all three platforms — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
-New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
+New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. CI and integration authors can use the dedicated [automation and JSONL contract](docs/AUTOMATION.md). Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
@@ -10,7 +10,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 ## Highlights
 
-- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, and a status bar with live context, task-progress, active-agent, and background-process gauges.
+- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions/delegated agents, `@` file/folder mentions, prompt-from-file, collapsible tool output, searchable/copyable transcript mode, responsive full-screen diff review, configurable global keys, and a status bar with live context, task-progress, active-agent, and background-process gauges.
 - Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
 - Streaming OpenAI-compatible, Anthropic-compatible, Responses-style, and native Bedrock ConverseStream conversations with tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
@@ -24,7 +24,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, and a maintained [capability matrix](docs/CAPABILITIES.md).
-- Schema-versioned JSONL event stream for automation (`collo run --jsonl`), with `--resume`/`--continue` for headless runs.
+- Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
 - Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK.
 - **Multi-agent delegation**: the `delegate` tool runs up to six sub-agent tasks concurrently (bounded to four at once). Read-only tasks share the workspace; write-capable tasks get their own isolated git worktree so parallel agents never race on the same files, with sibling-conflict detection across a batch. Optional named agent profiles (model, role instructions, tool allowlist) live in configuration.
@@ -162,6 +162,9 @@ collo policy check <command…>       evaluate a command against permission rule
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
 collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
+collo completion bash|zsh|fish|powershell  generate shell completion
+collo schema events                 print the embedded JSON Schema for JSONL events
+collo replay [--check] <trace|->    validate and safely render a completed JSONL run trace
 collo version                       print build information
 ```
 
@@ -179,7 +182,11 @@ Useful flags:
 --web                                serve the TUI in an authenticated local browser terminal
 --web-port <port>                    choose its loopback port (default: random available port)
 --no-open                            print the browser-terminal URL without opening a browser
+--alt-screen                         force the alternate-screen TUI
+--no-alt-screen                      retain the final TUI frame in scrollback
 --jsonl                              (run) emit schema-versioned JSONL events on stdout
+--ephemeral                          (run) skip durable conversation/session storage
+--check                              (replay) validate and print only a compact summary
 --debug                              write a redacted debug log
 --global                             (init) create the user-wide config instead of a project config
 --with-reference                     (init) also write the non-loaded annotated JSONC reference
@@ -195,15 +202,33 @@ collo run --autopilot "Fix the failing Go tests and verify the result"
 git diff | collo run --plan "Review this patch"
 collo run --resume <session-id> "Continue where we left off"
 collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
+collo run --jsonl --ephemeral --plan "Inspect this checkout without saving a conversation" | jq .
 ```
 
-With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and the final line is always a `run.result` record — the machine-readable verdict, so automation never has to reassemble text deltas or scan for mid-stream errors. Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event (for example, `{"kind":"rate_limit","status_code":429,"retryable":true,"retry_after_ms":3000,"request_id":"…"}`):
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and an actual run always ends with a `run.result` record after successful argument parsing — including prompt, configuration, provider, permission, timeout, and cancellation failures (`--help`/`--version` remain informational commands). Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event and the final result. Print the exact contract with `collo schema events`; see the [automation guide](docs/AUTOMATION.md) for all fields, failure kinds, and pipeline patterns.
 
 ```json
 {"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
 ```
 
-`status` is `ok`, `error`, or `cancelled` (interrupt); on non-`ok` the record carries the error and the process exits non-zero. Pull just the verdict with `... --jsonl | tail -1 | jq .result`.
+`status` remains `ok`, `error`, or `cancelled` for schema-v1 compatibility. Optional `failure`, `partial`, and `refused` fields make non-success and denied-action outcomes explicit. Exit codes are `0` success, `1` runtime/provider failure, `2` usage or configuration failure, and `130` cancellation. Pull just the verdict with `... --jsonl | tail -1 | jq .result`.
+
+Validate a retained stream, or render a readable offline transcript without
+loading configuration, contacting a provider, opening a session, or executing
+tools:
+
+```sh
+collo replay --check run.jsonl
+collo replay run.jsonl
+cat run.jsonl | collo replay -
+```
+
+Replay requires one complete headless stream ending in `run.result`; it is not
+for session-store or audit-ledger JSONL. It checks known schema-v1 payloads and
+lifecycle consistency, tolerates additive fields, strips terminal controls,
+and applies best-effort common-secret redaction while rendering. See the
+[automation guide](docs/AUTOMATION.md#validating-and-replaying-saved-traces)
+for its exact safety and compatibility boundary.
 
 ## Browser terminal
 
@@ -257,7 +282,8 @@ Inside the TUI:
 | `/context` | Break down exactly what the model sees: system prompt, instructions, skills, tool results, conversation, compaction summaries, and the usage gauge. |
 | `/plan [on\|off]` | Toggle read-only planning mode. |
 | `/tasks` | Show the structured task plan the agent maintains. |
-| `/diff` | Show every file change the agent made this session, with syntax highlighting. |
+| `/diff` | Open responsive unified/side-by-side review with file/hunk navigation and folding. |
+| `/transcript` | Search and copy the complete raw TUI transcript. |
 | `/undo` | Revert the agent's most recent file change (refuses to clobber files you edited outside the agent). |
 | `/review [ref] [instructions…]` | Read-only code review of uncommitted changes (`-` or no ref) or changes vs any ref; extra words become custom reviewer instructions. |
 | `/verify [focus]` | Detect and run the project's real build/lint/test commands, tying each outcome to a plan step. |
@@ -268,6 +294,8 @@ Inside the TUI:
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one (fuzzy picker with no argument). |
 | `/skills [list]` | Fuzzy-pick a skill to use — choosing one pre-fills the prompt — or `list` to print them. |
+| `/agents` | Fuzzy-search delegated tasks from this session and inspect status, outcome, changed files, and retained worktree details. |
+| `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; with no path, open a fuzzy file picker. |
 | `/mcp [subcommand]` | Browse MCP servers with a fuzzy picker, or manage them at runtime: `list`/`status` (health, identity, negotiated capabilities), `ping`, `reconnect`, `enable`/`disable`, `add`, `remove`. |
 | `/tools` | List the complete tool surface. |
 | `/config` | Show the active configuration source. |
@@ -276,9 +304,9 @@ Inside the TUI:
 
 Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/tools`, `/skills list`, `/mcp list`, `/config`, `/help`) render their output in a titled, theme-colored panel — the command's subject sits in the box border, body text is tinted with a readable shade derived from the theme (not the terminal's raw default color), and content wraps cleanly to the terminal width. Quick acknowledgements ("Theme switched…") stay as subtle one-line notes.
 
-Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
+Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace file/folder picker and safely quotes paths containing spaces. `/prompt` opens a text-file picker; `/prompt "docs/review prompt.md"` loads a named file into the composer, and you can type `/prompt ` then drag a workspace file into terminals that paste its path. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
 
-`ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them.
+`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, and `ctrl+d` opens the session diff browser. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
 
