@@ -181,12 +181,9 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.applyTheme(t)
 		m.addSystem("Theme switched to " + t.Name + ".")
 	case "/diff":
-		diff := m.runtime.Changes.Diff(m.runtime.Workspace)
-		if strings.TrimSpace(diff) == "" {
-			m.addSystem("No agent file changes this session.")
-			break
-		}
-		m.blocks = append(m.blocks, block{role: "tool-result", content: "```diff\n" + diff + "```"})
+		m.openDiffView()
+	case "/transcript":
+		m.openTranscriptView()
 	case "/undo":
 		snapshot, err := m.runtime.Changes.Undo()
 		if err != nil {

@@ -34,6 +34,23 @@ func TestParseInitWithReference(t *testing.T) {
 	}
 }
 
+func TestParseAlternateScreenOverride(t *testing.T) {
+	opts, err := parse([]string{"--no-alt-screen"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.altScreen == nil || *opts.altScreen {
+		t.Fatalf("no-alt-screen override=%v", opts.altScreen)
+	}
+	opts, err = parse([]string{"--alt-screen"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.altScreen == nil || !*opts.altScreen {
+		t.Fatalf("alt-screen override=%v", opts.altScreen)
+	}
+}
+
 func TestParsePersistentMCPAddOptionsAndCommandTerminator(t *testing.T) {
 	opts, err := parse([]string{"mcp", "add", "time", "--global", "--timeout", "12", "--env", "TOKEN=${MCP_TOKEN}", "--", "uvx", "mcp-server-time", "--local-timezone", "America/Los_Angeles"})
 	if err != nil {

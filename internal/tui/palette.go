@@ -26,6 +26,7 @@ var slashCommands = []commandInfo{
 	{name: "/review", args: "[ref] [instructions…]", desc: "review changes; '-' = uncommitted; extra words focus the review"},
 	{name: "/verify", args: "[focus]", desc: "detect and run build/lint/test commands"},
 	{name: "/diff", args: "", desc: "show all agent file changes this session"},
+	{name: "/transcript", args: "", desc: "search and copy the complete session transcript"},
 	{name: "/undo", args: "", desc: "revert the agent's most recent file change"},
 	{name: "/tasks", args: "", desc: "show the structured task plan"},
 	{name: "/ps", args: "", desc: "list background processes (stop with /ps stop <id>)"},

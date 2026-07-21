@@ -10,7 +10,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 ## Highlights
 
-- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, and a status bar with live context, task-progress, active-agent, and background-process gauges.
+- Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions, `@` file mentions, collapsible tool output, searchable/copyable transcript mode, responsive full-screen diff review, configurable global keys, and a status bar with live context, task-progress, active-agent, and background-process gauges.
 - Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
 - Streaming OpenAI-compatible, Anthropic-compatible, Responses-style, and native Bedrock ConverseStream conversations with tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
@@ -162,6 +162,7 @@ collo policy check <command…>       evaluate a command against permission rule
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
 collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
+collo completion bash|zsh|fish|powershell  generate shell completion
 collo version                       print build information
 ```
 
@@ -179,6 +180,8 @@ Useful flags:
 --web                                serve the TUI in an authenticated local browser terminal
 --web-port <port>                    choose its loopback port (default: random available port)
 --no-open                            print the browser-terminal URL without opening a browser
+--alt-screen                         force the alternate-screen TUI
+--no-alt-screen                      retain the final TUI frame in scrollback
 --jsonl                              (run) emit schema-versioned JSONL events on stdout
 --debug                              write a redacted debug log
 --global                             (init) create the user-wide config instead of a project config
@@ -257,7 +260,8 @@ Inside the TUI:
 | `/context` | Break down exactly what the model sees: system prompt, instructions, skills, tool results, conversation, compaction summaries, and the usage gauge. |
 | `/plan [on\|off]` | Toggle read-only planning mode. |
 | `/tasks` | Show the structured task plan the agent maintains. |
-| `/diff` | Show every file change the agent made this session, with syntax highlighting. |
+| `/diff` | Open responsive unified/side-by-side review with file/hunk navigation and folding. |
+| `/transcript` | Search and copy the complete raw TUI transcript. |
 | `/undo` | Revert the agent's most recent file change (refuses to clobber files you edited outside the agent). |
 | `/review [ref] [instructions…]` | Read-only code review of uncommitted changes (`-` or no ref) or changes vs any ref; extra words become custom reviewer instructions. |
 | `/verify [focus]` | Detect and run the project's real build/lint/test commands, tying each outcome to a plan step. |
@@ -278,7 +282,7 @@ Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/too
 
 Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace-file picker that inserts the chosen path into your prompt. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
 
-`ctrl+t` cycles the Chat, Session, and Help tabs, and `ctrl+o` expands or collapses finished tool output. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them.
+`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, and `ctrl+d` opens the session diff browser. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
 

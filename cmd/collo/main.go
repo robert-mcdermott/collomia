@@ -43,6 +43,7 @@ type options struct {
 	strict, revoke, status, debug, markdown, yes bool
 	cont, withReference, web, webPortSet, noOpen bool
 	mcpTimeoutSet                                bool
+	altScreen                                    *bool
 	mcpEnv, mcpHeaders                           []string
 	args                                         []string
 }
@@ -132,6 +133,8 @@ func run(args []string) error {
 		return runSkillsCommand(opts)
 	case "mcp":
 		return runMCPCommand(opts)
+	case "completion":
+		return runCompletionCommand(opts)
 	}
 	if opts.web {
 		executable, err := os.Executable()
@@ -176,7 +179,15 @@ func run(args []string) error {
 	}
 	defer runtime.Close()
 	initial := strings.Join(opts.args, " ")
-	program := tea.NewProgram(tui.New(runtime, broker, initial), tea.WithAltScreen())
+	altScreen := runtime.Config.Options.AlternateScreen
+	if opts.altScreen != nil {
+		altScreen = *opts.altScreen
+	}
+	programOptions := []tea.ProgramOption{}
+	if altScreen {
+		programOptions = append(programOptions, tea.WithAltScreen())
+	}
+	program := tea.NewProgram(tui.New(runtime, broker, initial), programOptions...)
 	_, err = program.Run()
 	tui.ResetTerminalBackground()
 	return err
@@ -266,7 +277,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion") {
 			opts.command = arg
 			continue
 		}
@@ -300,6 +311,12 @@ func parse(args []string) (options, error) {
 			opts.web = true
 		case arg == "--no-open":
 			opts.noOpen = true
+		case arg == "--no-alt-screen":
+			value := false
+			opts.altScreen = &value
+		case arg == "--alt-screen":
+			value := true
+			opts.altScreen = &value
 		case strings.HasPrefix(arg, "--web-port="):
 			value := strings.TrimPrefix(arg, "--web-port=")
 			port, parseErr := strconv.Atoi(value)
@@ -439,6 +456,13 @@ func tuiChildArgs(opts options) []string {
 	if opts.debug {
 		args = append(args, "--debug")
 	}
+	if opts.altScreen != nil {
+		if *opts.altScreen {
+			args = append(args, "--alt-screen")
+		} else {
+			args = append(args, "--no-alt-screen")
+		}
+	}
 	if len(opts.args) > 0 {
 		args = append(args, "--")
 		args = append(args, opts.args...)
@@ -466,6 +490,7 @@ Usage:
   collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
   collo skills [list|show|new|install|update|remove|enable|disable]  manage agent skills (project and --global scopes)
   collo mcp [list|show|add|remove|enable|disable|test]  manage persistent MCP servers (project and --global scopes)
+  collo completion bash|zsh|fish|powershell  generate shell completion
   collo version                       print build information
 
 Flags:
@@ -480,6 +505,8 @@ Flags:
   --web                                serve the TUI in an authenticated local browser terminal (macOS/Linux)
   --web-port <port>                    local browser-terminal port (default: random available port)
   --no-open                            (web) print the URL without opening the default browser
+  --alt-screen                         force the interactive TUI to use the alternate screen
+  --no-alt-screen                      keep the final TUI frame in terminal scrollback
   --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled)
   --debug                              write a redacted debug log (see collo doctor for path)
   --global                             target the user-wide config for init, skills, or MCP management

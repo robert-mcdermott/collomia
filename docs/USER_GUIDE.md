@@ -462,7 +462,8 @@ collo config validate --strict
 Normal loading tolerates unknown fields for forward compatibility; `--strict`
 rejects them, which catches misspellings. Validation checks provider types,
 authentication combinations, required endpoints/models, timeouts, modes,
-globs, regular expressions, hook events, and hook matchers. It parses the
+globs, regular expressions, hook events, hook matchers, keybinding action
+names, supported key forms, and global key collisions. It parses the
 project file for validation even before trust, but validation alone does not
 activate that file.
 
@@ -580,6 +581,8 @@ inspect.
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
+| `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
+| `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
 | `debug` | Enables redacted structured debug logging for every run. |
 
@@ -1526,6 +1529,13 @@ Markdown is rendered in the active theme. Fenced source code, expanded
 Tool output is initially compact and can be expanded without leaving the
 conversation.
 
+The layout adapts to narrow terminals: below 44 columns the header shows only
+the active tab, status content is truncated rather than wrapping into the
+composer, and full-screen transcript/diff views use the available rows. The
+80x24 layout is a supported baseline. Resizing preserves a manually scrolled
+chat position; new streaming output no longer pulls you to the bottom. Press
+`end` to resume live follow.
+
 ### Keyboard reference
 
 | Key | Action |
@@ -1538,7 +1548,10 @@ conversation.
 | `tab` | Complete the selected command/palette value. |
 | `ctrl+t` | Cycle Chat, Session, and Help. |
 | `ctrl+o` | Expand or collapse finished tool output. |
+| `ctrl+y` | Open the full-screen transcript search/copy view. |
+| `ctrl+d` | Open the interactive session diff viewer. |
 | `page up` / `page down` | Scroll the transcript. |
+| `home` / `end` | Jump to the top or bottom; `end` resumes live follow. |
 | `esc` | Dismiss a palette/picker or cancel the active turn. |
 | `ctrl+c` | Cancel the active turn; press again to quit. |
 
@@ -1546,6 +1559,10 @@ Typing `/` filters commands by prefix and substring. Known first arguments for
 `/theme`, `/autonomy`, `/plan`, and `/model` are completed fuzzily. These menus
 remain beside the composer; approvals and questions open as centered,
 theme-aware transient dialogs.
+
+The global actions in this table are configurable. The Help tab always shows
+the effective bindings after defaults, user configuration, and project
+configuration are merged. See [Terminal behavior and keybindings](#terminal-behavior-and-keybindings).
 
 ### Slash commands
 
@@ -1566,7 +1583,8 @@ theme-aware transient dialogs.
 | `/tools` | List every tool currently registered. |
 | `/review [ref] [instructions...]` | Review uncommitted changes or changes relative to a ref, with an optional focus. |
 | `/verify [focus]` | Detect and run project verification commands, recording plan results. |
-| `/diff` | Show all agent file changes made during this session. |
+| `/diff` | Open the interactive session diff viewer. |
+| `/transcript` | Open the complete raw transcript for search, navigation, and copy. |
 | `/undo` | Revert the most recent tracked agent file change when the file has not diverged externally. |
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
@@ -1598,6 +1616,144 @@ returns to the whole-file approval. Hunk selection currently applies only to
 Question dialogs let the agent or an MCP server pause a tool call for typed
 input. Review the question and any enumerated choices. Escape declines instead
 of inventing an answer.
+
+### Transcript search and copy
+
+Press `ctrl+y` (or run `/transcript`) to open a full-screen,
+selection-friendly view of every user message, assistant response, tool
+call/result, error, and informational panel in the current TUI transcript. It
+uses raw Markdown and the full retained tool-result block rather than the
+collapsed Chat rendering.
+
+| Transcript key | Action |
+| --- | --- |
+| `[` / `]` or left/right | Select the previous/next transcript block. |
+| up/down or `j`/`k` | Scroll one line. |
+| configured page/top/bottom keys | Scroll a page or jump to an edge. |
+| `/` | Enter a case-insensitive search; `enter` runs it. |
+| `n` / `N` | Move to the next/previous matching block. |
+| `y` | Copy the selected block's content. |
+| `Y` | Copy the complete transcript. |
+| `esc` or `q` | Return to Chat. |
+
+Copy uses the standard OSC 52 terminal clipboard sequence and is capped at 100
+KiB. It requires no platform helper, but the hosting terminal may disable
+clipboard writes or ask for confirmation; terminals do not acknowledge the
+request. In tmux 3.3+, enable `allow-passthrough` when OSC 52 does not reach the
+outer terminal. If clipboard integration is unavailable, start with
+`--no-alt-screen` and use normal terminal selection/scrollback instead.
+
+### Interactive diff review
+
+`/diff` or `ctrl+d` opens a full-screen browser over files changed by the agent
+in this session. It is a read-only review surface: approving or selectively
+applying a pending write still happens through the permission dialog and its
+existing `h` hunk-review action, so the diff viewer cannot bypass policy,
+auditing, change tracking, or undo.
+
+The viewer starts side-by-side at 108 columns or wider and uses unified diff at
+narrower widths. A resize below that threshold switches safely to unified
+mode. Unchanged regions are folded with three context lines by default.
+
+| Diff key | Action |
+| --- | --- |
+| `[` / `]` or left/right | Previous/next changed file. |
+| `n` / `N` | Next/previous change hunk. |
+| up/down or `j`/`k` | Scroll one line. |
+| configured page/top/bottom keys | Scroll a page or jump to an edge. |
+| `u` | Use unified view. |
+| `s` | Use side-by-side view when at least 108 columns are available. |
+| `f` | Fold/unfold unchanged regions. |
+| `esc` or `q` | Close the viewer. |
+
+Headers show the relative file path, file position, additions/deletions, and
+active layout. Both layouts use theme-aware addition/deletion colors; unified
+view shows hunk headers, while side-by-side view shows old/new line numbers.
+
+### Terminal behavior and keybindings
+
+Collomia uses the alternate screen by default, leaving the terminal exactly as
+it was when the TUI exits. To retain the final frame in native scrollback:
+
+```sh
+collo --no-alt-screen
+```
+
+Persist the preference, or force the default for one invocation with
+`--alt-screen`:
+
+```json
+{
+  "options": {
+    "alternate_screen": false
+  }
+}
+```
+
+Global navigation keys can be remapped by action. Each omitted action inherits
+its earlier/default binding, so a project may override just one user binding.
+Supported values are `ctrl+letter`, `alt+letter`, `f1` through `f12`, `pgup`,
+`pgdown`, `home`, and `end`. Duplicate global bindings fail configuration
+validation. Approval `y`/`a`/`n`, question `enter`/`esc`, and keys shown inside
+transcript/diff modes remain fixed so safety decisions and modal help stay
+unambiguous.
+
+```json
+{
+  "options": {
+    "keybindings": {
+      "next_tab": "alt+t",
+      "toggle_tool_output": "ctrl+o",
+      "transcript_view": "ctrl+y",
+      "diff_view": "ctrl+d",
+      "page_up": "pgup",
+      "page_down": "pgdown",
+      "scroll_top": "home",
+      "scroll_bottom": "end"
+    }
+  }
+}
+```
+
+Validate changes with `collo config validate --strict`, then inspect the Help
+tab for the effective bindings.
+
+### Shell completion
+
+`collo completion` generates completion without requiring a shell plugin. For
+the current shell session:
+
+```sh
+source <(collo completion bash)   # Bash
+source <(collo completion zsh)    # Zsh
+collo completion fish | source    # Fish
+```
+
+For persistent installation, save the generated script in the shell's normal
+completion directory:
+
+```sh
+# Bash (make sure ~/.local/share/bash-completion/completions is loaded).
+mkdir -p ~/.local/share/bash-completion/completions
+collo completion bash > ~/.local/share/bash-completion/completions/collo
+
+# Zsh: put this directory in fpath before compinit.
+mkdir -p ~/.zfunc
+collo completion zsh > ~/.zfunc/_collo
+
+# Fish automatically loads this location.
+mkdir -p ~/.config/fish/completions
+collo completion fish > ~/.config/fish/completions/collo.fish
+```
+
+PowerShell:
+
+```powershell
+$Completion = Join-Path $HOME '.collomia\collo-completion.ps1'
+collo completion powershell | Set-Content $Completion
+. $Completion
+# Add the preceding dot-source line to $PROFILE to load it in future shells.
+```
 
 ### Themes and color
 
@@ -1805,6 +1961,8 @@ collo review [ref] [instructions...]
 collo verify [focus]
 collo sessions list|show|fork|rename|archive|unarchive|delete
 collo skills list|show|new|install|update|remove|enable|disable
+collo mcp list|show|add|remove|enable|disable|test
+collo completion bash|zsh|fish|powershell
 collo version
 ```
 
@@ -1823,6 +1981,8 @@ Common flags:
 --web                                local browser terminal (macOS/Linux)
 --web-port <0..65535>                loopback port; 0/random by default
 --no-open                            print web URL without opening a browser
+--alt-screen                         force the alternate-screen TUI
+--no-alt-screen                      retain the final TUI frame in scrollback
 --jsonl                              JSONL output for `run`
 --debug                              redacted debug log
 --strict                             strict config/doctor validation
@@ -1877,7 +2037,7 @@ For any proposed write that needs approval, review the path and diff in the
 floating dialog. After changes:
 
 ```text
-/diff     show every change tracked in this session
+/diff     interactively browse every change tracked in this session
 /undo     revert the most recent tracked operation
 ```
 
@@ -2932,6 +3092,12 @@ occurs. Prefer a narrow fix over globally disabling controls.
 - For tmux background changes, enable `allow-passthrough`.
 - Terminal OSC support controls background and desktop notifications; missing
   OSC support does not affect core TUI operation.
+- If the terminal is too narrow, use 80x24 or larger for the complete status
+  display; the core workflow remains usable below that with compact headers.
+- If scrolling jumps unexpectedly, press `end` to resume live follow, or page
+  up to pause it while output continues.
+- If OSC 52 copy is blocked, enable terminal clipboard access/tmux passthrough
+  or run `collo --no-alt-screen` and use native selection.
 
 ### Browser terminal does not open
 

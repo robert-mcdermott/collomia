@@ -207,6 +207,14 @@ type Options struct {
 	DisabledTools       []string `json:"disabled_tools,omitempty"`
 	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
 	Theme               string   `json:"theme,omitempty"`
+	// AlternateScreen controls whether the interactive TUI uses the terminal's
+	// alternate screen buffer. It defaults to true; disabling it keeps the
+	// final screen in native terminal scrollback.
+	AlternateScreen bool `json:"alternate_screen"`
+	// Keybindings overrides named global TUI actions. Modal safety decisions
+	// retain fixed, visible keys so a local remap cannot make an approval
+	// ambiguous.
+	Keybindings map[string]string `json:"keybindings,omitempty"`
 	// Notifications controls how the TUI gets the user's attention for
 	// approvals, questions, and finished long turns: "on" (bell + terminal
 	// desktop notification, the default), "bell" (bell only), or "off".
@@ -234,8 +242,13 @@ func Defaults() Config {
 				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
 			},
 		},
-		MCP:     map[string]MCPServer{},
-		Options: Options{MaxIterations: 24, MaxToolOutputBytes: 64 * 1024},
+		MCP: map[string]MCPServer{},
+		Options: Options{
+			MaxIterations:      24,
+			MaxToolOutputBytes: 64 * 1024,
+			AlternateScreen:    true,
+			Keybindings:        DefaultKeybindings(),
+		},
 	}
 }
 
@@ -402,6 +415,12 @@ func (c *Config) normalize() {
 	}
 	if c.Options.MaxToolOutputBytes <= 0 {
 		c.Options.MaxToolOutputBytes = 64 * 1024
+	}
+	if c.Options.Keybindings == nil {
+		c.Options.Keybindings = DefaultKeybindings()
+	}
+	for action, key := range c.Options.Keybindings {
+		c.Options.Keybindings[action] = strings.ToLower(strings.TrimSpace(key))
 	}
 	for name, p := range c.Providers {
 		p.Type = strings.ToLower(strings.TrimSpace(p.Type))
@@ -637,6 +656,7 @@ func (c Config) ValidateFields() []FieldError {
 			}
 		}
 	}
+	errs = append(errs, ValidateKeybindings(c.Options.Keybindings)...)
 	return errs
 }
 
