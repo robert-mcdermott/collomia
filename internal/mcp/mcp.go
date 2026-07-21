@@ -44,7 +44,16 @@ type ServerStatus struct {
 	// (tools, resources, prompts, logging, completions).
 	ServerName    string
 	ServerVersion string
+	Protocol      string
 	Capabilities  []string
+	// ListChanges names catalogs for which the server promised list-change
+	// notifications. PendingCatalogs names notifications not yet observed by a
+	// successful refresh/list operation.
+	ListChanges      []string
+	PendingCatalogs  []string
+	CatalogRevision  uint64
+	CatalogUpdatedAt time.Time
+	CatalogError     string
 }
 
 type serverState struct {
@@ -56,6 +65,16 @@ type serverState struct {
 	err         error
 	connectedAt time.Time
 	toolNames   []string
+	generation  uint64
+
+	listChanges      []string
+	pendingCatalogs  map[string]bool
+	catalogVersions  map[string]uint64
+	catalogRevision  uint64
+	catalogUpdatedAt time.Time
+	catalogErrors    map[string]error
+	refreshRunning   bool
+	refreshAgain     bool
 }
 
 // Options configures manager behavior beyond the server map.
@@ -107,7 +126,10 @@ func ConnectAll(ctx context.Context, configured map[string]appconfig.MCPServer, 
 			state.err = fmt.Errorf("not started because trusted is false; review the server and set trusted to true")
 			errs = append(errs, fmt.Errorf("MCP %s: %w", name, state.err))
 		default:
-			if err := manager.startLocked(ctx, state); err != nil {
+			manager.mu.Lock()
+			err := manager.startLocked(ctx, state)
+			manager.mu.Unlock()
+			if err != nil {
 				errs = append(errs, fmt.Errorf("MCP %s: %w", name, err))
 			}
 		}
@@ -131,25 +153,35 @@ func (m *Manager) TakeNotes() []string {
 	return notes
 }
 
-// startLocked connects a server and registers its tools; the caller must
-// hold no expectation of partial success — on any failure the session is
-// closed and the state records the error.
+// startLocked connects a server and registers its tools. The caller holds
+// m.mu; on any failure the session is closed and the state records the error.
 func (m *Manager) startLocked(ctx context.Context, state *serverState) error {
-	session, err := dial(ctx, state.name, state.cfg, m.clientOptions(state.name))
+	state.generation++
+	generation := state.generation
+	state.pendingCatalogs = map[string]bool{}
+	state.catalogVersions = map[string]uint64{}
+	state.catalogRevision = 0
+	state.catalogErrors = map[string]error{}
+	state.refreshRunning = false
+	state.refreshAgain = false
+	session, err := dial(ctx, state.name, state.cfg, m.clientOptions(state.name, generation))
 	if err != nil {
 		state.status, state.err = StatusError, err
 		return err
 	}
-	toolNames, err := m.registerTools(ctx, state.name, state.cfg, session)
+	registered, toolNames, err := m.buildTools(ctx, state.name, state.cfg, session)
 	if err != nil {
 		_ = session.Close()
 		state.status, state.err = StatusError, fmt.Errorf("tools: %w", err)
 		return state.err
 	}
+	m.registry.Replace(state.toolNames, registered...)
 	state.session = session
 	state.status, state.err = StatusConnected, nil
 	state.connectedAt = time.Now()
 	state.toolNames = toolNames
+	state.listChanges = listChangeCapabilities(session.InitializeResult())
+	state.catalogUpdatedAt = state.connectedAt
 	m.checkPinLocked(state)
 	return nil
 }
@@ -190,6 +222,7 @@ func (m *Manager) checkPinLocked(state *serverState) {
 // stopLocked closes the session (if any) and removes the server's tools
 // from the registry.
 func (m *Manager) stopLocked(state *serverState) {
+	state.generation++
 	if state.session != nil {
 		_ = state.session.Close()
 		state.session = nil
@@ -199,6 +232,13 @@ func (m *Manager) stopLocked(state *serverState) {
 	}
 	state.toolNames = nil
 	state.connectedAt = time.Time{}
+	state.listChanges = nil
+	state.pendingCatalogs = nil
+	state.catalogVersions = nil
+	state.catalogUpdatedAt = time.Time{}
+	state.catalogErrors = nil
+	state.refreshRunning = false
+	state.refreshAgain = false
 }
 
 // Statuses reports every known server, sorted by name. Health is the last
@@ -209,23 +249,45 @@ func (m *Manager) Statuses() []ServerStatus {
 	var out []ServerStatus
 	for _, state := range m.servers {
 		s := ServerStatus{
-			Name:        state.name,
-			Transport:   transportName(state.cfg),
-			Status:      state.status,
-			Runtime:     state.runtime,
-			ConnectedAt: state.connectedAt,
-			Tools:       append([]string(nil), state.toolNames...),
+			Name:             state.name,
+			Transport:        transportName(state.cfg),
+			Status:           state.status,
+			Runtime:          state.runtime,
+			ConnectedAt:      state.connectedAt,
+			Tools:            append([]string(nil), state.toolNames...),
+			ListChanges:      append([]string(nil), state.listChanges...),
+			CatalogRevision:  state.catalogRevision,
+			CatalogUpdatedAt: state.catalogUpdatedAt,
 		}
 		if state.err != nil {
 			s.Err = state.err.Error()
 		}
 		if state.session != nil {
 			if init := state.session.InitializeResult(); init != nil {
+				s.Protocol = init.ProtocolVersion
 				if init.ServerInfo != nil {
 					s.ServerName, s.ServerVersion = init.ServerInfo.Name, init.ServerInfo.Version
 				}
 				s.Capabilities = capabilityNames(init.Capabilities)
 			}
+		}
+		for catalog, pending := range state.pendingCatalogs {
+			if pending {
+				s.PendingCatalogs = append(s.PendingCatalogs, catalog)
+			}
+		}
+		sort.Strings(s.PendingCatalogs)
+		if len(state.catalogErrors) > 0 {
+			var catalogs []string
+			for catalog := range state.catalogErrors {
+				catalogs = append(catalogs, catalog)
+			}
+			sort.Strings(catalogs)
+			var failures []string
+			for _, catalog := range catalogs {
+				failures = append(failures, fmt.Sprintf("%s: %v", catalog, state.catalogErrors[catalog]))
+			}
+			s.CatalogError = strings.Join(failures, "; ")
 		}
 		out = append(out, s)
 	}
@@ -295,6 +357,65 @@ func (m *Manager) Reconnect(ctx context.Context, name string) error {
 	}
 	m.stopLocked(state)
 	return m.startLocked(ctx, state)
+}
+
+// RefreshTools reloads one connected server's tool definitions without
+// tearing down the session. It is the manual retry path for a failed automatic
+// list-change refresh.
+func (m *Manager) RefreshTools(ctx context.Context, name string) (int, error) {
+	m.mu.Lock()
+	state, ok := m.servers[name]
+	if !ok {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("unknown MCP server %q", name)
+	}
+	session, cfg, generation, status := state.session, state.cfg, state.generation, state.status
+	if session == nil {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("server %s is not connected (%s)", name, status)
+	}
+	if state.refreshRunning {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("server %s is already refreshing its tool catalog", name)
+	}
+	state.refreshRunning = true
+	version := state.catalogVersions["tools"]
+	m.mu.Unlock()
+
+	registered, names, refreshErr := m.buildTools(ctx, name, cfg, session)
+	m.mu.Lock()
+	state = m.servers[name]
+	if state == nil || state.generation != generation || state.session != session {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("server %s changed connection while its tool catalog was refreshing; retry", name)
+	}
+	if refreshErr != nil {
+		if state.catalogErrors == nil {
+			state.catalogErrors = map[string]error{}
+		}
+		state.catalogErrors["tools"] = refreshErr
+	} else {
+		m.registry.Replace(state.toolNames, registered...)
+		state.toolNames = names
+		if state.catalogVersions["tools"] == version {
+			state.pendingCatalogs["tools"] = false
+		}
+		state.catalogUpdatedAt = time.Now()
+		delete(state.catalogErrors, "tools")
+	}
+	again := state.refreshAgain
+	state.refreshAgain = false
+	if !again {
+		state.refreshRunning = false
+	}
+	m.mu.Unlock()
+	if again {
+		go m.runToolRefresh(name, generation)
+	}
+	if refreshErr != nil {
+		return 0, refreshErr
+	}
+	return len(names), nil
 }
 
 // SetEnabled disables a server (closing it and withdrawing its tools) or
@@ -367,10 +488,7 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, state := range m.servers {
-		if state.session != nil {
-			_ = state.session.Close()
-			state.session = nil
-		}
+		m.stopLocked(state)
 	}
 }
 
@@ -407,14 +525,44 @@ func capabilityNames(caps *mcp.ServerCapabilities) []string {
 	return names
 }
 
+// listChangeCapabilities reports only list-change promises negotiated during
+// initialize. A handler is installed for every catalog, but a conforming
+// server sends notifications only for capabilities that advertise this flag.
+func listChangeCapabilities(init *mcp.InitializeResult) []string {
+	if init == nil || init.Capabilities == nil {
+		return nil
+	}
+	var names []string
+	if init.Capabilities.Tools != nil && init.Capabilities.Tools.ListChanged {
+		names = append(names, "tools")
+	}
+	if init.Capabilities.Resources != nil && init.Capabilities.Resources.ListChanged {
+		names = append(names, "resources")
+	}
+	if init.Capabilities.Prompts != nil && init.Capabilities.Prompts.ListChanged {
+		names = append(names, "prompts")
+	}
+	sort.Strings(names)
+	return names
+}
+
 // dial is the connection seam; tests replace it with an in-memory server.
 var dial = connect
 
 // clientOptions builds the per-server client callbacks: progress
 // notifications route to the callback registered for their token, and
 // elicitation requests (when an asker exists) become typed user questions.
-func (m *Manager) clientOptions(server string) *mcp.ClientOptions {
+func (m *Manager) clientOptions(server string, generation uint64) *mcp.ClientOptions {
 	opts := &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			go m.catalogChanged(server, "tools", generation)
+		},
+		ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
+			go m.catalogChanged(server, "resources", generation)
+		},
+		PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
+			go m.catalogChanged(server, "prompts", generation)
+		},
 		ProgressNotificationHandler: func(_ context.Context, req *mcp.ProgressNotificationClientRequest) {
 			if req == nil || req.Params == nil {
 				return
@@ -442,6 +590,85 @@ func (m *Manager) clientOptions(server string) *mcp.ClientOptions {
 		}
 	}
 	return opts
+}
+
+// catalogChanged records a server notification. Tool definitions are model
+// input, so they refresh automatically. Resources and prompts are deliberately
+// fetched live by their list operations; marking them pending makes the change
+// visible until that next successful read.
+func (m *Manager) catalogChanged(server, catalog string, generation uint64) {
+	m.mu.Lock()
+	state := m.servers[server]
+	if state == nil || state.generation != generation || state.session == nil {
+		m.mu.Unlock()
+		return
+	}
+	if state.pendingCatalogs == nil {
+		state.pendingCatalogs = map[string]bool{}
+	}
+	state.pendingCatalogs[catalog] = true
+	state.catalogRevision++
+	state.catalogVersions[catalog]++
+	if catalog != "tools" {
+		m.mu.Unlock()
+		return
+	}
+	if state.refreshRunning {
+		state.refreshAgain = true
+		m.mu.Unlock()
+		return
+	}
+	state.refreshRunning = true
+	m.mu.Unlock()
+	go m.runToolRefresh(server, generation)
+}
+
+func (m *Manager) runToolRefresh(server string, generation uint64) {
+	for {
+		m.mu.Lock()
+		state := m.servers[server]
+		if state == nil || state.generation != generation || state.session == nil {
+			m.mu.Unlock()
+			return
+		}
+		session, cfg, version := state.session, state.cfg, state.catalogVersions["tools"]
+		m.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Timeout)*time.Second)
+		registered, names, err := m.buildTools(ctx, server, cfg, session)
+		cancel()
+
+		m.mu.Lock()
+		state = m.servers[server]
+		if state == nil || state.generation != generation || state.session != session {
+			m.mu.Unlock()
+			return
+		}
+		if err != nil {
+			// Preserve the last known-good registry entries. A transient or
+			// malformed refresh must never leave a partial tool catalog.
+			if state.catalogErrors == nil {
+				state.catalogErrors = map[string]error{}
+			}
+			state.catalogErrors["tools"] = fmt.Errorf("refresh failed: %w", err)
+		} else {
+			m.registry.Replace(state.toolNames, registered...)
+			state.toolNames = names
+			if state.catalogVersions["tools"] == version {
+				state.pendingCatalogs["tools"] = false
+			}
+			state.catalogUpdatedAt = time.Now()
+			delete(state.catalogErrors, "tools")
+		}
+		again := state.refreshAgain
+		state.refreshAgain = false
+		if !again {
+			state.refreshRunning = false
+			m.mu.Unlock()
+			return
+		}
+		m.mu.Unlock()
+	}
 }
 
 // trackProgress registers a per-call progress callback and returns the token
@@ -492,22 +719,28 @@ func connect(ctx context.Context, name string, cfg appconfig.MCPServer, clientOp
 	}
 }
 
-func (m *Manager) registerTools(ctx context.Context, server string, cfg appconfig.MCPServer, session *mcp.ClientSession) ([]string, error) {
+func (m *Manager) buildTools(ctx context.Context, server string, cfg appconfig.MCPServer, session *mcp.ClientSession) ([]tools.Tool, []string, error) {
 	listCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Timeout)*time.Second)
 	defer cancel()
+	var built []tools.Tool
 	var registered []string
+	seen := map[string]string{}
 	cursor := ""
 	for {
 		result, err := session.ListTools(listCtx, &mcp.ListToolsParams{Cursor: cursor})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, remote := range result.Tools {
 			remote := remote
 			publicName := sanitize("mcp_" + server + "_" + remote.Name)
+			if prior, duplicate := seen[publicName]; duplicate {
+				return nil, nil, fmt.Errorf("remote tool names %q and %q both map to %q", prior, remote.Name, publicName)
+			}
+			seen[publicName] = remote.Name
 			schema, err := json.Marshal(remote.InputSchema)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if string(schema) == "null" {
 				schema = []byte(`{"type":"object"}`)
@@ -538,7 +771,7 @@ func (m *Manager) registerTools(ctx context.Context, server string, cfg appconfi
 				}
 				return output, nil
 			}
-			m.registry.Add(tools.Function{
+			built = append(built, tools.Function{
 				Def:    provider.ToolDefinition{Name: publicName, Description: fmt.Sprintf("MCP server %s tool %s. %s", server, remote.Name, remote.Description), InputSchema: schema},
 				Action: tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server},
 				Run: func(callCtx context.Context, raw json.RawMessage) (string, error) {
@@ -552,7 +785,8 @@ func (m *Manager) registerTools(ctx context.Context, server string, cfg appconfi
 			break
 		}
 	}
-	return registered, nil
+	sort.Strings(registered)
+	return built, registered, nil
 }
 
 var invalidName = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)

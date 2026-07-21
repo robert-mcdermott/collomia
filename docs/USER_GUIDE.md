@@ -2191,6 +2191,7 @@ Inside the TUI:
 /mcp                         pick a connected server and inspect its tools
 /mcp status                  status, transport, identity, capabilities, tools, uptime, errors
 /mcp ping docs               protocol health check
+/mcp refresh docs            reload the live tool catalog without reconnecting
 /mcp reconnect docs          reconnect and refresh the tool catalog
 /mcp disable docs            disconnect for this session and withdraw tools
 /mcp enable docs             reconnect a trusted configured server
@@ -2205,6 +2206,11 @@ Removing a configured server lasts only until the next Collomia start.
 
 Untrusted, disabled, and failed definitions remain visible in `/mcp status`
 with their error instead of disappearing.
+
+Status also shows the negotiated MCP protocol revision, catalogs that promised
+`list_changed` notifications, notification count, pending catalog reads, and
+the last catalog error. `refresh` is less disruptive than `reconnect`: it keeps
+the current transport/session and reloads only the tool definitions.
 
 ### MCP tools and permissions
 
@@ -2270,7 +2276,30 @@ resource links retain a URI that the resource tool can follow.
   URL, env/header names, or remote identity generates a warning. Secret values
   are excluded from the fingerprint so ordinary rotation does not cause noise.
 
-MCP resource subscriptions and OAuth are currently unsupported; check the
+### Live catalog changes and protocol support
+
+If a server advertises list-change support, Collomia installs handlers for the
+standard tool, resource, and prompt catalog notifications:
+
+- **Tools:** Collomia lists and validates the complete replacement catalog,
+  then swaps all tools from that server into the registry atomically. The model
+  never sees a half-refreshed catalog. If listing or validation fails, the
+  previous tools stay registered and `/mcp status` shows the error and pending
+  `tools` marker. Use `/mcp refresh <server>` to retry without reconnecting.
+- **Resources and prompts:** these lists are never held as a long-lived cache;
+  `/mcp resources` and `/mcp prompts` read the live server. A notification sets
+  a pending marker, cleared only after the corresponding list succeeds.
+- Notifications from a stale connection are ignored after disable, remove, or
+  reconnect. Bursts of tool changes are coalesced and serialized.
+
+Collomia reports the actually negotiated protocol revision per server. The
+current official SDK negotiates MCP 2025-11-25 and retains compatibility with
+2025-06-18, 2025-03-26, and 2024-11-05. The complete implemented subset and
+test boundary are in [MCP_PROTOCOL.md](MCP_PROTOCOL.md).
+
+Experimental MCP tasks, resource subscriptions, and standards-based OAuth are
+currently unsupported. Header tokens remain the supported authenticated HTTP
+configuration until the OAuth/login wave lands; check the
 [capability matrix](CAPABILITIES.md) for current status.
 
 ## Lifecycle hooks

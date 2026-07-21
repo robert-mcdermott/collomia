@@ -85,6 +85,20 @@ func (r *Registry) Remove(name string) {
 	delete(r.tools, name)
 }
 
+// Replace atomically withdraws a set of tool names and installs their
+// replacements. MCP catalog refreshes use this so the model can observe the
+// old catalog or the new catalog, but never a partially refreshed mixture.
+func (r *Registry) Replace(remove []string, replacements ...Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, name := range remove {
+		delete(r.tools, name)
+	}
+	for _, tool := range replacements {
+		r.tools[tool.Definition().Name] = tool
+	}
+}
+
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

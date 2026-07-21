@@ -787,9 +787,10 @@ Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are
 Servers are managed at runtime without restarting:
 
 ```
-/mcp status                 every server: health, transport, server name/version,
-                            negotiated capabilities, tool count, uptime, last error
+/mcp status                 every server: health, transport, protocol, server identity,
+                            capabilities, live/pending catalogs, tool count, errors
 /mcp ping docs              health-check one server (a failure is recorded as an error state)
+/mcp refresh docs           reload tools in place without reconnecting
 /mcp reconnect docs         tear down and re-establish the session, refreshing its tool catalog
 /mcp disable docs           close the server and withdraw its tools for this session
 /mcp enable docs            bring it back (cannot override missing trust)
@@ -812,6 +813,19 @@ Three more protocol features are supported end to end:
 - **Progress** — when an MCP tool reports progress during a long call, the updates stream live into the transcript exactly like command output (`progress: 3/10 — indexing…`).
 - **Elicitation** — a server can pause a tool call to ask the user for input. Form-mode requests become typed questions in the TUI (enum fields offer their options, booleans offer true/false, esc declines the whole request — sensitive input never defaults to acceptance). URL-mode elicitation is declined outright, and headless runs never advertise the capability, so servers cannot fish for input when nobody is there.
 - **Server pinning** — Collomia fingerprints each configured server's definition (transport, command, arguments, URL, and the *names* of env vars and headers — values are excluded so rotating a token is not a false alarm) and records the remote implementation's identity, per workspace, in the per-user state directory outside any repository. If a server's definition or its remote identity changes since last use, the session starts with an explicit warning naming the change — a tripwire for a swapped binary or a quietly edited server entry, layered on top of workspace trust (which already invalidates on any project-config change).
+
+MCP catalogs also stay live. When a server advertises and sends a tools
+`list_changed` notification, Collomia fetches and validates the complete new
+list, then swaps registry entries atomically. A failed refresh leaves the
+last-known-good tools callable and appears in `/mcp status`; `/mcp refresh
+<server>` retries without reconnecting. Resource and prompt listings are read
+live, so their notifications are shown as pending until the next successful
+`/mcp resources` or `/mcp prompts` call. `/mcp status` reports the negotiated
+protocol revision and exactly which catalogs advertised list-change support.
+
+The supported protocol subset and fixture coverage are detailed in
+[docs/MCP_PROTOCOL.md](docs/MCP_PROTOCOL.md). Experimental MCP tasks, resource
+subscriptions, and standards-based OAuth/login are not yet implemented.
 
 MCP configuration can launch processes or contact remote services. Servers are not started unless their entry explicitly sets `"trusted": true`; review a project-provided `.collomia.json` before granting that trust — this is exactly what `collo trust` gates.
 

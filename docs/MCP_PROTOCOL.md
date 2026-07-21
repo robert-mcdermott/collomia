@@ -1,0 +1,76 @@
+# MCP protocol support
+
+Collomia uses the official Model Context Protocol Go SDK and currently builds
+against `github.com/modelcontextprotocol/go-sdk` v1.6.1. Each connection
+negotiates its protocol revision during initialization; `/mcp status` reports
+the revision actually selected rather than assuming every server is current.
+
+## Revisions
+
+The SDK used by this release offers MCP 2025-11-25 and can negotiate these
+older revisions with compatible servers:
+
+- 2025-06-18
+- 2025-03-26
+- 2024-11-05
+
+Protocol negotiation does not imply that Collomia exposes every feature in a
+revision. The table below is the product-level contract.
+
+## Implemented client subset
+
+| Protocol area | Collomia behavior |
+| --- | --- |
+| Initialization | Negotiates a revision and records server identity and capabilities. |
+| Transports | stdio and Streamable HTTP. |
+| Tools | Paginated discovery, JSON Schema definitions, calls, typed results, cancellation, and progress. |
+| Tool list changes | Complete catalog is fetched and validated, then atomically replaces that server's registered tools. Failed refreshes keep the previous catalog. |
+| Resources | Paginated live listing and reads; text/binary metadata and embedded content are preserved as documented. |
+| Resource list changes | Marks the catalog pending until the next successful live list. |
+| Prompts | Paginated live listing and explicit expansion into the user-editable composer. |
+| Prompt list changes | Marks the catalog pending until the next successful live list. |
+| Elicitation | TUI form mode only; URL mode is declined and headless clients do not advertise elicitation. |
+| Progress | Routed to the active tool's streamed output by progress token. |
+| Logging | Negotiated by the SDK; Collomia does not currently expose a separate server-log viewer. |
+
+`/mcp refresh <server>` manually retries a tool-catalog refresh without closing
+the session. `/mcp reconnect <server>` is the stronger recovery action when the
+transport or remote implementation itself needs to be reinitialized.
+
+## Not implemented
+
+- Experimental MCP tasks and task status notifications.
+- Resource subscribe/unsubscribe and resource-updated notifications.
+- Standards-based OAuth discovery, login, refresh, logout, and token storage.
+- Sampling requests from servers.
+- Direct image/audio delivery to multimodal provider inputs; binary MCP content
+  is currently represented by safe type-and-size markers in text context.
+
+MCP tasks were introduced as experimental in the 2025-11-25 specification.
+Collomia will not create a private task dialect while that surface and its SDK
+API are evolving.
+
+## Conformance and regression coverage
+
+Ordinary `go test ./...` uses in-memory MCP fixture servers and no external
+credentials. Together the fixtures cover:
+
+- initialization, identity, revision, and negotiated capabilities;
+- tools, resources, prompts, and rich result content;
+- dynamic tool/resource/prompt list-change notifications;
+- atomic hot refresh, notification coalescing, stale-session rejection, and
+  preservation of the last-known-good tools when replacement validation fails;
+- progress routing, form elicitation, decline behavior, cancellation/timeouts,
+  ping/reconnect/enable/disable/add/remove, and server pinning.
+
+This suite validates Collomia's supported subset against the SDK's in-memory
+wire implementation. It is not a claim that every third-party MCP server is
+conformant; `/mcp status`, `/mcp ping`, and `/mcp refresh` remain the operational
+diagnostics for a configured server.
+
+Specification references:
+
+- [MCP 2025-11-25 specification](https://modelcontextprotocol.io/specification/2025-11-25)
+- [Tools and list-change notifications](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+- [Experimental tasks](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks)
+- [Official Go SDK](https://github.com/modelcontextprotocol/go-sdk)
