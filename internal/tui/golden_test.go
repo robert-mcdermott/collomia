@@ -82,13 +82,14 @@ func assertGoldenScreen(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("read golden %s: %v\n--- actual ---\n%s--- end actual ---", path, err, got)
 	}
-	if got != string(want) {
-		t.Fatalf("golden screen %s changed\n--- expected ---\n%s--- actual ---\n%s--- end ---", name, want, got)
+	wantText := normalizeGoldenLineEndings(string(want))
+	if got != wantText {
+		t.Fatalf("golden screen %s changed\n--- expected ---\n%s--- actual ---\n%s--- end ---", name, wantText, got)
 	}
 }
 
 func normalizeGoldenScreen(value string) string {
-	value = ansi.Strip(strings.ReplaceAll(value, "\r\n", "\n"))
+	value = ansi.Strip(normalizeGoldenLineEndings(value))
 	lines := strings.Split(value, "\n")
 	normalized := make([]string, 0, len(lines))
 	for i := range lines {
@@ -99,4 +100,20 @@ func normalizeGoldenScreen(value string) string {
 		normalized = append(normalized, lines[i])
 	}
 	return strings.TrimRight(strings.Join(normalized, "\n"), "\n") + "\n"
+}
+
+func normalizeGoldenLineEndings(value string) string {
+	return strings.ReplaceAll(value, "\r\n", "\n")
+}
+
+func TestNormalizeGoldenLineEndings(t *testing.T) {
+	t.Parallel()
+
+	const lf = "first line\nsecond line\n"
+	if got := normalizeGoldenLineEndings(lf); got != lf {
+		t.Fatalf("LF input changed: got %q, want %q", got, lf)
+	}
+	if got := normalizeGoldenLineEndings("first line\r\nsecond line\r\n"); got != lf {
+		t.Fatalf("CRLF input not normalized: got %q, want %q", got, lf)
+	}
 }
