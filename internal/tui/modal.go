@@ -117,8 +117,7 @@ func (m Model) renderQuestion() string {
 	}
 
 	in := m.input
-	in.SetWidth(max(1, inner-4))
-	in.SetHeight(1)
+	in.Placeholder = "Type an answer or option number…"
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.theme.Primary)).
@@ -126,6 +125,13 @@ func (m Model) renderQuestion() string {
 	if m.theme.Background != "" {
 		inputBox = inputBox.Background(lipgloss.Color(m.theme.Background))
 	}
+	// Lip Gloss Width includes padding but excludes the border. The textarea's
+	// SetWidth, by contrast, is its complete rendered width. Reserve each frame
+	// exactly once so the nested input cannot exceed the modal content row and
+	// be re-wrapped into broken border fragments.
+	in.SetWidth(max(1, inner-inputBox.GetHorizontalFrameSize()))
+	in.SetHeight(1)
+	inputBox = inputBox.Width(max(1, inner-inputBox.GetHorizontalBorderSize()))
 	body.WriteString("\n\n" + inputBox.Render(in.View()))
 	body.WriteString("\n" + m.styles.muted.Render(wrapAndLimit("Type an answer or option number · enter submit · esc decline", inner, 2)))
 	return m.modalFrame(body.String(), m.theme.Primary, questionModalMaxWidth)
@@ -154,8 +160,13 @@ func (m Model) modalInnerWidth(limit int) int {
 
 func (m Model) modalFrame(body, border string, limit int) string {
 	style := m.modalStyle(border)
-	inner := max(1, m.modalOuterWidth(limit)-style.GetHorizontalFrameSize())
-	return style.Width(inner).Render(body)
+	// Style.Width is the width before borders and already includes padding.
+	// modalInnerWidth is the content width after both have been removed, so
+	// subtract only the border here. Subtracting the complete frame made every
+	// modal four columns narrower than its body calculations and caused nested
+	// question editors to wrap their own border.
+	widthBeforeBorder := max(1, m.modalOuterWidth(limit)-style.GetHorizontalBorderSize())
+	return style.Width(widthBeforeBorder).Render(body)
 }
 
 func (m Model) modalStyle(border string) lipgloss.Style {

@@ -94,6 +94,46 @@ func TestQuestionUsesTransientOverlay(t *testing.T) {
 	}
 }
 
+func TestQuestionModalRowsStayWithinFrameAcrossResizes(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(questionMsg{envelope: questionEnvelope{
+		question: Question{Text: "Pick a color!", Options: []string{"Crimson", "Teal", "Amber", "Indigo", "Other (I'll type my own)"}},
+		reply:    make(chan string, 1),
+	}})
+	m = updated.(Model)
+
+	sizes := []tea.WindowSizeMsg{
+		{Width: 180, Height: 50},
+		{Width: 100, Height: 35},
+		{Width: 64, Height: 28},
+		{Width: 38, Height: 24},
+	}
+	assertAligned := func(label string) {
+		t.Helper()
+		for _, size := range sizes {
+			updated, _ = m.Update(size)
+			m = updated.(Model)
+			modal := m.renderQuestion()
+			want := m.modalOuterWidth(questionModalMaxWidth)
+			for row, line := range strings.Split(modal, "\n") {
+				if got := lipgloss.Width(line); got != want {
+					t.Fatalf("%s terminal %dx%d modal row %d width=%d, want %d:\n%s", label, size.Width, size.Height, row, got, want, ansi.Strip(modal))
+				}
+			}
+			view := m.View()
+			for row, line := range strings.Split(view, "\n") {
+				if got := lipgloss.Width(line); got != size.Width {
+					t.Fatalf("%s terminal %dx%d composed row %d width=%d:\n%s", label, size.Width, size.Height, row, got, ansi.Strip(view))
+				}
+			}
+		}
+	}
+	assertAligned("empty answer")
+	m.input.SetValue(strings.Repeat("a detailed custom response ", 12))
+	m.input.CursorEnd()
+	assertAligned("long answer")
+}
+
 func TestOneTimeApprovalDoesNotOfferOrAcceptAlways(t *testing.T) {
 	m := newTestModel(t)
 	reply := make(chan permission.Decision, 1)
