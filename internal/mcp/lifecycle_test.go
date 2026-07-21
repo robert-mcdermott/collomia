@@ -2,7 +2,9 @@ package mcpclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -163,6 +165,31 @@ func TestRuntimeAddAndRemove(t *testing.T) {
 	}
 	if len(manager.Statuses()) != 0 {
 		t.Fatal("remove should forget the server")
+	}
+}
+
+func TestDiagnosticConnectionCanDisablePersistentPinning(t *testing.T) {
+	stubDial(t, "lookup")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	manager, errs := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, tools.NewRegistry(), Options{
+		Workspace:      t.TempDir(),
+		DisablePinning: true,
+	})
+	defer manager.Close()
+	if len(errs) != 0 {
+		t.Fatalf("connect errors=%v", errs)
+	}
+	if err := manager.Ping(t.Context(), "docs"); err != nil {
+		t.Fatal(err)
+	}
+	path, err := pinPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("diagnostic wrote pin store %s: %v", path, err)
 	}
 }
 

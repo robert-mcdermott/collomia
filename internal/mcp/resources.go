@@ -66,7 +66,7 @@ func hasCapability(session *mcp.ClientSession, capability string) bool {
 }
 
 // Resources lists a server's resources (paginated to completion).
-func (m *Manager) Resources(ctx context.Context, server string) ([]ResourceInfo, error) {
+func (m *Manager) Resources(ctx context.Context, server string) (out []ResourceInfo, err error) {
 	session, timeout, err := m.connectedSession(server)
 	if err != nil {
 		return nil, err
@@ -74,9 +74,10 @@ func (m *Manager) Resources(ctx context.Context, server string) ([]ResourceInfo,
 	if !hasCapability(session, "resources") {
 		return nil, fmt.Errorf("server %s did not negotiate the resources capability", server)
 	}
+	version := m.catalogVersion(server, session, "resources")
+	defer func() { m.markCatalogObserved(server, session, "resources", version, err) }()
 	listCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	var out []ResourceInfo
 	cursor := ""
 	for {
 		result, err := session.ListResources(listCtx, &mcp.ListResourcesParams{Cursor: cursor})
@@ -120,7 +121,7 @@ func (m *Manager) ReadResource(ctx context.Context, server, uri string) (string,
 }
 
 // Prompts lists a server's prompt templates (paginated to completion).
-func (m *Manager) Prompts(ctx context.Context, server string) ([]PromptInfo, error) {
+func (m *Manager) Prompts(ctx context.Context, server string) (out []PromptInfo, err error) {
 	session, timeout, err := m.connectedSession(server)
 	if err != nil {
 		return nil, err
@@ -128,9 +129,10 @@ func (m *Manager) Prompts(ctx context.Context, server string) ([]PromptInfo, err
 	if !hasCapability(session, "prompts") {
 		return nil, fmt.Errorf("server %s did not negotiate the prompts capability", server)
 	}
+	version := m.catalogVersion(server, session, "prompts")
+	defer func() { m.markCatalogObserved(server, session, "prompts", version, err) }()
 	listCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	var out []PromptInfo
 	cursor := ""
 	for {
 		result, err := session.ListPrompts(listCtx, &mcp.ListPromptsParams{Cursor: cursor})
@@ -151,6 +153,40 @@ func (m *Manager) Prompts(ctx context.Context, server string) ([]PromptInfo, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// markCatalogObserved clears a pending list-change marker only after the live
+// catalog was read successfully. Errors remain visible in /mcp status while
+// the last known-good tool registry (if any) remains usable.
+func (m *Manager) catalogVersion(server string, session *mcp.ClientSession, catalog string) uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.servers[server]
+	if state == nil || state.session != session {
+		return 0
+	}
+	return state.catalogVersions[catalog]
+}
+
+func (m *Manager) markCatalogObserved(server string, session *mcp.ClientSession, catalog string, version uint64, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.servers[server]
+	if state == nil || state.session != session {
+		return
+	}
+	if state.catalogErrors == nil {
+		state.catalogErrors = map[string]error{}
+	}
+	if err != nil {
+		state.catalogErrors[catalog] = err
+		return
+	}
+	if state.catalogVersions[catalog] == version {
+		state.pendingCatalogs[catalog] = false
+	}
+	state.catalogUpdatedAt = time.Now()
+	delete(state.catalogErrors, catalog)
 }
 
 // GetPrompt expands a server prompt template with arguments and renders the

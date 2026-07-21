@@ -30,6 +30,25 @@ func TestPrepareRequireRejectsMissingNetworkProtection(t *testing.T) {
 	}
 }
 
+func TestPrepareRequireRejectsMissingReadProtection(t *testing.T) {
+	backend := fixtureBackend{caps: Capabilities{WriteIsolation: true, NetworkIsolation: NetworkFull}}
+	_, err := Prepare(backend, ModeRequire, []string{"command"}, Policy{WorkspaceRoot: t.TempDir(), AllowNetwork: true, ConstrainReads: true})
+	if err == nil || !strings.Contains(err.Error(), "user-data read confinement") {
+		t.Fatalf("require must fail on missing read enforcement, got %v", err)
+	}
+}
+
+func TestPrepareBroadReadsDoNotRequireReadIsolation(t *testing.T) {
+	backend := fixtureBackend{caps: Capabilities{WriteIsolation: true, NetworkIsolation: NetworkFull}}
+	got, err := Prepare(backend, ModeRequire, []string{"command"}, Policy{WorkspaceRoot: t.TempDir(), AllowNetwork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Active || got.Degraded != "" {
+		t.Fatalf("preparation=%+v", got)
+	}
+}
+
 func TestPrepareAutoUsesPartialBackendAndWarns(t *testing.T) {
 	backend := fixtureBackend{caps: Capabilities{WriteIsolation: true, NetworkIsolation: NetworkTCP}}
 	got, err := Prepare(backend, ModeAuto, []string{"command"}, Policy{WorkspaceRoot: t.TempDir()})
@@ -52,10 +71,24 @@ func TestPrepareAutoContinuesWhenUnavailable(t *testing.T) {
 }
 
 func TestCapabilitiesSummaryIsExplicit(t *testing.T) {
-	got := (Capabilities{WriteIsolation: true, NetworkIsolation: NetworkTCP}).Summary()
-	for _, want := range []string{"workspace write confinement", "broad reads", "TCP denial only"} {
+	got := (Capabilities{WriteIsolation: true, ReadIsolation: true, NetworkIsolation: NetworkTCP}).Summary()
+	for _, want := range []string{"workspace write confinement", "user-data read confinement available", "TCP denial only"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary %q missing %q", got, want)
 		}
+	}
+}
+
+func TestReadPolicySummaryDistinguishesRequestedAndAlwaysOn(t *testing.T) {
+	optional := Capabilities{ReadIsolation: true}
+	if got := optional.ReadPolicySummary(Policy{}); got != "broad" {
+		t.Fatalf("optional broad summary=%q", got)
+	}
+	if got := optional.ReadPolicySummary(Policy{ConstrainReads: true}); got != "workspace-scoped" {
+		t.Fatalf("optional confined summary=%q", got)
+	}
+	always := Capabilities{ReadIsolation: true, ReadIsolationAlways: true}
+	if got := always.ReadPolicySummary(Policy{}); got != "confined (backend-enforced)" {
+		t.Fatalf("always-on summary=%q", got)
 	}
 }

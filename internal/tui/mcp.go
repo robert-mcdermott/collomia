@@ -11,7 +11,7 @@ import (
 )
 
 // mcpCommand handles /mcp subcommands: list/status, ping, reconnect,
-// enable, disable, add, remove. The bare /mcp opens the server picker.
+// refresh, enable, disable, add, remove. The bare /mcp opens the server picker.
 func (m *Model) mcpCommand(args []string) {
 	sub := strings.ToLower(args[0])
 	rest := args[1:]
@@ -47,6 +47,17 @@ func (m *Model) mcpCommand(args []string) {
 		}
 		m.addSystem("Reconnected " + name + " and refreshed its tool catalog.")
 		m.drainMCPNotes()
+	case "refresh":
+		name, ok := need("server")
+		if !ok {
+			return
+		}
+		count, err := m.runtime.MCP.RefreshTools(context.Background(), name)
+		if err != nil {
+			m.addError(fmt.Errorf("refresh %s tool catalog: %w", name, err))
+			return
+		}
+		m.addSystem(fmt.Sprintf("Refreshed %s without reconnecting; %d tools are registered.", name, count))
 	case "enable", "disable":
 		name, ok := need("server")
 		if !ok {
@@ -178,7 +189,7 @@ func (m *Model) mcpCommand(args []string) {
 		}
 		m.addSystem("Removed " + name + ". Servers from the configuration file return on the next start; runtime-added servers are gone.")
 	default:
-		m.addError(fmt.Errorf("unknown /mcp subcommand %q (list, ping, reconnect, enable, disable, add, remove)", sub))
+		m.addError(fmt.Errorf("unknown /mcp subcommand %q (list, ping, refresh, reconnect, enable, disable, add, remove)", sub))
 	}
 }
 
@@ -248,11 +259,29 @@ func (m *Model) mcpStatusReport() string {
 		if s.ServerName != "" {
 			line += fmt.Sprintf("\n    server: %s %s", s.ServerName, s.ServerVersion)
 		}
+		if s.Protocol != "" {
+			line += "\n    protocol: " + s.Protocol
+		}
 		if len(s.Capabilities) > 0 {
 			line += "\n    capabilities: " + strings.Join(s.Capabilities, ", ")
 		}
+		if len(s.ListChanges) > 0 {
+			line += "\n    live catalogs: " + strings.Join(s.ListChanges, ", ")
+		}
 		if len(s.Tools) > 0 {
 			line += fmt.Sprintf("\n    tools: %d registered", len(s.Tools))
+		}
+		if s.CatalogRevision > 0 {
+			line += fmt.Sprintf("\n    catalog notifications: %d", s.CatalogRevision)
+			if !s.CatalogUpdatedAt.IsZero() {
+				line += fmt.Sprintf("; last successful read %s ago", time.Since(s.CatalogUpdatedAt).Round(time.Second))
+			}
+		}
+		if len(s.PendingCatalogs) > 0 {
+			line += "\n    pending catalog reads: " + strings.Join(s.PendingCatalogs, ", ")
+		}
+		if s.CatalogError != "" {
+			line += "\n    catalog error: " + s.CatalogError
 		}
 		if !s.ConnectedAt.IsZero() {
 			line += fmt.Sprintf("\n    up for %s", time.Since(s.ConnectedAt).Round(time.Second))
@@ -262,6 +291,6 @@ func (m *Model) mcpStatusReport() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "\n/mcp ping|reconnect|enable|disable|remove <name> · /mcp add <name> <command…> · /mcp prompts|resources <name>")
+	lines = append(lines, "\n/mcp ping|refresh|reconnect|enable|disable|remove <name> · /mcp add <name> <command…> · /mcp prompts|resources <name>")
 	return strings.Join(lines, "\n")
 }

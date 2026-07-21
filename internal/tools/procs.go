@@ -139,7 +139,7 @@ func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process
 	argv := shellArgv(command)
 	sandboxWarning := ""
 	if runner.SandboxMode == sandbox.ModeAuto || runner.SandboxMode == sandbox.ModeRequire {
-		prepared, err := sandbox.Prepare(runner.Backend, runner.SandboxMode, argv, sandbox.Policy{WorkspaceRoot: runner.Workspace, ExtraWritableRoots: runner.resolvedWritableRoots(), AllowNetwork: runner.AllowNetwork})
+		prepared, err := sandbox.Prepare(runner.Backend, runner.SandboxMode, argv, runner.sandboxPolicy())
 		if err != nil {
 			return nil, err
 		}

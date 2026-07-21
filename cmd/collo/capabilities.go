@@ -21,7 +21,7 @@ func capabilityMatrix() []capabilityRow {
 	backend := sandbox.ForPlatform()
 	if backend.Available() == nil {
 		sandboxStatus = "experimental"
-		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; enable with permissions.sandbox=auto|require"
+		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; optional workspace-scoped command user-data reads use sandbox_allow_read_outside_workspace=false; enable with permissions.sandbox=auto|require"
 	}
 	return []capabilityRow{
 		{"provider", "openai / openai-compatible (Ollama, vLLM, LM Studio)", "implemented", "streaming chat completions + function tools"},
@@ -59,14 +59,17 @@ func capabilityMatrix() []capabilityRow {
 		{"planning", "structured plan artifact", "implemented", "update_plan tool, /tasks view, persisted and restored with the session"},
 		{"planning", "user-question primitive", "implemented", "ask_user pauses the run in a transient floating dialog for a typed answer (TUI only)"},
 		{"mcp", "tools over stdio / streamable HTTP", "implemented", "trusted servers only"},
-		{"mcp", "runtime lifecycle management", "implemented", "`/mcp status|ping|reconnect|enable|disable|add|remove`; health, negotiated capabilities, and initialization errors reported per server; disabled/failed servers withdraw their tools"},
+		{"mcp", "runtime lifecycle management", "implemented", "`/mcp status|ping|refresh|reconnect|enable|disable|add|remove`; health, protocol, negotiated capabilities, catalog state, and initialization errors reported per server; disabled/failed servers withdraw their tools"},
+		{"mcp", "persistent lifecycle management", "implemented", "`collo mcp list|show|add|remove|enable|disable|test`; project/global scopes, precedence and quarantine visibility, atomic config edits, secret-safe display, and connection-only testing"},
 		{"mcp", "resources", "implemented", "`/mcp resources <server>` browses, `/mcp resource` previews; the agent lists and reads them with `list_mcp_resources`/`read_mcp_resource` (external-risk, server-scoped)"},
 		{"mcp", "prompts", "implemented", "`/mcp prompts <server>` lists templates; `/mcp prompt <server> <name> key=value` expands one into the input box for review before sending"},
 		{"mcp", "rich tool content", "implemented", "typed content preserved: text, structured output, embedded resources; images/audio become explicit type+size markers, resource links keep their URI and a read hint"},
 		{"mcp", "elicitation", "implemented", "form-mode server questions become typed TUI prompts (esc declines); URL-mode is declined; headless runs never advertise the capability"},
 		{"mcp", "progress notifications", "implemented", "server progress streams live into the transcript during tool calls, like command output"},
+		{"mcp", "catalog list-change notifications", "implemented", "tool catalogs hot-refresh atomically; resource/prompt changes are marked pending until their next live list; failed refreshes preserve last-known-good tools"},
+		{"mcp", "protocol conformance fixtures", "implemented", "official Go SDK negotiation plus capability-specific in-memory fixtures cover tools, resources, prompts, list changes, rich content, progress, elicitation, cancellation, lifecycle, and pinning"},
 		{"mcp", "server pinning", "implemented", "definition fingerprints (command/args/url/env keys) and remote identity pinned per workspace outside the repo; changes are flagged at connect"},
-		{"mcp", "subscriptions / oauth", "unsupported", "roadmap phase 5"},
+		{"mcp", "tasks / resource subscriptions / oauth", "unsupported", "tasks remain experimental; subscriptions and standards-based OAuth/login remain roadmap phase 5"},
 		{"skills", "discovery + on-demand load", "implemented", "YAML front matter (folded blocks, metadata, allowed-tools), bundled scripts/references/assets surfaced by load_skill, project-over-global precedence with shadow reporting, validation warnings; a present project config must be trusted"},
 		{"skills", "lifecycle management", "implemented", "`collo skills list|show|new|install|update|remove|enable|disable`; sha256 inspection, .disabled marker, symlink-refusing installs"},
 		{"hooks", "lifecycle hooks", "implemented", "11 events (session, prompt, permission, tool, file change, compaction, subagent, stop) run configured commands with JSON stdin, matchers, and timeouts; user_prompt/tool_start may block (exit 2 or decision JSON) — hooks only tighten, never bypass permissions or the sandbox"},

@@ -564,13 +564,19 @@ func (r *Runtime) sandboxSummary() string {
 	if err := backend.Available(); err != nil {
 		return fmt.Sprintf("%s; unavailable: %v", mode, err)
 	}
-	policy := sandbox.Policy{WorkspaceRoot: r.Workspace, AllowNetwork: r.Config.Permissions.SandboxAllowNetwork}
+	policy := sandbox.Policy{
+		WorkspaceRoot:  r.Workspace,
+		AllowNetwork:   r.Config.Permissions.SandboxAllowNetwork,
+		ConstrainReads: !r.Config.Permissions.SandboxAllowReadOutsideWorkspace,
+	}
 	network := "denied"
 	if policy.AllowNetwork {
 		network = "allowed"
 	}
-	detail := fmt.Sprintf("%s; %s; command network %s", mode, backend.Name(), network)
-	if missing := backend.Capabilities().Missing(policy); len(missing) > 0 {
+	caps := backend.Capabilities()
+	reads := caps.ReadPolicySummary(policy)
+	detail := fmt.Sprintf("%s; %s; command user-data reads %s; command network %s", mode, backend.Name(), reads, network)
+	if missing := caps.Missing(policy); len(missing) > 0 {
 		detail += "; degraded: missing " + strings.Join(missing, " and ")
 	}
 	return detail

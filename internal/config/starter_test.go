@@ -73,7 +73,7 @@ func TestWriteGlobalStarterIncludesProvidersPermissionsAndOptions(t *testing.T) 
 	if err := json.Unmarshal(rawField(t, data, "permissions"), &permissions); err != nil {
 		t.Fatal(err)
 	}
-	if len(permissions) != 4 || string(permissions["mode"]) != `"ask"` || string(permissions["allow_outside_workspace"]) != "false" || string(permissions["sandbox"]) != `"off"` || string(permissions["sandbox_allow_network"]) != "true" {
+	if len(permissions) != 5 || string(permissions["mode"]) != `"ask"` || string(permissions["allow_outside_workspace"]) != "false" || string(permissions["sandbox"]) != `"off"` || string(permissions["sandbox_allow_network"]) != "true" || string(permissions["sandbox_allow_read_outside_workspace"]) != "true" {
 		t.Fatalf("global starter permissions should expose compatibility-friendly editable defaults: %s", rawField(t, data, "permissions"))
 	}
 	var options map[string]json.RawMessage

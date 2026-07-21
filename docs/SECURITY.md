@@ -155,19 +155,28 @@ including background processes started with `start_process`, and commands
 run under a pseudo-terminal (`run_command` with `pty: true`) — in the
 platform's containment mechanism.
 
-Sandboxing is currently opt-in (`off` is the runtime default), and
-`sandbox_allow_network` defaults to `true`. Changing only `sandbox` from `off`
-to `auto` therefore preserves the network access used by package installation
-and online CLIs. Users who want network-denied commands set that value to
-`false` explicitly.
-This switch controls only `run_command`, PTY commands, and `start_process`.
+Sandboxing is currently opt-in (`off` is the runtime default).
+`sandbox_allow_network` and `sandbox_allow_read_outside_workspace` both
+default to `true`. Changing only `sandbox` from `off` to `auto` therefore
+preserves the network and dependency reads used by package installation and
+developer toolchains. Users opt into network denial or user-data read
+confinement by setting the corresponding value to `false` explicitly.
+These switches control only `run_command`, PTY commands, and `start_process`.
 Provider HTTP, remote MCP, hooks, and language servers run in the Collomia
-process and are not blocked by command-sandbox networking.
+process and are not blocked by command-sandbox read/network policy.
 
 **macOS: Seatbelt** (`sandbox-exec`):
 
 - File writes are confined to the workspace, the temp directories, and
-  `/dev`; everything else is deny-by-default (reads stay open).
+  `/dev`; everything else is deny-by-default.
+- With `sandbox_allow_read_outside_workspace: false`, file-content reads from
+  user homes and mounted volumes are denied except for the workspace,
+  temporary directories, executable directories from `PATH`, explicit
+  `sandbox_readable_roots`, and writable roots. Public operating-system
+  runtime paths remain readable. File metadata remains visible so a shell can
+  resolve paths and report a normal permission failure without leaking file
+  contents. This is a user-data boundary, not an attempt to hide public system
+  configuration.
 - Network egress is denied unless `permissions.sandbox_allow_network` is
   true (loopback stays open for local model servers).
 - `sandbox-exec` is deprecated by Apple but functional; treated as
@@ -178,28 +187,49 @@ re-exec shim — Landlock restricts the calling process, so the command is
 re-executed through the shim, which applies the ruleset to itself and then
 execs the real command):
 
-- File writes are confined to the granted roots (the workspace, temp
-  directories). Reads are not confined.
-- On kernel 6.7+ (Landlock ABI v4), TCP connect/bind are also denied unless
-  `permissions.sandbox_allow_network` is true. Below ABI v4, only the
-  filesystem is confined and `collo doctor` reports that network is
-  unenforced. **UDP — including DNS — cannot be restricted by Landlock at
-  all**, on any kernel version; treat DNS-based exfiltration as always
-  possible even with the sandbox enabled.
+- File write rules are available on ABI v1, but ABI v1–v2 cannot deny a
+  standalone `truncate(2)` operation; ABI v3 (Linux 6.2) is the recommended
+  minimum for robust write confinement. Other writes are confined to the
+  granted roots (the workspace and temp directories). With
+  `sandbox_allow_read_outside_workspace: false`, Landlock
+  also handles read/execute access and grants it only to the workspace,
+  temporary/writable roots, conventional system runtime/configuration roots,
+  executable directories from `PATH`, and explicit
+  `sandbox_readable_roots`. System roots such as `/usr`, `/lib`, and `/etc`
+  stay readable so normal dynamically linked tools, TLS, identity lookup, and
+  package clients continue to work; ungranted user data does not.
+- Landlock ABI v4+ denies TCP connect/bind unless
+  `permissions.sandbox_allow_network` is true. ABI v10+ additionally handles
+  UDP bind/connect/send, including DNS. Below ABI v4, only the filesystem is
+  confined; on ABI v4–v9, UDP remains reachable and `collo doctor` reports
+  TCP-only isolation.
 - `require` checks capabilities rather than merely checking that Landlock
-  exists. With `sandbox_allow_network: false`, Linux fails closed because UDP
-  cannot be denied completely. `auto` still applies write confinement and TCP
-  denial while reporting the UDP limitation in `collo doctor`, `/status`, and
-  command output.
+  exists. With `sandbox_allow_network: false`, ABI v4–v9 fails closed because
+  UDP cannot be denied completely; ABI v10+ satisfies the full network-denial
+  request. `auto` still applies filesystem confinement and the available
+  network controls while reporting any limitation in `collo doctor`, `/status`,
+  and command output.
+
+The Linux kernel's [Landlock userspace API documentation](https://docs.kernel.org/userspace-api/landlock.html)
+defines the read/execute rights, TCP and ABI v10 UDP rights, ruleset layering,
+and special-filesystem limitations used for this capability reporting. The
+project's [Linux sandbox setup and Landlock compatibility guide](LINUX_SANDBOX.md)
+provides the kernel/ABI matrix, Ubuntu 26.04 behavior, configuration recipes,
+host verification, custom-kernel requirements, and container/WSL
+troubleshooting.
 
 **Windows 11: AppContainer + Job Object**:
 
 - A workspace-specific AppContainer SID provides low-integrity filesystem,
   registry, credential, device, network, and cross-process isolation.
 - Collomia grants that SID access to the workspace, the user temp directory,
-  and explicit `permissions.sandbox_writable_roots`. User-local executable
+  explicit `permissions.sandbox_readable_roots` (read/execute), and explicit
+  `permissions.sandbox_writable_roots` (read/write). User-local executable
   directories on `PATH` receive read/execute access, not write access. The
-  normal user's existing access checks still apply as well.
+  normal user's existing access checks still apply as well. AppContainer
+  always restricts user-data reads even though the compatibility read switch
+  defaults to broad reads on macOS/Linux; granting the whole user profile is
+  deliberately not used to weaken the Windows boundary.
 - With `sandbox_allow_network: false`, no Internet or private-network
   capabilities are placed in the process token. With it set to `true`,
   Collomia grants the `internetClient` and `privateNetworkClientServer`
@@ -223,19 +253,26 @@ exemption that Collomia deliberately does not create.
 
 Shared limitations, stated plainly:
 
-- Reads are not confined on macOS or Linux: a sandboxed command can still read
-  any file your user can. AppContainer restricts Windows user-data reads while
-  allowing the Windows runtime and explicitly granted locations.
+- Read confinement is opt-in on macOS/Linux and always present for Windows
+  AppContainer. It protects ordinary user data, not public operating-system
+  files, executable PATH entries, temp paths, or explicit grants. On macOS,
+  metadata remains visible and the content boundary targets user homes and
+  mounted volumes because a global Seatbelt content denial prevents stable
+  process startup on current macOS. Linux Landlock provides the stricter
+  allowlisted filesystem view, but pseudo-filesystems have kernel-specific
+  mediation limits. Do not describe either mode as a secret vault.
 - `auto` never silently equates partial enforcement with a complete sandbox:
   it emits an actionable degradation warning. `require` refuses a command if
-  any requested write or network protection is unavailable.
+  any requested write, read, or network protection is unavailable.
 - Network policy remains all-or-nothing for a command. Domain-scoped egress is
   roadmap work; environment-only proxy settings would not be a security
   boundary because a hostile command could bypass them.
-- Package managers and build tools may need write access to caches outside the
-  workspace. Prefer a narrow `sandbox_writable_roots` entry. `command_env:
-  "minimal"` can also hide proxy variables or registry credentials; switch to
-  `full` only when that tradeoff is intended.
+- Package managers and build tools may need dependencies or caches outside the
+  workspace. Prefer a narrow `sandbox_readable_roots` entry for immutable
+  inputs and `sandbox_writable_roots` only for paths that must change. Writable
+  roots are implicitly readable. `command_env: "minimal"` can also hide proxy
+  variables or registry credentials; switch to `full` only when that tradeoff
+  is intended.
 
 ## Repository trust
 

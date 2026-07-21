@@ -117,6 +117,15 @@ type Permissions struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxAllowNetwork permits network egress inside the sandbox.
 	SandboxAllowNetwork bool `json:"sandbox_allow_network,omitempty"`
+	// SandboxAllowReadOutsideWorkspace keeps the compatibility default of
+	// broad filesystem reads inside the command sandbox. Set it to false to
+	// confine reads to the workspace, system runtime paths, temporary
+	// directories, and SandboxReadableRoots.
+	SandboxAllowReadOutsideWorkspace bool `json:"sandbox_allow_read_outside_workspace,omitempty"`
+	// SandboxReadableRoots grants sandboxed commands read access to additional
+	// explicit roots when outside-workspace reads are confined. Relative paths
+	// are resolved from the workspace. Writable roots are always readable.
+	SandboxReadableRoots []string `json:"sandbox_readable_roots,omitempty"`
 	// SandboxWritableRoots grants sandboxed commands write access to
 	// additional explicit roots (for example a package-manager cache). Relative
 	// paths are resolved from the workspace.
@@ -217,8 +226,9 @@ func Defaults() Config {
 			},
 		},
 		Permissions: Permissions{
-			Mode:                "ask",
-			SandboxAllowNetwork: true,
+			Mode:                             "ask",
+			SandboxAllowNetwork:              true,
+			SandboxAllowReadOutsideWorkspace: true,
 			DeniedCommands: []string{
 				`(?i)(^|[;&|]\s*)(rm\s+-[^\s]*(rf|fr)[^\s]*|rmdir\s+/s)\s+([/~]|\.{1,2}|\*|[a-z]:\\)($|\s)`,
 				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
@@ -422,18 +432,27 @@ func (c *Config) normalize() {
 		c.Providers[name] = p
 	}
 	for name, server := range c.MCP {
-		server.URL = expandEnv(server.URL)
-		for key, value := range server.Env {
-			server.Env[key] = expandEnv(value)
-		}
-		for key, value := range server.Headers {
-			server.Headers[key] = expandEnv(value)
-		}
-		if server.Timeout <= 0 {
-			server.Timeout = 30
-		}
-		c.MCP[name] = server
+		c.MCP[name] = ResolveMCPServer(server)
 	}
+}
+
+// ResolveMCPServer expands environment references and applies runtime
+// defaults to one MCP definition. It is exported for scoped diagnostics such
+// as `collo mcp test --global`, which deliberately inspect one configuration
+// layer rather than loading the merged project configuration.
+func ResolveMCPServer(server MCPServer) MCPServer {
+	server.Transport = strings.ToLower(strings.TrimSpace(server.Transport))
+	server.URL = expandEnv(server.URL)
+	for key, value := range server.Env {
+		server.Env[key] = expandEnv(value)
+	}
+	for key, value := range server.Headers {
+		server.Headers[key] = expandEnv(value)
+	}
+	if server.Timeout == 0 {
+		server.Timeout = 30
+	}
+	return server
 }
 
 // FieldError ties a validation failure to the configuration key that caused it.
@@ -489,6 +508,11 @@ func (c Config) ValidateFields() []FieldError {
 	for i, root := range c.Permissions.SandboxWritableRoots {
 		if strings.TrimSpace(root) == "" {
 			errs = append(errs, FieldError{fmt.Sprintf("permissions.sandbox_writable_roots.%d", i), "must not be empty"})
+		}
+	}
+	for i, root := range c.Permissions.SandboxReadableRoots {
+		if strings.TrimSpace(root) == "" {
+			errs = append(errs, FieldError{fmt.Sprintf("permissions.sandbox_readable_roots.%d", i), "must not be empty"})
 		}
 	}
 	for name, provider := range c.Providers {
@@ -580,6 +604,9 @@ func (c Config) ValidateFields() []FieldError {
 				errs = append(errs, FieldError{field, fmt.Sprintf("invalid pattern %q: %v", glob, err)})
 			}
 		}
+	}
+	for name, server := range c.MCP {
+		errs = append(errs, ValidateMCPServer(name, server)...)
 	}
 	for name, a := range c.Agents {
 		if a.MaxIterations < 0 {

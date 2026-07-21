@@ -357,7 +357,8 @@ Example global configuration:
   "permissions": {
     "mode": "ask",
     "sandbox": "auto",
-    "sandbox_allow_network": true
+    "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": true
   }
 }
 ```
@@ -532,7 +533,9 @@ request shapes.
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `off`. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
-| `sandbox_writable_roots` | string list | Additional narrowly scoped write roots for sandboxed commands, resolved from the workspace when relative. |
+| `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
+| `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
+| `sandbox_writable_roots` | string list | Additional narrowly scoped read/write roots for sandboxed commands, resolved from the workspace when relative. Every writable root is implicitly readable. |
 | `command_env` | string | `full` or `minimal`; if omitted while sandboxing is enabled, minimal is used. |
 | `reviewer_command` | string | Optional external policy reviewer for otherwise auto-approved non-read actions. |
 
@@ -1336,27 +1339,31 @@ path for physical-disk administration.
 ### OS sandboxing
 
 Enable compatibility-first containment while preserving package installation,
-online documentation CLIs, and other command networking:
+online documentation CLIs, command networking, and dependency reads outside
+the workspace:
 
 ```json
 {
   "permissions": {
     "sandbox": "auto",
     "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": true,
     "command_env": "minimal"
   }
 }
 ```
 
-Sandboxing is `off` unless configured, while `sandbox_allow_network` defaults
-to `true`. Changing only `sandbox` to `auto` therefore adds containment without
-blocking package downloads at the network boundary. To deny command
-networking, set `sandbox_allow_network` to `false` explicitly. Package managers
-can still require a writable cache root or environment-provided credentials;
-the examples below cover both cases.
+Sandboxing is `off` unless configured. `sandbox_allow_network` and
+`sandbox_allow_read_outside_workspace` default to `true`. Changing only
+`sandbox` to `auto` therefore adds write/process containment without blocking
+package downloads or dependencies stored in a user cache. Set either switch
+to `false` to deliberately request network denial or user-data read
+confinement. Package managers can still require a readable dependency store,
+writable cache, or environment-provided credentials; the examples below cover
+all three cases.
 
 Use `"require"` for fail-closed operation: if the backend is unavailable or
-cannot enforce every requested write/network protection, it refuses to run.
+cannot enforce every requested write/read/network protection, it refuses to run.
 `"auto"` applies all available protections and emits a visible degradation
 warning in command output, `collo doctor`, and `/status` when a protection is
 missing.
@@ -1369,21 +1376,34 @@ servers. Those are separately controlled through configuration trust,
 
 Platform behavior:
 
-- **macOS/Seatbelt:** reads remain open; writes are limited to the workspace,
-  temporary directories, and `/dev`. With network disabled, remote egress is
-  denied but loopback remains available.
-- **Linux/Landlock:** kernel 5.13+ confines writes to the workspace and
-  temporary/device helper paths. Kernel 6.7+ (ABI v4) can also deny TCP
-  connect/bind. Older kernels cannot enforce the network setting. Landlock
-  cannot restrict UDP, including DNS, on any supported kernel. Consequently,
-  `require` plus network denial fails closed; `auto` provides and clearly
-  reports TCP-only isolation.
+- **macOS/Seatbelt:** writes are limited to the workspace, temporary
+  directories, and `/dev`. When outside-workspace reads are disabled,
+  file-content reads in user homes and mounted volumes are denied except for
+  the workspace, temp/writable roots, PATH entries, and explicit readable
+  roots. Public system runtime files and path metadata remain visible. With
+  network disabled, remote egress is denied but loopback remains available.
+- **Linux/Landlock:** kernel 5.13+/ABI v1 applies filesystem rules, but ABI v3
+  (Linux 6.2) is recommended because ABI v1–v2 cannot deny standalone
+  truncation. Writes are otherwise confined to the workspace and
+  temporary/device helper paths. Read confinement adds a deny-by-default
+  Landlock view with grants for the workspace, temp/writable roots,
+  conventional system runtime/configuration paths, PATH entries, and explicit
+  readable roots. ABI v4+ can deny TCP connect/bind; ABI v10+ can also deny UDP
+  bind/connect/send, including DNS. Older kernels cannot enforce the network
+  setting, and ABI v4–v9 remains TCP-only. Consequently, `require` plus network
+  denial fails closed on ABI v4–v9 but succeeds with full TCP/UDP isolation on
+  ABI v10+; `auto` applies and clearly reports the capability available. See
+  [Linux sandbox setup and Landlock compatibility](LINUX_SANDBOX.md) for the
+  ABI feature matrix, Ubuntu 26.04 specifics, verification and custom-kernel
+  steps, configuration recipes, and container/WSL troubleshooting.
 - **Windows 11/AppContainer:** a workspace-specific, low-integrity
   AppContainer restricts filesystem, registry, credentials, devices, network,
   and access to other processes. A kill-on-close Job Object owns the complete
   child tree. The workspace, temp directory, and `sandbox_writable_roots` are
-  writable; user-local PATH directories are read/execute only. This uses inbox
-  Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
+  writable; `sandbox_readable_roots` and user-local PATH directories are
+  read/execute only. AppContainer always confines user-data reads even though
+  the compatibility switch defaults to broad reads on macOS/Linux. This uses
+  inbox Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
   service, administrator setup, or additional installation.
 
 The network setting is deliberately command-specific. It does not block model
@@ -1394,22 +1414,27 @@ server without an administrator-created exemption. Collomia does not request
 that exemption; use `sandbox: "off"` for a command that must access such a
 local development service.
 
-Build/package caches outside the workspace may need a narrow explicit grant:
+Dependency stores and build/package caches outside the workspace may need
+narrow explicit grants:
 
 ```json
 {
   "permissions": {
     "sandbox": "auto",
     "sandbox_allow_network": true,
+    "sandbox_allow_read_outside_workspace": false,
+    "sandbox_readable_roots": ["${HOME}/go/pkg/mod"],
     "sandbox_writable_roots": [".collomia-cache", "${HOME}/.cache/my-build"]
   }
 }
 ```
 
-Prefer a tool-specific cache over granting an entire home directory. Neither
-the macOS nor Linux backend confines reads; Windows AppContainer does restrict
-user-data reads outside its explicitly accessible locations. Read [Security
-model](SECURITY.md) before using autopilot with untrusted repositories or
+Relative entries resolve from the workspace and environment references expand
+at command time. Writable roots are automatically readable. Prefer an
+immutable dependency root or tool-specific cache over granting an entire home
+directory. Read [Security model](SECURITY.md) for the precise platform
+boundary—including macOS metadata/system-runtime visibility and Linux
+pseudo-filesystem limits—before using autopilot with untrusted repositories or
 instructions.
 
 ### Command environment
@@ -2183,6 +2208,76 @@ A configured MCP server starts only when:
 These gates are separate. A trusted project does not make an MCP entry with
 `trusted: false` executable.
 
+### Persistent MCP management from the command line
+
+`collo mcp` edits MCP definitions without requiring users to hand-copy JSON.
+Project scope is the default; add `--global` to target
+`~/.collomia/config.json` on macOS/Linux or
+`%USERPROFILE%\.collomia\config.json` on Windows:
+
+```text
+collo mcp list
+collo mcp list --global
+collo mcp show time
+collo mcp show time --global
+
+# Persistent stdio server for this project.
+collo mcp add time -- uvx mcp-server-time
+
+# Persistent stdio server for every workspace.
+collo mcp add time --global -- uvx mcp-server-time
+
+# Persistent Streamable HTTP server. Quote ${...} so your shell does not
+# expand it while the definition is being written.
+collo mcp add docs --global \
+  --url https://docs.example.com/mcp \
+  --header 'Authorization=Bearer ${DOCS_MCP_TOKEN}' \
+  --timeout 30
+
+# Stdio environment values are repeatable too.
+collo mcp add database \
+  --env 'DATABASE_TOKEN=${DATABASE_MCP_TOKEN}' \
+  -- database-mcp --read-only
+
+collo mcp test time
+collo mcp disable time
+collo mcp enable time
+collo mcp remove time
+```
+
+`add` creates a reviewed, enabled definition with `trusted: true`. If the same
+name already exists in the selected scope, Collomia refuses to overwrite it;
+inspect it with `show`, then add `--yes` only when replacement is intentional.
+`enable`, `disable`, and `remove` also modify only the selected scope. For
+example, removing a project entry may reveal a same-named global entry that it
+previously shadowed.
+
+Without `--global`, `list` shows both layers and labels each entry `effective`,
+`shadowed by project`, or `quarantined`. A project entry shadows the global
+entry of the same name only after project trust is active. `list --global` and
+`show --global` inspect only the user-wide file.
+
+Every project-config edit changes the file's trust hash. Review the updated
+`.collomia.json` and run `collo trust` before Collomia will apply any project
+entry. Global entries do not need repository trust, but the per-server
+`trusted` field still applies.
+
+`show` leaves environment references visible but redacts literal values in
+sensitive environment variables and headers. `add` warns when a likely secret
+is literal; prefer `${NAME}` references so credentials remain in the process
+environment rather than the JSON file.
+
+`collo mcp test <name>` tests the effective entry; `--global` tests the exact
+global entry even if a project entry shadows it. It connects, negotiates the
+protocol, pings the server, validates the tool catalog, and lists advertised
+resource/prompt catalogs. It closes the connection afterward, invokes no MCP
+tool, and does not read or update the persistent MCP pin store.
+
+Configuration writes use an atomic same-directory replacement, preserve the
+file's permissions, and retain unrelated configuration plus unknown fields.
+The active configuration is strict JSON, so comments belong in the non-loaded
+`.example.jsonc` reference rather than `config.json` or `.collomia.json`.
+
 ### Runtime MCP management
 
 Inside the TUI:
@@ -2191,20 +2286,112 @@ Inside the TUI:
 /mcp                         pick a connected server and inspect its tools
 /mcp status                  status, transport, identity, capabilities, tools, uptime, errors
 /mcp ping docs               protocol health check
+/mcp refresh docs            reload the live tool catalog without reconnecting
 /mcp reconnect docs          reconnect and refresh the tool catalog
 /mcp disable docs            disconnect for this session and withdraw tools
 /mcp enable docs             reconnect a trusted configured server
-/mcp add scratch npx -y @modelcontextprotocol/server-filesystem .
+/mcp add time uvx mcp-server-time
 /mcp add remote --url https://example.com/mcp
-/mcp remove scratch
+/mcp remove time
 ```
 
 Runtime-added servers are an explicit user action, session-scoped, and not
-written to configuration. Add a reviewed definition to JSON to persist one.
-Removing a configured server lasts only until the next Collomia start.
+written to configuration. Use `collo mcp add` outside the TUI to persist one.
+Removing or disabling a configured server with the slash command lasts only
+until the next Collomia start; the command-line lifecycle edits configuration.
 
 Untrusted, disabled, and failed definitions remain visible in `/mcp status`
 with their error instead of disappearing.
+
+Status also shows the negotiated MCP protocol revision, catalogs that promised
+`list_changed` notifications, notification count, pending catalog reads, and
+the last catalog error. `refresh` is less disruptive than `reconnect`: it keeps
+the current transport/session and reloads only the tool definitions.
+
+### Quick MCP test: current time
+
+The official time server is a useful first MCP test because it adds timezone
+functionality that Collomia's built-in workspace tools do not already provide.
+It requires [`uvx`](https://docs.astral.sh/uv/), which is installed with `uv`.
+
+From inside the Collomia TUI, run:
+
+```text
+/mcp add time uvx mcp-server-time
+```
+
+On Windows, a normal `uv` installation makes `uvx.exe` directly available, so
+the same command should work. If `uvx` is available only through the command
+shell on that machine, use:
+
+```text
+/mcp add time cmd /c uvx mcp-server-time
+```
+
+The first run may use the network to download the official
+[`mcp-server-time`](https://github.com/modelcontextprotocol/servers/tree/main/src/time)
+package. Check the connection:
+
+```text
+/mcp status
+```
+
+A healthy entry looks conceptually like this; exact versions and tool counts
+may change with the server release:
+
+```text
+● time — connected (stdio, session-only)
+    server: mcp-time <version>
+    protocol: <negotiated revision>
+    capabilities: tools
+    tools: <count> registered
+```
+
+Now ask Collomia:
+
+```text
+Use the time MCP server to tell me the current time in Japan.
+```
+
+The transcript should show a tool such as `mcp_time_get_current_time` before
+the answer. The call is external-risk, so it may require approval under your
+permission policy. Remove the test server when finished:
+
+```text
+/mcp remove time
+```
+
+Because `/mcp add` is session-scoped, exiting Collomia also removes it. To make
+the server available in future sessions, exit the TUI and run either:
+
+```text
+collo mcp add time -- uvx mcp-server-time
+collo mcp add time --global -- uvx mcp-server-time
+```
+
+The first command writes the project configuration and requires a subsequent
+`collo trust`; the second writes the user-wide configuration. Their equivalent
+JSON is:
+
+```json
+{
+  "mcp": {
+    "time": {
+      "transport": "stdio",
+      "trusted": true,
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "timeout_seconds": 30
+    }
+  }
+}
+```
+
+For this smoke test, prefer the time server over the filesystem server.
+Collomia already has native workspace-aware file tools, so adding a filesystem
+MCP server usually duplicates capabilities while adding another process and
+trust boundary. Filesystem MCP remains useful for MCP interoperability testing
+or deliberately exposing a separately constrained directory.
 
 ### MCP tools and permissions
 
@@ -2270,7 +2457,30 @@ resource links retain a URI that the resource tool can follow.
   URL, env/header names, or remote identity generates a warning. Secret values
   are excluded from the fingerprint so ordinary rotation does not cause noise.
 
-MCP resource subscriptions and OAuth are currently unsupported; check the
+### Live catalog changes and protocol support
+
+If a server advertises list-change support, Collomia installs handlers for the
+standard tool, resource, and prompt catalog notifications:
+
+- **Tools:** Collomia lists and validates the complete replacement catalog,
+  then swaps all tools from that server into the registry atomically. The model
+  never sees a half-refreshed catalog. If listing or validation fails, the
+  previous tools stay registered and `/mcp status` shows the error and pending
+  `tools` marker. Use `/mcp refresh <server>` to retry without reconnecting.
+- **Resources and prompts:** these lists are never held as a long-lived cache;
+  `/mcp resources` and `/mcp prompts` read the live server. A notification sets
+  a pending marker, cleared only after the corresponding list succeeds.
+- Notifications from a stale connection are ignored after disable, remove, or
+  reconnect. Bursts of tool changes are coalesced and serialized.
+
+Collomia reports the actually negotiated protocol revision per server. The
+current official SDK negotiates MCP 2025-11-25 and retains compatibility with
+2025-06-18, 2025-03-26, and 2024-11-05. The complete implemented subset and
+test boundary are in [MCP_PROTOCOL.md](MCP_PROTOCOL.md).
+
+Experimental MCP tasks, resource subscriptions, and standards-based OAuth are
+currently unsupported. Header tokens remain the supported authenticated HTTP
+configuration until the OAuth/login wave lands; check the
 [capability matrix](CAPABILITIES.md) for current status.
 
 ## Lifecycle hooks
@@ -2667,10 +2877,13 @@ persisted-history issue from the provider configuration.
 Run `collo doctor`:
 
 - macOS must have `sandbox-exec` available.
-- Linux needs enabled Landlock (kernel 5.13+); TCP enforcement additionally
-  needs ABI v4/kernel 6.7+. Because Landlock cannot block UDP, `require` with
-  command networking disabled intentionally fails closed; use `auto` to accept
-  the reported TCP-only boundary.
+- Linux needs enabled Landlock (kernel 5.13+). Network denial requires ABI v4+
+  for TCP and ABI v10+ for UDP. On ABI v4–v9, `require` with command networking
+  disabled intentionally fails closed; use `auto` to accept the reported
+  TCP-only boundary. ABI v3 (Linux 6.2) is the recommended minimum for robust
+  filesystem confinement because earlier ABIs cannot mediate standalone
+  truncation. The complete Linux setup procedure is in
+  [Linux sandbox setup and Landlock compatibility](LINUX_SANDBOX.md).
 - Windows 11 must expose the built-in AppContainer APIs. No optional Windows
   feature or third-party installation is required.
 
@@ -2680,10 +2893,12 @@ approval prompt for sandbox enforcement.
 
 ### A build works in the shell but fails in Collomia
 
-If sandboxing is enabled, writes outside the workspace/temp or remote network
-may be denied. Set `sandbox_allow_network: true` when the command genuinely
-needs package registries or online documentation, and add a narrow
-`sandbox_writable_roots` cache rather than granting the whole home directory.
+If sandboxing is enabled, reads/writes outside the granted roots or remote
+network access may be denied. Set `sandbox_allow_network: true` when the
+command genuinely needs package registries or online documentation. When read
+confinement is enabled, add immutable dependencies or SDKs to
+`sandbox_readable_roots`; add only caches that must change to
+`sandbox_writable_roots`. Avoid granting the whole home directory.
 If `command_env` is minimal, proxy, registry, compiler, cloud, or package
 credentials may be absent; select `full` deliberately when those values are
 required. Windows AppContainer also blocks loopback to ordinary unpackaged

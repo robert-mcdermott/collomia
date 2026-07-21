@@ -47,6 +47,21 @@ func TestWindowsAppContainerWorker(t *testing.T) {
 		outside = "ok"
 	}
 	fmt.Printf("inside=%s outside=%s\n", inside, outside)
+	if readInside := os.Getenv("COLLO_APPCONTAINER_READ_INSIDE"); readInside != "" {
+		insideRead := "denied"
+		if data, err := os.ReadFile(readInside); err == nil && string(data) == "inside-value" {
+			insideRead = "ok"
+		}
+		outsideRead := "denied"
+		if data, err := os.ReadFile(os.Getenv("COLLO_APPCONTAINER_READ_OUTSIDE")); err == nil && string(data) == "outside-secret" {
+			outsideRead = "ok"
+		}
+		extraRead := "denied"
+		if data, err := os.ReadFile(os.Getenv("COLLO_APPCONTAINER_READ_EXTRA")); err == nil && string(data) == "extra-value" {
+			extraRead = "ok"
+		}
+		fmt.Printf("inside_read=%s outside_read=%s extra_read=%s\n", insideRead, outsideRead, extraRead)
+	}
 }
 
 func TestWindowsAppContainerConfinesWrites(t *testing.T) {
@@ -60,7 +75,23 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(home, fmt.Sprintf(".collomia-appcontainer-escape-%d.txt", os.Getpid()))
-	t.Cleanup(func() { _ = os.Remove(outside) })
+	secret := filepath.Join(home, fmt.Sprintf(".collomia-appcontainer-secret-%d.txt", os.Getpid()))
+	extra := filepath.Join(home, fmt.Sprintf(".collomia-appcontainer-readable-%d.txt", os.Getpid()))
+	t.Cleanup(func() {
+		_ = os.Remove(outside)
+		_ = os.Remove(secret)
+		_ = os.Remove(extra)
+	})
+	if err := os.WriteFile(secret, []byte("outside-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("extra-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	insideRead := filepath.Join(workspace, "readable.txt")
+	if err := os.WriteFile(insideRead, []byte("inside-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// Put the worker executable in the granted workspace so an AppContainer
 	// can read and execute it without broadening access to the Go build cache.
@@ -88,7 +119,7 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wrapped, err := backend.Wrap([]string{worker, "-test.run=TestWindowsAppContainerWorker"}, Policy{WorkspaceRoot: workspace})
+	wrapped, err := backend.Wrap([]string{worker, "-test.run=TestWindowsAppContainerWorker"}, Policy{WorkspaceRoot: workspace, ConstrainReads: true, ExtraReadableRoots: []string{extra}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,20 +128,29 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		"COLLO_APPCONTAINER_WORKER=1",
 		"COLLO_APPCONTAINER_WORKSPACE="+workspace,
 		"COLLO_APPCONTAINER_OUTSIDE="+outside,
+		"COLLO_APPCONTAINER_READ_INSIDE="+insideRead,
+		"COLLO_APPCONTAINER_READ_OUTSIDE="+secret,
+		"COLLO_APPCONTAINER_READ_EXTRA="+extra,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("AppContainer helper failed: %v\n%s", err, out)
 	}
 	markerFound := false
+	readMarkerFound := false
 	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(line) == "inside=ok outside=denied" {
 			markerFound = true
-			break
+		}
+		if strings.TrimSpace(line) == "inside_read=ok outside_read=denied extra_read=ok" {
+			readMarkerFound = true
 		}
 	}
 	if !markerFound {
 		t.Fatalf("enforcement mismatch: %q", strings.TrimSpace(string(out)))
+	}
+	if !readMarkerFound {
+		t.Fatalf("read enforcement mismatch: %q", strings.TrimSpace(string(out)))
 	}
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("outside file exists despite AppContainer confinement")
@@ -119,7 +159,7 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 
 func TestWindowsBackendReportsCompleteIsolation(t *testing.T) {
 	caps := ForPlatform().Capabilities()
-	if !caps.WriteIsolation || !caps.ReadIsolation || caps.NetworkIsolation != NetworkFull || !caps.ProcessIsolation {
+	if !caps.WriteIsolation || !caps.ReadIsolation || !caps.ReadIsolationAlways || caps.NetworkIsolation != NetworkFull || !caps.ProcessIsolation {
 		t.Fatalf("capabilities=%+v", caps)
 	}
 }
