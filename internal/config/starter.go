@@ -336,6 +336,13 @@ const configReferenceJSONC = `
       "scroll_bottom": "end"
     },
     "notifications": "on",
+    // Optional external editor used by the e key in the diff viewer.
+    // Collomia executes this argv directly (no shell). Supported placeholders
+    // are {file}, {line}, and {column}; {file} is appended when omitted.
+    "editor": {
+      "command": "code",
+      "args": ["--wait", "--goto", "{file}:{line}:{column}"]
+    },
     "debug": false
   },
 

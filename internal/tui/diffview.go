@@ -19,6 +19,7 @@ type diffViewState struct {
 	folded      bool
 	viewport    viewport.Model
 	hunkOffsets []int
+	hunkLines   []int
 	hunk        int
 	notice      string
 	stats       []diffStats
@@ -70,6 +71,7 @@ func (m *Model) rebuildDiffView() {
 	state.viewport.Width = max(1, m.width)
 	state.viewport.Height = max(1, m.height-2)
 	state.hunkOffsets = state.hunkOffsets[:0]
+	state.hunkLines = state.hunkLines[:0]
 	file := state.files[state.file]
 	var content string
 	if state.mode == "side-by-side" {
@@ -92,6 +94,7 @@ func (m Model) renderUnifiedReview(file diffmodel.FileDiff, state *diffViewState
 		for lineOffset, line := range strings.Split(strings.TrimRight(file.Unified, "\n"), "\n") {
 			if strings.HasPrefix(line, "@@") {
 				state.hunkOffsets = append(state.hunkOffsets, lineOffset)
+				state.hunkLines = append(state.hunkLines, unifiedHunkLine(line))
 			}
 			b.WriteString(m.styleDiffLine(ansi.Truncate(line, max(1, m.width), "…")))
 			b.WriteByte('\n')
@@ -118,6 +121,7 @@ func (m Model) renderUnifiedRows(rows []reviewRow, state *diffViewState) string 
 		changed := row.Kind != ' '
 		if changed && !previousChanged {
 			state.hunkOffsets = append(state.hunkOffsets, lineOffset)
+			state.hunkLines = append(state.hunkLines, reviewTargetLine(row))
 		}
 		previousChanged = changed
 		left, right := lineNumber(row.LeftNumber), lineNumber(row.RightNumber)
@@ -162,6 +166,7 @@ func (m Model) renderSideBySide(file diffmodel.FileDiff, state *diffViewState) s
 		changed := row.Kind != ' '
 		if changed && !previousChanged {
 			state.hunkOffsets = append(state.hunkOffsets, lineOffset)
+			state.hunkLines = append(state.hunkLines, reviewTargetLine(row))
 		}
 		previousChanged = changed
 		leftPrefix := fmt.Sprintf("%5s %c ", lineNumber(row.LeftNumber), sideMarker(row.Kind, true))
@@ -279,6 +284,8 @@ func (m Model) handleDiffViewKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		state.viewport.GotoTop()
 		m.rebuildDiffView()
 		return m, nil
+	case "e":
+		return m.openExternalEditor()
 	default:
 		switch {
 		case m.keyIs("page_up", keyName):
@@ -320,11 +327,34 @@ func (m Model) renderDiffView() string {
 	stats := state.stats[state.file]
 	header := m.styles.brand.Render(" Diff review ") + m.styles.accent.Render(file.Name) +
 		m.styles.muted.Render(fmt.Sprintf("  file %d/%d · +%d -%d · %s", state.file+1, len(state.files), stats.added, stats.deleted, state.mode))
-	footer := "[ ] file · n/N hunk · ↑↓/page scroll · u unified · s side-by-side · f fold · esc close"
+	footer := "[ ] file · n/N hunk · ↑↓/page scroll · u unified · s side-by-side · f fold · e editor · esc close"
 	if state.notice != "" {
 		footer = state.notice + "  ·  " + footer
 	}
 	return fitLine(header, max(1, m.width)) + "\n" + state.viewport.View() + "\n" + fitLine(m.styles.muted.Render(footer), max(1, m.width))
+}
+
+func reviewTargetLine(row diffmodel.AlignedLine) int {
+	if row.RightNumber > 0 {
+		return row.RightNumber
+	}
+	return max(1, row.LeftNumber)
+}
+
+func unifiedHunkLine(header string) int {
+	fields := strings.Fields(header)
+	if len(fields) < 3 || !strings.HasPrefix(fields[2], "+") {
+		return 1
+	}
+	value := strings.TrimPrefix(fields[2], "+")
+	if before, _, ok := strings.Cut(value, ","); ok {
+		value = before
+	}
+	line := 1
+	if _, err := fmt.Sscanf(value, "%d", &line); err != nil {
+		return 1
+	}
+	return max(1, line)
 }
 
 func diffCounts(file diffmodel.FileDiff) (added, deleted int) {

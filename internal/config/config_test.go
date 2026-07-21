@@ -463,6 +463,18 @@ func TestValidateNotifications(t *testing.T) {
 	}
 }
 
+func TestValidateExternalEditor(t *testing.T) {
+	cfg := Defaults()
+	cfg.Options.Editor = EditorOptions{Command: "code", Args: []string{"--goto", "{file}:{line}:{column}"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid editor: %v", err)
+	}
+	cfg.Options.Editor = EditorOptions{Args: []string{"{file}"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "options.editor.command") {
+		t.Fatalf("missing command error=%v", err)
+	}
+}
+
 func TestValidateKeybindings(t *testing.T) {
 	cfg := Defaults()
 	cfg.Options.Keybindings["next_tab"] = "alt+t"

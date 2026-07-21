@@ -219,7 +219,16 @@ type Options struct {
 	// approvals, questions, and finished long turns: "on" (bell + terminal
 	// desktop notification, the default), "bell" (bell only), or "off".
 	Notifications string `json:"notifications,omitempty"`
-	Debug         bool   `json:"debug,omitempty"`
+	// Editor configures the user-initiated external-editor action in diff
+	// review. Command and Args are executed directly without a shell. Args may
+	// use {file}, {line}, and {column} placeholders.
+	Editor EditorOptions `json:"editor,omitempty"`
+	Debug  bool          `json:"debug,omitempty"`
+}
+
+type EditorOptions struct {
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
 }
 
 func Defaults() Config {
@@ -422,6 +431,7 @@ func (c *Config) normalize() {
 	for action, key := range c.Options.Keybindings {
 		c.Options.Keybindings[action] = strings.ToLower(strings.TrimSpace(key))
 	}
+	c.Options.Editor.Command = strings.TrimSpace(c.Options.Editor.Command)
 	for name, p := range c.Providers {
 		p.Type = strings.ToLower(strings.TrimSpace(p.Type))
 		p.Auth = strings.ToLower(strings.TrimSpace(p.Auth))
@@ -636,6 +646,17 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "on", "bell", "off":
 	default:
 		errs = append(errs, FieldError{"options.notifications", fmt.Sprintf("must be on, bell, or off (got %q)", c.Options.Notifications)})
+	}
+	if c.Options.Editor.Command == "" && len(c.Options.Editor.Args) > 0 {
+		errs = append(errs, FieldError{"options.editor.command", "required when editor args are configured"})
+	}
+	if strings.ContainsRune(c.Options.Editor.Command, '\x00') {
+		errs = append(errs, FieldError{"options.editor.command", "must not contain NUL"})
+	}
+	for i, arg := range c.Options.Editor.Args {
+		if strings.ContainsRune(arg, '\x00') {
+			errs = append(errs, FieldError{fmt.Sprintf("options.editor.args[%d]", i), "must not contain NUL"})
+		}
 	}
 	for eventName, hooksForEvent := range c.Hooks {
 		if !slices.Contains(HookEvents, eventName) {

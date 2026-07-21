@@ -12,6 +12,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
 )
 
 func deltaEvent(text string) runtimeevent.Event {
@@ -84,6 +85,41 @@ func TestTabCycling(t *testing.T) {
 	m = press(t, m, tea.KeyCtrlT)
 	if m.tab != tabChat {
 		t.Fatalf("tabs should wrap back to chat, got %d", m.tab)
+	}
+}
+
+func TestSessionTabShowsWorkspaceHealthAndRecentActivity(t *testing.T) {
+	m := newTestModel(t)
+	m.workspaceLoading = false
+	m.workspaceStatus.InRepository = true
+	m.workspaceStatus.Branch = "wave15"
+	m.workspaceStatus.Staged = 1
+	decision := runtimeevent.New(runtimeevent.KindPermissionDecision)
+	decision.Permission = &runtimeevent.Permission{Tool: "run_command", Summary: "run tests", Source: "interactive", Allowed: true}
+	m.handleEvent(decision)
+	failure := toolResultEvent("run_command", "Tool error: failed")
+	failure.Tool.IsError = true
+	m.handleEvent(failure)
+	view := m.sessionContent()
+	for _, want := range []string{"Workspace", "wave15", "staged 1", "Runtime health", "Recent decisions and failures", "allowed via interactive", "run_command"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("session content missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestWorkspaceStatusIgnoresStaleAsyncResult(t *testing.T) {
+	m := newTestModel(t)
+	m.workspaceGeneration = 4
+	updated, _ := m.Update(workspaceStatusMsg{generation: 3, status: workspacestate.GitStatus{InRepository: true, Branch: "stale"}})
+	m = updated.(Model)
+	if m.workspaceStatus.Branch == "stale" {
+		t.Fatal("stale workspace result was applied")
+	}
+	updated, _ = m.Update(workspaceStatusMsg{generation: 4, status: workspacestate.GitStatus{InRepository: true, Branch: "current"}})
+	m = updated.(Model)
+	if m.workspaceStatus.Branch != "current" || m.workspaceLoading {
+		t.Fatalf("current workspace result not applied: %+v", m.workspaceStatus)
 	}
 }
 

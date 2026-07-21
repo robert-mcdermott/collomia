@@ -584,6 +584,7 @@ inspect.
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
+| `editor` | Optional direct external-editor command and argument list used by `e` in `/diff`. Arguments support `{file}`, `{line}`, and `{column}`. |
 | `debug` | Enables redacted structured debug logging for every run. |
 
 ### Named agent fields
@@ -1521,7 +1522,11 @@ collo --cwd /path/to/repository
 
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
-files, delegated-agent status, and background processes. `/agents` provides a
+files, delegated-agent status, background processes, Git branch/upstream and
+working-tree counts, provider/sandbox/MCP/trust health, and a bounded list of
+recent permission decisions and tool failures. Git inspection is read-only,
+runs asynchronously with a short timeout, and reports non-Git workspaces
+normally; press `r` in the Session tab to refresh it. `/agents` provides a
 searchable view of each retained delegated outcome. Help lists commands,
 providers, tools, skills, MCP servers, themes, and keybindings.
 
@@ -1552,6 +1557,7 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
+| `r` in Session | Refresh the asynchronous Git workspace summary. |
 | `page up` / `page down` | Scroll the transcript. |
 | `home` / `end` | Jump to the top or bottom; `end` resumes live follow. |
 | `esc` | Dismiss a palette/picker or cancel the active turn. |
@@ -1703,11 +1709,55 @@ mode. Unchanged regions are folded with three context lines by default.
 | `u` | Use unified view. |
 | `s` | Use side-by-side view when at least 108 columns are available. |
 | `f` | Fold/unfold unchanged regions. |
+| `e` | Open the current file at the selected hunk in the configured external editor. |
 | `esc` or `q` | Close the viewer. |
 
 Headers show the relative file path, file position, additions/deletions, and
 active layout. Both layouts use theme-aware addition/deletion colors; unified
 view shows hunk headers, while side-by-side view shows old/new line numbers.
+
+#### External editor handoff
+
+The `e` action suspends the terminal UI, runs an editor directly without a
+shell, and restores Collomia when that process exits. It refuses any target
+whose resolved path is outside the active workspace. The diff is read again on
+return, so changes made in the editor appear immediately; if the editor restores
+the file to its original state, the empty review closes normally.
+
+Configure an editor under `options`. `{file}`, `{line}`, and `{column}` are
+replaced in individual arguments. When no argument contains `{file}`, Collomia
+appends the absolute file path:
+
+```json
+{
+  "options": {
+    "editor": {
+      "command": "code",
+      "args": ["--wait", "--goto", "{file}:{line}:{column}"]
+    }
+  }
+}
+```
+
+For a terminal editor:
+
+```json
+{
+  "options": {
+    "editor": {
+      "command": "nvim",
+      "args": ["+{line}", "{file}"]
+    }
+  }
+}
+```
+
+When `options.editor.command` is omitted, Collomia tries `VISUAL`, then
+`EDITOR`, as a whitespace-separated executable and argument list. Shell
+operators are not interpreted. Use the JSON argument form for executable paths
+or arguments containing spaces. GUI editor commands that return immediately
+also return immediately to Collomia; add the editor's wait flag when you want
+the TUI to remain suspended until the file is closed.
 
 ### Terminal behavior and keybindings
 

@@ -307,7 +307,7 @@ Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/too
 
 Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace file/folder picker and safely quotes paths containing spaces. `/prompt` opens a text-file picker; `/prompt "docs/review prompt.md"` loads a named file into the composer, and you can type `/prompt ` then drag a workspace file into terminals that paste its path. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
 
-`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, `ctrl+d` opens the session diff browser, and `alt+s` opens the saved-session picker without replacing an unsent draft. At the first or last visual line of the composer, ↑/↓ walks earlier prompts and returns to the exact draft you were editing; within multiline or soft-wrapped input, the same keys continue to move the cursor normally. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
+`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, `ctrl+d` opens the session diff browser, and `alt+s` opens the saved-session picker without replacing an unsent draft. At the first or last visual line of the composer, ↑/↓ walks earlier prompts and returns to the exact draft you were editing; within multiline or soft-wrapped input, the same keys continue to move the cursor normally. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, running background processes, asynchronous Git branch/upstream/dirty state, provider/sandbox/MCP/trust health, and recent permission decisions or tool failures; press `r` there to refresh Git state. The status bar carries live task/agent/process badges. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
 
@@ -331,6 +331,26 @@ When the agent proposes a write, command, or other privileged action, a centered
 | `h` | For a `write_file` change with two or more diff hunks: open **hunk review** — accept or reject each hunk independently instead of the whole file. |
 
 Hunk review replaces the approval dialog with a focused preview of the current hunk. ↑/↓ (or `j`/`k`) navigate, `space` toggles the current hunk, `a` keeps all, `enter` applies only the selected hunks (composed against a fresh read of the file), and `esc` returns to the normal approval dialog. `edit_file` (a single atomic replacement) and `apply_patch` (a multi-file changeset) stay file-level for now. Questions from the agent and MCP elicitation use the same transient dialog treatment, with their answer editor inside the box.
+
+In the full-screen `/diff` viewer, press `e` to open the current file at the
+selected hunk in an external editor. Configure a direct command and argument
+list—Collomia never inserts a shell—or use a simple `VISUAL`/`EDITOR` value:
+
+```json
+{
+  "options": {
+    "editor": {
+      "command": "code",
+      "args": ["--wait", "--goto", "{file}:{line}:{column}"]
+    }
+  }
+}
+```
+
+The supported placeholders are `{file}`, `{line}`, and `{column}`. If
+`{file}` is omitted, Collomia appends it. Only files contained by the active
+workspace can be opened, and the diff is refreshed when the editor process
+returns.
 
 ## Themes
 
