@@ -140,6 +140,21 @@ func (r *Registry) Names() []string {
 	return names
 }
 
+// Clone returns a point-in-time registry containing the same tool instances.
+// It is used for delegated agents so profile-specific visibility can be
+// applied without mutating the parent's live registry. Stateful tools remain
+// shared intentionally; the child's permission manager and plan mode still
+// govern every execution.
+func (r *Registry) Clone() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	clone := NewRegistry()
+	for _, tool := range r.tools {
+		clone.tools[tool.Definition().Name] = tool
+	}
+	return clone
+}
+
 func (r *Registry) Assess(name string, args json.RawMessage) (Action, error) {
 	tool, ok := r.Get(name)
 	if !ok {

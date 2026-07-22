@@ -21,7 +21,7 @@ var slashCommands = []commandInfo{
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
-	{name: "/agents", args: "", desc: "search delegated agents and inspect their outcomes"},
+	{name: "/agents", args: "[stop <id-or-name>]", desc: "inspect delegated agents or cancel one"},
 	{name: "/prompt", args: "[workspace-file]", desc: "load a UTF-8 text file into the composer"},
 	{name: "/attach", args: "[workspace-image]", desc: "attach a PNG, JPEG, GIF, or WebP image"},
 	{name: "/attachments", args: "", desc: "list images attached to the pending prompt"},

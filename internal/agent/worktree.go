@@ -12,6 +12,7 @@ import (
 )
 
 var slugPattern = regexp.MustCompile(`[^a-z0-9]+`)
+var zeroContextHunkPattern = regexp.MustCompile(`@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
 // slugify turns an arbitrary task name into a short, filesystem- and
 // branch-name-safe token.
@@ -74,6 +75,64 @@ func (w *worktree) changedFiles(ctx context.Context) []string {
 		}
 	}
 	return files
+}
+
+// DelegateHunk identifies a changed range against the common HEAD base used
+// by every sibling worktree. Old-side ranges make sibling overlap comparable
+// even when their inserted output has different lengths.
+type DelegateHunk struct {
+	Path     string `json:"path"`
+	OldStart int    `json:"old_start"`
+	OldLines int    `json:"old_lines"`
+	NewStart int    `json:"new_start"`
+	NewLines int    `json:"new_lines"`
+}
+
+// changedHunks returns zero-context Git hunks for tracked changes and a
+// whole-file insertion range for an untracked file. Failure is conservative:
+// the caller retains file-level conflict detection when no ranges are known.
+func (w *worktree) changedHunks(ctx context.Context, files []string) []DelegateHunk {
+	var hunks []DelegateHunk
+	for _, path := range files {
+		cmd := exec.CommandContext(ctx, "git", "-C", w.path, "diff", "--no-ext-diff", "--no-color", "--unified=0", "HEAD", "--", path)
+		out, err := cmd.Output()
+		if err == nil {
+			for _, match := range zeroContextHunkPattern.FindAllStringSubmatch(string(out), -1) {
+				hunks = append(hunks, DelegateHunk{Path: path, OldStart: parseHunkCount(match[1]), OldLines: optionalHunkCount(match[2]), NewStart: parseHunkCount(match[3]), NewLines: optionalHunkCount(match[4])})
+			}
+		}
+		if hasHunkForPath(hunks, path) {
+			continue
+		}
+		// Git diff omits untracked files (and may omit binary ranges). Treat
+		// either conservatively as an insertion at the empty base. Do not open
+		// the path here: an untracked symlink or enormous file must not turn
+		// conflict reporting into an out-of-sandbox read or memory spike.
+		hunks = append(hunks, DelegateHunk{Path: path, OldStart: 0, OldLines: 0, NewStart: 1, NewLines: 1})
+	}
+	return hunks
+}
+
+func parseHunkCount(value string) int {
+	var parsed int
+	_, _ = fmt.Sscanf(value, "%d", &parsed)
+	return parsed
+}
+
+func optionalHunkCount(value string) int {
+	if value == "" {
+		return 1
+	}
+	return parseHunkCount(value)
+}
+
+func hasHunkForPath(hunks []DelegateHunk, path string) bool {
+	for _, hunk := range hunks {
+		if hunk.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // remove tears down the working tree. Callers only invoke this when the

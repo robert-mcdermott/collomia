@@ -11,6 +11,7 @@ import (
 // Approval and question-dialog decisions are intentionally excluded: their
 // visible y/a/n/enter/escape controls remain fixed and unambiguous.
 var KeybindingActions = []string{
+	"agent_control",
 	"diff_view",
 	"next_tab",
 	"page_down",
@@ -25,6 +26,7 @@ var KeybindingActions = []string{
 // DefaultKeybindings returns a fresh copy of Collomia's default global keys.
 func DefaultKeybindings() map[string]string {
 	return map[string]string{
+		"agent_control":      "alt+a",
 		"diff_view":          "ctrl+d",
 		"next_tab":           "ctrl+t",
 		"page_down":          "pgdown",

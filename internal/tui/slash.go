@@ -167,6 +167,19 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		m.openSkillPicker()
 	case "/agents":
+		if len(args) > 0 {
+			if len(args) < 2 || args[0] != "stop" {
+				m.addError(fmt.Errorf("usage: /agents [stop <id-or-name>]"))
+				break
+			}
+			target := strings.Join(args[1:], " ")
+			if err := m.runtime.Team.Stop(target); err != nil {
+				m.addError(err)
+			} else {
+				m.addSystem("Cancellation requested for delegated agent " + target + ".")
+			}
+			break
+		}
 		m.openAgentPicker()
 	case "/prompt":
 		path, err := promptPathArgument(line)

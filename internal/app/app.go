@@ -242,7 +242,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	lifecycle := hooks.NewRunner(workspace, cfg.Hooks, func(note hooks.Note) {
 		logger.Warn("hook", "event", note.Event, "command", note.Command, "note", note.Text)
 	})
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, Artifacts: artifactSink, Attachments: attachments, PinnedContext: func() string {
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
 			return ""
@@ -255,6 +255,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	}
 	agentRuntime := agent.New(agentOptions)
 	team := agent.NewTeam()
+	attachTeam(team, sess)
 	agentRuntime.AddDelegationTool(cfg, opts.Approver, team)
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
@@ -476,6 +477,41 @@ func attachBoard(board *plan.Board, sess *session.Session) {
 	board.Clear()
 }
 
+// attachTeam binds process-local delegated-agent observability to the active
+// durable session. Stored queued/running states are restored as interrupted by
+// Team.Restore and are never submitted back to the scheduler.
+func attachTeam(team *agent.Team, sess *session.Session) {
+	if team == nil {
+		return
+	}
+	team.SetObserver(nil)
+	if sess == nil {
+		team.Reset()
+		return
+	}
+	stored := sess.Delegates()
+	restored := make([]agent.DelegateStatus, 0, len(stored))
+	for _, status := range stored {
+		restored = append(restored, agent.DelegateStatusFromEvent(status))
+	}
+	team.Restore(restored)
+	persist := func(status agent.DelegateStatus) {
+		payload := status.Event()
+		update := event.New(event.KindDelegateUpdate)
+		update.Delegate = &payload
+		sess.AppendEvent(update)
+	}
+	team.SetObserver(persist)
+	// Persist the one-way recovery transition once. Subsequent resumes see a
+	// terminal interrupted record rather than repeatedly reinterpreting stale
+	// queued/running state.
+	for i, status := range team.Snapshot() {
+		if i < len(restored) && status.Status != restored[i].Status {
+			persist(status)
+		}
+	}
+}
+
 // SwitchSession loads another saved session into the running agent:
 // conversation, plan, and persistence hooks all move over. The previous
 // session file is closed; nothing about it is lost.
@@ -501,6 +537,7 @@ func (r *Runtime) SwitchSession(id string) error {
 	sess.FlushInterrupted()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	attachBoard(r.Plan, sess)
+	attachTeam(r.Team, sess)
 	return nil
 }
 
@@ -527,6 +564,7 @@ func (r *Runtime) NewSession() error {
 	r.Agent.Clear()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	attachBoard(r.Plan, sess)
+	attachTeam(r.Team, sess)
 	return nil
 }
 
@@ -552,6 +590,7 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	r.Agent.SetMessages(sess.Active())
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	attachBoard(r.Plan, sess)
+	attachTeam(r.Team, sess)
 	return sourceID, sess.Meta.ID, nil
 }
 
@@ -591,6 +630,11 @@ func (r *Runtime) Close() {
 		sessionID = r.Session.Meta.ID
 	}
 	r.Hooks.Fire(context.Background(), hooks.Payload{Event: "session_end", Workspace: r.Workspace, Subject: "session_end", Detail: map[string]any{"session_id": sessionID}})
+	if r.Team != nil {
+		// Queued and running delegated tasks never intentionally outlive the
+		// runtime; cancellation is requested before process/session teardown.
+		r.Team.StopAll()
+	}
 	if r.Processes != nil {
 		// Background processes never outlive the session.
 		r.Processes.StopAll()

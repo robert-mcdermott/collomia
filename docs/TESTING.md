@@ -102,6 +102,15 @@ Important failure-oriented tests include:
   widen the permission decision for a file mutation.
 - Attachment type/size/quota/integrity enforcement, owner-only storage where
   supported, session-scoped pending TUI drafts, and fork/rewind/delete cleanup.
+- Delegation profiles that can only tighten parent permissions, tool and skill
+  allowlists enforced at execution, token-budget exhaustion, queue-inclusive
+  timeouts, session-wide/global and per-provider FIFO admission, cancellation
+  of one child without affecting siblings, and shutdown cancellation.
+- Structured delegated results and durable latest-state restoration, including
+  the guarantee that queued/running work resumes as inert `interrupted` state;
+  common-base hunk comparison distinguishes overlapping and disjoint sibling
+  edits without performing a merge.
+- TUI agent control selection and stop behavior while the parent turn is busy.
 
 When adding a fault seam, keep production defaults on the real operating
 system implementation. Tests may inject writers, clocks, transports, or

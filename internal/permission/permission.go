@@ -56,6 +56,11 @@ type Manager struct {
 	denied       map[string]bool
 	allowOutside bool
 	rules        []appconfig.Rule
+	// restrictions are an independent, deny-or-prompt-only policy layer used
+	// by delegated agents. Evaluating it after the base policy and taking the
+	// stricter outcome prevents either layer's ordered rules from masking a
+	// denial in the other.
+	restrictions []appconfig.Rule
 	reviewer     string
 	approver     Approver
 	ledger       *audit.Ledger
@@ -80,6 +85,22 @@ func (m *Manager) SetLedger(ledger *audit.Ledger) {
 	m.mu.Unlock()
 }
 
+// SetRestrictions installs a second policy layer that may only prompt or
+// deny. Invalid allow rules are ignored defensively even though configuration
+// validation rejects them. The effective result is the stricter of the base
+// policy and this layer.
+func (m *Manager) SetRestrictions(rules []appconfig.Rule) {
+	restricted := make([]appconfig.Rule, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Action == "prompt" || rule.Action == "deny" {
+			restricted = append(restricted, rule)
+		}
+	}
+	m.mu.Lock()
+	m.restrictions = restricted
+	m.mu.Unlock()
+}
+
 func (m *Manager) Mode() string { m.mu.RLock(); defer m.mu.RUnlock(); return m.mode }
 func (m *Manager) SetMode(mode string) error {
 	if !slices.Contains([]string{"ask", "workspace", "autopilot"}, mode) {
@@ -98,9 +119,37 @@ func (m *Manager) Evaluate(tool string, action tools.Action) (Grant, string) {
 	return grant, outcome
 }
 
-// decide returns the non-interactive decision: outcome is "allow", "deny",
-// or "prompt", with the reason a prompt would carry.
+// decide returns the stricter result of the ordinary parent policy and an
+// optional delegated-agent restriction layer.
 func (m *Manager) decide(tool string, action tools.Action) (Grant, string, string) {
+	grant, outcome, reason := m.decideBase(tool, action)
+	if outcome == "deny" {
+		return grant, outcome, reason
+	}
+	m.mu.RLock()
+	restrictions := append([]appconfig.Rule(nil), m.restrictions...)
+	m.mu.RUnlock()
+	if len(restrictions) == 0 {
+		return grant, outcome, reason
+	}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
+	restriction := policy.Evaluate(restrictions, request)
+	if !restriction.Matched() {
+		return grant, outcome, reason
+	}
+	restrictedGrant := Grant{Source: "rule", Rule: "agent restriction: " + restriction.Describe()}
+	switch restriction.Action {
+	case "deny":
+		return restrictedGrant, "deny", ""
+	case "prompt":
+		if outcome == "allow" {
+			return restrictedGrant, "prompt", "agent profile requires approval: " + restriction.Describe()
+		}
+	}
+	return grant, outcome, reason
+}
+
+func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, string) {
 	m.mu.RLock()
 	mode := m.mode
 	sessionAllowed := m.allowed[tool]

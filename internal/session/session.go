@@ -567,6 +567,10 @@ type Session struct {
 	active []provider.Message
 	// PlanRaw is the latest persisted structured plan, if any.
 	PlanRaw json.RawMessage
+	// delegates retains the latest parent-inbox snapshot for each delegated
+	// task. Stored updates are inert data and are never scheduled during load.
+	delegates     map[string]event.DelegateStatus
+	delegateOrder []string
 
 	store              *Store
 	mu                 sync.Mutex
@@ -606,7 +610,30 @@ func (sess *Session) replay(record Record) {
 		}
 	case "plan":
 		sess.PlanRaw = record.Plan
+	case "event":
+		if record.Event != nil && record.Event.Kind == event.KindDelegateUpdate && record.Event.Delegate != nil {
+			sess.applyDelegate(*record.Event.Delegate)
+		}
 	}
+}
+
+func (sess *Session) applyDelegate(status event.DelegateStatus) {
+	if status.ID == "" {
+		return
+	}
+	if sess.delegates == nil {
+		sess.delegates = map[string]event.DelegateStatus{}
+	}
+	current, exists := sess.delegates[status.ID]
+	if exists && current.Revision > status.Revision {
+		return
+	}
+	if !exists {
+		sess.delegateOrder = append(sess.delegateOrder, status.ID)
+	}
+	status.Evidence = append([]string(nil), status.Evidence...)
+	status.ChangedFiles = append([]string(nil), status.ChangedFiles...)
+	sess.delegates[status.ID] = status
 }
 
 // AppendPlan persists the latest structured plan state.
@@ -725,7 +752,28 @@ func (sess *Session) AppendEvent(e event.Event) {
 		sess.mu.Unlock()
 		_ = sess.append(Record{Type: "meta", Meta: &meta})
 	}
+	if e.Kind == event.KindDelegateUpdate && e.Delegate != nil {
+		sess.mu.Lock()
+		sess.applyDelegate(*e.Delegate)
+		sess.mu.Unlock()
+	}
 	_ = sess.append(Record{Type: "event", Event: &e})
+}
+
+// Delegates returns the latest inert delegated-task snapshots in creation
+// order. Resuming code decides how to label non-terminal snapshots; it never
+// turns them back into executable work.
+func (sess *Session) Delegates() []event.DelegateStatus {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	out := make([]event.DelegateStatus, 0, len(sess.delegateOrder))
+	for _, id := range sess.delegateOrder {
+		status := sess.delegates[id]
+		status.Evidence = append([]string(nil), status.Evidence...)
+		status.ChangedFiles = append([]string(nil), status.ChangedFiles...)
+		out = append(out, status)
+	}
+	return out
 }
 
 // FlushInterrupted persists interruption notes discovered during load.

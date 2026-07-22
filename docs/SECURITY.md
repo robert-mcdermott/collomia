@@ -332,6 +332,41 @@ by `stop_process`, `/ps stop`, or automatically when the session ends
 its own worktree, which are stopped when that sub-agent's task finishes).
 Nothing started this way is expected to outlive the `collo` process.
 
+## Delegated-agent boundary
+
+Delegated agents use the same security boundary as the parent and can only be
+made more restrictive. An `agents.<name>` profile may choose a smaller tool or
+skill allowlist, add denied tools or command regexes, add `prompt`/`deny`
+permission rules, and lower the autonomy mode. Configuration validation rejects
+an agent-level `allow` rule. Parent and built-in denials remain additive, and a
+child cannot enable outside-workspace access, network access, user-data reads,
+or a weaker sandbox policy that the parent did not have. Disabled tools are
+checked again at execution time, not merely hidden from the model's tool list.
+
+Every child gets a distinct permission manager and audit ledger. A child
+approval is shown through the normal themed approval dialog with the delegated
+task name and ID, and approval affects only that proposed action. Write-capable
+children get independent Git worktrees; Collomia records their changed files
+and common-base hunk ranges but never commits, merges, or chooses between
+sibling changes automatically. Retained worktrees may contain user-reviewable
+changes after a task ends.
+
+The session-wide FIFO scheduler bounds total and per-provider concurrency.
+Each task also has a queue-inclusive timeout, maximum iteration count, and
+optional token budget. Token enforcement uses provider-reported usage when the
+adapter supplies it and estimates the next request before sending; providers
+may report usage only after a response, so a final response can exceed the
+configured token target. Timeouts and iteration limits remain the hard fallback.
+These controls limit agent work, not operating-system CPU or memory consumption.
+
+`/agents stop <id-or-name>` and `alt+a` cancel one queued or active child.
+Closing Collomia requests cancellation for every child and stops background
+processes owned by write agents. Durable sessions keep bounded status, summary,
+evidence, usage, and change manifests—not raw child transcripts. On resume,
+recorded completed outcomes remain visible and any nonterminal task becomes
+`interrupted`; it is never automatically scheduled again. This avoids duplicate
+mutations but means the user or parent must explicitly start replacement work.
+
 **PTY commands** (`run_command` with `pty: true`, Unix only) run in their
 own session (`setsid`) rather than merely a process group, because a
 pseudo-terminal's child processes attach to the session leader; killing the

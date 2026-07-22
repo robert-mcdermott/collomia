@@ -177,8 +177,29 @@ type AgentDefinition struct {
 	// Tools restricts the sub-agent to this allowlist of tool names. Empty
 	// means it may use every tool the parent has enabled.
 	Tools []string `json:"tools,omitempty"`
+	// Skills restricts the sub-agent's model-visible skill catalog. Empty
+	// inherits every skill visible to the parent.
+	Skills []string `json:"skills,omitempty"`
 	// MaxIterations overrides the default sub-agent iteration budget.
 	MaxIterations int `json:"max_iterations,omitempty"`
+	// TokenBudget bounds provider-reported input plus output tokens across the
+	// delegated task. Zero leaves the task bounded by iterations and timeout.
+	TokenBudget int `json:"token_budget,omitempty"`
+	// TimeoutSeconds bounds queueing plus execution. Zero uses ten minutes.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// Permissions can only tighten the parent's effective policy. It cannot
+	// enable outside access, alter sandboxing, or add allow rules.
+	Permissions AgentPermissions `json:"permissions,omitempty"`
+}
+
+// AgentPermissions is the deliberately restrictive permission surface for a
+// named delegated-agent profile. Denials are additive, rules may only prompt
+// or deny, and Mode is intersected with the parent's effective autonomy.
+type AgentPermissions struct {
+	Mode           string   `json:"mode,omitempty"`
+	DeniedTools    []string `json:"denied_tools,omitempty"`
+	DeniedCommands []string `json:"denied_commands,omitempty"`
+	Rules          []Rule   `json:"rules,omitempty"`
 }
 
 // Hook is one lifecycle-hook command. The event it observes is the key of
@@ -202,11 +223,17 @@ type Hook struct {
 var HookEvents = []string{"session_start", "user_prompt", "permission_decision", "tool_start", "tool_end", "file_change", "compaction", "subagent_start", "subagent_end", "stop", "session_end"}
 
 type Options struct {
-	MaxIterations       int      `json:"max_iterations,omitempty"`
-	MaxToolOutputBytes  int      `json:"max_tool_output_bytes,omitempty"`
-	DisabledTools       []string `json:"disabled_tools,omitempty"`
-	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
-	Theme               string   `json:"theme,omitempty"`
+	MaxIterations      int `json:"max_iterations,omitempty"`
+	MaxToolOutputBytes int `json:"max_tool_output_bytes,omitempty"`
+	// DelegateMaxConcurrency is the session-wide delegated-task limit. It
+	// defaults to four and is capped by the six-task delegate request limit.
+	DelegateMaxConcurrency int `json:"delegate_max_concurrency,omitempty"`
+	// DelegateProviderConcurrency optionally applies a tighter limit to tasks
+	// using a named provider. Omitted providers inherit the session-wide limit.
+	DelegateProviderConcurrency map[string]int `json:"delegate_provider_concurrency,omitempty"`
+	DisabledTools               []string       `json:"disabled_tools,omitempty"`
+	TranscriptDirectory         string         `json:"transcript_directory,omitempty"`
+	Theme                       string         `json:"theme,omitempty"`
 	// AlternateScreen controls whether the interactive TUI uses the terminal's
 	// alternate screen buffer. It defaults to true; disabling it keeps the
 	// final screen in native terminal scrollback.
@@ -251,7 +278,8 @@ func Defaults() Config {
 				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
 			},
 		},
-		MCP: map[string]MCPServer{},
+		MCP:    map[string]MCPServer{},
+		Agents: map[string]AgentDefinition{},
 		Options: Options{
 			MaxIterations:      24,
 			MaxToolOutputBytes: 64 * 1024,
@@ -433,6 +461,12 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	}
 	if c.Options.MaxToolOutputBytes <= 0 {
 		c.Options.MaxToolOutputBytes = 64 * 1024
+	}
+	if c.Options.DelegateMaxConcurrency <= 0 {
+		c.Options.DelegateMaxConcurrency = 4
+	}
+	if c.Options.DelegateProviderConcurrency == nil {
+		c.Options.DelegateProviderConcurrency = map[string]int{}
 	}
 	if c.Options.Keybindings == nil {
 		c.Options.Keybindings = DefaultKeybindings()
@@ -660,8 +694,53 @@ func (c Config) ValidateFields() []FieldError {
 		errs = append(errs, ValidateMCPServer(name, server)...)
 	}
 	for name, a := range c.Agents {
+		field := "agents." + name
 		if a.MaxIterations < 0 {
-			errs = append(errs, FieldError{"agents." + name + ".max_iterations", "must not be negative"})
+			errs = append(errs, FieldError{field + ".max_iterations", "must not be negative"})
+		}
+		if a.TokenBudget < 0 {
+			errs = append(errs, FieldError{field + ".token_budget", "must not be negative"})
+		}
+		if a.TimeoutSeconds < 0 || a.TimeoutSeconds > 3600 {
+			errs = append(errs, FieldError{field + ".timeout_seconds", "must be between 0 and 3600"})
+		}
+		switch a.Permissions.Mode {
+		case "", "ask", "workspace", "autopilot":
+		default:
+			errs = append(errs, FieldError{field + ".permissions.mode", fmt.Sprintf("must be ask, workspace, or autopilot (got %q)", a.Permissions.Mode)})
+		}
+		for i, pattern := range a.Permissions.DeniedCommands {
+			if _, err := regexp.Compile(pattern); err != nil {
+				errs = append(errs, FieldError{fmt.Sprintf("%s.permissions.denied_commands[%d]", field, i), err.Error()})
+			}
+		}
+		for i, rule := range a.Permissions.Rules {
+			ruleField := fmt.Sprintf("%s.permissions.rules[%d]", field, i)
+			if rule.Action != "prompt" && rule.Action != "deny" {
+				errs = append(errs, FieldError{ruleField + ".action", "delegated-agent rules may only prompt or deny"})
+			}
+			if rule.Tool == "" && rule.Path == "" && rule.Command == "" && rule.Host == "" && rule.Server == "" {
+				errs = append(errs, FieldError{ruleField, "must match on at least one of tool, path, command, host, or server"})
+			}
+			for _, glob := range []string{rule.Tool, rule.Path, rule.Command, rule.Host, rule.Server} {
+				if glob == "" {
+					continue
+				}
+				if _, err := filepath.Match(glob, ""); err != nil {
+					errs = append(errs, FieldError{ruleField, fmt.Sprintf("invalid pattern %q: %v", glob, err)})
+				}
+			}
+		}
+	}
+	if c.Options.DelegateMaxConcurrency < 0 || c.Options.DelegateMaxConcurrency > 6 {
+		errs = append(errs, FieldError{"options.delegate_max_concurrency", "must be zero (default) or between 1 and 6"})
+	}
+	for name, limit := range c.Options.DelegateProviderConcurrency {
+		if strings.TrimSpace(name) == "" {
+			errs = append(errs, FieldError{"options.delegate_provider_concurrency", "provider names must not be empty"})
+		}
+		if limit < 1 || limit > 6 {
+			errs = append(errs, FieldError{"options.delegate_provider_concurrency." + name, "must be between 1 and 6"})
 		}
 	}
 	switch strings.ToLower(c.Options.Notifications) {

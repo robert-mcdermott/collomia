@@ -579,6 +579,8 @@ inspect.
 | --- | --- |
 | `max_iterations` | Maximum model/tool iterations in one turn; defaults to `24`. |
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
+| `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
+| `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -595,7 +597,18 @@ inspect.
 | `model` | Model override on the same provider as the parent. |
 | `instructions` | Role instructions prepended to the sub-agent prompt. |
 | `tools` | Tool-name allowlist; empty inherits the parent tool surface. |
+| `skills` | Skill-name allowlist; empty inherits the parent catalog. |
 | `max_iterations` | Per-agent iteration override; zero inherits the normal budget. |
+| `token_budget` | Maximum provider-reported input plus output tokens for the task; zero disables this additional limit. |
+| `timeout_seconds` | Queue plus execution deadline; zero means `600`, maximum `3600`. |
+| `permissions` | Child-only restrictions: optional stricter `mode`, additive `denied_tools`/`denied_commands`, and `prompt`/`deny` rules. `allow` rules are rejected. |
+
+Profile permissions cannot weaken their parent. The effective autonomy is the
+stricter mode; profile denials are added to inherited denials; profile rules
+are evaluated as an independent restriction layer and may only prompt or deny,
+so neither layer can mask the other's denial. Sandbox, networking,
+outside-workspace access, command environment, reviewer, catastrophic denials,
+and all other parent protections remain inherited unchanged.
 
 ### LSP field
 
@@ -1528,7 +1541,8 @@ working-tree counts, provider/sandbox/MCP/trust health, and a bounded list of
 recent permission decisions and tool failures. Git inspection is read-only,
 runs asynchronously with a short timeout, and reports non-Git workspaces
 normally; press `r` in the Session tab to refresh it. `/agents` provides a
-searchable view of each retained delegated outcome. Help lists commands,
+searchable view of each retained delegated outcome, and `alt+a` can stop one
+active child while its parent turn is still running. Help lists commands,
 providers, tools, skills, MCP servers, themes, and keybindings.
 
 Markdown is rendered in the active theme. Fenced source code, expanded
@@ -1555,6 +1569,7 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `tab` | Complete the selected command/palette value. |
 | `ctrl+t` | Cycle Chat, Session, and Help. |
 | `alt+s` | Open the saved-session picker without replacing the current draft. |
+| `alt+a` | Inspect delegated agents; while children are active, choose one to cancel without stopping siblings or the parent. |
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
@@ -1588,7 +1603,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/theme [name]` | Pick or switch themes for this process. |
 | `/skills` | Pick a skill and prefill a prompt that asks the agent to use it. |
 | `/skills list` | List active and disabled skills. |
-| `/agents` | Fuzzy-search delegated tasks and inspect status, task, duration, outcome, changed files, and retained worktree/branch details. |
+| `/agents [stop <id-or-name>]` | Inspect delegated tasks and persisted outcomes or cancel one. During a running turn use `alt+a`. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
 | `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
 | `/attachments` | List images attached to the pending prompt. |
@@ -1841,6 +1856,7 @@ unambiguous.
 {
   "options": {
     "keybindings": {
+      "agent_control": "alt+a",
       "next_tab": "alt+t",
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
@@ -2988,9 +3004,10 @@ trusted project configuration.
 
 ## Sub-agents
 
-The `delegate` tool can run up to six bounded tasks per call with four active at
-once. It is useful for independent investigation, parallel reviews, or isolated
-implementation tasks.
+The `delegate` tool can submit up to six bounded tasks per call. One FIFO
+scheduler is shared by the session, with four active tasks by default, so two
+simultaneous delegate calls cannot create eight active children. It is useful
+for independent investigation, parallel reviews, or isolated implementation.
 
 Conceptual tool request:
 
@@ -3024,11 +3041,14 @@ sandbox policy.
 No sub-agent result is committed, merged, or pushed automatically. A clean
 write worktree is removed. A worktree with changes is left in place and its
 path/branch is reported for human review. When siblings modify the same path,
-the parent reports a conflict rather than attempting reconciliation.
+the parent reports a conflict rather than attempting reconciliation. Because
+all siblings start at the same `HEAD`, Collomia also compares zero-context
+hunks against that common base and labels known overlap or disjoint ranges.
+This analysis is advisory; disjoint worktrees are still never auto-merged.
 
-Each task has a 10-minute timeout and at most 16 model/tool iterations (or a
-lower configured/profile limit). Sub-agents do not receive the `delegate` tool,
-so delegation is not recursive.
+Queueing plus execution has a 10-minute default timeout, and each child has at
+most 16 model/tool iterations (or a lower configured/profile limit). Sub-agents
+do not receive the `delegate` tool, so delegation is not recursive.
 
 Named profiles specialize a sub-agent without defining another provider:
 
@@ -3045,24 +3065,89 @@ Named profiles specialize a sub-agent without defining another provider:
         "search_symbols",
         "git_diff"
       ],
-      "max_iterations": 12
+      "skills": ["security-review"],
+      "max_iterations": 12,
+      "token_budget": 50000,
+      "timeout_seconds": 600,
+      "permissions": {
+        "mode": "ask",
+        "denied_tools": ["run_command"],
+        "denied_commands": ["(?i)^example-destructive-command($|\\s)"],
+        "rules": [
+          {
+            "action": "deny",
+            "server": "production-*",
+            "reason": "review agents cannot call production MCP servers"
+          }
+        ]
+      }
     }
   }
 }
 ```
 
-The model override stays on the parent's provider. Omitted fields inherit the
-parent. A non-empty `tools` list restricts the child to those names. The
-Session tab and status bar show delegated work and retained outcomes. Run
-`/agents` to fuzzy-search those tasks; selecting one shows its task, mode,
-duration, redacted outcome, changed files, and any retained worktree/branch.
-Running agents are snapshots, so reopen the picker to refresh their status.
+The model override stays on the parent's provider. Empty `tools` and `skills`
+inherit the parent's visible surface; non-empty lists are allowlists. Hidden
+tools are enforced at execution too, so a model cannot call one merely by
+inventing its name.
+
+Profile permissions are deliberately one-way. Their `mode` is intersected
+with the parent's effective mode; `denied_tools` and `denied_commands` are
+additive; profile rules are a separate restriction layer and may only `prompt`
+or `deny`, so a prompt cannot mask a parent denial and a parent allow cannot
+mask a child denial. Configuration validation rejects `allow`. A profile cannot enable
+outside-workspace access, weaken sandboxing, enable command networking, expose
+more environment, or bypass parent/global/built-in denials.
+
+`token_budget` counts provider-reported input plus output tokens. Before each
+request Collomia reserves the estimated next input and reduces the requested
+output maximum to the remaining allowance, then checks the provider's reported
+usage afterward. Tokenizers and images are provider-specific, and a provider
+that omits usage cannot provide an exact token guarantee; iteration and timeout
+bounds still apply. `timeout_seconds` includes scheduler queue time and accepts
+up to 3600 seconds.
+
+Configure scheduler limits independently of profiles:
+
+```json
+{
+  "options": {
+    "delegate_max_concurrency": 4,
+    "delegate_provider_concurrency": {
+      "openrouter": 2,
+      "bedrock": 1
+    }
+  }
+}
+```
+
+Each parent result is bounded structured JSON containing the child's terminal
+status, summary/error, up to eight bounded tool-evidence entries, provider
+usage, token budget, changed file/hunk manifest, and retained worktree/branch.
+The raw child transcript is not injected wholesale into parent context. If the
+complete batch would exceed `max_tool_output_bytes`, Collomia compacts details
+while preserving valid JSON and every task's identity/status, and sets
+`truncated: true`; `/agents` retains the bounded per-task outcome for review.
+
+The Session tab shows queued, running, waiting-for-approval, cancelling,
+completed, failed, cancelled, timed-out, budget-exhausted, and interrupted
+states. `/agents` searches the snapshots and opens details. `/agents stop
+<id-or-name>` cancels one when the composer is available; `alt+a` stays active
+during a busy turn and opens a picker that cancels only the chosen child.
+Approval dialogs name the requesting child.
+
+Delegation lifecycle snapshots and completed outcomes are persisted in the
+parent session. On resume, terminal outcomes remain inspectable; any recorded
+queued/running/approval state becomes `interrupted`. Collomia never re-enqueues
+it or repeats its provider/tool calls. Dirty worktrees remain available for
+manual inspection.
 
 ## Sessions and context
 
 Every run creates or resumes a durable per-workspace session. The append-only
 JSONL file includes metadata, full messages, runtime events, compaction
-markers, and structured plan updates.
+markers, structured plan updates, and bounded delegated-agent lifecycle/outcome
+snapshots. These agent records are observational and are never replayed as work.
 
 ### Session commands
 

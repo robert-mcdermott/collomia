@@ -68,8 +68,10 @@ Current one-shot runs emit these events when applicable:
 | `run.result` | `result`, optional `usage` | Exactly one terminal verdict. |
 
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
-and `plan.update` for consumers sharing the runtime event model. Do not assume
-every reserved kind appears in every current CLI stream.
+`plan.update`, and `delegate.update` for consumers sharing the runtime event
+model. `delegate.update` carries the latest bounded child status used by
+durable interactive sessions; one-shot JSONL runs do not currently promise it.
+Do not assume every reserved kind appears in every current CLI stream.
 
 `tool.call.delta.arguments_delta` can be incomplete JSON until `done` is true.
 It is an observation stream, not an execution request. Collomia itself waits

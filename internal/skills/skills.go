@@ -300,6 +300,27 @@ func (c Catalog) Names() []string {
 	return names
 }
 
+// Restrict returns a catalog containing only the named active skills. An
+// empty allowlist preserves the original catalog. The returned Issues list is
+// retained so profile filtering never hides discovery/trust diagnostics from
+// operators, while disabled skills remain unavailable.
+func (c Catalog) Restrict(names []string) Catalog {
+	if len(names) == 0 {
+		return c
+	}
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	filtered := Catalog{Issues: append([]string(nil), c.Issues...)}
+	for _, skill := range c.Skills {
+		if allowed[skill.Name] {
+			filtered.Skills = append(filtered.Skills, skill)
+		}
+	}
+	return filtered
+}
+
 // Find returns an active skill by name.
 func (c Catalog) Find(name string) (Skill, bool) {
 	for _, s := range c.Skills {

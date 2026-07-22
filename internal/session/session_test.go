@@ -459,3 +459,53 @@ func TestListRenameArchiveDelete(t *testing.T) {
 		t.Fatalf("metas=%+v", metas)
 	}
 }
+
+func TestDelegatedAgentSnapshotsPersistLatestStateWithoutExecution(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := event.New(event.KindDelegateUpdate)
+	queued.Delegate = &event.DelegateStatus{ID: "d1", Name: "review", Status: "queued", Task: "inspect auth"}
+	sess.AppendEvent(queued)
+	done := event.New(event.KindDelegateUpdate)
+	done.Delegate = &event.DelegateStatus{ID: "d1", Name: "review", Status: "done", Summary: "checked", ChangedFiles: []string{"auth.go"}, Usage: event.Usage{InputTokens: 12, OutputTokens: 3}}
+	sess.AppendEvent(done)
+	sess.Close()
+
+	loaded, err := store.Load(sess.Meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	statuses := loaded.Delegates()
+	if len(statuses) != 1 || statuses[0].Status != "done" || statuses[0].Summary != "checked" || statuses[0].Usage.InputTokens != 12 {
+		t.Fatalf("delegates=%+v", statuses)
+	}
+}
+
+func TestDelegatedAgentSnapshotsIgnoreOutOfOrderRevisions(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := event.New(event.KindDelegateUpdate)
+	newer.Delegate = &event.DelegateStatus{ID: "d1", Name: "review", Status: "running", CurrentAction: "reading", Revision: 3}
+	sess.AppendEvent(newer)
+	older := event.New(event.KindDelegateUpdate)
+	older.Delegate = &event.DelegateStatus{ID: "d1", Name: "review", Status: "queued", Revision: 2}
+	sess.AppendEvent(older)
+	sess.Close()
+
+	loaded, err := store.Load(sess.Meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	statuses := loaded.Delegates()
+	if len(statuses) != 1 || statuses[0].Revision != 3 || statuses[0].CurrentAction != "reading" {
+		t.Fatalf("delegate status regressed after out-of-order writes: %+v", statuses)
+	}
+}

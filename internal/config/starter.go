@@ -29,10 +29,12 @@ func WriteStarter(path string, global bool) error {
 		SandboxWritableRoots             []string `json:"sandbox_writable_roots,omitempty"`
 	}
 	type starterOptions struct {
-		MaxIterations      int               `json:"max_iterations"`
-		MaxToolOutputBytes int               `json:"max_tool_output_bytes"`
-		AlternateScreen    bool              `json:"alternate_screen"`
-		Keybindings        map[string]string `json:"keybindings"`
+		MaxIterations               int               `json:"max_iterations"`
+		MaxToolOutputBytes          int               `json:"max_tool_output_bytes"`
+		DelegateMaxConcurrency      int               `json:"delegate_max_concurrency"`
+		DelegateProviderConcurrency map[string]int    `json:"delegate_provider_concurrency"`
+		AlternateScreen             bool              `json:"alternate_screen"`
+		Keybindings                 map[string]string `json:"keybindings"`
 	}
 	type starterConfig struct {
 		SchemaVersion   int                 `json:"schema_version"`
@@ -73,10 +75,12 @@ func WriteStarter(path string, global bool) error {
 			SandboxAllowNetwork: &commandNetwork,
 		}
 		cfg.Options = &starterOptions{
-			MaxIterations:      24,
-			MaxToolOutputBytes: 64 * 1024,
-			AlternateScreen:    true,
-			Keybindings:        DefaultKeybindings(),
+			MaxIterations:               24,
+			MaxToolOutputBytes:          64 * 1024,
+			DelegateMaxConcurrency:      4,
+			DelegateProviderConcurrency: map[string]int{},
+			AlternateScreen:             true,
+			Keybindings:                 DefaultKeybindings(),
 		}
 	} else {
 		cfg.Permissions = &starterPermissions{Mode: "ask"}
@@ -318,6 +322,12 @@ const configReferenceJSONC = `
     // Active-context preview per returned tool string. Durable sessions may
     // retain a quota-bound larger copy for read_tool_result; ephemeral runs do not.
     "max_tool_output_bytes": 65536,
+    // Session-wide delegated tasks. Provider entries may only tighten the
+    // global limit; queue time counts against each profile timeout.
+    "delegate_max_concurrency": 4,
+    "delegate_provider_concurrency": {
+      "openrouter": 2
+    },
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",
     "theme": "collomia",
@@ -327,6 +337,7 @@ const configReferenceJSONC = `
     // Global TUI actions are remappable. Approval/question decision keys stay
     // fixed and are always shown in their dialog.
     "keybindings": {
+      "agent_control": "alt+a",
       "next_tab": "ctrl+t",
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
@@ -349,12 +360,25 @@ const configReferenceJSONC = `
   },
 
   // Named profiles for the delegate tool. Empty fields inherit the parent.
+  // Profile permissions only tighten: allow rules are rejected, denials are
+  // additive, and the effective mode is the stricter of parent and child.
   "agents": {
     "reviewer": {
       "model": "",
       "instructions": "Review for correctness, security, and missing tests.",
       "tools": ["read_file", "search_files"],
-      "max_iterations": 12
+      "skills": ["security-review"],
+      "max_iterations": 12,
+      "token_budget": 50000,
+      "timeout_seconds": 600,
+      "permissions": {
+        "mode": "ask",
+        "denied_tools": ["run_command"],
+        "denied_commands": ["(?i)^example-destructive-command($|\\s)"],
+        "rules": [
+          {"action": "deny", "server": "production-*", "reason": "review agents cannot call production MCP servers"}
+        ]
+      }
     }
   },
 

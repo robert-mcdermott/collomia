@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
 	"github.com/muesli/termenv"
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/skills"
 )
 
@@ -102,6 +104,28 @@ func TestAgentPickerWithoutDelegatesExplainsFeature(t *testing.T) {
 	last := m.blocks[len(m.blocks)-1]
 	if last.role != "panel" || !strings.Contains(last.content, "delegate tool") {
 		t.Fatalf("expected delegated-agent guidance, got %+v", last)
+	}
+}
+
+func TestAgentControlPickerCancelsSelectedChild(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	m.runtime.Team.Enqueue(agent.DelegateStart{ID: "delegate-1", Name: "review", Task: "review", Cancel: cancel})
+	m.runtime.Team.MarkRunning("delegate-1")
+	m.openAgentControlPicker()
+	if m.picker == nil || len(m.picker.matches) != 1 {
+		t.Fatalf("agent control picker missing: %+v", m.picker)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("selecting the active agent did not cancel its context")
+	}
+	status, _ := m.runtime.Team.Get("delegate-1")
+	if status.Status != agent.DelegateCancelling {
+		t.Fatalf("status=%s", status.Status)
 	}
 }
 

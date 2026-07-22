@@ -21,6 +21,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
+	"github.com/robert-mcdermott/collomia/internal/skills"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -438,6 +439,21 @@ type concurrentClient struct {
 	chat    func(provider.Request) (provider.Response, error)
 }
 
+func decodeDelegateResults(t *testing.T, value string) struct {
+	Tasks    []DelegateResult `json:"tasks"`
+	Warnings []string         `json:"warnings"`
+} {
+	t.Helper()
+	var decoded struct {
+		Tasks    []DelegateResult `json:"tasks"`
+		Warnings []string         `json:"warnings"`
+	}
+	if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+		t.Fatalf("decode delegate result: %v\n%s", err, value)
+	}
+	return decoded
+}
+
 func (c *concurrentClient) Name() string { return "fake" }
 func (c *concurrentClient) Chat(_ context.Context, request provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
 	c.mu.Lock()
@@ -470,9 +486,13 @@ func TestDelegateRunsTasksConcurrently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"[t1]", "[t2]", "[t3]"} {
-		if !strings.Contains(result, name) {
-			t.Fatalf("missing %s in result: %s", name, result)
+	decoded := decodeDelegateResults(t, result)
+	if len(decoded.Tasks) != 3 {
+		t.Fatalf("tasks=%+v", decoded.Tasks)
+	}
+	for i, name := range []string{"t1", "t2", "t3"} {
+		if decoded.Tasks[i].Name != name || decoded.Tasks[i].Status != DelegateDone {
+			t.Fatalf("task %d=%+v", i, decoded.Tasks[i])
 		}
 	}
 	client.mu.Lock()
@@ -532,8 +552,9 @@ func TestDelegateWriteTaskUsesIsolatedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "changed 1 file(s)") {
-		t.Fatalf("expected changed-file report: %s", result)
+	decoded := decodeDelegateResults(t, result)
+	if len(decoded.Tasks) != 1 || len(decoded.Tasks[0].ChangedFiles) != 1 || decoded.Tasks[0].ChangedFiles[0] != "new.txt" {
+		t.Fatalf("expected structured changed-file report: %s", result)
 	}
 	snapshot := team.Snapshot()
 	if len(snapshot) != 1 || snapshot[0].Status != "done" {
@@ -571,7 +592,8 @@ func TestDelegateAgentProfileOverridesModelAndRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "[r1]") {
+	decoded := decodeDelegateResults(t, result)
+	if len(decoded.Tasks) != 1 || decoded.Tasks[0].Name != "r1" || decoded.Tasks[0].Profile != "reviewer" {
 		t.Fatalf("result=%s", result)
 	}
 	if sawModel != "model-b" {
@@ -596,8 +618,228 @@ func TestDelegateUnknownAgentProfileErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, `unknown agent profile "missing"`) {
+	decoded := decodeDelegateResults(t, result)
+	if len(decoded.Tasks) != 1 || decoded.Tasks[0].Status != DelegateError || !strings.Contains(decoded.Tasks[0].Error, `unknown agent profile "missing"`) {
 		t.Fatalf("result=%s", result)
+	}
+}
+
+func TestAgentProfilePermissionsOnlyTightenParent(t *testing.T) {
+	parent := appconfig.Permissions{
+		Mode: "workspace", DeniedTools: []string{"parent-denied"}, DeniedCommands: []string{"parent-command"},
+		Rules: []appconfig.Rule{{Action: "allow", Tool: "read_file"}}, Sandbox: "require", SandboxAllowNetwork: true,
+	}
+	child := appconfig.AgentPermissions{
+		Mode: "ask", DeniedTools: []string{"child-denied"}, DeniedCommands: []string{"child-command"},
+		Rules: []appconfig.Rule{{Action: "deny", Server: "production-*"}},
+	}
+	effective := restrictAgentPermissions(parent, child)
+	if effective.Mode != "ask" || effective.Sandbox != "require" || !effective.SandboxAllowNetwork {
+		t.Fatalf("effective permissions widened or lost parent policy: %+v", effective)
+	}
+	if !slices.Equal(effective.DeniedTools, []string{"parent-denied", "child-denied"}) || !slices.Equal(effective.DeniedCommands, []string{"parent-command", "child-command"}) {
+		t.Fatalf("denials are not additive: %+v", effective)
+	}
+	if len(effective.Rules) != 1 || effective.Rules[0].Action != "allow" {
+		t.Fatalf("parent rule ordering must remain intact for independent child restriction evaluation: %+v", effective.Rules)
+	}
+	widenAttempt := restrictAgentPermissions(appconfig.Permissions{Mode: "ask"}, appconfig.AgentPermissions{Mode: "autopilot"})
+	if widenAttempt.Mode != "ask" {
+		t.Fatalf("child widened parent autonomy: %s", widenAttempt.Mode)
+	}
+}
+
+func TestSubagentSystemPromptMatchesReadOrWriteMode(t *testing.T) {
+	a := New(Options{Subagent: true, PlanMode: true, Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil)})
+	readPrompt := a.systemPrompt(true)
+	if !strings.Contains(readPrompt, "research sub-agent") || !strings.Contains(readPrompt, "do not attempt changes") {
+		t.Fatalf("read-only subagent prompt=%q", readPrompt)
+	}
+	writePrompt := a.systemPrompt(false)
+	if !strings.Contains(writePrompt, "implementation sub-agent") || strings.Contains(writePrompt, "do not attempt changes") {
+		t.Fatalf("write subagent prompt=%q", writePrompt)
+	}
+}
+
+func TestReadOnlyDelegateCannotMutateParentPlanArtifact(t *testing.T) {
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "update_plan", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "update parent plan"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			t.Fatal("parent plan tool executed in child")
+			return "", nil
+		},
+	})
+	client := &fakeClient{chat: func(_ int, request provider.Request) (provider.Response, error) {
+		for _, definition := range request.Tools {
+			if definition.Name == "update_plan" {
+				t.Fatal("parent plan tool was exposed to delegated child")
+			}
+		}
+		return provider.Response{Content: "reported without changing parent plan"}, nil
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 4})
+	a.AddDelegationTool(appconfig.Config{}, nil, NewTeam())
+	if _, err := registry.Execute(t.Context(), "delegate", json.RawMessage(`{"tasks":[{"task":"review the plan"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDelegateProfileFiltersSkillsAndEnforcesToolAllowlist(t *testing.T) {
+	dangerRan := false
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "danger", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "dangerous read"},
+		Run:    func(context.Context, json.RawMessage) (string, error) { dangerRan = true; return "ran", nil },
+	})
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if call == 1 {
+			if !strings.Contains(request.System, "keep: allowed") || strings.Contains(request.System, "drop: hidden") {
+				t.Fatalf("filtered skill catalog not reflected in system prompt:\n%s", request.System)
+			}
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "1", Name: "danger", Arguments: json.RawMessage(`{}`)}}}, nil
+		}
+		last := request.Messages[len(request.Messages)-1]
+		if !strings.Contains(last.Content, "not available to this agent") {
+			t.Fatalf("hidden tool call was not blocked: %+v", last)
+		}
+		return provider.Response{Content: "finished safely"}, nil
+	}}
+	catalog := skills.Catalog{Skills: []skills.Skill{{Name: "drop", Description: "hidden"}, {Name: "keep", Description: "allowed"}}}
+	cfg := appconfig.Config{Agents: map[string]appconfig.AgentDefinition{"reviewer": {Tools: []string{"load_skill"}, Skills: []string{"keep"}}}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), Catalog: catalog, MaxIterations: 4})
+	team := NewTeam()
+	a.AddDelegationTool(cfg, nil, team)
+	result, err := registry.Execute(t.Context(), "delegate", json.RawMessage(`{"tasks":[{"name":"review","task":"review","agent":"reviewer"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := decodeDelegateResults(t, result)
+	if dangerRan || len(decoded.Tasks) != 1 || decoded.Tasks[0].Status != DelegateDone {
+		t.Fatalf("tool restriction failed: danger=%t result=%s", dangerRan, result)
+	}
+}
+
+func TestDelegateTokenBudgetStopsBeforeAnotherProviderCall(t *testing.T) {
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"},
+		Run:    func(context.Context, json.RawMessage) (string, error) { return "evidence", nil },
+	})
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call > 1 {
+			t.Fatal("token budget should stop before a second provider request")
+		}
+		return provider.Response{Usage: provider.Usage{InputTokens: 6000, OutputTokens: 1000}, ToolCalls: []provider.ToolCall{{ID: "1", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
+	}}
+	cfg := appconfig.Config{Agents: map[string]appconfig.AgentDefinition{"bounded": {TokenBudget: 10000}}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 1000}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 4})
+	team := NewTeam()
+	a.AddDelegationTool(cfg, nil, team)
+	result, err := registry.Execute(t.Context(), "delegate", json.RawMessage(`{"tasks":[{"name":"bounded","task":"inspect","agent":"bounded"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := decodeDelegateResults(t, result)
+	if len(decoded.Tasks) != 1 || decoded.Tasks[0].Status != DelegateBudgetExhausted || decoded.Tasks[0].InputTokens != 6000 || decoded.Tasks[0].TokenBudget != 10000 {
+		t.Fatalf("budget result=%s", result)
+	}
+}
+
+func TestDelegateInboxCompactionKeepsValidStructuredResults(t *testing.T) {
+	results := make([]DelegateResult, 6)
+	for i := range results {
+		results[i] = DelegateResult{ID: fmt.Sprintf("d%d", i), Name: strings.Repeat("name", 100), Status: DelegateDone, Summary: strings.Repeat("summary", 2000), Evidence: []string{strings.Repeat("evidence", 500)}, TimeoutSeconds: 600}
+	}
+	encoded, err := encodeDelegateInbox(results, []string{strings.Repeat("warning", 2000)}, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > 4096 {
+		t.Fatalf("compacted inbox=%d bytes", len(encoded))
+	}
+	var decoded struct {
+		Tasks []DelegateResult `json:"tasks"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("compacted inbox is not valid JSON: %v\n%s", err, encoded)
+	}
+	if len(decoded.Tasks) != 6 {
+		t.Fatalf("compacted inbox lost task identities: %+v", decoded.Tasks)
+	}
+	for _, result := range decoded.Tasks {
+		if !result.Truncated || result.ID == "" || result.Status != DelegateDone {
+			t.Fatalf("compacted task lost required state: %+v", result)
+		}
+	}
+}
+
+func TestDelegateSchedulerLimitIsSharedAcrossCalls(t *testing.T) {
+	client := &concurrentClient{chat: func(provider.Request) (provider.Response, error) { return provider.Response{Content: "done"}, nil }}
+	registry := tools.NewRegistry()
+	cfg := appconfig.Config{Options: appconfig.Options{DelegateMaxConcurrency: 2}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 4})
+	a.AddDelegationTool(cfg, nil, NewTeam())
+	args := json.RawMessage(`{"tasks":[{"task":"one"},{"task":"two"},{"task":"three"}]}`)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := registry.Execute(t.Context(), "delegate", args); err != nil {
+				t.Errorf("delegate: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	client.mu.Lock()
+	maxSeen := client.maxSeen
+	client.mu.Unlock()
+	if maxSeen != 2 {
+		t.Fatalf("shared scheduler max concurrency=%d, want 2", maxSeen)
+	}
+}
+
+type cancellableClient struct{ started chan struct{} }
+
+func (c *cancellableClient) Name() string { return "cancellable" }
+func (c *cancellableClient) Chat(ctx context.Context, _ provider.Request, _ func(provider.Delta)) (provider.Response, error) {
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return provider.Response{}, ctx.Err()
+}
+
+func TestDelegateTaskCanBeCancelledIndividually(t *testing.T) {
+	client := &cancellableClient{started: make(chan struct{}, 1)}
+	registry := tools.NewRegistry()
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 4})
+	team := NewTeam()
+	a.AddDelegationTool(appconfig.Config{}, nil, team)
+	done := make(chan string, 1)
+	go func() {
+		result, _ := registry.Execute(t.Context(), "delegate", json.RawMessage(`{"tasks":[{"name":"cancel-me","task":"wait"}]}`))
+		done <- result
+	}()
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("delegated provider call did not start")
+	}
+	status := team.Snapshot()[0]
+	if err := team.Stop(status.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		decoded := decodeDelegateResults(t, result)
+		if len(decoded.Tasks) != 1 || decoded.Tasks[0].Status != DelegateCancelled {
+			t.Fatalf("cancel result=%s", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled delegated task did not finish")
 	}
 }
 
@@ -650,6 +892,25 @@ func TestDelegateReportsSiblingConflicts(t *testing.T) {
 			exec.Command("git", "-C", workspace, "worktree", "remove", "--force", s.Worktree).Run()
 			exec.Command("git", "-C", workspace, "branch", "-D", s.Branch).Run()
 		}
+	}
+}
+
+func TestHunkConflictWarningDistinguishesOverlapAndDisjointChanges(t *testing.T) {
+	names := []string{"first", "second"}
+	changed := [][]string{{"shared.go"}, {"shared.go"}}
+	overlap := hunkConflictWarning(names, changed, [][]DelegateHunk{
+		{{Path: "shared.go", OldStart: 10, OldLines: 3}},
+		{{Path: "shared.go", OldStart: 12, OldLines: 2}},
+	})
+	if !strings.Contains(overlap, "overlapping hunks") {
+		t.Fatalf("overlap=%q", overlap)
+	}
+	disjoint := hunkConflictWarning(names, changed, [][]DelegateHunk{
+		{{Path: "shared.go", OldStart: 10, OldLines: 2}},
+		{{Path: "shared.go", OldStart: 30, OldLines: 2}},
+	})
+	if !strings.Contains(disjoint, "disjoint hunks") {
+		t.Fatalf("disjoint=%q", disjoint)
 	}
 }
 

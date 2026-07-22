@@ -82,6 +82,33 @@ func TestDurableRuntimeEnablesBoundedResultArtifacts(t *testing.T) {
 	}
 }
 
+func TestResumeRestoresDelegatedOutcomesAndMarksActiveWorkInterrupted(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	runtime, err := New(context.Background(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := runtime.Session.Meta.ID
+	runtime.Team.Start("done", "review", "review code", false)
+	runtime.Team.Finish("done", "all clear", []string{"main.go"}, "", "", nil)
+	runtime.Team.Start("active", "tests", "run tests", false)
+	runtime.Close()
+
+	resumed, err := New(context.Background(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	statuses := resumed.Team.Snapshot()
+	if len(statuses) != 2 || statuses[0].Status != "done" || statuses[0].Summary != "all clear" || statuses[1].Status != "interrupted" {
+		t.Fatalf("restored delegated agents=%+v", statuses)
+	}
+	if resumed.Team.Active() != 0 {
+		t.Fatal("resume must not restart recorded delegated work")
+	}
+}
+
 func (s *scriptedClient) Name() string { return "scripted" }
 func (s *scriptedClient) Chat(_ context.Context, request provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
 	s.requests = append(s.requests, request)

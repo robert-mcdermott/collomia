@@ -64,6 +64,35 @@ func TestDenyRuleBeatsAutopilot(t *testing.T) {
 	}
 }
 
+func TestRestrictionsCannotMaskOrBeMaskedByBaseRules(t *testing.T) {
+	requests := 0
+	baseDeny := New(appconfig.Permissions{Mode: "autopilot", Rules: []appconfig.Rule{
+		{Action: "deny", Tool: "run_command", Command: "curl", Reason: "parent denial"},
+	}}, func(context.Context, Request) (Decision, error) {
+		requests++
+		return Decision{Allow: true}, nil
+	})
+	baseDeny.SetRestrictions([]appconfig.Rule{{Action: "prompt", Tool: "run_command", Command: "*"}})
+	action := tools.Action{Risk: tools.RiskExecute, Summary: "run curl", Executables: []string{"curl"}}
+	if _, err := baseDeny.Authorize(t.Context(), "run_command", action); !errors.Is(err, ErrDenied) {
+		t.Fatalf("child prompt masked parent deny: %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("parent denial became approvable; prompts=%d", requests)
+	}
+
+	childDeny := New(appconfig.Permissions{Mode: "ask", Rules: []appconfig.Rule{
+		{Action: "allow", Tool: "run_command", Command: "*"},
+	}}, nil)
+	childDeny.SetRestrictions([]appconfig.Rule{
+		{Action: "allow", Tool: "run_command", Command: "*"}, // ignored defensively
+		{Action: "deny", Tool: "run_command", Command: "curl", Reason: "child denial"},
+	})
+	if _, err := childDeny.Authorize(t.Context(), "run_command", action); !errors.Is(err, ErrDenied) {
+		t.Fatalf("parent allow masked child deny: %v", err)
+	}
+}
+
 func TestAllowRuleSkipsPromptInAskMode(t *testing.T) {
 	m := New(appconfig.Permissions{Mode: "ask", Rules: []appconfig.Rule{
 		{Action: "allow", Tool: "run_command", Command: "go"},
