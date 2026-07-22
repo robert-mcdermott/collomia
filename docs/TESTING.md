@@ -41,6 +41,8 @@ The current corpus covers these outcome-oriented scenarios:
 | Interrupted mutation recovery | Durable session store and recovery | Loading adds an interruption warning but never executes the recorded write. |
 | Long-context retention | Compaction, pinned plan, exact failure evidence | Compaction retains authoritative plan state and bounded exact failure evidence. |
 | Conversation rewind | Durable branch creation and restoration | Rewind preserves the source, never replays recorded tools, and leaves workspace state unchanged. |
+| Governed parallel delegation | Real delegate tool, shared FIFO scheduler, structured plan, read-only child, isolated write child | Both children run concurrently, retain plan association/evidence, and the write appears only in its retained worktree. |
+| Selective delegated integration | Git worktree validation, common-base diff, hunk picker model, rooted publication, change tracker, real Go verification | With a Windows-style inherited `core.autocrlf=true`, parent and child remain byte-stable; one of two hunks lands, tests pass, and the child worktree remains available. |
 
 These are product evaluations rather than model-quality benchmarks. The
 scripted provider deliberately selects the tool calls so CI can test runtime
@@ -110,6 +112,10 @@ Important failure-oriented tests include:
   the guarantee that queued/running work resumes as inert `interrupted` state;
   common-base hunk comparison distinguishes overlapping and disjoint sibling
   edits without performing a merge.
+- Delegate cancellation at the scheduler queue, provider-call, and interactive
+  approval boundaries. Cancelling an approval-waiting child cannot publish its
+  proposed write, revive the child through a late state update, or cancel a
+  sibling.
 - Bounded, exactly-once steering delivery at provider boundaries, structured
   plan-step validation, recent-output tail limits, and operator metadata event
   round trips.
@@ -119,6 +125,14 @@ Important failure-oriented tests include:
   selective text hunks, records the result in the change tracker, retains the
   worktree, refuses parent drift, and rechecks changes made while approval is
   pending.
+- Cross-platform Git fixtures explicitly override inherited configuration and
+  reproduce `core.autocrlf=true`; nested mixed-case paths, LF/CRLF conversion,
+  Git-significant executable bits, and Windows-irrelevant permission bits are
+  tested according to each platform's semantics.
+- One opaque failure ID remains stable across the returned error, JSONL error
+  and final-result records, TUI diagnostic, durable delegate status, debug log,
+  and support-bundle correlation metadata. Tests validate the ID shape without
+  depending on a particular random value.
 - TUI agent action selection requires an explicit stop action rather than
   making the first picker selection destructive.
 
@@ -129,10 +143,11 @@ state.
 
 ## CI layout
 
-The main test matrix runs build, unit/integration tests, race detection, and
-`go vet` on Ubuntu, macOS, and Windows. A separate Ubuntu quality job runs the
-offline evaluation package once without cache reuse and performs short fuzz
-campaigns. Release builds wait for both jobs.
+The main test matrix runs build, fresh (`-count=1`) unit/integration/evaluation
+tests, fresh race detection, and `go vet` on Ubuntu, macOS, and Windows. A
+separate Ubuntu quality job runs the offline evaluation package once without
+cache reuse and performs short fuzz campaigns. Release builds wait for both
+jobs.
 
 Golden terminal fixtures normalize line endings and padding so the same
 semantic screen is stable across operating systems. Use semantic assertions

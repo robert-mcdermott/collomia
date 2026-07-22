@@ -36,8 +36,9 @@ func TestJSONLWriterEmitsOneLinePerEvent(t *testing.T) {
 
 func TestRunResultRoundTrips(t *testing.T) {
 	e := New(KindRunResult)
+	e.FailureID = "err-0123456789abcdef"
 	e.Result = &RunResult{
-		Status: "cancelled", Error: "context canceled", Failure: &Failure{Kind: FailureCancelled}, Partial: true,
+		Status: "cancelled", Error: "context canceled", Failure: &Failure{ID: e.FailureID, Kind: FailureCancelled}, Partial: true,
 		Ephemeral: true, Refused: true, SessionID: "abc123", ChangedFiles: []string{"main.go"}, DurationMS: 1500,
 	}
 	e.Usage = &Usage{InputTokens: 10, OutputTokens: 4}
@@ -50,7 +51,7 @@ func TestRunResultRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" ||
-		decoded.Result.Failure == nil || decoded.Result.Failure.Kind != FailureCancelled || !decoded.Result.Partial || !decoded.Result.Ephemeral || !decoded.Result.Refused ||
+		decoded.FailureID != e.FailureID || decoded.Result.Failure == nil || decoded.Result.Failure.ID != e.FailureID || decoded.Result.Failure.Kind != FailureCancelled || !decoded.Result.Partial || !decoded.Result.Ephemeral || !decoded.Result.Refused ||
 		len(decoded.Result.ChangedFiles) != 1 || decoded.Usage == nil || decoded.Usage.InputTokens != 10 {
 		t.Fatalf("round trip mismatch: %+v", decoded)
 	}

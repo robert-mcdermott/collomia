@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/redact"
 )
 
@@ -244,15 +245,21 @@ func validateEvent(line int, e event.Event, fields map[string]json.RawMessage) e
 		if e.Delegate.TokenBudget < 0 || e.Delegate.TimeoutSeconds < 0 {
 			return lineError(line, "delegate token_budget and timeout_seconds cannot be negative")
 		}
+		if e.Delegate.FailureID != "" && !failureid.Valid(e.Delegate.FailureID) {
+			return lineError(line, "delegate failure_id has an invalid format")
+		}
 	case event.KindError:
 		if _, ok := fields["error"]; !ok || strings.TrimSpace(e.Error) == "" {
 			return lineError(line, "error requires a non-empty %q payload", "error")
+		}
+		if e.FailureID != "" && !failureid.Valid(e.FailureID) {
+			return lineError(line, "error failure_id has an invalid format")
 		}
 	case event.KindRunResult:
 		if err := require("result", e.Result); err != nil {
 			return err
 		}
-		if err := validateResult(line, e.Result, fields["result"]); err != nil {
+		if err := validateResult(line, e.Result, e.FailureID, fields["result"]); err != nil {
 			return err
 		}
 		if e.Usage != nil {
@@ -276,13 +283,16 @@ func validDelegateStatus(status string) bool {
 	}
 }
 
-func validateResult(line int, result *event.RunResult, raw json.RawMessage) error {
+func validateResult(line int, result *event.RunResult, eventFailureID string, raw json.RawMessage) error {
 	fields, err := requireObjectFields(line, string(event.KindRunResult), "result", raw, "status", "duration_ms")
 	if err != nil {
 		return err
 	}
 	if result.DurationMS < 0 {
 		return lineError(line, "result.duration_ms cannot be negative")
+	}
+	if eventFailureID != "" && !failureid.Valid(eventFailureID) {
+		return lineError(line, "run.result event failure_id has an invalid format")
 	}
 	switch result.Status {
 	case "ok":
@@ -314,6 +324,12 @@ func validateResult(line int, result *event.RunResult, raw json.RawMessage) erro
 		if err != nil {
 			return err
 		}
+		if result.Failure.ID != "" && !failureid.Valid(result.Failure.ID) {
+			return lineError(line, "run.result failure id has an invalid format")
+		}
+		if (eventFailureID != "" || result.Failure.ID != "") && result.Failure.ID != eventFailureID {
+			return lineError(line, "run.result failure id does not match event failure_id")
+		}
 		switch result.Failure.Kind {
 		case event.FailureUsage, event.FailureConfiguration, event.FailurePermission, event.FailureProvider, event.FailureTimeout, event.FailureCancelled, event.FailureRuntime:
 		default:
@@ -327,6 +343,9 @@ func validateResult(line int, result *event.RunResult, raw json.RawMessage) erro
 				return err
 			}
 		}
+	}
+	if result.Failure == nil && eventFailureID != "" {
+		return lineError(line, "successful run.result cannot include a failure_id")
 	}
 	return nil
 }

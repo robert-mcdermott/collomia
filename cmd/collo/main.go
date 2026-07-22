@@ -18,6 +18,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
@@ -32,7 +33,7 @@ func main() {
 		if errors.As(err, &exitErr) && exitErr.Code > 0 {
 			os.Exit(exitErr.Code)
 		}
-		fmt.Fprintln(os.Stderr, "collo:", err)
+		fmt.Fprintln(os.Stderr, "collo:", failureid.Display(err))
 		os.Exit(exitCode(err))
 	}
 }
@@ -324,6 +325,9 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 		writer.Redact = redact.New().Redact
 	}
 	defer func() {
+		if runErr != nil {
+			runErr = failureid.Ensure(runErr)
+		}
 		if writer != nil {
 			streamedAnswer, refused, progressed := observation.Snapshot()
 			if runErr != nil && answer == "" {
@@ -414,6 +418,7 @@ func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options
 		}
 	}
 	if runErr != nil {
+		runErr = failureid.Ensure(runErr)
 		result.Status = "error"
 		result.Error = runErr.Error()
 		failure := failureFor(runErr)
@@ -424,6 +429,7 @@ func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options
 		result.Partial = progressed || strings.TrimSpace(answer) != "" || len(result.ChangedFiles) > 0
 	}
 	final := event.New(event.KindRunResult)
+	final.FailureID = failureid.ID(runErr)
 	final.Result = &result
 	final.Usage = usage
 	if runtime != nil {
@@ -433,6 +439,8 @@ func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options
 }
 
 func failureFor(err error) event.Failure {
+	err = failureid.Ensure(err)
+	id := failureid.ID(err)
 	if providerErr, ok := provider.AsError(err); ok {
 		kind := event.FailureProvider
 		if providerErr.Kind == provider.ErrorCancelled {
@@ -440,32 +448,33 @@ func failureFor(err error) event.Failure {
 		} else if providerErr.Kind == provider.ErrorTimeout {
 			kind = event.FailureTimeout
 		}
-		return event.Failure{Kind: kind, Retryable: providerErr.Retryable, Provider: &event.ProviderFailure{
+		return event.Failure{ID: id, Kind: kind, Retryable: providerErr.Retryable, Provider: &event.ProviderFailure{
 			Name: providerErr.Provider, Operation: providerErr.Operation, Kind: string(providerErr.Kind), StatusCode: providerErr.StatusCode,
 			Retryable: providerErr.Retryable, RetryAfterMS: providerErr.RetryAfter.Milliseconds(), RequestID: providerErr.RequestID,
 		}}
 	}
 	var commandErr *commandError
 	if errors.As(err, &commandErr) && commandErr.kind != "" {
-		return event.Failure{Kind: commandErr.kind}
+		return event.Failure{ID: id, Kind: commandErr.kind}
 	}
 	if errors.Is(err, context.Canceled) {
-		return event.Failure{Kind: event.FailureCancelled}
+		return event.Failure{ID: id, Kind: event.FailureCancelled}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return event.Failure{Kind: event.FailureTimeout, Retryable: true}
+		return event.Failure{ID: id, Kind: event.FailureTimeout, Retryable: true}
 	}
 	if errors.Is(err, permission.ErrDenied) {
-		return event.Failure{Kind: event.FailurePermission}
+		return event.Failure{ID: id, Kind: event.FailurePermission}
 	}
 	var validation appconfig.ValidationError
 	if errors.As(err, &validation) {
-		return event.Failure{Kind: event.FailureConfiguration}
+		return event.Failure{ID: id, Kind: event.FailureConfiguration}
 	}
-	return event.Failure{Kind: event.FailureRuntime}
+	return event.Failure{ID: id, Kind: event.FailureRuntime}
 }
 
 func headlessStartupFailure(opts options, err error, started time.Time) error {
+	err = failureid.Ensure(err)
 	if opts.jsonl && (opts.command == "run" || opts.command == "review" || opts.command == "verify") {
 		writer := event.NewJSONLWriter(os.Stdout)
 		writer.Redact = redact.New().Redact

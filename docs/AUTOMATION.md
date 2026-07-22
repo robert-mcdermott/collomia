@@ -64,8 +64,8 @@ Current one-shot runs emit these events when applicable:
 | `usage` | `usage` | Provider-reported input/output/cached/reasoning tokens. |
 | `context.compaction` | `text` | Context was compacted. |
 | `warning` | `text` | Non-fatal runtime/provider warning. |
-| `error` | `error`, optional `provider` | A failure observed during the run. |
-| `run.result` | `result`, optional `usage` | Exactly one terminal verdict. |
+| `error` | `error`, optional `provider`, optional `failure_id` | A failure observed during the run. |
+| `run.result` | `result`, optional `usage`, optional `failure_id` | Exactly one terminal verdict. |
 
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
 `plan.update`, and `delegate.update` for consumers sharing the runtime event
@@ -79,6 +79,10 @@ history plus `pending_guidance`, evidence and changed/integrated file lists,
 usage/budgets, and retained worktree/branch/base metadata. These are
 observations only: replay never restarts a child, delivers stored guidance, or
 integrates stored changes. Consumers must tolerate additive fields.
+
+Failed, cancelled, timed-out, budget-exhausted, or recovery-interrupted child
+records may also carry `delegate.failure_id`. It is the same opaque ID shown in
+that child's interactive diagnostic; it is not a task ID and grants no access.
 
 `tool.call.delta.arguments_delta` can be incomplete JSON until `done` is true.
 It is an observation stream, not an execution request. Collomia itself waits
@@ -122,6 +126,14 @@ readability):
 | `session_id` | Durable session ID. Omitted for ephemeral or pre-session startup failures. |
 | `changed_files` | Workspace files changed through Collomia's tracked write tools. |
 | `duration_ms` | Wall-clock duration measured by the headless runner. |
+
+For a failed or cancelled run, the event-level `failure_id` and
+`result.failure.id` contain the same value, for example
+`err-0123456789abcdef`. The value is random per failure occurrence and contains
+no error text, path, session, provider, prompt, or credential material. Treat
+its format as stable but its value as opaque: use it only to correlate the
+terminal verdict with a preceding `error` event, debug log, TUI report, or
+reviewed support bundle. A repeated root cause receives a new ID.
 
 Failure kinds are stable and provider-neutral:
 

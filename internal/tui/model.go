@@ -21,6 +21,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/version"
@@ -236,12 +237,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
 			if msg.err != nil {
-				m.alert("Turn failed: " + msg.err.Error())
+				m.alert("Turn failed: " + failureid.Display(msg.err))
 			} else if elapsed > 10*time.Second {
 				m.alert(fmt.Sprintf("Turn finished after %s", elapsed))
 			}
 			if msg.err != nil {
-				m.blocks = append(m.blocks, block{role: "error", content: msg.err.Error()})
+				m.blocks = append(m.blocks, block{role: "error", content: failureid.Display(msg.err)})
 			} else if strings.TrimSpace(msg.final) == "" {
 				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}
@@ -543,6 +544,15 @@ func (m *Model) startTurn(value string) tea.Cmd {
 			} else {
 				err = errors.Join(err, persistenceErr)
 			}
+		}
+		if err != nil && failureid.ID(err) == "" {
+			err = failureid.Ensure(err)
+			failureEvent := runtimeevent.New(runtimeevent.KindError)
+			failureEvent.Error = err.Error()
+			failureEvent.FailureID = failureid.ID(err)
+			runtime.LogEvent(failureEvent)
+		} else {
+			err = failureid.Ensure(err)
 		}
 		events <- runMsg{done: true, final: final, err: err}
 		close(events)

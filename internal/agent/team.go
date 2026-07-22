@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
@@ -48,6 +49,7 @@ type DelegateStatus struct {
 	PendingGuidance int
 	Summary         string
 	Error           string
+	FailureID       string
 	Evidence        []string
 	Changed         []string
 	Worktree        string
@@ -245,11 +247,14 @@ func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, wo
 		s.CurrentAction = ""
 		s.cancel = nil
 		s.Error = ""
+		s.FailureID = ""
 		s.Status = DelegateDone
 		if err == nil {
 			return
 		}
+		err = failureid.Ensure(err)
 		s.Error = err.Error()
+		s.FailureID = failureid.ID(err)
 		switch {
 		case errors.Is(err, ErrTokenBudgetExceeded):
 			s.Status = DelegateBudgetExhausted
@@ -351,7 +356,9 @@ func (t *Team) Restore(statuses []DelegateStatus) {
 		if !terminalDelegateStatus(status.Status) {
 			status.Status = DelegateInterrupted
 			status.CurrentAction = ""
-			status.Error = "Collomia exited before this delegated task recorded a terminal result; it was not restarted"
+			err := failureid.Ensure(errors.New("Collomia exited before this delegated task recorded a terminal result; it was not restarted"))
+			status.Error = err.Error()
+			status.FailureID = failureid.ID(err)
 			status.Revision++
 			if status.Finished.IsZero() {
 				status.Finished = time.Now()
@@ -504,7 +511,8 @@ func (status DelegateStatus) Event() event.DelegateStatus {
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
 		Summary: status.Summary, Error: status.Error,
-		Evidence: append([]string(nil), status.Evidence...), ChangedFiles: append([]string(nil), status.Changed...),
+		FailureID: status.FailureID,
+		Evidence:  append([]string(nil), status.Evidence...), ChangedFiles: append([]string(nil), status.Changed...),
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, IntegratedFiles: append([]string(nil), status.Integrated...),
 		Usage:       event.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
@@ -521,7 +529,7 @@ func DelegateStatusFromEvent(status event.DelegateStatus) DelegateStatus {
 		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
-		Summary: status.Summary, Error: status.Error,
+		Summary: status.Summary, Error: status.Error, FailureID: status.FailureID,
 		Evidence: append([]string(nil), status.Evidence...), Changed: append([]string(nil), status.ChangedFiles...),
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, Integrated: append([]string(nil), status.IntegratedFiles...),
 		Usage:       provider.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
@@ -74,7 +75,7 @@ func TestTeamRestoreNeverRestartsActiveState(t *testing.T) {
 	team := NewTeam()
 	team.Restore([]DelegateStatus{{ID: "old", Name: "old task", Status: DelegateRunning, Usage: provider.Usage{InputTokens: 10}}})
 	status, ok := team.Get("old")
-	if !ok || status.Status != DelegateInterrupted || status.Error == "" {
+	if !ok || status.Status != DelegateInterrupted || status.Error == "" || !failureid.Valid(status.FailureID) {
 		t.Fatalf("restored=%+v", status)
 	}
 	if team.Active() != 0 {
@@ -141,11 +142,25 @@ func TestDelegateStatusEventRoundTripPreservesOperatorMetadata(t *testing.T) {
 	original := DelegateStatus{
 		ID: "d1", Name: "writer", Task: "implement", Write: true, PlanStep: 3,
 		Status: DelegateDone, RecentOutput: "tests passed", Guidance: []string{"run the focused test"},
-		Summary: "done", Changed: []string{"a.go"}, Integrated: []string{"a.go"},
+		Summary: "done", FailureID: "err-0123456789abcdef", Changed: []string{"a.go"}, Integrated: []string{"a.go"},
 		Worktree: "/tmp/worktree", Branch: "collomia/writer", BaseCommit: "abcdef",
 	}
 	restored := DelegateStatusFromEvent(original.Event())
-	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 {
+	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 {
 		t.Fatalf("restored=%+v", restored)
+	}
+}
+
+func TestTeamFailureCarriesCorrelationID(t *testing.T) {
+	team := NewTeam()
+	team.Start("d1", "writer", "write", true)
+	team.Finish("d1", "", nil, "", "", context.Canceled)
+	status, ok := team.Get("d1")
+	if !ok || status.Status != DelegateCancelled || !failureid.Valid(status.FailureID) {
+		t.Fatalf("status=%+v", status)
+	}
+	restored := DelegateStatusFromEvent(status.Event())
+	if restored.FailureID != status.FailureID {
+		t.Fatalf("restored failure id=%q want %q", restored.FailureID, status.FailureID)
 	}
 }

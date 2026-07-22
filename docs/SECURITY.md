@@ -387,6 +387,9 @@ evidence, usage, and change manifests—not raw child transcripts. On resume,
 recorded completed outcomes remain visible and any nonterminal task becomes
 `interrupted`; it is never automatically scheduled again. This avoids duplicate
 mutations but means the user or parent must explicitly start replacement work.
+Cancellation is honored while a child is queued, calling a provider, or waiting
+for approval. A cancelled approval returns no permission and cannot publish the
+proposed mutation; late child updates cannot revive a cancelling task.
 
 **PTY commands** (`run_command` with `pty: true`, Unix only) run in their
 own session (`setsid`) rather than merely a process group, because a
@@ -564,6 +567,10 @@ records, and logs. Configuration validation failures are represented by a
 generic status because detailed validator errors can echo user-defined names,
 paths, patterns, or values. Default collection also suppresses environment
 expansion, so `api_key_env` and MCP environment references are not fetched.
+The manifest may contain up to eight recent opaque failure IDs collected from
+bounded debug-log tails. Each ID is random and contains no error text, path,
+session, provider, prompt, or secret. Only the identifier is copied; log
+messages and attributes remain excluded unless the user requests logs.
 
 Logs require the explicit `--include-logs` flag and are bounded to five files,
 1 MiB per file, and 3 MiB total. Configured/common credential values are

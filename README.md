@@ -208,7 +208,7 @@ collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
 collo run --jsonl --ephemeral --plan "Inspect this checkout without saving a conversation" | jq .
 ```
 
-With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and an actual run always ends with a `run.result` record after successful argument parsing — including prompt, configuration, provider, permission, timeout, and cancellation failures (`--help`/`--version` remain informational commands). Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event and the final result. Print the exact contract with `collo schema events`; see the [automation guide](docs/AUTOMATION.md) for all fields, failure kinds, and pipeline patterns.
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and an actual run always ends with a `run.result` record after successful argument parsing — including prompt, configuration, provider, permission, timeout, and cancellation failures (`--help`/`--version` remain informational commands). Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event and the final result. Failed/cancelled runs also carry one opaque per-occurrence `failure_id`, repeated as `result.failure.id`, so the TUI, JSONL, debug log, and support bundle can be correlated without encoding user data in the identifier. Print the exact contract with `collo schema events`; see the [automation guide](docs/AUTOMATION.md) for all fields, failure kinds, and pipeline patterns.
 
 ```json
 {"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
@@ -249,7 +249,9 @@ The default archive is written under `~/.collomia/support/` on macOS/Linux or
 read-only: it does not initialize providers or MCP servers and makes no network
 requests. Default collection also leaves environment-backed provider and MCP
 values unresolved. The archive contains an anonymous health manifest and the
-generated capability matrix. It excludes configuration values, environment
+generated capability matrix. The manifest may include up to eight opaque
+recent failure IDs collected from bounded log tails, but no associated log
+messages or attributes. It excludes configuration values, environment
 variables, provider endpoints/models, MCP definitions, workspace paths, source
 files, prompts, transcripts, sessions, audit records, and debug logs.
 
@@ -1139,9 +1141,10 @@ go test -race ./...
 go vet ./...
 ```
 
-The CI quality job also runs the offline agent evaluations and short fuzzing
-campaigns for replay, configuration validation, shell analysis, and diff/hunk
-parsing. See [docs/TESTING.md](docs/TESTING.md) for the evaluation scenarios,
+The cross-platform matrix runs tests and race detection without test-result
+cache reuse. The CI quality job also runs the offline agent evaluations and
+short fuzzing campaigns for replay, configuration validation, shell analysis,
+and diff/hunk parsing. See [docs/TESTING.md](docs/TESTING.md) for the evaluation scenarios,
 local fuzz commands, CI coverage, and guidance for adding regression cases.
 
 These commands run the recorded provider contracts used by CI and never need

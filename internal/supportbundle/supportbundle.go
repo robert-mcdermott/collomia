@@ -6,6 +6,7 @@ package supportbundle
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
@@ -25,6 +26,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/logging"
 	"github.com/robert-mcdermott/collomia/internal/redact"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
@@ -87,6 +89,9 @@ type healthInfo struct {
 	MCP           mcpInfo       `json:"mcp"`
 	Sandbox       sandboxInfo   `json:"sandbox"`
 	Extensions    extensionInfo `json:"extensions"`
+	// RecentFailureIDs contains only opaque correlation values extracted from
+	// bounded local debug-log tails. No log messages or attributes are copied.
+	RecentFailureIDs []string `json:"recent_failure_ids,omitempty"`
 }
 
 type configInfo struct {
@@ -265,7 +270,85 @@ func inspect(workspace, buildVersion, id string, created time.Time, resolveLogSe
 	}
 	data.Health.Workspace = inspectWorkspace(workspace)
 	data.Health.Sandbox = inspectSandbox(workspace, cfg, err, common)
+	data.Health.RecentFailureIDs = recentFailureIDs()
 	return data, common
+}
+
+func recentFailureIDs() []string {
+	dir, err := logging.Dir()
+	if err != nil {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	type candidate struct {
+		path string
+		mod  time.Time
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr == nil && info.Mode().IsRegular() {
+			candidates = append(candidates, candidate{path: filepath.Join(dir, entry.Name()), mod: info.ModTime()})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mod.After(candidates[j].mod) })
+	if len(candidates) > maxIncludedLogs {
+		candidates = candidates[:maxIncludedLogs]
+	}
+	seen := map[string]bool{}
+	const maxIDs = 8
+	var result []string
+	for _, candidate := range candidates {
+		ids := failureIDsFromLogTail(candidate.path)
+		for i := len(ids) - 1; i >= 0 && len(result) < maxIDs; i-- {
+			if !seen[ids[i]] {
+				seen[ids[i]] = true
+				result = append(result, ids[i])
+			}
+		}
+		if len(result) == maxIDs {
+			break
+		}
+	}
+	return result
+}
+
+func failureIDsFromLogTail(path string) []string {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil
+	}
+	start := max(int64(0), info.Size()-maxIncludedLog)
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		return nil
+	}
+	scanner := bufio.NewScanner(io.LimitReader(file, maxIncludedLog))
+	scanner.Buffer(make([]byte, 4096), maxIncludedLog)
+	if start > 0 {
+		// The tail may begin in a partial JSON object.
+		scanner.Scan()
+	}
+	var ids []string
+	for scanner.Scan() {
+		var record struct {
+			FailureID string `json:"failure_id"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &record) == nil && failureid.Valid(record.FailureID) {
+			ids = append(ids, record.FailureID)
+		}
+	}
+	return ids
 }
 
 func summarizeConfig(workspace string, cfg config.Config) configInfo {
@@ -464,7 +547,7 @@ func collectLogs(workspace string, redactor *redact.Redactor) ([]archiveFile, er
 			continue
 		}
 		info, err := entry.Info()
-		if err != nil {
+		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
 		candidates = append(candidates, candidate{path: filepath.Join(dir, entry.Name()), mod: info.ModTime()})
@@ -532,6 +615,7 @@ func bundleReadme(logs bool) string {
 	return "Collomia support bundle\n\n" +
 		"This archive was generated locally without contacting providers, MCP servers, or any other network service.\n\n" +
 		"The default bundle excludes configuration values, environment variables, credentials, provider endpoints/models, MCP definitions, workspace paths, source files, prompts, transcripts, sessions, audit records, and debug logs.\n\n" +
+		"The manifest may include up to eight recent opaque failure IDs read from bounded debug-log tails. IDs contain no error text or user data and are included only to correlate a report with diagnostics the user chooses to share separately.\n\n" +
 		logText + "\n\nAlways review this archive before sending it to another person or attaching it to an issue.\n"
 }
 

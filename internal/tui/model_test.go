@@ -3,15 +3,18 @@ package tui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
 )
@@ -106,6 +109,19 @@ func TestSessionTabShowsWorkspaceHealthAndRecentActivity(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("session content missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestTurnFailureShowsCorrelationID(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.turnStarted = time.Now()
+	err := failureid.Ensure(errors.New("provider stopped unexpectedly"))
+	updated, _ := m.Update(runMsg{done: true, err: err})
+	m = updated.(Model)
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "error" || !strings.Contains(last.content, "provider stopped unexpectedly") || !strings.Contains(last.content, "Failure ID: "+failureid.ID(err)) {
+		t.Fatalf("failure block=%+v", last)
 	}
 }
 
