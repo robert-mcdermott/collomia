@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -171,6 +172,20 @@ func TestDelegateIntegrationRechecksAfterApproval(t *testing.T) {
 	}
 	if string(data) != "user changed during approval\n" {
 		t.Fatalf("parent edit was overwritten: %q", data)
+	}
+}
+
+func TestDelegateIntegrationGitModeComparisonUsesPortableSemantics(t *testing.T) {
+	content := "unchanged\n"
+	if !sameGitBaseState(&content, 0o666, &content, 0o644) {
+		t.Fatal("non-Git permission differences must not look like parent drift")
+	}
+	if runtime.GOOS != "windows" && sameGitBaseState(&content, 0o755, &content, 0o644) {
+		t.Fatal("Git-significant executable changes must remain visible on Unix")
+	}
+	changed := "changed\n"
+	if sameGitBaseState(&changed, 0o644, &content, 0o644) {
+		t.Fatal("content changes must always look like parent drift")
 	}
 }
 

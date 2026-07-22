@@ -184,7 +184,8 @@ type AlignedLine struct {
 type Tracker struct {
 	mu      sync.Mutex
 	root    string
-	rootID  os.FileInfo
+	rootID  safefile.RootIdentity
+	rootErr error
 	base    map[string]*string
 	history []Snapshot
 }
@@ -196,7 +197,7 @@ func NewTracker(root ...string) *Tracker {
 	tracker := &Tracker{base: map[string]*string{}}
 	if len(root) > 0 {
 		tracker.root = root[0]
-		tracker.rootID, _ = os.Stat(root[0])
+		tracker.rootID, tracker.rootErr = safefile.CaptureRootIdentity(root[0])
 	}
 	return tracker
 }
@@ -366,16 +367,19 @@ func (t *Tracker) mutationTarget(path string) (*safefile.Target, error) {
 			rel, relErr := filepath.Rel(rootAbs, pathAbs)
 			inside := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 			if inside {
+				if t.rootErr != nil {
+					return nil, fmt.Errorf("workspace mutation root identity unavailable: %w", t.rootErr)
+				}
 				target, err := safefile.Open(rootAbs, pathAbs)
 				if err != nil {
 					return nil, err
 				}
-				if t.rootID != nil {
-					opened, statErr := target.RootStat()
-					if statErr != nil || !os.SameFile(t.rootID, opened) {
+				if t.rootID.Valid() {
+					opened, identityErr := target.RootIdentity()
+					if identityErr != nil || !t.rootID.Same(opened) {
 						_ = target.Close()
-						if statErr != nil {
-							return nil, statErr
+						if identityErr != nil {
+							return nil, identityErr
 						}
 						return nil, fmt.Errorf("workspace mutation root changed since startup")
 					}

@@ -24,6 +24,45 @@ type Target struct {
 	abs  string
 }
 
+// RootIdentity is a stable, opaque identity for one directory. Capture uses an
+// already-open directory handle rather than retaining an os.Stat result. This
+// distinction matters on Windows, where os.Stat may defer loading the volume
+// and file IDs until os.SameFile is first called; resolving that lazy identity
+// after a path is replaced would identify the replacement instead.
+type RootIdentity struct {
+	info os.FileInfo
+}
+
+// CaptureRootIdentity records the directory currently named by rootPath. The
+// returned identity remains tied to that directory after the handle is closed,
+// so callers can detect a later rename-and-replacement of the root path.
+func CaptureRootIdentity(rootPath string) (RootIdentity, error) {
+	rootAbs, err := filepath.Abs(rootPath)
+	if err != nil {
+		return RootIdentity{}, err
+	}
+	root, err := os.OpenRoot(rootAbs)
+	if err != nil {
+		return RootIdentity{}, err
+	}
+	defer root.Close()
+	info, err := root.Stat(".")
+	if err != nil {
+		return RootIdentity{}, err
+	}
+	if !info.IsDir() {
+		return RootIdentity{}, fmt.Errorf("mutation root %s is not a directory", rootAbs)
+	}
+	return RootIdentity{info: info}, nil
+}
+
+func (id RootIdentity) Valid() bool { return id.info != nil }
+
+// Same reports whether two captured identities refer to the same directory.
+func (id RootIdentity) Same(other RootIdentity) bool {
+	return id.info != nil && other.info != nil && os.SameFile(id.info, other.info)
+}
+
 // Open anchors path beneath rootPath. Both paths are made absolute before the
 // lexical containment check; symlink containment is enforced by os.Root when
 // an operation is performed.
@@ -110,11 +149,15 @@ func (t *Target) ReadFile() ([]byte, error)   { return t.root.ReadFile(t.name) }
 func (t *Target) OpenFile() (*os.File, error) { return t.root.Open(t.name) }
 func (t *Target) Stat() (os.FileInfo, error)  { return t.root.Stat(t.name) }
 func (t *Target) Lstat() (os.FileInfo, error) { return t.root.Lstat(t.name) }
-func (t *Target) RootStat() (os.FileInfo, error) {
+func (t *Target) RootIdentity() (RootIdentity, error) {
 	if t == nil || t.root == nil {
-		return nil, errors.New("safe file target is closed")
+		return RootIdentity{}, errors.New("safe file target is closed")
 	}
-	return t.root.Stat(".")
+	info, err := t.root.Stat(".")
+	if err != nil {
+		return RootIdentity{}, err
+	}
+	return RootIdentity{info: info}, nil
 }
 
 // Replace writes data to a private same-directory temporary file, syncs and

@@ -100,7 +100,11 @@ func TestMutationTargetRejectsReplacedWorkspaceRoot(t *testing.T) {
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := guard.MutationTarget("payload.txt"); err == nil {
+	target, _, err := guard.MutationTarget("payload.txt")
+	if target != nil {
+		_ = target.Close()
+	}
+	if err == nil {
 		t.Fatal("replacement workspace root unexpectedly accepted")
 	}
 	if _, err := os.Stat(filepath.Join(root, "payload.txt")); !os.IsNotExist(err) {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,9 +100,9 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 		}
 		file := DelegateIntegrationFile{Path: path, Before: parent, After: child, BeforeMode: parentMode, AfterMode: childMode}
 		switch {
-		case sameFileState(parent, parentMode, child, childMode):
+		case sameOSFileState(parent, parentMode, child, childMode):
 			file.AlreadyApplied = true
-		case !sameFileState(parent, parentMode, base, baseMode):
+		case !sameGitBaseState(parent, parentMode, base, baseMode):
 			file.Conflict = "parent workspace changed from the delegated base"
 		default:
 			file.Unified = diffmodel.Unified(path, contentString(parent), contentString(child))
@@ -204,8 +205,8 @@ func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selec
 	for _, mutation := range mutations {
 		file, ok := freshFiles[mutation.path]
 		if !ok || file.Conflict != "" || file.AlreadyApplied ||
-			!sameFileState(file.Before, file.BeforeMode, mutation.before, mutation.beforeMode) ||
-			!sameFileState(file.After, file.AfterMode, mutation.expectedChild, mutation.childMode) {
+			!sameOSFileState(file.Before, file.BeforeMode, mutation.before, mutation.beforeMode) ||
+			!sameOSFileState(file.After, file.AfterMode, mutation.expectedChild, mutation.childMode) {
 			return nil, fmt.Errorf("%s changed while integration approval was pending; review again", mutation.path)
 		}
 	}
@@ -434,14 +435,41 @@ func replaceRooted(root, path string, content *string, mode os.FileMode) error {
 	return target.Replace([]byte(*content), mode)
 }
 
-func sameFileState(left *string, leftMode os.FileMode, right *string, rightMode os.FileMode) bool {
+func sameFileContent(left, right *string) bool {
 	if (left == nil) != (right == nil) {
 		return false
 	}
 	if left == nil {
 		return true
 	}
-	return *left == *right && leftMode.Perm() == rightMode.Perm()
+	return *left == *right
+}
+
+// sameOSFileState compares two live filesystem snapshots. Windows does not
+// expose Unix permission bits through a checked-out Git worktree, so content
+// is the complete portable state there. Unix retains the stricter permission
+// comparison used for post-approval drift detection.
+func sameOSFileState(left *string, leftMode os.FileMode, right *string, rightMode os.FileMode) bool {
+	if !sameFileContent(left, right) {
+		return false
+	}
+	return runtime.GOOS == "windows" || leftMode.Perm() == rightMode.Perm()
+}
+
+// sameGitBaseState compares a live parent file with a Git tree entry. Git
+// stores content plus only the executable distinction, not group/other write
+// bits. On Windows even that distinction is not represented reliably in
+// os.FileMode, so clean checked-out content is authoritative.
+func sameGitBaseState(parent *string, parentMode os.FileMode, base *string, baseMode os.FileMode) bool {
+	if !sameFileContent(parent, base) {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	parentExecutable := parentMode.Perm()&0o111 != 0
+	baseExecutable := baseMode.Perm()&0o111 != 0
+	return parentExecutable == baseExecutable
 }
 
 func contentString(value *string) string {

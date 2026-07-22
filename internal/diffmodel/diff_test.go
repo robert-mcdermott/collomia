@@ -153,3 +153,24 @@ func TestUndoRejectsReplacedWorkspaceRoot(t *testing.T) {
 		t.Fatalf("replacement workspace was modified: %v", err)
 	}
 }
+
+func TestUndoFailsClosedWhenRootIdentityWasUnavailable(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing-workspace")
+	tracker := NewTracker(root)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "file.txt")
+	before, after := "before", "after"
+	if err := os.WriteFile(path, []byte(after), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tracker.RecordWithMode(path, "edit", &before, &after, 0o600, 0o600)
+	if _, err := tracker.Undo(); err == nil || !strings.Contains(err.Error(), "identity unavailable") {
+		t.Fatalf("undo must fail closed without a captured root identity, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != after {
+		t.Fatalf("file changed after refused undo: %q err=%v", data, err)
+	}
+}

@@ -143,6 +143,31 @@ func TestOpenParentCreatesMissingAuthorizedAncestors(t *testing.T) {
 	}
 }
 
+func TestRootIdentityDetectsReplacement(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original, err := CaptureRootIdentity(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(root, filepath.Join(base, "original-workspace")); err != nil {
+		t.Skipf("cannot replace directory root on this platform: %v", err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := CaptureRootIdentity(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original.Same(replacement) {
+		t.Fatal("replacement directory retained the original root identity")
+	}
+}
+
 func TestConcurrentParentSymlinkSwapCannotEscapeRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("ordinary Windows CI users cannot reliably create symbolic links")

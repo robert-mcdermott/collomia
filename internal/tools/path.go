@@ -12,7 +12,7 @@ import (
 type PathGuard struct {
 	Workspace    string
 	AllowOutside bool
-	workspaceID  os.FileInfo
+	workspaceID  safefile.RootIdentity
 }
 
 // MutationTarget resolves policy exactly as Resolve does, then anchors the
@@ -32,12 +32,12 @@ func (g *PathGuard) MutationTarget(requested string) (*safefile.Target, bool, er
 	if err != nil {
 		return nil, outside, err
 	}
-	if !outside && g.workspaceID != nil {
-		opened, statErr := target.RootStat()
-		if statErr != nil || !os.SameFile(g.workspaceID, opened) {
+	if !outside && g.workspaceID.Valid() {
+		opened, identityErr := target.RootIdentity()
+		if identityErr != nil || !g.workspaceID.Same(opened) {
 			_ = target.Close()
-			if statErr != nil {
-				return nil, outside, fmt.Errorf("verify workspace mutation root: %w", statErr)
+			if identityErr != nil {
+				return nil, outside, fmt.Errorf("verify workspace mutation root: %w", identityErr)
 			}
 			return nil, outside, fmt.Errorf("workspace mutation root changed since startup")
 		}
@@ -61,7 +61,11 @@ func NewPathGuard(workspace string, allowOutside bool) (*PathGuard, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workspace %s is not a directory", abs)
 	}
-	return &PathGuard{Workspace: filepath.Clean(abs), AllowOutside: allowOutside, workspaceID: info}, nil
+	identity, err := safefile.CaptureRootIdentity(abs)
+	if err != nil {
+		return nil, fmt.Errorf("capture workspace mutation root: %w", err)
+	}
+	return &PathGuard{Workspace: filepath.Clean(abs), AllowOutside: allowOutside, workspaceID: identity}, nil
 }
 
 func (g *PathGuard) Resolve(requested string) (resolved string, outside bool, err error) {
