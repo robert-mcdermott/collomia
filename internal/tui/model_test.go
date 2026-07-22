@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
+	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -105,10 +106,19 @@ func TestSessionTabShowsWorkspaceHealthAndRecentActivity(t *testing.T) {
 	failure.Tool.IsError = true
 	m.handleEvent(failure)
 	view := m.sessionContent()
-	for _, want := range []string{"Workspace", "wave15", "staged 1", "Runtime health", "Recent decisions and failures", "allowed via interactive", "run_command"} {
+	for _, want := range []string{"Workspace", "wave15", "staged 1", "Runtime health", "Recent activity", "allowed", "via interactive", "run_command", "/activity"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("session content missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestSessionHealthOffersActionForQuarantinedProject(t *testing.T) {
+	m := newTestModel(t)
+	m.runtime.Config.Layers = append(m.runtime.Config.Layers, appconfig.Layer{Name: "project", Applied: false})
+	view := m.sessionContent()
+	if !strings.Contains(view, "project configuration quarantined") || !strings.Contains(view, "run collo trust") {
+		t.Fatalf("quarantined project guidance missing:\n%s", view)
 	}
 }
 

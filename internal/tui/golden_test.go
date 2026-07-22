@@ -5,9 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/robert-mcdermott/collomia/internal/activity"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
@@ -56,6 +58,18 @@ func TestTerminalGoldenScreens(t *testing.T) {
 			t.Fatalf("expected side-by-side diff, got %+v", m.diffView)
 		}
 		assertGoldenScreen(t, "diff_120x32.txt", m.View())
+	})
+
+	t.Run("activity 80x24", func(t *testing.T) {
+		m := goldenReplayModel(t, 80, 24)
+		base := time.Date(2026, 7, 22, 12, 0, 0, 0, time.Local)
+		m.activities = []activity.Item{
+			{Time: base, Category: activity.CategoryTurn, Status: activity.StatusActive, Title: "Turn started · 1"},
+			{Time: base.Add(time.Second), Category: activity.CategoryPermission, Status: activity.StatusSuccess, Title: "run_command allowed", Detail: "go test ./... · via interactive"},
+			{Time: base.Add(2 * time.Second), Category: activity.CategoryTool, Status: activity.StatusError, Title: "run_command failed", Detail: "unit tests failed", FailureID: "err-0123456789abcdef"},
+		}
+		m.openActivityView()
+		assertGoldenScreen(t, "activity_80x24.txt", m.View())
 	})
 }
 

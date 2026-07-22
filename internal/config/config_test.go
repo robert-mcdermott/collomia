@@ -551,13 +551,16 @@ func TestValidateKeybindings(t *testing.T) {
 
 func TestPartialKeybindingOverrideInheritsDefaults(t *testing.T) {
 	dir := t.TempDir()
-	writeProject(t, dir, `{"options":{"alternate_screen":false,"keybindings":{"next_tab":"alt+t"}}}`)
+	writeProject(t, dir, `{"options":{"alternate_screen":false,"reduced_motion":true,"keybindings":{"next_tab":"alt+t"}}}`)
 	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Options.AlternateScreen {
 		t.Fatal("project alternate_screen=false was not applied")
+	}
+	if !cfg.Options.ReducedMotion {
+		t.Fatal("project reduced_motion=true was not applied")
 	}
 	if got := cfg.Options.Keybindings["next_tab"]; got != "alt+t" {
 		t.Fatalf("next_tab=%q", got)

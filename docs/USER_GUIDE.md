@@ -585,6 +585,7 @@ inspect.
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
+| `reduced_motion` | Optional static working indicator. Defaults to `false`, so animations remain enabled; it never changes input, commands, cancellation, or other controls. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
 | `editor` | Optional direct external-editor command and argument list used by `e` in `/diff`. Arguments support `{file}`, `{line}`, and `{column}`. |
@@ -1536,9 +1537,10 @@ collo --cwd /path/to/repository
 
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
-files, a parent/child delegated-agent tree with bounded recent output, background processes, Git branch/upstream and
-working-tree counts, provider/sandbox/MCP/trust health, and a bounded list of
-recent permission decisions and tool failures. Git inspection is read-only,
+files, a parent/child delegated-agent tree with bounded recent output,
+background processes, Git branch/upstream and working-tree counts,
+provider/sandbox/MCP/trust health with concise recovery actions, and bounded
+recent activity. Git inspection is read-only,
 runs asynchronously with a short timeout, and reports non-Git workspaces
 normally; press `r` in the Session tab to refresh it. `/agents` provides a
 searchable view of each retained delegated outcome, and `alt+a` opens explicit
@@ -1551,10 +1553,21 @@ Markdown is rendered in the active theme. Fenced source code, expanded
 Tool output is initially compact and can be expanded without leaving the
 conversation.
 
+`/activity` opens the bounded in-memory operator timeline retained for the
+current session: turns, completed tool events, permission decisions, file
+changes, plan updates, delegated-agent state, context compaction, warnings,
+and failures. It is projected from the same durable runtime events used by
+headless output and session recovery; opening it does not execute a tool,
+contact a provider, or replay prior work. The UI retains at most the newest
+500 projected entries, while the append-only session JSONL remains the durable
+record. Press `f` to cycle only categories present, `/` to search, `n`/`N` to
+move between matches, arrow/page keys to navigate, and `y` to copy the selected
+failure ID (or the selected activity text when no failure ID exists).
+
 The layout adapts to narrow terminals: below 44 columns the header shows only
 the active tab, status content is truncated rather than wrapping into the
-composer, and full-screen transcript/diff views use the available rows. The
-80x24 layout is a supported baseline. Resizing preserves a manually scrolled
+composer, and full-screen transcript/activity/diff views use the available
+rows. The 80x24 layout is a supported baseline. Resizing preserves a manually scrolled
 chat position; new streaming output no longer pulls you to the bottom. Press
 `end` to resume live follow.
 
@@ -1574,6 +1587,9 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
+| `f` in Activity | Cycle the activity categories present in this session. |
+| `/`, then `n` / `N` in Activity | Search activity and move between matches. |
+| `y` in Activity | Copy the selected failure ID, or the activity text when no ID is present. |
 | `r` in Session | Refresh the asynchronous Git workspace summary. |
 | `page up` / `page down` | Scroll the transcript. |
 | `home` / `end` | Jump to the top or bottom; `end` resumes live follow. |
@@ -1587,8 +1603,8 @@ theme-aware transient dialogs.
 
 While a provider turn is running, the composer remains available for a small
 local-control command lane: `/help`, `/status`, `/context`, `/tasks`, `/tools`,
-`/config`, `/attachments`, `/transcript`, `/diff`, read-only `/ps`, and
-`/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
+`/config`, `/attachments`, `/transcript`, `/activity`, `/diff`, read-only
+`/ps`, and `/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
 the composer as unsent drafts; they are not queued to the model or executed
 concurrently. If the agent asks a question, Collomia preserves and restores the
 draft around the question dialog.
@@ -1626,6 +1642,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/verify [focus]` | Detect and run project verification commands, recording plan results. |
 | `/diff` | Open the interactive session diff viewer. |
 | `/transcript` | Open the complete raw transcript for search, navigation, and copy. |
+| `/activity` | Search and category-filter the bounded event-derived session timeline; `y` copies a selected failure ID when present. |
 | `/undo` | Revert the most recent tracked agent file change when the file has not diverged externally. |
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
@@ -1855,6 +1872,22 @@ Persist the preference, or force the default for one invocation with
   }
 }
 ```
+
+Animations also remain enabled by default. To replace the decorative working
+spinner with a static marker:
+
+```json
+{
+  "options": {
+    "reduced_motion": true
+  }
+}
+```
+
+This setting affects only decorative progress motion. The composer remains
+editable, the busy-safe slash-command lane remains available, and cancellation,
+approvals, questions, and agent controls behave exactly as they do with the
+animated indicator.
 
 Global navigation keys can be remapped by action. Each omitted action inherits
 its earlier/default binding, so a project may override just one user binding.
@@ -3666,6 +3699,8 @@ occurs. Prefer a narrow fix over globally disabling controls.
 ### TUI colors, notifications, or rendering look wrong
 
 - Set `NO_COLOR=1` or choose `/theme plain` for limited terminals.
+- Set `options.reduced_motion` to `true` if you prefer a static progress
+  marker; omit it or set it to `false` to retain the normal animations.
 - Ensure stdout is a real TTY; use `collo run` for redirected output.
 - For tmux background changes, enable `allow-passthrough`.
 - Terminal OSC support controls background and desktop notifications; missing

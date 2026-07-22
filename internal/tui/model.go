@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/robert-mcdermott/collomia/internal/activity"
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
@@ -93,10 +94,12 @@ type Model struct {
 	renderer      *glamour.TermRenderer
 	rendererWidth int
 
-	chatFollow bool
-	tabOffsets [tabCount]int
-	transcript *transcriptState
-	diffView   *diffViewState
+	chatFollow   bool
+	tabOffsets   [tabCount]int
+	transcript   *transcriptState
+	diffView     *diffViewState
+	activityView *activityViewState
+	activities   []activity.Item
 
 	promptHistory      []string
 	historyIndex       int
@@ -109,7 +112,6 @@ type Model struct {
 	workspaceLoading    bool
 	workspaceGeneration int
 	workspaceRefreshed  time.Time
-	recentActivity      []sessionActivity
 }
 
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
@@ -164,7 +166,14 @@ func (m *Model) applyTheme(t Theme) {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick, m.broker.wait(), inspectWorkspaceCmd(m.runtime.Workspace, m.workspaceGeneration))
+	return tea.Batch(textarea.Blink, m.progressTick(), m.broker.wait(), inspectWorkspaceCmd(m.runtime.Workspace, m.workspaceGeneration))
+}
+
+func (m Model) progressTick() tea.Cmd {
+	if m.runtime.Config.Options.ReducedMotion {
+		return nil
+	}
+	return m.spinner.Tick
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -254,7 +263,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		if m.busy {
+		if m.busy && !m.runtime.Config.Options.ReducedMotion {
 			cmds = append(cmds, cmd)
 			if m.tab == tabSession {
 				m.refresh()
@@ -294,6 +303,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.diffView != nil {
 			return m.handleDiffViewKey(msg)
+		}
+		if m.activityView != nil {
+			return m.handleActivityKey(msg)
 		}
 		if m.tab == tabSession && strings.EqualFold(msg.String(), "r") {
 			cmd := m.refreshWorkspaceStatus()
@@ -557,7 +569,7 @@ func (m *Model) startTurn(value string) tea.Cmd {
 		events <- runMsg{done: true, final: final, err: err}
 		close(events)
 	}()
-	return tea.Batch(waitRun(events), m.spinner.Tick)
+	return tea.Batch(waitRun(events), m.progressTick())
 }
 
 func isMentionBoundary(c byte) bool {
@@ -575,7 +587,8 @@ func waitRun(events <-chan runMsg) tea.Cmd {
 }
 
 func (m *Model) handleEvent(e runtimeevent.Event) {
-	m.recordSessionActivity(e)
+	wasActivityBottom := m.activityView != nil && m.activityView.cursor == len(m.activities)-1
+	m.activities = activity.Append(m.activities, e, activity.DefaultLimit)
 	switch e.Kind {
 	case runtimeevent.KindTextDelta:
 		if len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "assistant" {
@@ -624,6 +637,14 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 			m.transcript.cursor = len(m.blocks) - 1
 			m.rebuildTranscriptView()
 			m.transcript.viewport.GotoBottom()
+		}
+	}
+	if m.activityView != nil {
+		m.rebuildActivityView()
+		if wasActivityBottom && len(m.activities) > 0 {
+			m.activityView.cursor = len(m.activities) - 1
+			m.rebuildActivityView()
+			m.activityView.viewport.GotoBottom()
 		}
 	}
 	m.refresh()
@@ -811,8 +832,8 @@ func (m *Model) banner() string {
 		return m.styles.brand.Render("✿ Collomia")
 	}
 	art := gradient(asciiBanner, m.theme.Primary, m.theme.Secondary)
-	provider, model := m.runtime.Agent.Selection()
-	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), provider, model, m.theme.Name))
+	providerName, model := m.runtime.Agent.Selection()
+	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), providerName, model, m.theme.Name))
 	tips := m.styles.system.Render(fmt.Sprintf("type a prompt · / commands · %s tabs · %s tool output", m.binding("next_tab"), m.binding("toggle_tool_output")))
 	return art + "\n" + sub + "\n" + tips
 }
@@ -822,7 +843,7 @@ func (m *Model) sessionContent() string {
 	kv := func(key, value string) string {
 		return fitLine(m.styles.accent.Render(fmt.Sprintf("  %-12s", key))+value, max(1, m.width))
 	}
-	provider, model := m.runtime.Agent.Selection()
+	providerName, model := m.runtime.Agent.Selection()
 	usage := m.runtime.Agent.Usage()
 	estimate, window := m.runtime.Agent.ContextEstimate()
 	windowText := "unknown"
@@ -839,7 +860,7 @@ func (m *Model) sessionContent() string {
 		}
 		b.WriteString(kv("session", id) + "\n")
 	}
-	b.WriteString(kv("provider", provider+"/"+model) + "\n")
+	b.WriteString(kv("provider", providerName+"/"+model) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
@@ -849,6 +870,9 @@ func (m *Model) sessionContent() string {
 	b.WriteString(h("Workspace") + "\n")
 	b.WriteString(kv("git", m.gitStatusText()) + "\n")
 	b.WriteString(kv("trust", m.projectTrustText()) + "\n")
+	if m.projectConfigurationQuarantined() {
+		b.WriteString(m.styles.muted.Render("  action: review the project configuration, then run collo trust") + "\n")
+	}
 	refresh := "r refresh"
 	if !m.workspaceRefreshed.IsZero() {
 		refresh += " · checked " + m.workspaceRefreshed.Format("15:04:05")
@@ -859,16 +883,31 @@ func (m *Model) sessionContent() string {
 	b.WriteString(m.styles.muted.Render("  "+refresh) + "\n\n")
 
 	b.WriteString(h("Runtime health") + "\n")
-	b.WriteString(kv("provider", m.runtime.Agent.ProviderHealth().Summary()) + "\n")
-	b.WriteString(kv("sandbox", m.runtime.SandboxSummary()) + "\n")
+	providerHealth := m.runtime.Agent.ProviderHealth()
+	b.WriteString(kv("provider", providerHealth.Summary()) + "\n")
+	if providerHealth.State == provider.HealthDegraded || providerHealth.State == provider.HealthOpen || providerHealth.State == provider.HealthHalfOpen {
+		b.WriteString(m.styles.muted.Render("  action: inspect /models and run collo doctor") + "\n")
+	}
+	sandboxSummary := m.runtime.SandboxSummary()
+	b.WriteString(kv("sandbox", sandboxSummary) + "\n")
+	if strings.Contains(sandboxSummary, "unavailable") || strings.Contains(sandboxSummary, "degraded") {
+		b.WriteString(m.styles.muted.Render("  action: run collo doctor and review the sandbox setup guide") + "\n")
+	}
 	b.WriteString(kv("MCP", m.mcpHealthText()) + "\n")
+	if m.mcpNeedsAttention() {
+		b.WriteString(m.styles.muted.Render("  action: inspect /mcp; trust changed project configuration with collo trust") + "\n")
+	}
 	persistence := "healthy"
 	if m.runtime.Session == nil {
 		persistence = "ephemeral or unavailable"
 	} else if err := m.runtime.PersistenceError(); err != nil {
 		persistence = "failed · " + err.Error()
 	}
-	b.WriteString(kv("persistence", persistence) + "\n\n")
+	b.WriteString(kv("persistence", persistence) + "\n")
+	if m.runtime.PersistenceError() != nil {
+		b.WriteString(m.styles.muted.Render("  action: stop mutating work, verify disk space, then run collo support bundle") + "\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString(h("Context") + "\n")
 	usageText := fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)
@@ -887,7 +926,7 @@ func (m *Model) sessionContent() string {
 		b.WriteString(kv("goal", current.Goal) + "\n")
 		for _, step := range current.Steps {
 			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(colors[step.Status])).Render(marks[step.Status])
-			line := fmt.Sprintf("  %s %d. %s", mark, step.ID, step.Title)
+			line := fmt.Sprintf("  %s [%s] %d. %s", mark, step.Status, step.ID, step.Title)
 			if step.Evidence != "" {
 				line += m.styles.muted.Render("  — " + step.Evidence)
 			}
@@ -908,23 +947,28 @@ func (m *Model) sessionContent() string {
 		b.WriteString(m.styles.muted.Render("  /diff to review · /undo to revert the latest") + "\n\n")
 	}
 
-	if len(m.recentActivity) > 0 {
-		b.WriteString(h("Recent decisions and failures") + "\n")
-		start := max(0, len(m.recentActivity)-6)
-		for i := len(m.recentActivity) - 1; i >= start; i-- {
-			activity := m.recentActivity[i]
-			mark := m.styles.errText.Render("✗")
-			if activity.ok {
-				mark = m.styles.success.Render("●")
+	if len(m.activities) > 0 {
+		b.WriteString(h("Recent activity") + "\n")
+		start := max(0, len(m.activities)-6)
+		for i := len(m.activities) - 1; i >= start; i-- {
+			item := m.activities[i]
+			status := "[" + string(item.Status) + "]"
+			statusStyle := m.styles.muted
+			switch item.Status {
+			case activity.StatusSuccess:
+				statusStyle = m.styles.success
+			case activity.StatusWarning, activity.StatusActive:
+				statusStyle = m.styles.accent
+			case activity.StatusError:
+				statusStyle = m.styles.errText
 			}
-			label := activity.tool
-			if label == "" {
-				label = activity.kind
+			line := fmt.Sprintf("  %s %s  %s", statusStyle.Render(status), m.styles.muted.Render(string(item.Category)), m.styles.panelBody.Render(m.runtime.Redactor.Redact(item.Title)))
+			if item.Detail != "" {
+				line += m.styles.muted.Render(" · " + m.runtime.Redactor.Redact(item.Detail))
 			}
-			line := fmt.Sprintf("  %s %s  %s", mark, m.styles.accent.Render(label), m.styles.muted.Render(activity.summary))
 			b.WriteString(fitLine(line, max(1, m.width)) + "\n")
 		}
-		b.WriteString("\n")
+		b.WriteString(m.styles.muted.Render("  /activity to search, filter, and copy failure IDs") + "\n\n")
 	}
 
 	if procs := m.runtime.Processes.Snapshot(); len(procs) > 0 {
@@ -993,7 +1037,7 @@ func (m *Model) sessionContent() string {
 	for _, name := range m.runtime.Config.ProviderNames() {
 		p := m.runtime.Config.Providers[name]
 		marker := "  "
-		if name == provider {
+		if name == providerName {
 			marker = m.styles.success.Render("▸ ")
 		}
 		b.WriteString(fmt.Sprintf("%s%s  [%s]  %s\n", marker, m.styles.accent.Render(name), p.Type, p.Model))
@@ -1053,6 +1097,7 @@ func (m *Model) helpContent() string {
 		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
+		{"/activity", "search/filter runtime activity and copy failure IDs"},
 		{"↑ / ↓ (composer)", "previous / next prompt at the first or last line"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
 		{"h (approval)", "review a multi-hunk file write and approve only some hunks"},
@@ -1100,6 +1145,9 @@ func (m Model) View() string {
 	}
 	if m.diffView != nil && !m.modalActive() {
 		return m.renderDiffView()
+	}
+	if m.activityView != nil && !m.modalActive() {
+		return m.renderActivityView()
 	}
 	sections := []string{m.renderHeader(), m.viewport.View()}
 	if m.picker != nil && !m.modalActive() {
@@ -1194,7 +1242,11 @@ func (m Model) renderStatusBar() string {
 		right = m.styles.statusBase.Render("enter answer · esc decline ")
 	case m.busy:
 		elapsed := time.Since(m.turnStarted).Round(time.Second)
-		right = m.styles.statusKey.Render(m.spinner.View()) + m.styles.statusBase.Render(fmt.Sprintf(" working %s · ", elapsed))
+		progress := m.spinner.View()
+		if m.runtime.Config.Options.ReducedMotion {
+			progress = "•"
+		}
+		right = m.styles.statusKey.Render(progress) + m.styles.statusBase.Render(fmt.Sprintf(" working %s · ", elapsed))
 		if m.runtime.Team.Active() > 0 {
 			right += m.styles.statusKey.Render(m.binding("agent_control")) + m.styles.statusBase.Render(" agents · ")
 		}

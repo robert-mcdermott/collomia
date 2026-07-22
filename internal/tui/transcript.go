@@ -295,4 +295,7 @@ func (m *Model) resizeFullScreenViews() {
 	if m.diffView != nil {
 		m.rebuildDiffView()
 	}
+	if m.activityView != nil {
+		m.rebuildActivityView()
+	}
 }

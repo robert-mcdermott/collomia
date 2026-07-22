@@ -246,6 +246,9 @@ type Options struct {
 	// approvals, questions, and finished long turns: "on" (bell + terminal
 	// desktop notification, the default), "bell" (bell only), or "off".
 	Notifications string `json:"notifications,omitempty"`
+	// ReducedMotion replaces decorative progress animation with a static
+	// marker. It is opt-in and never changes input, cancellation, or controls.
+	ReducedMotion bool `json:"reduced_motion,omitempty"`
 	// Editor configures the user-initiated external-editor action in diff
 	// review. Command and Args are executed directly without a shell. Args may
 	// use {file}, {line}, and {column} placeholders.

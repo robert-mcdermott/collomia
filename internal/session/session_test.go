@@ -509,3 +509,31 @@ func TestDelegatedAgentSnapshotsIgnoreOutOfOrderRevisions(t *testing.T) {
 		t.Fatalf("delegate status regressed after out-of-order writes: %+v", statuses)
 	}
 }
+
+func TestRecentEventsRestoreAndRemainBounded(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < recentEventLimit+5; i++ {
+		e := event.New(event.KindWarning)
+		e.Text = fmt.Sprintf("warning-%d", i)
+		sess.AppendEvent(e)
+	}
+	if got := sess.RecentEvents(); len(got) != recentEventLimit || got[0].Text != "warning-5" {
+		t.Fatalf("live recent events: len=%d first=%q", len(got), got[0].Text)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+
+	loaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	got := loaded.RecentEvents()
+	if len(got) != recentEventLimit || got[0].Text != "warning-5" || got[len(got)-1].Text != fmt.Sprintf("warning-%d", recentEventLimit+4) {
+		t.Fatalf("restored recent events: len=%d first=%q last=%q", len(got), got[0].Text, got[len(got)-1].Text)
+	}
+}

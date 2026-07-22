@@ -135,11 +135,33 @@ Important failure-oriented tests include:
   depending on a particular random value.
 - TUI agent action selection requires an explicit stop action rather than
   making the first picker selection destructive.
+- The activity projection excludes streaming noise, retains a fixed newest
+  window, restores from durable events without replay, and keeps explicit
+  status words in plain mode. TUI tests cover filtering, search, failure-ID
+  copy fallback, resize, and the opt-in static progress marker while proving
+  the composer and busy controls remain available.
 
 When adding a fault seam, keep production defaults on the real operating
 system implementation. Tests may inject writers, clocks, transports, or
 providers, but normal runtime behavior should not depend on test-only global
 state.
+
+## Performance benchmarks
+
+The performance checks are diagnostic benchmarks rather than flaky wall-clock
+CI gates. Run them on a quiet machine when changing session projection or TUI
+rendering:
+
+```sh
+go test -run '^$' -bench 'ProjectLargeSession' -benchmem ./internal/activity
+go test -run '^$' -bench 'ActivityView500Items' -benchmem ./internal/tui
+```
+
+The first projects 10,000 durable events into the fixed 500-entry operator
+window. The second renders that maximum-size activity view. Unit tests enforce
+the structural memory bounds and cross-platform screen dimensions; benchmark
+numbers provide a local regression signal without failing CI because two
+runners have different timing.
 
 ## CI layout
 

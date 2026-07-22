@@ -536,6 +536,16 @@ from support bundles. None of these properties redact arbitrary stored tool
 output or encrypt it at rest; protect the user account and delete sensitive
 sessions when they are no longer needed.
 
+`/activity` is a read-only projection of these already-recorded runtime
+events. Opening, filtering, searching, or copying from it never contacts a
+provider, starts a process, grants permission, or replays a tool. Its UI keeps
+only the newest 500 projected entries and redacts displayed text with the
+active runtime redactor; the durable session log may contain older and more
+detailed records. Activity text can still contain paths, tool summaries, and
+other session content, so terminal clipboard copies should be handled like
+transcript copies. Opaque `err-…` IDs contain no embedded prompt, path,
+provider, session, or credential information.
+
 ## Optional external reviewer
 
 `permissions.reviewer_command`, when set, runs before any non-read action
