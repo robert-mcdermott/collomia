@@ -127,8 +127,7 @@ func (m *Model) mcpCommand(args []string) {
 			m.addError(err)
 			return
 		}
-		m.input.SetValue(text)
-		m.input.CursorEnd()
+		m.setComposerValue(text)
 		m.input.Focus()
 		m.addSystem(fmt.Sprintf("Prompt %s/%s expanded into the input box — review or edit it, then press enter to send.", server, promptName))
 	case "resources":

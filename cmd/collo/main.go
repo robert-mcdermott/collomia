@@ -99,12 +99,14 @@ func exitCode(err error) int {
 
 type options struct {
 	command, cwd, provider, model, autonomy       string
+	output                                        string
 	resume                                        string
 	mcpURL                                        string
 	webPort, mcpTimeout                           int
 	plan, global, help, version, jsonl, ephemeral bool
 	strict, revoke, status, debug, markdown, yes  bool
 	check                                         bool
+	includeLogs                                   bool
 	cont, withReference, web, webPortSet, noOpen  bool
 	mcpTimeoutSet                                 bool
 	altScreen                                     *bool
@@ -193,6 +195,8 @@ func run(args []string) error {
 		return runDoctorCommand(opts)
 	case "capabilities":
 		return runCapabilitiesCommand(opts)
+	case "support":
+		return runSupportCommand(opts)
 	case "policy":
 		return runPolicyCommand(opts)
 	case "sessions":
@@ -356,6 +360,14 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 			observation.Observe(e)
 			writer.Handle(e)
 		})
+		if persistenceErr := runtime.PersistenceError(); persistenceErr != nil {
+			persistenceErr = fmt.Errorf("session persistence failed: %w", persistenceErr)
+			if err == nil {
+				err = persistenceErr
+			} else {
+				err = errors.Join(err, persistenceErr)
+			}
+		}
 		return classifyCommandError(err)
 	}
 	answer, err = runtime.Agent.Run(ctx, prompt, func(e event.Event) {
@@ -377,6 +389,14 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 			}
 		}
 	})
+	if persistenceErr := runtime.PersistenceError(); persistenceErr != nil {
+		persistenceErr = fmt.Errorf("session persistence failed: %w", persistenceErr)
+		if err == nil {
+			err = persistenceErr
+		} else {
+			err = errors.Join(err, persistenceErr)
+		}
+	}
 	if err == nil {
 		fmt.Println()
 	}
@@ -458,7 +478,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "support" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
 			opts.command = arg
 			continue
 		}
@@ -492,6 +512,19 @@ func parse(args []string) (options, error) {
 			opts.yes = true
 		case arg == "--check":
 			opts.check = true
+		case arg == "--include-logs":
+			opts.includeLogs = true
+		case strings.HasPrefix(arg, "--output="):
+			opts.output = strings.TrimPrefix(arg, "--output=")
+			if opts.output == "" {
+				return opts, fmt.Errorf("--output requires a path")
+			}
+		case arg == "--output":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--output requires a path")
+			}
+			i++
+			opts.output = args[i]
 		case arg == "--continue":
 			opts.cont = true
 		case arg == "--web":
@@ -626,6 +659,9 @@ func parse(args []string) (options, error) {
 	if opts.check && opts.command != "replay" {
 		return opts, fmt.Errorf("--check is only available for `collo replay`")
 	}
+	if opts.command != "support" && (opts.includeLogs || opts.output != "") {
+		return opts, fmt.Errorf("--include-logs and --output are only available for `collo support bundle`")
+	}
 	return opts, nil
 }
 
@@ -680,6 +716,7 @@ Usage:
   collo trust [--status|--revoke]     review and trust this workspace's project config
   collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
   collo capabilities [--markdown]     print the product capability matrix
+  collo support bundle [--output path] [--include-logs]  create a privacy-conscious diagnostic archive
   collo policy check <command…>       evaluate a command against permission rules without running it
   collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
   collo verify [focus]                detect and run this project's build/lint/test commands headlessly
@@ -708,6 +745,8 @@ Flags:
   --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled)
   --ephemeral                          (run) do not create or update a durable conversation session; audit and workspace changes still apply
   --check                              (replay) validate the trace and print only its summary
+  --output <path>                      (support bundle) archive path (default: timestamped ZIP under ~/.collomia/support)
+  --include-logs                       (support bundle) include up to five recent bounded, redacted debug logs
   --debug                              write a redacted debug log (see collo doctor for path)
   --global                             target the user-wide config for init, skills, or MCP management
   --url <endpoint>                     (mcp add) configure a Streamable HTTP server

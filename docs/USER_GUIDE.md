@@ -29,6 +29,7 @@ matrix](CAPABILITIES.md).
 - [Sessions and context](#sessions-and-context)
 - [Browser terminal](#browser-terminal)
 - [Files, state, logs, and privacy](#files-state-logs-and-privacy)
+- [Support bundles and problem reports](#support-bundles-and-problem-reports)
 - [Troubleshooting](#troubleshooting)
 - [Uninstalling](#uninstalling)
 
@@ -584,6 +585,7 @@ inspect.
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
+| `editor` | Optional direct external-editor command and argument list used by `e` in `/diff`. Arguments support `{file}`, `{line}`, and `{column}`. |
 | `debug` | Enables redacted structured debug logging for every run. |
 
 ### Named agent fields
@@ -1521,7 +1523,11 @@ collo --cwd /path/to/repository
 
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
-files, delegated-agent status, and background processes. `/agents` provides a
+files, delegated-agent status, background processes, Git branch/upstream and
+working-tree counts, provider/sandbox/MCP/trust health, and a bounded list of
+recent permission decisions and tool failures. Git inspection is read-only,
+runs asynchronously with a short timeout, and reports non-Git workspaces
+normally; press `r` in the Session tab to refresh it. `/agents` provides a
 searchable view of each retained delegated outcome. Help lists commands,
 providers, tools, skills, MCP servers, themes, and keybindings.
 
@@ -1545,12 +1551,14 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `alt+enter` | Insert a newline in the prompt. |
 | `/` | Open/filter the slash-command palette. |
 | `@` | Fuzzy-pick a workspace file or folder and insert its safely quoted path. |
-| `up` / `down` | Move in palettes, pickers, and completion lists. |
+| `up` / `down` | Move in palettes/pickers; at the first or last composer line, navigate this session's prompt history. Multiline input retains normal cursor movement. |
 | `tab` | Complete the selected command/palette value. |
 | `ctrl+t` | Cycle Chat, Session, and Help. |
+| `alt+s` | Open the saved-session picker without replacing the current draft. |
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
+| `r` in Session | Refresh the asynchronous Git workspace summary. |
 | `page up` / `page down` | Scroll the transcript. |
 | `home` / `end` | Jump to the top or bottom; `end` resumes live follow. |
 | `esc` | Dismiss a palette/picker or cancel the active turn. |
@@ -1592,6 +1600,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
 | `/sessions` | Fuzzy-pick and switch to another durable session in place. |
+| `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
 | `/config` | Show the active configuration source. |
@@ -1701,11 +1710,55 @@ mode. Unchanged regions are folded with three context lines by default.
 | `u` | Use unified view. |
 | `s` | Use side-by-side view when at least 108 columns are available. |
 | `f` | Fold/unfold unchanged regions. |
+| `e` | Open the current file at the selected hunk in the configured external editor. |
 | `esc` or `q` | Close the viewer. |
 
 Headers show the relative file path, file position, additions/deletions, and
 active layout. Both layouts use theme-aware addition/deletion colors; unified
 view shows hunk headers, while side-by-side view shows old/new line numbers.
+
+#### External editor handoff
+
+The `e` action suspends the terminal UI, runs an editor directly without a
+shell, and restores Collomia when that process exits. It refuses any target
+whose resolved path is outside the active workspace. The diff is read again on
+return, so changes made in the editor appear immediately; if the editor restores
+the file to its original state, the empty review closes normally.
+
+Configure an editor under `options`. `{file}`, `{line}`, and `{column}` are
+replaced in individual arguments. When no argument contains `{file}`, Collomia
+appends the absolute file path:
+
+```json
+{
+  "options": {
+    "editor": {
+      "command": "code",
+      "args": ["--wait", "--goto", "{file}:{line}:{column}"]
+    }
+  }
+}
+```
+
+For a terminal editor:
+
+```json
+{
+  "options": {
+    "editor": {
+      "command": "nvim",
+      "args": ["+{line}", "{file}"]
+    }
+  }
+}
+```
+
+When `options.editor.command` is omitted, Collomia tries `VISUAL`, then
+`EDITOR`, as a whitespace-separated executable and argument list. Shell
+operators are not interpreted. Use the JSON argument form for executable paths
+or arguments containing spaces. GUI editor commands that return immediately
+also return immediately to Collomia; add the editor's wait flag when you want
+the TUI to remain suspended until the file is closed.
 
 ### Terminal behavior and keybindings
 
@@ -1743,6 +1796,7 @@ unambiguous.
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
+      "session_picker": "alt+s",
       "page_up": "pgup",
       "page_down": "pgdown",
       "scroll_top": "home",
@@ -2066,6 +2120,7 @@ collo config show|validate|reference
 collo trust [--status|--revoke]
 collo doctor [--strict]
 collo capabilities [--markdown]
+collo support bundle [--output path] [--include-logs]
 collo policy check <command...>
 collo review [ref] [instructions...]
 collo verify [focus]
@@ -2098,6 +2153,8 @@ Common flags:
 --jsonl                              JSONL output for `run`
 --ephemeral                          skip durable session storage for `run`
 --check                              validate and summarize a `replay` trace
+--output <path>                      support-bundle archive path
+--include-logs                       include bounded, redacted logs in a support bundle
 --debug                              redacted debug log
 --strict                             strict config/doctor validation
 --global                             user scope for init/new/install/update
@@ -2940,12 +2997,34 @@ copies history into an independent session that can diverge. Archive hides a
 session from `--continue` selection but does not delete it. Delete is permanent
 and requires `--yes`.
 
-Within the TUI, `/sessions` switches transcript, plan, and persistence hooks in
-place. `/new` creates a fresh session while leaving the current one saved.
+Within the TUI, `/sessions` or the configurable `alt+s` shortcut switches the
+transcript, plan, prompt history, unsent draft, and persistence hooks in place.
+The shortcut is useful when a draft is already in the composer because opening
+the picker does not replace it. `/new` creates a fresh session while leaving
+the current one saved. Drafts are retained per session only while this TUI
+process remains open; unsent text is not added to durable history.
+
+On initial `--resume`/`--continue` and in-TUI switches, Collomia reconstructs
+the complete visible conversation from the durable transcript, including tool
+calls, tool results, and interruption warnings. This is presentation only:
+restoration never executes a saved tool. Context compaction can shorten what
+the model receives without hiding the complete transcript from the user.
+
+At the first or last visual line of the composer, up/down navigates the active
+session's prior user prompts and restores the exact in-progress draft when you
+move past the newest entry. Inside multiline or soft-wrapped input, up/down
+continues to move the cursor normally. `/retry` is the explicit equivalent for
+the most recent prompt: it loads editable text into the composer and never
+submits anything automatically.
 
 Session loading tolerates a torn final JSONL line after a crash. A tool call
 without a recorded result is marked interrupted and is not replayed
-automatically, preventing duplicate writes or commands.
+automatically, preventing duplicate writes or commands. If the operating
+system returns a disk error or short write, Collomia latches the first
+persistence failure and stops appending records behind the torn tail. The
+current turn fails visibly in the TUI or headless result, and the Session tab
+shows persistence as failed. Resolve the storage problem before continuing;
+accepted history up to the final torn line remains recoverable.
 
 ### Context estimation and compaction
 
@@ -3031,6 +3110,7 @@ macOS/Linux and `%USERPROFILE%\.collomia\` on Windows:
 | Trust database | `trust.json` |
 | MCP pins | `mcp-pins.json` |
 | Debug logs | `logs/*.log` |
+| Support bundles | `support/collomia-support-*.zip` |
 
 `options.transcript_directory` is currently reserved and does not relocate
 sessions. Run `collo doctor` to print the exact log directory for the current
@@ -3060,6 +3140,66 @@ env/header values, common credential patterns, Bedrock bearer tokens, and Azure
 client secrets. Redaction is best effort. Inspect a log before attaching it to
 an issue, and never assume arbitrary repository/tool output is secret-free.
 
+## Support bundles and problem reports
+
+When `collo doctor` does not explain a problem, create a diagnostic ZIP from
+the affected workspace:
+
+```sh
+collo support bundle
+```
+
+The default destination is:
+
+- `~/.collomia/support/collomia-support-<timestamp>.zip` on macOS/Linux.
+- `%USERPROFILE%\.collomia\support\collomia-support-<timestamp>.zip` on
+  Windows.
+
+Use `--output` when you want a different location:
+
+```sh
+collo support bundle --output ./collomia-support.zip
+```
+
+Collection is local and read-only. The command does not construct the agent
+runtime, initialize providers, connect MCP servers, open sessions, execute
+tools, or make network requests. It loads configuration structure without
+expanding environment-backed provider or MCP values. The default bundle contains:
+
+- A schema-versioned manifest with Collomia version, OS, architecture, and
+  terminal status.
+- Anonymous configuration-layer and strict-validation status. User-defined
+  provider, MCP, agent, LSP, and hook names are removed from setting keys.
+  Failed validation is reported generically because the detailed local error
+  can contain user-defined names, paths, patterns, or values; run
+  `collo config validate --strict` for the local detail.
+- Provider type/auth-mode counts without provider aliases, models,
+  deployments, endpoints, profiles, or credential references.
+- Aggregate MCP enabled/disabled/trusted counts without server definitions.
+- Git availability/repository status and effective sandbox capability status.
+- The capability matrix generated by the same binary.
+
+The default bundle excludes configuration values, all environment variable
+names and values, credentials, provider endpoints/models, MCP names/URLs/
+commands/arguments, the workspace path, source files, prompts, transcripts,
+sessions, audit records, and debug logs.
+
+Logs are opt-in because arbitrary repository and tool output can contain data
+that pattern matching cannot recognize as secret:
+
+```sh
+collo support bundle --include-logs
+```
+
+This includes at most five recent debug logs, caps each at 1 MiB and the total
+at 3 MiB, applies configured-secret and common-credential redaction, removes
+terminal control characters, and replaces exact home/workspace paths. For this
+explicit mode only, configured secret references are resolved locally so their
+values can be registered with the redactor; they are not added to the manifest.
+These protections are defense in depth, not a guarantee. Always open and
+review the archive before sharing it. The command refuses to overwrite an
+existing output file.
+
 ## Troubleshooting
 
 Start with these four commands from the affected workspace:
@@ -3072,6 +3212,11 @@ collo doctor --strict
 ```
 
 Then reproduce with `--debug` if the failure is not explained.
+
+For a problem report, prefer a reviewed `collo support bundle` over copying
+whole configuration, session, audit, or environment files. Add
+`--include-logs` only after reproducing with debug logging and reviewing the
+resulting archive.
 
 ### `collo` is not found
 
@@ -3237,12 +3382,13 @@ not bypass that prompt.
 
 Include:
 
-- `collo --version`
-- Operating system and architecture from `collo doctor`
+- A reviewed `collo support bundle` when practical; its manifest already
+  contains the Collomia version, OS/architecture, anonymous configuration
+  layering, and local health state.
 - The relevant provider type (not credentials)
-- `collo config show` after reviewing its redaction
 - Exact error and provider request ID
-- A reviewed, redacted `--debug` excerpt when needed
+- A reviewed, redacted `--debug` excerpt only when the default bundle is not
+  enough, or recreate the bundle with `--include-logs`
 
 Do not attach raw keys, tokens, full environments, or unreviewed session/audit
 files.

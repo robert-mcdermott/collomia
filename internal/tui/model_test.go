@@ -12,6 +12,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
 )
 
 func deltaEvent(text string) runtimeevent.Event {
@@ -84,6 +85,41 @@ func TestTabCycling(t *testing.T) {
 	m = press(t, m, tea.KeyCtrlT)
 	if m.tab != tabChat {
 		t.Fatalf("tabs should wrap back to chat, got %d", m.tab)
+	}
+}
+
+func TestSessionTabShowsWorkspaceHealthAndRecentActivity(t *testing.T) {
+	m := newTestModel(t)
+	m.workspaceLoading = false
+	m.workspaceStatus.InRepository = true
+	m.workspaceStatus.Branch = "wave15"
+	m.workspaceStatus.Staged = 1
+	decision := runtimeevent.New(runtimeevent.KindPermissionDecision)
+	decision.Permission = &runtimeevent.Permission{Tool: "run_command", Summary: "run tests", Source: "interactive", Allowed: true}
+	m.handleEvent(decision)
+	failure := toolResultEvent("run_command", "Tool error: failed")
+	failure.Tool.IsError = true
+	m.handleEvent(failure)
+	view := m.sessionContent()
+	for _, want := range []string{"Workspace", "wave15", "staged 1", "Runtime health", "Recent decisions and failures", "allowed via interactive", "run_command"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("session content missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestWorkspaceStatusIgnoresStaleAsyncResult(t *testing.T) {
+	m := newTestModel(t)
+	m.workspaceGeneration = 4
+	updated, _ := m.Update(workspaceStatusMsg{generation: 3, status: workspacestate.GitStatus{InRepository: true, Branch: "stale"}})
+	m = updated.(Model)
+	if m.workspaceStatus.Branch == "stale" {
+		t.Fatal("stale workspace result was applied")
+	}
+	updated, _ = m.Update(workspaceStatusMsg{generation: 4, status: workspacestate.GitStatus{InRepository: true, Branch: "current"}})
+	m = updated.(Model)
+	if m.workspaceStatus.Branch != "current" || m.workspaceLoading {
+		t.Fatalf("current workspace result not applied: %+v", m.workspaceStatus)
 	}
 }
 
@@ -385,6 +421,158 @@ func TestNewSessionAndPickerSwitch(t *testing.T) {
 	m = press(t, m, tea.KeyEnter)
 	if m.picker == nil {
 		t.Fatal("/sessions should open the session picker")
+	}
+}
+
+func TestResumedTUIRestoresCompleteTranscriptAndToolResults(t *testing.T) {
+	m := newTestModel(t)
+	id := m.runtime.Session.Meta.ID
+	call := provider.ToolCall{ID: "read-1", Name: "read_file", Arguments: []byte(`{"path":"main.go"}`)}
+	for _, message := range []provider.Message{
+		{Role: "user", Content: "Inspect main.go."},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{call}},
+		{Role: "tool", ToolCallID: call.ID, Content: "package main\n\nfunc main() {}"},
+		{Role: "assistant", Content: "The entry point is empty."},
+	} {
+		m.runtime.Session.AppendMessage(message)
+	}
+	// Compaction changes the model-visible context, not the visible durable
+	// history restored by the TUI.
+	m.runtime.Session.AppendCompaction(provider.Message{Role: "user", Content: "[Context summary: earlier work]"}, 3)
+	if err := m.runtime.SwitchSession(id); err != nil {
+		t.Fatal(err)
+	}
+	if active := m.runtime.Session.Active(); len(active) == 0 || !strings.HasPrefix(active[0].Content, "[Context summary") {
+		t.Fatalf("test setup did not compact active context: %+v", active)
+	}
+
+	restored := New(m.runtime, NewApprovalBroker(), "")
+	roles := make([]string, len(restored.blocks))
+	for i, entry := range restored.blocks {
+		roles[i] = entry.role
+	}
+	if got, want := strings.Join(roles, ","), "user,tool,tool-result,assistant"; got != want {
+		t.Fatalf("restored roles=%q, want %q; blocks=%+v", got, want, restored.blocks)
+	}
+	if restored.blocks[1].content != "read_file\x00read main.go" || restored.blocks[2].tool != "read_file" || !strings.Contains(restored.blocks[2].content, "func main") {
+		t.Fatalf("saved tool call/result not reconstructed: %+v", restored.blocks)
+	}
+	if len(restored.promptHistory) != 1 || restored.promptHistory[0] != "Inspect main.go." {
+		t.Fatalf("prompt history=%q", restored.promptHistory)
+	}
+}
+
+func TestInterruptedSavedToolIsShownButNeverReplayed(t *testing.T) {
+	m := newTestModel(t)
+	id := m.runtime.Session.Meta.ID
+	target := filepath.Join(m.runtime.Workspace, "must-not-exist.txt")
+	m.runtime.Session.AppendMessage(provider.Message{
+		Role: "assistant",
+		ToolCalls: []provider.ToolCall{{
+			ID: "write-1", Name: "write_file",
+			Arguments: []byte(`{"path":"must-not-exist.txt","content":"unsafe"}`),
+		}},
+	})
+	if err := m.runtime.SwitchSession(id); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(m.runtime, NewApprovalBroker(), "")
+	var interrupted bool
+	for _, entry := range restored.blocks {
+		interrupted = interrupted || strings.Contains(entry.content, "Tool call interrupted")
+	}
+	if !interrupted {
+		t.Fatalf("interrupted result missing from restored blocks: %+v", restored.blocks)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("restoring the TUI replayed a saved write: stat err=%v", err)
+	}
+}
+
+func TestPromptHistoryRespectsMultilineEditingAndRestoresDraft(t *testing.T) {
+	m := newTestModel(t)
+	m.recordPrompt("first prompt")
+	m.recordPrompt("second prompt")
+	m.setComposerValue("draft first line\ndraft second line")
+
+	// The first up-arrow moves within the multiline draft.
+	m = press(t, m, tea.KeyUp)
+	if got := m.input.Value(); got != "draft first line\ndraft second line" || m.historyIndex != len(m.promptHistory) {
+		t.Fatalf("multiline navigation entered history: value=%q index=%d", got, m.historyIndex)
+	}
+	// At the first visual line, arrows navigate session prompt history.
+	m = press(t, m, tea.KeyUp)
+	if got := m.input.Value(); got != "second prompt" {
+		t.Fatalf("previous prompt=%q", got)
+	}
+	m = press(t, m, tea.KeyUp)
+	if got := m.input.Value(); got != "first prompt" {
+		t.Fatalf("oldest prompt=%q", got)
+	}
+	m = press(t, m, tea.KeyDown)
+	m = press(t, m, tea.KeyDown)
+	if got := m.input.Value(); got != "draft first line\ndraft second line" {
+		t.Fatalf("draft was not restored after history navigation: %q", got)
+	}
+}
+
+func TestRetryOnlyLoadsPreviousPromptForReview(t *testing.T) {
+	m := newTestModel(t)
+	m.recordPrompt("Investigate the failing test")
+	before := len(m.blocks)
+	quit, cmd := (&m).slash("/retry")
+	if quit || cmd != nil || m.busy {
+		t.Fatalf("/retry must not execute: quit=%t cmd=%v busy=%t", quit, cmd, m.busy)
+	}
+	if got := m.input.Value(); got != "Investigate the failing test" {
+		t.Fatalf("retry composer=%q", got)
+	}
+	if len(m.blocks) != before+1 || !strings.Contains(m.blocks[len(m.blocks)-1].content, "Nothing has been sent") {
+		t.Fatalf("retry guidance missing: %+v", m.blocks)
+	}
+}
+
+func TestSessionPickerShortcutPreservesDraftsPerSession(t *testing.T) {
+	m := newTestModel(t)
+	first := m.runtime.Session.Meta.ID
+	if err := m.runtime.NewSession(); err != nil {
+		t.Fatal(err)
+	}
+	second := m.runtime.Session.Meta.ID
+	if err := m.runtime.SwitchSession(first); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildTranscript()
+	m.setComposerValue("draft for first")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}, Alt: true})
+	m = updated.(Model)
+	if m.picker == nil || m.picker.title != "Resume session" {
+		t.Fatalf("alt+s did not open the session picker: %+v", m.picker)
+	}
+	for i, item := range m.picker.matches {
+		if item.id == second {
+			m.picker.sel = i
+			break
+		}
+	}
+	_, _ = m.handlePickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.runtime.Session.Meta.ID != second || m.input.Value() != "" {
+		t.Fatalf("switch to second: session=%s draft=%q", m.runtime.Session.Meta.ID, m.input.Value())
+	}
+	m.setComposerValue("draft for second")
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}, Alt: true})
+	m = updated.(Model)
+	for i, item := range m.picker.matches {
+		if item.id == first {
+			m.picker.sel = i
+			break
+		}
+	}
+	_, _ = m.handlePickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.runtime.Session.Meta.ID != first || m.input.Value() != "draft for first" {
+		t.Fatalf("switch back: session=%s draft=%q", m.runtime.Session.Meta.ID, m.input.Value())
 	}
 }
 

@@ -329,12 +329,20 @@ const configReferenceJSONC = `
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
+      "session_picker": "alt+s",
       "page_up": "pgup",
       "page_down": "pgdown",
       "scroll_top": "home",
       "scroll_bottom": "end"
     },
     "notifications": "on",
+    // Optional external editor used by the e key in the diff viewer.
+    // Collomia executes this argv directly (no shell). Supported placeholders
+    // are {file}, {line}, and {column}; {file} is appended when omitted.
+    "editor": {
+      "command": "code",
+      "args": ["--wait", "--goto", "{file}:{line}:{column}"]
+    },
     "debug": false
   },
 

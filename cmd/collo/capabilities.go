@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"runtime"
 	"strings"
@@ -53,7 +54,7 @@ func capabilityMatrix() []capabilityRow {
 		{"config", "layering defaults→user→project→env", "implemented", "inspect with `collo config show`"},
 		{"config", "schema versioning + validation", "implemented", "`collo config validate [--strict]`"},
 		{"config", "repository trust", "implemented", "when .collomia.json exists, project config/skills/instructions are quarantined until `collo trust`; trust is content-bound"},
-		{"sessions", "persistence / resume / fork / crash recovery", "implemented", "append-only JSONL store; `collo sessions`, --resume, --continue"},
+		{"sessions", "persistence / resume / fork / crash recovery", "implemented", "append-only JSONL store; `collo sessions`, --resume, --continue; complete conversation/tool restoration without replay; short/disk writes latch a visible failure and preserve a recoverable torn tail"},
 		{"sessions", "automatic + manual compaction", "implemented", "auto above 80% of the window; /compact [focus]; transcript preserved"},
 		{"context", "token accounting", "implemented", "usage-anchored estimates; cached/reasoning tokens where reported; cost pending pricing data"},
 		{"planning", "structured plan artifact", "implemented", "update_plan tool, /tasks view, persisted and restored with the session"},
@@ -80,12 +81,17 @@ func capabilityMatrix() []capabilityRow {
 		{"interface", "workspace input", "implemented", "@ fuzzy-picks files/folders with safe path quoting; /prompt loads a workspace UTF-8 file into the reviewable composer, including quoted, escaped, file-URL, and drag-and-drop paths; binary/multimodal attachments remain unsupported"},
 		{"interface", "delegated-agent browser", "implemented", "/agents fuzzy-searches current-session delegates and shows status, task, duration, redacted outcome, changed files, and retained worktree/branch details"},
 		{"interface", "transcript navigation and copy", "implemented", "full-screen raw transcript browser with message navigation, search, live scroll preservation, and bounded OSC 52 copy for one message or the complete transcript"},
-		{"interface", "interactive diff review", "implemented", "full-screen changed-file browser; responsive unified/side-by-side layouts, folded unchanged regions, file/hunk navigation, line numbers, and theme-aware additions/deletions"},
+		{"interface", "workspace status dashboard", "implemented", "Session tab shows async Git branch/upstream/dirty state, provider/sandbox/MCP/trust health, and bounded recent permission decisions/tool failures; r refreshes Git state"},
+		{"interface", "interactive diff review", "implemented", "full-screen changed-file browser; responsive unified/side-by-side layouts, folding, file/hunk navigation, line numbers, theme-aware changes, and safe external-editor handoff"},
+		{"interface", "session continuity and prompt history", "implemented", "full transcript/tool restoration on resume; boundary-aware up/down history; in-process per-session drafts via the alt+s picker; /retry loads but never submits"},
 		{"interface", "terminal ergonomics", "implemented", "80x24/narrow responsive layouts, alternate-screen config/CLI override, validated named keybindings shown in Help, and generated Bash/Zsh/Fish/PowerShell completion"},
 		{"interface", "notifications", "implemented", "terminal bell + OSC 9 desktop notification for approvals, questions, and long turns; options.notifications on|bell|off"},
 		{"interface", "PTY-backed browser terminal", "implemented", "`collo --web`; loopback-only, token-authenticated, embedded xterm.js; macOS/Linux (Windows ConPTY pending)"},
 		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; embedded/published schema v1; exactly one final `run.result` with stable failure/refusal/partial metadata and exit codes; durable resume or session-free `--ephemeral`"},
 		{"interface", "offline trace replay", "implemented", "`collo replay [--check] <trace|->` validates completed schema-v1 JSONL lifecycle/result consistency and renders a control-safe, best-effort-redacted transcript without loading config, providers, sessions, or tools"},
+		{"diagnostics", "privacy-conscious support bundle", "implemented", "`collo support bundle`; local-only anonymous config/provider/MCP/sandbox/Git health and capability manifest; no config values, source, prompts, sessions, audits, or logs by default; bounded redacted logs are explicit opt-in"},
+		{"quality", "offline agent evaluations", "experimental", "credential-free real agent/permission/tool scenarios cover repository inspection, bug fix plus verification, permission refusal, and interrupted mutation recovery; broader task corpus remains roadmap work"},
+		{"quality", "parser fuzz smoke tests", "implemented", "bounded replay, config validation, shell analysis, and diff/hunk fuzz targets run in the Linux CI quality job"},
 		{"platform", "macOS / Linux / Windows builds", "implemented", "CI-tested; browser terminal requires macOS/Linux until ConPTY support is added"},
 	}
 }
@@ -93,15 +99,7 @@ func capabilityMatrix() []capabilityRow {
 func runCapabilitiesCommand(opts options) error {
 	rows := capabilityMatrix()
 	if opts.markdown {
-		fmt.Println("# Collomia capability matrix")
-		fmt.Println()
-		fmt.Println("Generated by `collo capabilities --markdown`. Status meanings: **implemented** (works today), **experimental** (usable, incomplete), **unsupported** (not yet built).")
-		fmt.Println()
-		fmt.Println("| Area | Capability | Status | Notes |")
-		fmt.Println("| --- | --- | --- | --- |")
-		for _, r := range rows {
-			fmt.Printf("| %s | %s | %s | %s |\n", r.area, r.capability, r.status, r.notes)
-		}
+		fmt.Print(capabilityMarkdown())
 		return nil
 	}
 	area := ""
@@ -117,4 +115,18 @@ func runCapabilitiesCommand(opts options) error {
 		fmt.Println()
 	}
 	return nil
+}
+
+func capabilityMarkdown() string {
+	var out bytes.Buffer
+	fmt.Fprintln(&out, "# Collomia capability matrix")
+	fmt.Fprintln(&out)
+	fmt.Fprintln(&out, "Generated by `collo capabilities --markdown`. Status meanings: **implemented** (works today), **experimental** (usable, incomplete), **unsupported** (not yet built).")
+	fmt.Fprintln(&out)
+	fmt.Fprintln(&out, "| Area | Capability | Status | Notes |")
+	fmt.Fprintln(&out, "| --- | --- | --- | --- |")
+	for _, row := range capabilityMatrix() {
+		fmt.Fprintf(&out, "| %s | %s | %s | %s |\n", row.area, row.capability, row.status, row.notes)
+	}
+	return out.String()
 }

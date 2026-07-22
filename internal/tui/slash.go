@@ -235,16 +235,28 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.addPanel("Background processes", strings.Join(lines, "\n")+"\n\n/ps stop <id> stops one; all are stopped at exit.")
 	case "/sessions", "/resume":
 		m.openSessionPicker()
+	case "/retry":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
+			break
+		}
+		if len(m.promptHistory) == 0 {
+			m.addError(fmt.Errorf("there is no previous prompt in this session"))
+			break
+		}
+		m.setComposerValue(m.promptHistory[len(m.promptHistory)-1])
+		m.addSystem("Loaded the previous prompt into the composer for review. Nothing has been sent; edit it or press enter when ready.")
 	case "/new":
 		if m.busy {
 			m.addError(fmt.Errorf("wait for the current turn to finish first"))
 			break
 		}
+		m.saveSessionDraft()
 		if err := m.runtime.NewSession(); err != nil {
 			m.addError(err)
 			break
 		}
-		m.blocks = nil
+		m.rebuildTranscript()
 		m.addSystem("Started a fresh session (" + m.runtime.Session.Meta.ID + "). The previous conversation is saved — /sessions to return to it.")
 	case "/compact":
 		count, err := m.runtime.Agent.Compact(context.Background(), strings.Join(args, " "))

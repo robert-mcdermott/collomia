@@ -6,4 +6,4 @@
                                                           │     4 +     return 42
     5   }                                                 │     5   }
 
-[ ] file · n/N hunk · ↑↓/page scroll · u unified · s side-by-side · f fold · esc close
+[ ] file · n/N hunk · ↑↓/page scroll · u unified · s side-by-side · f fold · e editor · esc close

@@ -23,7 +23,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
-- Diagnostics: `collo doctor`, redacted `--debug` logging, and a maintained [capability matrix](docs/CAPABILITIES.md).
+- Diagnostics: `collo doctor`, redacted `--debug` logging, a privacy-conscious `collo support bundle`, and a maintained [capability matrix](docs/CAPABILITIES.md).
 - Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
 - Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK.
@@ -32,7 +32,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - **Code intelligence**: `search_symbols` queries an incremental, ignore-aware definition index (Go, Python, JS/TS, Rust); `diagnostics` runs a real language server (gopls, pyright, typescript-language-server, rust-analyzer) and returns exact-position findings.
 - **Verification loop**: `detect_verification` finds the project's real build/lint/test commands from its own files (`go.mod`, `package.json`, `Cargo.toml`, …); `collo verify`/`/verify` runs them and ties outcomes to the plan.
 - Read-only planning mode with a structured, persisted plan artifact (`update_plan`, `/tasks`).
-- Durable sessions: crash-safe persistence, `--resume`/`--continue`, forking, live in-TUI switching (`/sessions`), and automatic context compaction.
+- Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, and automatic context compaction.
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), colorized diff previews at approval, and **hunk-level approval** — accept or reject individual hunks of a `write_file` change before it lands.
 - Read-only git inspection tools (status, diff, log, blame) that never commit or push.
 - `run_command` supports a pseudo-terminal (`pty: true`, Unix) for interactive-only or isatty-dependent programs.
@@ -80,7 +80,7 @@ Collomia supports both user-wide defaults and per-project overrides. You do not 
 | macOS and Linux | `~/.collomia/config.json` |
 | Windows | `%USERPROFILE%\.collomia\config.json` |
 
-The global file applies to every workspace for that user. The same `.collomia` directory is the single root for every persistent user-level Collomia file: the generated `config.example.jsonc` reference, optional `AGENTS.md`/`COLLOMIA.md` instructions, skills, sessions, logs, audit ledgers, repository trust decisions, and MCP server pins. Collomia does not search additional platform configuration or cache directories.
+The global file applies to every workspace for that user. The same `.collomia` directory is the single root for every persistent user-level Collomia file: the generated `config.example.jsonc` reference, optional `AGENTS.md`/`COLLOMIA.md` instructions, skills, sessions, logs, support bundles, audit ledgers, repository trust decisions, and MCP server pins. Collomia does not search additional platform configuration or cache directories.
 
 It is a good place for personal provider definitions, preferred models, permissions, and user-wide options. Collomia uses compatibility-friendly defaults: sandboxing is `off`, command networking is enabled, and command reads remain broad, so changing only `permissions.sandbox` to `auto` adds write/process containment without unexpectedly breaking package managers and developer toolchains. Set `sandbox_allow_network` to `false` when you intentionally want sandboxed commands offline, and set `sandbox_allow_read_outside_workspace` to `false` when you want OS-enforced user-data read confinement. Package managers may also need a narrow readable dependency root, writable cache, or environment-provided registry credentials, as described under [Permissions and safety](#permissions-and-safety). Store API keys in environment variables and refer to them with `api_key_env`; avoid putting secret values directly in either configuration file.
 
@@ -158,6 +158,7 @@ collo config reference              print every configuration option with annota
 collo trust [--status|--revoke]     review and trust this workspace's project config
 collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
 collo capabilities [--markdown]     print the product capability matrix
+collo support bundle [--output path] [--include-logs]  create a privacy-conscious diagnostic ZIP
 collo policy check <command…>       evaluate a command against permission rules, without running it
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
@@ -187,6 +188,8 @@ Useful flags:
 --jsonl                              (run) emit schema-versioned JSONL events on stdout
 --ephemeral                          (run) skip durable conversation/session storage
 --check                              (replay) validate and print only a compact summary
+--output <path>                      (support bundle) choose the archive path
+--include-logs                       (support bundle) include bounded, redacted recent debug logs
 --debug                              write a redacted debug log
 --global                             (init) create the user-wide config instead of a project config
 --with-reference                     (init) also write the non-loaded annotated JSONC reference
@@ -229,6 +232,33 @@ lifecycle consistency, tolerates additive fields, strips terminal controls,
 and applies best-effort common-secret redaction while rendering. See the
 [automation guide](docs/AUTOMATION.md#validating-and-replaying-saved-traces)
 for its exact safety and compatibility boundary.
+
+### Support bundles
+
+Create a local diagnostic archive when `doctor` is not enough or when opening
+an issue:
+
+```sh
+collo support bundle
+collo support bundle --output ./collomia-support.zip
+collo support bundle --include-logs
+```
+
+The default archive is written under `~/.collomia/support/` on macOS/Linux or
+`%USERPROFILE%\.collomia\support\` on Windows. Collection is local and
+read-only: it does not initialize providers or MCP servers and makes no network
+requests. Default collection also leaves environment-backed provider and MCP
+values unresolved. The archive contains an anonymous health manifest and the
+generated capability matrix. It excludes configuration values, environment
+variables, provider endpoints/models, MCP definitions, workspace paths, source
+files, prompts, transcripts, sessions, audit records, and debug logs.
+
+`--include-logs` is deliberately explicit. It adds at most five recent logs,
+bounds both individual and total size, redacts configured/common credential
+values (resolving configured secret references locally for that purpose), and
+replaces home/workspace paths. Redaction is defense in depth, so
+always inspect the ZIP before sharing it. Existing output files are never
+overwritten.
 
 ## Browser terminal
 
@@ -289,6 +319,7 @@ Inside the TUI:
 | `/verify [focus]` | Detect and run the project's real build/lint/test commands, tying each outcome to a plan step. |
 | `/ps` | List background processes started this session; `/ps stop <id>` stops one. |
 | `/sessions` | Fuzzy-pick a saved session and resume it in place — transcript, plan, and persistence all move over. |
+| `/retry` | Load the previous prompt into the composer for review; it never sends or repeats tools automatically. |
 | `/new` | Start a fresh session; the current one stays saved. |
 | `/compact [focus]` | Summarize older context to free the model window. |
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
@@ -306,7 +337,7 @@ Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/too
 
 Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace file/folder picker and safely quotes paths containing spaces. `/prompt` opens a text-file picker; `/prompt "docs/review prompt.md"` loads a named file into the composer, and you can type `/prompt ` then drag a workspace file into terminals that paste its path. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
 
-`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, and `ctrl+d` opens the session diff browser. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, and running background processes; the status bar carries live badges for all of them. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
+`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, `ctrl+d` opens the session diff browser, and `alt+s` opens the saved-session picker without replacing an unsent draft. At the first or last visual line of the composer, ↑/↓ walks earlier prompts and returns to the exact draft you were editing; within multiline or soft-wrapped input, the same keys continue to move the cursor normally. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, running background processes, asynchronous Git branch/upstream/dirty state, provider/sandbox/MCP/trust health, and recent permission decisions or tool failures; press `r` there to refresh Git state. The status bar carries live task/agent/process badges. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
 
@@ -330,6 +361,26 @@ When the agent proposes a write, command, or other privileged action, a centered
 | `h` | For a `write_file` change with two or more diff hunks: open **hunk review** — accept or reject each hunk independently instead of the whole file. |
 
 Hunk review replaces the approval dialog with a focused preview of the current hunk. ↑/↓ (or `j`/`k`) navigate, `space` toggles the current hunk, `a` keeps all, `enter` applies only the selected hunks (composed against a fresh read of the file), and `esc` returns to the normal approval dialog. `edit_file` (a single atomic replacement) and `apply_patch` (a multi-file changeset) stay file-level for now. Questions from the agent and MCP elicitation use the same transient dialog treatment, with their answer editor inside the box.
+
+In the full-screen `/diff` viewer, press `e` to open the current file at the
+selected hunk in an external editor. Configure a direct command and argument
+list—Collomia never inserts a shell—or use a simple `VISUAL`/`EDITOR` value:
+
+```json
+{
+  "options": {
+    "editor": {
+      "command": "code",
+      "args": ["--wait", "--goto", "{file}:{line}:{column}"]
+    }
+  }
+}
+```
+
+The supported placeholders are `{file}`, `{line}`, and `{column}`. If
+`{file}` is omitted, Collomia appends it. Only files contained by the active
+workspace can be opened, and the diff is refreshed when the editor process
+returns.
 
 ## Themes
 
@@ -1005,7 +1056,7 @@ collo --resume <id>
 collo --continue          # resume the most recently updated session
 ```
 
-Inside the TUI, `/sessions` opens a fuzzy picker that switches the **live** conversation in place — transcript, plan, and persistence hooks all move over, no restart needed — and `/new` starts a fresh one while the current session stays saved. `collo sessions fork <id>` copies history into an independent session that shares the past but diverges from there. Loading tolerates a torn final write (a crash mid-append) and marks any tool call with no recorded result as interrupted rather than silently replaying it. The context window is managed automatically: usage-anchored estimates trigger compaction above 80% of the model's window, summarizing older messages while keeping recent ones (and the full durable transcript) intact; `/compact [focus]` compacts on demand.
+Inside the TUI, `/sessions` or `alt+s` opens a fuzzy picker that switches the **live** conversation in place — transcript, plan, prompt history, draft, and persistence hooks all move over, no restart needed — and `/new` starts a fresh one while the current session stays saved. Unsent drafts are kept per session for the lifetime of the running TUI; they are not written to durable history until submitted. Resuming reconstructs the complete visible conversation, including saved tool calls, results, and interruption warnings; it does not execute any restored tool. ↑/↓ at the composer boundary navigates that session's earlier prompts, while `/retry` loads the most recent one for review without submitting it. `collo sessions fork <id>` copies history into an independent session that shares the past but diverges from there. Loading tolerates a torn final write (a crash mid-append) and marks any tool call with no recorded result as interrupted rather than silently replaying it. A disk error or short write is latched, shown as failed persistence in the Session tab, and makes the current TUI/headless turn visibly fail; later records are not appended behind a torn tail. The context window is managed automatically: usage-anchored estimates trigger compaction above 80% of the model's window, summarizing older messages while keeping recent ones. Compaction shortens only model context; the full durable transcript remains visible after resume. `/compact [focus]` compacts on demand.
 
 ## Architecture
 
@@ -1033,6 +1084,8 @@ internal/config                            cross-platform layered JSON configura
 internal/trust                              repository trust store
 internal/redact                              secret redaction for logs/events/ledger
 internal/logging                              redacted structured debug logging
+internal/supportbundle                        privacy-conscious local diagnostic archives
+internal/eval                                 credential-free end-to-end agent evaluations
 ```
 
 The provider-neutral message and tool representation keeps protocol translation at the edge. This is the same architectural advantage used by gateways such as [Phlox-GW](https://github.com/robert-mcdermott/phlox-gw): the agent loop does not need vendor-specific behavior.
@@ -1058,6 +1111,11 @@ go test ./...
 go test -race ./...
 go vet ./...
 ```
+
+The CI quality job also runs the offline agent evaluations and short fuzzing
+campaigns for replay, configuration validation, shell analysis, and diff/hunk
+parsing. See [docs/TESTING.md](docs/TESTING.md) for the evaluation scenarios,
+local fuzz commands, CI coverage, and guidance for adding regression cases.
 
 These commands run the recorded provider contracts used by CI and never need
 cloud credentials. Maintainers can additionally qualify real OpenAI,

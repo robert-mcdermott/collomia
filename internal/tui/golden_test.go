@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 func TestTerminalGoldenScreens(t *testing.T) {
@@ -32,6 +33,11 @@ func TestTerminalGoldenScreens(t *testing.T) {
 		assertGoldenScreen(t, "replay_chat_40x12.txt", m.View())
 	})
 
+	t.Run("resumed session 80x24", func(t *testing.T) {
+		m := goldenResumedModel(t, 80, 24)
+		assertGoldenScreen(t, "resumed_session_80x24.txt", m.View())
+	})
+
 	t.Run("side-by-side diff 120x32", func(t *testing.T) {
 		m := newTestModel(t)
 		plain, _ := themeByName("plain")
@@ -51,6 +57,25 @@ func TestTerminalGoldenScreens(t *testing.T) {
 		}
 		assertGoldenScreen(t, "diff_120x32.txt", m.View())
 	})
+}
+
+func goldenResumedModel(t *testing.T, width, height int) Model {
+	t.Helper()
+	m := newTestModel(t)
+	call := provider.ToolCall{ID: "read-1", Name: "read_file", Arguments: []byte(`{"path":"main.go"}`)}
+	for _, message := range []provider.Message{
+		{Role: "user", Content: "Inspect main.go and explain the result."},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{call}},
+		{Role: "tool", ToolCallID: call.ID, Content: "package main\n\nfunc main() {}"},
+		{Role: "assistant", Content: "`main.go` defines an empty Go entry point."},
+	} {
+		m.runtime.Session.AppendMessage(message)
+	}
+	plain, _ := themeByName("plain")
+	m = New(m.runtime, NewApprovalBroker(), "")
+	m.applyTheme(plain)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	return updated.(Model)
 }
 
 func goldenReplayModel(t *testing.T, width, height int) Model {

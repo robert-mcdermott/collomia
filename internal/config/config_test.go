@@ -96,6 +96,28 @@ func TestLoadProjectConfigAndExpandEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadCanSkipEnvironmentExpansionForDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TEST_COLLO_SECRET", "resolved-secret")
+	writeProject(t, dir, `{
+  "default_provider":"custom",
+  "default_model":"model",
+  "providers":{"custom":{"type":"openai","base_url":"https://example.invalid/${TEST_COLLO_SECRET}/","api_key_env":"TEST_COLLO_SECRET","headers":{"X-Test":"${TEST_COLLO_SECRET}"},"model":"model"}},
+  "mcp":{"fixture":{"transport":"stdio","command":"fixture","env":{"TOKEN":"${TEST_COLLO_SECRET}"}}}
+}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll, SkipEnvironmentExpansion: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := cfg.Providers["custom"]
+	if provider.APIKey != "" || provider.BaseURL != "https://example.invalid/${TEST_COLLO_SECRET}" || provider.Headers["X-Test"] != "${TEST_COLLO_SECRET}" {
+		t.Fatalf("provider environment unexpectedly resolved: %+v", provider)
+	}
+	if got := cfg.MCP["fixture"].Env["TOKEN"]; got != "${TEST_COLLO_SECRET}" {
+		t.Fatalf("MCP environment unexpectedly resolved: %q", got)
+	}
+}
+
 func TestValidateProviderTimeouts(t *testing.T) {
 	cfg := Defaults()
 	p := cfg.Providers["ollama"]
@@ -463,6 +485,18 @@ func TestValidateNotifications(t *testing.T) {
 	}
 }
 
+func TestValidateExternalEditor(t *testing.T) {
+	cfg := Defaults()
+	cfg.Options.Editor = EditorOptions{Command: "code", Args: []string{"--goto", "{file}:{line}:{column}"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid editor: %v", err)
+	}
+	cfg.Options.Editor = EditorOptions{Args: []string{"{file}"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "options.editor.command") {
+		t.Fatalf("missing command error=%v", err)
+	}
+}
+
 func TestValidateKeybindings(t *testing.T) {
 	cfg := Defaults()
 	cfg.Options.Keybindings["next_tab"] = "alt+t"
@@ -504,5 +538,8 @@ func TestPartialKeybindingOverrideInheritsDefaults(t *testing.T) {
 	}
 	if got := cfg.Options.Keybindings["diff_view"]; got != "ctrl+d" {
 		t.Fatalf("omitted keybinding did not inherit default: %q", got)
+	}
+	if got := cfg.Options.Keybindings["session_picker"]; got != "alt+s" {
+		t.Fatalf("new session-picker binding did not inherit default: %q", got)
 	}
 }

@@ -107,6 +107,25 @@ func TestParseAndRenderReplay(t *testing.T) {
 	}
 }
 
+func TestParseSupportBundleOptions(t *testing.T) {
+	opts, err := parse([]string{"support", "bundle", "--output", "diagnostics.zip", "--include-logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "support" || opts.output != "diagnostics.zip" || !opts.includeLogs || !slices.Equal(opts.args, []string{"bundle"}) {
+		t.Fatalf("options=%+v", opts)
+	}
+	for _, args := range [][]string{
+		{"run", "--include-logs", "prompt"},
+		{"doctor", "--output", "diagnostics.zip"},
+		{"support", "bundle", "--output"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Errorf("parse(%v) accepted invalid support options", args)
+		}
+	}
+}
+
 func TestStableExitCodesAndFailureClassification(t *testing.T) {
 	usage := withCommandError(errors.New("bad flag"), exitUsage, event.FailureUsage)
 	if got := exitCode(usage); got != 2 || failureFor(usage).Kind != event.FailureUsage {

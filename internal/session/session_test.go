@@ -1,6 +1,8 @@
 package session
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,55 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
+
+type shortRecordFile struct {
+	file  recordFile
+	calls int
+}
+
+func (f *shortRecordFile) Write(data []byte) (int, error) {
+	f.calls++
+	if f.calls > 1 {
+		return f.file.Write(data)
+	}
+	return f.file.Write(data[:max(1, len(data)/2)])
+}
+
+func (f *shortRecordFile) Close() error { return f.file.Close() }
+
+func TestSessionLatchesShortWriteAndLeavesRecoverableTornTail(t *testing.T) {
+	store, err := OpenAt(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	short := &shortRecordFile{file: sess.file}
+	sess.file = short
+	sess.AppendMessage(provider.Message{Role: "user", Content: "must be durable"})
+	if err := sess.Err(); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("latched error=%v", err)
+	}
+	// The latched failure prevents a later record from following the torn
+	// line and turning it into non-tail corruption.
+	sess.AppendMessage(provider.Message{Role: "assistant", Content: "not persisted"})
+	if short.calls != 1 {
+		t.Fatalf("writer called %d times after failure", short.calls)
+	}
+	sess.Close()
+
+	recovered, err := store.Load(id)
+	if err != nil {
+		t.Fatalf("torn final record should be recoverable: %v", err)
+	}
+	defer recovered.Close()
+	if len(recovered.TranscriptMessages()) != 0 {
+		t.Fatalf("partial record became accepted history: %+v", recovered.TranscriptMessages())
+	}
+}
 
 func testStore(t *testing.T) *Store {
 	t.Helper()

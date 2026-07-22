@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/version"
+	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
 )
 
 // block is one transcript entry. title is only set for role "panel", the
@@ -85,6 +87,17 @@ type Model struct {
 	tabOffsets [tabCount]int
 	transcript *transcriptState
 	diffView   *diffViewState
+
+	promptHistory []string
+	historyIndex  int
+	historyDraft  string
+	sessionDrafts map[string]string
+
+	workspaceStatus     workspacestate.GitStatus
+	workspaceLoading    bool
+	workspaceGeneration int
+	workspaceRefreshed  time.Time
+	recentActivity      []sessionActivity
 }
 
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
@@ -105,13 +118,18 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	in.Focus()
 	spin := spinner.New()
 	spin.Spinner = spinner.Points
-	m := Model{runtime: runtime, broker: broker, input: in, spinner: spin, started: time.Now(), chatFollow: true}
+	m := Model{
+		runtime: runtime, broker: broker, input: in, spinner: spin,
+		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{},
+		workspaceLoading: true, workspaceGeneration: 1,
+	}
 	m.applyTheme(theme)
+	m.rebuildTranscript()
 	for _, warning := range runtime.Warnings {
 		m.blocks = append(m.blocks, block{role: "error", content: warning.Error()})
 	}
 	if initial != "" {
-		m.input.SetValue(initial)
+		m.setComposerValue(initial)
 	}
 	return m
 }
@@ -133,7 +151,9 @@ func (m *Model) applyTheme(t Theme) {
 	}
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(textarea.Blink, m.spinner.Tick, m.broker.wait()) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(textarea.Blink, m.spinner.Tick, m.broker.wait(), inspectWorkspaceCmd(m.runtime.Workspace, m.workspaceGeneration))
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -162,6 +182,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case providerStatusMsg:
 		m.replaceProviderStatusPanel(msg.statuses)
+	case workspaceStatusMsg:
+		if msg.generation == m.workspaceGeneration {
+			m.workspaceStatus = msg.status
+			m.workspaceLoading = false
+			m.workspaceRefreshed = time.Now()
+			m.refresh()
+		}
+	case editorFinishedMsg:
+		m.finishExternalEditor(msg)
 	case questionMsg:
 		env := msg.envelope
 		m.question = &env
@@ -192,6 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if strings.TrimSpace(msg.final) == "" {
 				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}
+			cmds = append(cmds, m.refreshWorkspaceStatus())
 			m.refresh()
 		} else {
 			cmds = append(cmds, waitRun(m.runEvents))
@@ -234,8 +264,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.diffView != nil {
 			return m.handleDiffViewKey(msg)
 		}
+		if m.tab == tabSession && strings.EqualFold(msg.String(), "r") {
+			cmd := m.refreshWorkspaceStatus()
+			m.refresh()
+			return m, cmd
+		}
 		if m.keyIs("next_tab", key) {
-			m.switchTab((m.tab + 1) % tabCount)
+			next := (m.tab + 1) % tabCount
+			var cmd tea.Cmd
+			if next == tabSession {
+				cmd = m.refreshWorkspaceStatus()
+			}
+			m.switchTab(next)
+			return m, cmd
+		}
+		if m.keyIs("session_picker", key) {
+			if m.busy {
+				m.addError(fmt.Errorf("wait for the current turn to finish before switching sessions"))
+				m.refresh()
+				return m, nil
+			}
+			m.openSessionPicker()
 			return m, nil
 		}
 		if m.keyIs("toggle_tool_output", key) {
@@ -299,8 +348,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "tab":
 				chosen := m.palette[m.paletteSel]
-				m.input.SetValue(chosen.name + " ")
-				m.input.CursorEnd()
+				m.setComposerValue(chosen.name + " ")
 				if m.updatePalette() {
 					m.layout()
 				}
@@ -334,6 +382,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 			}
+		}
+		if (key == "up" || key == "down") && !m.busy && m.navigatePromptHistory(key == "up") {
+			m.updatePalette()
+			m.layout()
+			m.refresh()
+			return m, nil
 		}
 		if key == "enter" && !m.busy && !msg.Alt {
 			value := strings.TrimSpace(m.input.Value())
@@ -371,6 +425,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 	if !m.busy && m.pending == nil {
+		if key, isKey := msg.(tea.KeyMsg); isKey && key.String() != "up" && key.String() != "down" {
+			m.leavePromptHistory()
+		}
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		// Typing "@" at a word boundary opens the file-mention picker; the
@@ -391,6 +448,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // startTurn submits one prompt to the agent and begins streaming events.
 func (m *Model) startTurn(value string) tea.Cmd {
+	m.recordPrompt(value)
 	m.blocks = append(m.blocks, block{role: "user", content: value})
 	m.busy = true
 	m.turnStarted = time.Now()
@@ -405,6 +463,14 @@ func (m *Model) startTurn(value string) tea.Cmd {
 			runtime.LogEvent(e)
 			events <- runMsg{event: &e}
 		})
+		if persistenceErr := runtime.PersistenceError(); persistenceErr != nil {
+			persistenceErr = fmt.Errorf("session persistence failed: %w", persistenceErr)
+			if err == nil {
+				err = persistenceErr
+			} else {
+				err = errors.Join(err, persistenceErr)
+			}
+		}
 		events <- runMsg{done: true, final: final, err: err}
 		close(events)
 	}()
@@ -426,6 +492,7 @@ func waitRun(events <-chan runMsg) tea.Cmd {
 }
 
 func (m *Model) handleEvent(e runtimeevent.Event) {
+	m.recordSessionActivity(e)
 	switch e.Kind {
 	case runtimeevent.KindTextDelta:
 		if len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "assistant" {
@@ -668,7 +735,7 @@ func (m *Model) banner() string {
 func (m *Model) sessionContent() string {
 	h := m.styles.heading.Render
 	kv := func(key, value string) string {
-		return m.styles.accent.Render(fmt.Sprintf("  %-12s", key)) + value
+		return fitLine(m.styles.accent.Render(fmt.Sprintf("  %-12s", key))+value, max(1, m.width))
 	}
 	provider, model := m.runtime.Agent.Selection()
 	usage := m.runtime.Agent.Usage()
@@ -693,6 +760,30 @@ func (m *Model) sessionContent() string {
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
 	b.WriteString(kv("theme", m.theme.Name) + "\n")
 	b.WriteString(kv("uptime", time.Since(m.started).Round(time.Second).String()) + "\n\n")
+
+	b.WriteString(h("Workspace") + "\n")
+	b.WriteString(kv("git", m.gitStatusText()) + "\n")
+	b.WriteString(kv("trust", m.projectTrustText()) + "\n")
+	refresh := "r refresh"
+	if !m.workspaceRefreshed.IsZero() {
+		refresh += " · checked " + m.workspaceRefreshed.Format("15:04:05")
+	}
+	if m.workspaceLoading {
+		refresh += " · refreshing…"
+	}
+	b.WriteString(m.styles.muted.Render("  "+refresh) + "\n\n")
+
+	b.WriteString(h("Runtime health") + "\n")
+	b.WriteString(kv("provider", m.runtime.Agent.ProviderHealth().Summary()) + "\n")
+	b.WriteString(kv("sandbox", m.runtime.SandboxSummary()) + "\n")
+	b.WriteString(kv("MCP", m.mcpHealthText()) + "\n")
+	persistence := "healthy"
+	if m.runtime.Session == nil {
+		persistence = "ephemeral or unavailable"
+	} else if err := m.runtime.PersistenceError(); err != nil {
+		persistence = "failed · " + err.Error()
+	}
+	b.WriteString(kv("persistence", persistence) + "\n\n")
 
 	b.WriteString(h("Context") + "\n")
 	usageText := fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)
@@ -730,6 +821,25 @@ func (m *Model) sessionContent() string {
 			b.WriteString("  " + m.styles.accent.Render(display) + "\n")
 		}
 		b.WriteString(m.styles.muted.Render("  /diff to review · /undo to revert the latest") + "\n\n")
+	}
+
+	if len(m.recentActivity) > 0 {
+		b.WriteString(h("Recent decisions and failures") + "\n")
+		start := max(0, len(m.recentActivity)-6)
+		for i := len(m.recentActivity) - 1; i >= start; i-- {
+			activity := m.recentActivity[i]
+			mark := m.styles.errText.Render("✗")
+			if activity.ok {
+				mark = m.styles.success.Render("●")
+			}
+			label := activity.tool
+			if label == "" {
+				label = activity.kind
+			}
+			line := fmt.Sprintf("  %s %s  %s", mark, m.styles.accent.Render(label), m.styles.muted.Render(activity.summary))
+			b.WriteString(fitLine(line, max(1, m.width)) + "\n")
+		}
+		b.WriteString("\n")
 	}
 
 	if procs := m.runtime.Processes.Snapshot(); len(procs) > 0 {
@@ -827,9 +937,11 @@ func (m *Model) helpContent() string {
 		{"↑ ↓ (palette)", "select a command or completion"},
 		{"tab (palette)", "complete the selected command"},
 		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
+		{m.binding("session_picker"), "open saved sessions without replacing the draft"},
 		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
+		{"↑ / ↓ (composer)", "previous / next prompt at the first or last line"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
 		{"h (approval)", "review a multi-hunk file write and approve only some hunks"},
 		{"esc", "cancel turn · dismiss palette or picker"},

@@ -210,6 +210,7 @@ func (m *Model) openSessionPicker() {
 			m.addSystem("Already on session " + item.id + ".")
 			return nil
 		}
+		m.saveSessionDraft()
 		if err := m.runtime.SwitchSession(item.id); err != nil {
 			m.addError(err)
 			return nil
@@ -235,8 +236,7 @@ func (m *Model) openSkillPicker() {
 		items = append(items, pickerItem{id: skill.Name, title: skill.Name, desc: desc})
 	}
 	m.picker = newPicker("Use a skill", items, func(m *Model, item pickerItem) tea.Cmd {
-		m.input.SetValue(`Use the "` + item.id + `" skill: `)
-		m.input.CursorEnd()
+		m.setComposerValue(`Use the "` + item.id + `" skill: `)
 		m.input.Focus()
 		return nil
 	})
@@ -366,35 +366,10 @@ func (m *Model) openFilePicker() {
 		if at := strings.LastIndex(value, "@"); at >= 0 {
 			value = value[:at]
 		}
-		m.input.SetValue(value + quoteComposerPath(item.id) + " ")
-		m.input.CursorEnd()
+		m.setComposerValue(value + quoteComposerPath(item.id) + " ")
 		m.input.Focus()
 		return nil
 	})
 	m.layout()
-	m.refresh()
-}
-
-// rebuildTranscript replaces the chat view with the switched-to session's
-// conversation so the screen matches the model's context.
-func (m *Model) rebuildTranscript() {
-	m.blocks = nil
-	for _, message := range m.runtime.Session.Active() {
-		switch message.Role {
-		case "user":
-			if strings.HasPrefix(message.Content, "[Context summary") {
-				m.blocks = append(m.blocks, block{role: "system", content: "· older context compacted into a summary ·"})
-				continue
-			}
-			m.blocks = append(m.blocks, block{role: "user", content: message.Content})
-		case "assistant":
-			if message.Content != "" {
-				m.blocks = append(m.blocks, block{role: "assistant", content: message.Content})
-			}
-			for _, call := range message.ToolCalls {
-				m.blocks = append(m.blocks, block{role: "tool", content: call.Name + "\x00(from saved session)"})
-			}
-		}
-	}
 	m.refresh()
 }
