@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,6 +119,16 @@ func runSessionsCommand(opts options) error {
 		}
 		defer sess.Close()
 		fmt.Printf("id: %s\ntitle: %s\nprovider: %s/%s\nturns: %d\ncreated: %s\nupdated: %s\n\n", sess.Meta.ID, sess.Meta.Title, sess.Meta.Provider, sess.Meta.Model, sess.Meta.Turns, sess.Meta.CreatedAt.Local().Format(time.RFC3339), sess.Meta.UpdatedAt.Local().Format(time.RFC3339))
+		checkpoints, err := store.Checkpoints(id)
+		if err != nil {
+			return err
+		}
+		fmt.Println("rewind checkpoints:")
+		fmt.Println("  0  before the first completed turn")
+		for _, checkpoint := range checkpoints {
+			fmt.Printf("  %d  %s\n", checkpoint.Turn, compactSessionPrompt(checkpoint.Prompt, 100))
+		}
+		fmt.Println()
 		for _, message := range sess.Transcript {
 			text := message.Content
 			if len(text) > 400 {
@@ -137,6 +148,26 @@ func runSessionsCommand(opts options) error {
 		}
 		forked.Close()
 		fmt.Printf("Forked %s → %s\nResume it with: collo --resume %s\n", id, forked.Meta.ID, forked.Meta.ID)
+		return nil
+	case "rewind":
+		id, err := arg(1, "a session id")
+		if err != nil {
+			return err
+		}
+		turnText, err := arg(2, "an earlier completed turn number (0 means before the first turn)")
+		if err != nil {
+			return err
+		}
+		turn, err := strconv.Atoi(turnText)
+		if err != nil || turn < 0 {
+			return fmt.Errorf("sessions rewind requires a non-negative turn number")
+		}
+		rewound, err := store.Rewind(id, turn)
+		if err != nil {
+			return err
+		}
+		rewound.Close()
+		fmt.Printf("Rewound %s at completed turn %d → %s\nThe original session and workspace were not changed. Resume the branch with: collo --resume %s\n", id, turn, rewound.Meta.ID, rewound.Meta.ID)
 		return nil
 	case "rename":
 		id, err := arg(1, "a session id")
@@ -163,8 +194,17 @@ func runSessionsCommand(opts options) error {
 		}
 		return store.Delete(id)
 	default:
-		return fmt.Errorf("unknown sessions subcommand %q (list, show, fork, rename, archive, unarchive, delete)", sub)
+		return fmt.Errorf("unknown sessions subcommand %q (list, show, fork, rewind, rename, archive, unarchive, delete)", sub)
 	}
+}
+
+func compactSessionPrompt(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 func runTrustCommand(opts options) error {

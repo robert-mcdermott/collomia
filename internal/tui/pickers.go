@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -221,6 +222,70 @@ func (m *Model) openSessionPicker() {
 	})
 	m.layout()
 	m.refresh()
+}
+
+// openRewindPicker offers only durable completed-turn boundaries. Selecting
+// one creates a new branch; it never truncates the source session or attempts
+// to reverse workspace, command, or external side effects.
+func (m *Model) openRewindPicker() {
+	if m.runtime.Sessions == nil || m.runtime.Session == nil {
+		m.addSystem("Session persistence is unavailable.")
+		return
+	}
+	if m.busy {
+		m.addError(fmt.Errorf("wait for the current turn to finish before rewinding"))
+		return
+	}
+	checkpoints, err := m.runtime.Sessions.Checkpoints(m.runtime.Session.Meta.ID)
+	if err != nil {
+		m.addError(err)
+		return
+	}
+	if len(checkpoints) == 0 {
+		m.addSystem("There are no completed turns to rewind. /new starts a separate empty session.")
+		return
+	}
+	var items []pickerItem
+	for i := len(checkpoints) - 2; i >= 0; i-- {
+		checkpoint := checkpoints[i]
+		prompt := compactPickerText(checkpoint.Prompt, 72)
+		items = append(items, pickerItem{id: fmt.Sprint(checkpoint.Turn), title: fmt.Sprintf("After turn %d", checkpoint.Turn), desc: prompt})
+	}
+	items = append(items, pickerItem{id: "0", title: "Before the first turn", desc: "empty conversation branch · workspace unchanged"})
+	m.picker = newPicker("Rewind conversation safely", items, func(m *Model, item pickerItem) tea.Cmd {
+		turn, err := strconv.Atoi(item.id)
+		if err != nil {
+			m.addError(err)
+			return nil
+		}
+		m.rewindTo(turn)
+		return nil
+	})
+	m.layout()
+	m.refresh()
+}
+
+func (m *Model) rewindTo(turn int) {
+	if m.runtime.Session == nil {
+		m.addError(fmt.Errorf("session persistence is unavailable"))
+		return
+	}
+	m.saveSessionDraft()
+	sourceID, rewoundID, err := m.runtime.RewindSession(turn)
+	if err != nil {
+		m.addError(err)
+		return
+	}
+	m.rebuildTranscript()
+	m.addSystem(fmt.Sprintf("Created session %s from %s after completed turn %d. The original conversation and workspace are unchanged; file, command, and external side effects were not undone.", rewoundID, sourceID, turn))
+}
+
+func compactPickerText(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit-1] + "…"
 }
 
 // openSkillPicker lists discovered skills; choosing one pre-fills the input

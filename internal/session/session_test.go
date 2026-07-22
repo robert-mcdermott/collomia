@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -192,6 +193,202 @@ func TestForkIsIndependent(t *testing.T) {
 		if message.Content == "fork only" {
 			t.Fatal("fork mutated the original session")
 		}
+	}
+}
+
+func TestRewindCreatesIndependentCompletedTurnBranch(t *testing.T) {
+	store := testStore(t)
+	original, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for turn := 1; turn <= 3; turn++ {
+		original.AppendMessage(provider.Message{Role: "user", Content: fmt.Sprintf("prompt %d", turn)})
+		original.AppendMessage(provider.Message{Role: "assistant", Content: fmt.Sprintf("answer %d", turn)})
+		original.AppendEvent(event.New(event.KindTurnEnd))
+	}
+	originalID := original.Meta.ID
+	original.Close()
+
+	checkpoints, err := store.Checkpoints(originalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkpoints) != 3 || checkpoints[1].Turn != 2 || checkpoints[1].Prompt != "prompt 2" {
+		t.Fatalf("checkpoints=%+v", checkpoints)
+	}
+	rewound, err := store.Rewind(originalID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rewound.Meta.ID == originalID || rewound.Meta.ForkedFrom != originalID || rewound.Meta.Turns != 1 {
+		t.Fatalf("rewound meta=%+v", rewound.Meta)
+	}
+	if messages := rewound.TranscriptMessages(); len(messages) != 2 || messages[0].Content != "prompt 1" || messages[1].Content != "answer 1" {
+		t.Fatalf("rewound transcript=%+v", messages)
+	}
+	rewound.AppendMessage(provider.Message{Role: "user", Content: "branch only"})
+	rewound.Close()
+
+	reloaded, err := store.Load(originalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if reloaded.Meta.Turns != 3 || len(reloaded.TranscriptMessages()) != 6 {
+		t.Fatalf("source changed: meta=%+v transcript=%+v", reloaded.Meta, reloaded.TranscriptMessages())
+	}
+}
+
+func TestRewindZeroStartsBeforeFirstTurn(t *testing.T) {
+	store := testStore(t)
+	original, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original.AppendMessage(provider.Message{Role: "user", Content: "do not copy"})
+	original.AppendMessage(provider.Message{Role: "assistant", Content: "done"})
+	original.AppendEvent(event.New(event.KindTurnEnd))
+	id := original.Meta.ID
+	original.Close()
+
+	rewound, err := store.Rewind(id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rewound.Close()
+	if rewound.Meta.Turns != 0 || len(rewound.TranscriptMessages()) != 0 {
+		t.Fatalf("zero rewind meta=%+v transcript=%+v", rewound.Meta, rewound.TranscriptMessages())
+	}
+	if _, err := store.Rewind(id, 1); err == nil || !strings.Contains(err.Error(), "earlier") {
+		t.Fatalf("rewinding to current turn should fail, got %v", err)
+	}
+}
+
+func TestSessionArtifactsAreBoundedReadableAndFollowBranches(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewArtifactManager()
+	manager.Use(sess)
+	content := strings.Repeat("界", ArtifactResultLimit/3+10)
+	ref, err := manager.SaveArtifact("run_command", content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.ID == "" || ref.StoredBytes > ArtifactResultLimit || ref.ReturnedBytes != len(content) || ref.Complete {
+		t.Fatalf("artifact ref=%+v", ref)
+	}
+	chunk, err := manager.ReadArtifact(ref.ID, 0, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(chunk, "begin untrusted tool output") || !strings.Contains(chunk, "next_offset=") {
+		t.Fatalf("artifact chunk=%q", chunk)
+	}
+	tiny, err := manager.ReadArtifact(ref.ID, 0, 1)
+	if err != nil || !strings.Contains(tiny, "bytes 0..3") {
+		t.Fatalf("UTF-8 range did not make progress: %q err=%v", tiny, err)
+	}
+	if stats := manager.Stats(); stats.Count != 1 || stats.StoredBytes != ref.StoredBytes || stats.DiskBytes > ArtifactResultLimit {
+		t.Fatalf("artifact stats=%+v ref=%+v", stats, ref)
+	}
+
+	sess.AppendMessage(provider.Message{Role: "user", Content: "turn"})
+	sess.AppendMessage(provider.Message{Role: "assistant", Content: "done"})
+	sess.AppendEvent(event.New(event.KindTurnEnd))
+	id := sess.Meta.ID
+	sess.Close()
+	forked, err := store.Fork(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Use(forked)
+	if _, err := manager.ReadArtifact(ref.ID, 0, 32); err != nil {
+		t.Fatalf("fork lost referenced artifact: %v", err)
+	}
+	forkID := forked.Meta.ID
+	forked.Close()
+	if err := store.Delete(forkID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.artifactDir(forkID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("artifact directory survived session delete: %v", err)
+	}
+}
+
+func TestRewindCopiesOnlyArtifactsReferencedByRetainedTurns(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewArtifactManager()
+	manager.Use(sess)
+	first, err := manager.SaveArtifact("run_command", "first retained output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AppendMessage(provider.Message{Role: "user", Content: "first"})
+	sess.AppendMessage(provider.Message{Role: "tool", Content: "session artifact " + first.ID})
+	sess.AppendEvent(event.New(event.KindTurnEnd))
+	second, err := manager.SaveArtifact("run_command", "future discarded output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AppendMessage(provider.Message{Role: "user", Content: "second"})
+	sess.AppendMessage(provider.Message{Role: "tool", Content: "session artifact " + second.ID})
+	sess.AppendEvent(event.New(event.KindTurnEnd))
+	id := sess.Meta.ID
+	sess.Close()
+
+	rewound, err := store.Rewind(id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rewound.Close()
+	manager.Use(rewound)
+	if _, err := manager.ReadArtifact(first.ID, 0, 32); err != nil {
+		t.Fatalf("retained turn lost its artifact: %v", err)
+	}
+	if _, err := manager.ReadArtifact(second.ID, 0, 32); err == nil {
+		t.Fatal("rewind copied an artifact belonging only to a discarded future turn")
+	}
+}
+
+func TestSessionArtifactNormalizesInvalidUTF8(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	manager := NewArtifactManager()
+	manager.Use(sess)
+	ref, err := manager.SaveArtifact("binary-ish", string([]byte{0xff, 'x'}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.ReturnedBytes != 2 || !ref.Complete || ref.Content != "�x" {
+		t.Fatalf("normalized artifact=%+v", ref)
+	}
+	chunk, err := manager.ReadArtifact(ref.ID, 0, 32)
+	if err != nil || !strings.Contains(chunk, "�x") {
+		t.Fatalf("normalized read=%q err=%v", chunk, err)
+	}
+	escaped := strings.Repeat("\x00", 1<<20)
+	escapedRef, err := manager.SaveArtifact("control-heavy", escaped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(store.artifactDir(sess.Meta.ID), escapedRef.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > ArtifactResultLimit || escapedRef.StoredBytes >= len(escaped) {
+		t.Fatalf("encoded artifact exceeded disk bound or was not clipped: ref=%+v size=%v", escapedRef, info.Size())
 	}
 }
 

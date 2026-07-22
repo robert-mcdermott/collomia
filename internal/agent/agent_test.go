@@ -13,12 +13,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -200,6 +202,136 @@ func TestManualCompactUsesFocus(t *testing.T) {
 	}
 	if a.MessageCount() != 7 {
 		t.Fatalf("messages=%d", a.MessageCount())
+	}
+}
+
+func TestPinnedContextIsRefreshedForEveryRequest(t *testing.T) {
+	pinned := "Active structured plan:\n[ ] 1. inspect"
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			pinned = "Active structured plan:\n[x] 1. inspect — verified"
+			return "observed", nil
+		},
+	})
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			if !strings.Contains(request.System, "[ ] 1. inspect") {
+				t.Fatalf("initial plan missing from system prompt: %s", request.System)
+			}
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "1", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
+		default:
+			if !strings.Contains(request.System, "[x] 1. inspect — verified") || strings.Contains(request.System, "[ ] 1. inspect") {
+				t.Fatalf("updated plan was not refreshed: %s", request.System)
+			}
+			return provider.Response{Content: "done"}, nil
+		}
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), PinnedContext: func() string { return pinned }})
+	if _, err := a.Run(t.Context(), "work the plan", nil); err != nil {
+		t.Fatal(err)
+	}
+	if breakdown := a.ContextBreakdown(); breakdown.PinnedStateChars != len(pinned) {
+		t.Fatalf("context breakdown=%+v pinned=%q", breakdown, pinned)
+	}
+}
+
+func TestCompactionRetainsRecentFailureEvidenceVerbatim(t *testing.T) {
+	const exactFailure = "Tool error: compile failed at fixture.go:17: undefined: Widget"
+	client := &fakeClient{chat: func(_ int, _ provider.Request) (provider.Response, error) {
+		return provider.Response{Content: "summary that accidentally omitted the failure"}, nil
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil)})
+	messages := []provider.Message{
+		{Role: "user", Content: "build it"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "failed-1", Name: "run_command"}}},
+		{Role: "tool", ToolCallID: "failed-1", Content: exactFailure},
+		{Role: "assistant", Content: "I will investigate"},
+	}
+	for i := 0; i < 6; i++ {
+		messages = append(messages, provider.Message{Role: "user", Content: fmt.Sprintf("follow-up %d", i)})
+	}
+	a.SetMessages(messages)
+	if _, err := a.Compact(t.Context(), ""); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.RLock()
+	active := append([]provider.Message(nil), a.messages...)
+	a.mu.RUnlock()
+	if len(active) == 0 || !strings.Contains(active[0].Content, exactFailure) || !strings.Contains(active[0].Content, "tool_call_id=failed-1") {
+		t.Fatalf("failure evidence was not retained exactly: %+v", active)
+	}
+}
+
+func TestFailureEvidenceMarksItsRetentionLimit(t *testing.T) {
+	content := "Tool error: " + strings.Repeat("界", retainedFailureBytes)
+	evidence := recentFailureEvidence([]provider.Message{{Role: "tool", ToolCallID: "large-failure", Content: content}})
+	if !strings.Contains(evidence, retainedFailureTruncation) {
+		t.Fatalf("bounded failure evidence has no truncation marker")
+	}
+	if len(evidence) > retainedFailureBytes+len("tool_call_id=large-failure\n") {
+		t.Fatalf("failure evidence exceeded its bound: %d", len(evidence))
+	}
+	if !utf8.ValidString(evidence) {
+		t.Fatal("failure evidence was clipped inside a UTF-8 sequence")
+	}
+}
+
+func TestOversizedToolResultUsesSessionArtifactWithoutReplay(t *testing.T) {
+	store, err := session.OpenAt(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	artifacts := session.NewArtifactManager()
+	artifacts.Use(sess)
+	executions := 0
+	large := strings.Repeat("0123456789", 300)
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "large_result", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "large result"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return large, nil
+		}},
+		session.ArtifactTool(artifacts),
+	)
+	artifactID := ""
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "large", Name: "large_result", Arguments: json.RawMessage(`{}`)}}}, nil
+		case 2:
+			last := request.Messages[len(request.Messages)-1].Content
+			marker := "session artifact "
+			start := strings.Index(last, marker)
+			if start < 0 {
+				t.Fatalf("artifact reference missing from result: %q", last)
+			}
+			artifactID = strings.Fields(last[start+len(marker):])[0]
+			args := fmt.Sprintf(`{"id":%q,"offset":1024,"limit":128}`, artifactID)
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "read", Name: "read_tool_result", Arguments: json.RawMessage(args)}}}, nil
+		default:
+			last := request.Messages[len(request.Messages)-1].Content
+			if !strings.Contains(last, "begin untrusted tool output") || !strings.Contains(last, "next_offset=") {
+				t.Fatalf("bounded artifact range missing: %q", last)
+			}
+			return provider.Response{Content: "done"}, nil
+		}
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxToolOutput: 1024, Artifacts: artifacts})
+	if _, err := a.Run(t.Context(), "inspect all output", nil); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 1 || artifactID == "" {
+		t.Fatalf("originating tool executions=%d artifact=%q", executions, artifactID)
+	}
+	if stats := artifacts.Stats(); stats.Count != 1 || stats.StoredBytes != len(large) {
+		t.Fatalf("artifact stats=%+v", stats)
 	}
 }
 

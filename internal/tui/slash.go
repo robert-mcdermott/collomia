@@ -97,11 +97,14 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			sessionID = "\nSession: " + m.runtime.Session.Meta.ID
 		}
 		breakdown := m.runtime.Agent.ContextBreakdown()
-		inspector := fmt.Sprintf("\n\nWhat the model sees each request (≈4 chars/token):\n  system prompt      ~%s tokens\n  project instructions ~%s tokens\n  skills summary     ~%s tokens\n  tool results       ~%s tokens across %d messages",
-			formatTokens(breakdown.SystemPromptChars/4), formatTokens(breakdown.InstructionsChars/4), formatTokens(breakdown.SkillsSummaryChars/4), formatTokens(breakdown.ToolResultChars/4), breakdown.MessagesByRole["tool"])
+		inspector := fmt.Sprintf("\n\nWhat the model sees each request (≈4 chars/token):\n  base system prompt ~%s tokens\n  project instructions ~%s tokens\n  pinned plan/state  ~%s tokens\n  skills summary     ~%s tokens\n  tool results       ~%s tokens across %d messages",
+			formatTokens(breakdown.SystemPromptChars/4), formatTokens(breakdown.InstructionsChars/4), formatTokens(breakdown.PinnedStateChars/4), formatTokens(breakdown.SkillsSummaryChars/4), formatTokens(breakdown.ToolResultChars/4), breakdown.MessagesByRole["tool"])
 		inspector += fmt.Sprintf("\n  conversation       %d user / %d assistant messages", breakdown.MessagesByRole["user"], breakdown.MessagesByRole["assistant"])
 		if breakdown.Summaries > 0 {
 			inspector += fmt.Sprintf("\n  compaction         %d summary block(s) replacing older history", breakdown.Summaries)
+		}
+		if breakdown.ArtifactCount > 0 {
+			inspector += fmt.Sprintf("\n  retained results   %d artifact(s), %s on disk and outside the prompt", breakdown.ArtifactCount, formatByteCount(breakdown.ArtifactBytes))
 		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
 		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
@@ -235,6 +238,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.addPanel("Background processes", strings.Join(lines, "\n")+"\n\n/ps stop <id> stops one; all are stopped at exit.")
 	case "/sessions", "/resume":
 		m.openSessionPicker()
+	case "/rewind":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
+			break
+		}
+		if len(args) == 0 {
+			m.openRewindPicker()
+			break
+		}
+		if len(args) != 1 {
+			m.addError(fmt.Errorf("usage: /rewind [completed-turn-number]"))
+			break
+		}
+		turn, err := strconv.Atoi(args[0])
+		if err != nil || turn < 0 {
+			m.addError(fmt.Errorf("rewind target must be a non-negative completed turn number"))
+			break
+		}
+		m.rewindTo(turn)
 	case "/retry":
 		if m.busy {
 			m.addError(fmt.Errorf("wait for the current turn to finish first"))
@@ -283,4 +305,14 @@ func (m *Model) addSystem(value string) {
 }
 func (m *Model) addError(err error) {
 	m.blocks = append(m.blocks, block{role: "error", content: err.Error()})
+}
+
+func formatByteCount(value int) string {
+	if value < 1024 {
+		return fmt.Sprintf("%d B", value)
+	}
+	if value < 1024*1024 {
+		return fmt.Sprintf("%.1f KiB", float64(value)/1024)
+	}
+	return fmt.Sprintf("%.1f MiB", float64(value)/(1024*1024))
 }

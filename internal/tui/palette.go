@@ -33,6 +33,7 @@ var slashCommands = []commandInfo{
 	{name: "/tasks", args: "", desc: "show the structured task plan"},
 	{name: "/ps", args: "", desc: "list background processes (stop with /ps stop <id>)"},
 	{name: "/sessions", args: "", desc: "pick a saved session to resume"},
+	{name: "/rewind", args: "[turn]", desc: "branch from an earlier completed turn without undoing files"},
 	{name: "/retry", args: "", desc: "load the previous prompt for review without running it"},
 	{name: "/new", args: "", desc: "start a fresh session (current one stays saved)"},
 	{name: "/compact", args: "[focus]", desc: "summarize older context to free the window"},

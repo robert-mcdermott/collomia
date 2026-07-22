@@ -315,6 +315,8 @@ const configReferenceJSONC = `
 
   "options": {
     "max_iterations": 24,
+    // Active-context preview per returned tool string. Durable sessions may
+    // retain a quota-bound larger copy for read_tool_result; ephemeral runs do not.
     "max_tool_output_bytes": 65536,
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",

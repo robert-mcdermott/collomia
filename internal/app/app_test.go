@@ -14,13 +14,16 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/session"
+	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
 // scriptedClient replays a fixed provider conversation so a full runtime can
 // be exercised end to end without a network.
 type scriptedClient struct {
-	calls int
-	steps []provider.Response
+	calls    int
+	steps    []provider.Response
+	requests []provider.Request
 }
 
 func isolateGlobalFiles(t *testing.T) {
@@ -41,6 +44,9 @@ func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testi
 	if runtime.Sessions != nil || runtime.Session != nil {
 		t.Fatalf("ephemeral runtime opened durable session state: store=%v session=%v", runtime.Sessions, runtime.Session)
 	}
+	if _, ok := runtime.Registry.Get("read_tool_result"); ok {
+		t.Fatal("ephemeral runtime exposed durable artifact tool")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -53,8 +59,32 @@ func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testi
 	}
 }
 
+func TestDurableRuntimeEnablesBoundedResultArtifacts(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, ok := runtime.Registry.Get("read_tool_result"); !ok {
+		t.Fatal("durable runtime did not expose artifact reader")
+	}
+	item, ok := runtime.Registry.Get("run_command")
+	if !ok {
+		t.Fatal("run_command missing")
+	}
+	command, ok := item.(*tools.RunCommandTool)
+	if !ok {
+		t.Fatalf("run_command type=%T", item)
+	}
+	if command.StreamOutputBytes != runtime.Config.Options.MaxToolOutputBytes || command.MaxOutputBytes != session.ArtifactResultLimit+1 {
+		t.Fatalf("command capture=%d stream=%d config=%d", command.MaxOutputBytes, command.StreamOutputBytes, runtime.Config.Options.MaxToolOutputBytes)
+	}
+}
+
 func (s *scriptedClient) Name() string { return "scripted" }
-func (s *scriptedClient) Chat(_ context.Context, _ provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
+func (s *scriptedClient) Chat(_ context.Context, request provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
+	s.requests = append(s.requests, request)
 	step := s.steps[min(s.calls, len(s.steps)-1)]
 	s.calls++
 	if step.Content != "" && onDelta != nil {
@@ -223,6 +253,14 @@ func TestPlanPersistsAcrossResume(t *testing.T) {
 	current := resumed.Plan.Current()
 	if current == nil || current.Goal != "ship it" || len(current.Steps) != 1 {
 		t.Fatalf("plan not restored: %+v", current)
+	}
+	follow := &scriptedClient{steps: []provider.Response{{Content: "continued"}}}
+	resumed.Agent.SetProvider("scripted", "fixture", appconfig.Provider{MaxTokens: 100}, follow)
+	if _, err := resumed.Agent.Run(context.Background(), "continue the plan", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(follow.requests) != 1 || !strings.Contains(follow.requests[0].System, "Active structured plan") || !strings.Contains(follow.requests[0].System, "ship it") || !strings.Contains(follow.requests[0].System, "go build") {
+		t.Fatalf("restored plan was not pinned in the next request: %+v", follow.requests)
 	}
 }
 

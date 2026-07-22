@@ -33,6 +33,7 @@ func runCompletionCommand(opts options) error {
 func completionScript(shell string) (string, error) {
 	commands := strings.Join(completionCommands, " ")
 	flags := strings.Join(completionFlags, " ")
+	sessionCommands := "list show fork rewind rename archive unarchive delete"
 	switch shell {
 	case "bash":
 		return fmt.Sprintf(`# bash completion for collo
@@ -45,7 +46,7 @@ _collo() {
     completion) COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "$cur") ); return ;;
     schema) COMPREPLY=( $(compgen -W "events" -- "$cur") ); return ;;
     config) COMPREPLY=( $(compgen -W "show validate reference" -- "$cur") ); return ;;
-    sessions) COMPREPLY=( $(compgen -W "list show fork rename archive unarchive delete" -- "$cur") ); return ;;
+    sessions) COMPREPLY=( $(compgen -W "%s" -- "$cur") ); return ;;
     skills) COMPREPLY=( $(compgen -W "list show new install update remove enable disable" -- "$cur") ); return ;;
     mcp) COMPREPLY=( $(compgen -W "list show add remove enable disable test" -- "$cur") ); return ;;
     policy) COMPREPLY=( $(compgen -W "check" -- "$cur") ); return ;;
@@ -59,26 +60,32 @@ _collo() {
   fi
 }
 complete -F _collo collo
-`, flags, commands), nil
+`, sessionCommands, flags, commands), nil
 	case "zsh":
 		return fmt.Sprintf(`#compdef collo
 _collo() {
-  local -a commands flags
+  local -a commands flags session_commands
   commands=(%s)
   flags=(%s)
+  session_commands=(%s)
   if (( CURRENT == 2 )); then
     _describe 'command' commands
+  elif (( CURRENT == 3 )) && [[ $words[2] == sessions ]]; then
+    _describe 'session command' session_commands
   else
     _describe 'option' flags
   fi
 }
 compdef _collo collo
-`, commands, flags), nil
+`, commands, flags, sessionCommands), nil
 	case "fish":
 		var b strings.Builder
 		b.WriteString("# fish completion for collo\ncomplete -c collo -f\n")
 		for _, command := range completionCommands {
 			fmt.Fprintf(&b, "complete -c collo -n '__fish_use_subcommand' -a '%s'\n", command)
+		}
+		for _, command := range strings.Fields(sessionCommands) {
+			fmt.Fprintf(&b, "complete -c collo -n '__fish_seen_subcommand_from sessions' -a '%s'\n", command)
 		}
 		for _, flag := range completionFlags {
 			fmt.Fprintf(&b, "complete -c collo -l '%s'\n", strings.TrimPrefix(flag, "--"))
@@ -86,6 +93,7 @@ compdef _collo collo
 		return b.String(), nil
 	case "powershell", "pwsh":
 		words := append(append([]string{}, completionCommands...), completionFlags...)
+		words = append(words, strings.Fields(sessionCommands)...)
 		quoted := make([]string, len(words))
 		for i, word := range words {
 			quoted[i] = "'" + word + "'"

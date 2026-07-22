@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -421,6 +422,62 @@ func TestNewSessionAndPickerSwitch(t *testing.T) {
 	m = press(t, m, tea.KeyEnter)
 	if m.picker == nil {
 		t.Fatal("/sessions should open the session picker")
+	}
+}
+
+func TestRewindCreatesConversationBranchWithoutChangingWorkspace(t *testing.T) {
+	m := newTestModel(t)
+	workspaceFile := filepath.Join(m.runtime.Workspace, "state.txt")
+	if err := os.WriteFile(workspaceFile, []byte("current workspace state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for turn := 1; turn <= 2; turn++ {
+		m.runtime.Session.AppendMessage(provider.Message{Role: "user", Content: fmt.Sprintf("prompt %d", turn)})
+		m.runtime.Session.AppendMessage(provider.Message{Role: "assistant", Content: fmt.Sprintf("answer %d", turn)})
+		m.runtime.Session.AppendEvent(runtimeevent.New(runtimeevent.KindTurnEnd))
+	}
+	originalID := m.runtime.Session.Meta.ID
+	if quit, cmd := (&m).slash("/rewind 1"); quit || cmd != nil {
+		t.Fatalf("rewind unexpectedly quit or returned command: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.runtime.Session.Meta.ID == originalID || m.runtime.Session.Meta.ForkedFrom != originalID || m.runtime.Session.Meta.Turns != 1 {
+		t.Fatalf("rewound session=%+v original=%s", m.runtime.Session.Meta, originalID)
+	}
+	if transcript := m.runtime.Session.TranscriptMessages(); len(transcript) != 2 || transcript[0].Content != "prompt 1" {
+		t.Fatalf("rewound transcript=%+v", transcript)
+	}
+	data, err := os.ReadFile(workspaceFile)
+	if err != nil || string(data) != "current workspace state" {
+		t.Fatalf("rewind changed workspace: data=%q err=%v", data, err)
+	}
+	original, err := m.runtime.Sessions.Load(originalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+	if original.Meta.Turns != 2 || len(original.TranscriptMessages()) != 4 {
+		t.Fatalf("original changed: meta=%+v transcript=%+v", original.Meta, original.TranscriptMessages())
+	}
+	if last := m.blocks[len(m.blocks)-1].content; !strings.Contains(last, "were not undone") {
+		t.Fatalf("rewind safety notice missing: %q", last)
+	}
+}
+
+func TestRewindWithoutArgumentOpensCompletedTurnPicker(t *testing.T) {
+	m := newTestModel(t)
+	for turn := 1; turn <= 2; turn++ {
+		m.runtime.Session.AppendMessage(provider.Message{Role: "user", Content: fmt.Sprintf("prompt %d", turn)})
+		m.runtime.Session.AppendMessage(provider.Message{Role: "assistant", Content: "done"})
+		m.runtime.Session.AppendEvent(runtimeevent.New(runtimeevent.KindTurnEnd))
+	}
+	if quit, cmd := (&m).slash("/rewind"); quit || cmd != nil {
+		t.Fatalf("rewind picker unexpectedly quit or returned command: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.picker == nil || m.picker.title != "Rewind conversation safely" {
+		t.Fatalf("rewind picker=%+v", m.picker)
+	}
+	if len(m.picker.matches) != 2 || m.picker.matches[0].id != "1" || m.picker.matches[1].id != "0" {
+		t.Fatalf("rewind targets=%+v", m.picker.matches)
 	}
 }
 

@@ -32,7 +32,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - **Code intelligence**: `search_symbols` queries an incremental, ignore-aware definition index (Go, Python, JS/TS, Rust); `diagnostics` runs a real language server (gopls, pyright, typescript-language-server, rust-analyzer) and returns exact-position findings.
 - **Verification loop**: `detect_verification` finds the project's real build/lint/test commands from its own files (`go.mod`, `package.json`, `Cargo.toml`, …); `collo verify`/`/verify` runs them and ties outcomes to the plan.
 - Read-only planning mode with a structured, persisted plan artifact (`update_plan`, `/tasks`).
-- Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, and automatic context compaction.
+- Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, non-destructive turn rewind, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, pinned plan state, referenced oversized results, and automatic context compaction.
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), colorized diff previews at approval, and **hunk-level approval** — accept or reject individual hunks of a `write_file` change before it lands.
 - Read-only git inspection tools (status, diff, log, blame) that never commit or push.
 - `run_command` supports a pseudo-terminal (`pty: true`, Unix) for interactive-only or isatty-dependent programs.
@@ -162,7 +162,7 @@ collo support bundle [--output path] [--include-logs]  create a privacy-consciou
 collo policy check <command…>       evaluate a command against permission rules, without running it
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
-collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
+collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions
 collo completion bash|zsh|fish|powershell  generate shell completion
 collo schema events                 print the embedded JSON Schema for JSONL events
 collo replay [--check] <trace|->    validate and safely render a completed JSONL run trace
@@ -309,7 +309,7 @@ Inside the TUI:
 | `/status` | Show workspace, provider, model, effective capabilities, plan, autonomy, and config status. |
 | `/model [provider/model]` | Show or switch the active provider and model (opens a fuzzy picker with no argument). |
 | `/models` | Show each provider's default model, effective capabilities, endpoint constraints, and live catalog availability when the adapter supports discovery. |
-| `/context` | Break down exactly what the model sees: system prompt, instructions, skills, tool results, conversation, compaction summaries, and the usage gauge. |
+| `/context` | Break down exactly what the model sees: base system prompt, instructions, pinned plan, skills, tool results, conversation, compaction summaries, retained-result storage, and the usage gauge. |
 | `/plan [on\|off]` | Toggle read-only planning mode. |
 | `/tasks` | Show the structured task plan the agent maintains. |
 | `/diff` | Open responsive unified/side-by-side review with file/hunk navigation and folding. |
@@ -319,6 +319,7 @@ Inside the TUI:
 | `/verify [focus]` | Detect and run the project's real build/lint/test commands, tying each outcome to a plan step. |
 | `/ps` | List background processes started this session; `/ps stop <id>` stops one. |
 | `/sessions` | Fuzzy-pick a saved session and resume it in place — transcript, plan, and persistence all move over. |
+| `/rewind [turn]` | Create and switch to a new conversation branch after an earlier completed turn; the source session and workspace stay unchanged. |
 | `/retry` | Load the previous prompt into the composer for review; it never sends or repeats tools automatically. |
 | `/new` | Start a fresh session; the current one stays saved. |
 | `/compact [focus]` | Summarize older context to free the model window. |
@@ -1049,6 +1050,7 @@ Every conversation is a durable, crash-safe session (append-only JSONL, stored o
 collo sessions list
 collo sessions show <id>
 collo sessions fork <id>
+collo sessions rewind <id> <turn>   # 0 = before the first completed turn
 collo sessions rename <id> "auth refactor"
 collo sessions archive <id>
 collo sessions delete <id>
@@ -1056,7 +1058,14 @@ collo --resume <id>
 collo --continue          # resume the most recently updated session
 ```
 
-Inside the TUI, `/sessions` or `alt+s` opens a fuzzy picker that switches the **live** conversation in place — transcript, plan, prompt history, draft, and persistence hooks all move over, no restart needed — and `/new` starts a fresh one while the current session stays saved. Unsent drafts are kept per session for the lifetime of the running TUI; they are not written to durable history until submitted. Resuming reconstructs the complete visible conversation, including saved tool calls, results, and interruption warnings; it does not execute any restored tool. ↑/↓ at the composer boundary navigates that session's earlier prompts, while `/retry` loads the most recent one for review without submitting it. `collo sessions fork <id>` copies history into an independent session that shares the past but diverges from there. Loading tolerates a torn final write (a crash mid-append) and marks any tool call with no recorded result as interrupted rather than silently replaying it. A disk error or short write is latched, shown as failed persistence in the Session tab, and makes the current TUI/headless turn visibly fail; later records are not appended behind a torn tail. The context window is managed automatically: usage-anchored estimates trigger compaction above 80% of the model's window, summarizing older messages while keeping recent ones. Compaction shortens only model context; the full durable transcript remains visible after resume. `/compact [focus]` compacts on demand.
+Inside the TUI, `/sessions` or `alt+s` opens a fuzzy picker that switches the **live** conversation in place — transcript, plan, prompt history, draft, retained-result store, and persistence hooks all move over, no restart needed — and `/new` starts a fresh one while the current session stays saved. Unsent drafts are kept per session for the lifetime of the running TUI; they are not written to durable history until submitted. Resuming reconstructs the complete visible conversation, including saved tool calls, results, and interruption warnings; it does not execute any restored tool. ↑/↓ at the composer boundary navigates that session's earlier prompts, while `/retry` loads the most recent one for review without submitting it.
+
+`/rewind` opens completed-turn checkpoints; `/rewind 3` and `collo sessions rewind <id> 3` create a new branch ending after turn 3. Turn `0` means before the first completed turn. Rewind is deliberately non-destructive: the original session stays intact, saved tool calls are data rather than executable instructions, and the current workspace is not changed. It does not undo file edits, commands, deployments, MCP calls, or other external effects; use `/undo`, Git, or an isolated worktree for file recovery. `collo sessions fork <id>` remains the way to copy the complete current history.
+`collo sessions show <id>` prints the numbered completed-turn checkpoints before the transcript when choosing a CLI rewind target.
+
+Loading tolerates a torn final write (a crash mid-append) and marks any tool call with no recorded result as interrupted rather than silently replaying it. A disk error or short write is latched, shown as failed persistence in the Session tab, and makes the current TUI/headless turn visibly fail; later records are not appended behind a torn tail. The context window is managed automatically: usage-anchored estimates trigger compaction above 80% of the model's window, summarizing older messages while keeping recent ones. The active structured plan is pinned into every request outside compactable history, and up to 16 KiB of recent failure evidence is copied verbatim into the bounded summary record; reaching that limit is marked explicitly. Compaction shortens only model context; the full durable transcript remains visible after resume. `/compact [focus]` compacts on demand.
+
+When a tool returns more than `options.max_tool_output_bytes`, a bounded preview enters the model context and the omitted output is retained under the active session with an opaque artifact ID. The agent can page it with the read-only `read_tool_result` tool without rerunning the command, MCP call, or other originating action. Retention is capped at 4 MiB per result and 32 MiB per session; the reference says when only a prefix fit. These artifacts can contain the same sensitive data as tool output, use owner-only permissions where supported, follow forks/rewinds, and are deleted with the session.
 
 ## Architecture
 
@@ -1075,7 +1084,7 @@ internal/sandbox                  OS sandbox backends (Seatbelt, Landlock)
 internal/policy                    scoped allow/prompt/deny rule matching
 internal/shell                      outcome-aware command safety analysis
 internal/audit                       permission-decision and outcome ledger
-internal/session                      durable session store, resume/fork, compaction
+internal/session                      durable session store, resume/fork/rewind, compaction, bounded result artifacts
 internal/plan                          structured plan artifact
 internal/event                          schema-versioned runtime event model
 internal/skills                          progressive skill discovery and loading

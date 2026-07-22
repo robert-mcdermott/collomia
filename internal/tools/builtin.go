@@ -34,7 +34,7 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 	registry := NewRegistry(
 		ReadFileTool{Guard: guard}, ListFilesTool{Guard: guard}, SearchFilesTool{Guard: guard},
 		WriteFileTool{Guard: guard, Tracker: tracker}, EditFileTool{Guard: guard, Tracker: tracker},
-		ApplyPatchTool{Guard: guard, Tracker: tracker}, *command,
+		ApplyPatchTool{Guard: guard, Tracker: tracker}, command,
 		GitStatusTool{Workspace: guard.Workspace}, GitDiffTool{Workspace: guard.Workspace},
 		GitLogTool{Workspace: guard.Workspace}, GitBlameTool{Workspace: guard.Workspace},
 		DetectVerificationTool{Workspace: guard.Workspace},

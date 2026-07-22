@@ -156,6 +156,106 @@ func TestInterruptedMutationRecoveryEvaluation(t *testing.T) {
 	}
 }
 
+// TestLongContextRetentionEvaluation verifies the product-level contract for
+// long work: provider-authored compaction cannot erase exact failure evidence,
+// and the active structured plan remains pinned outside compactable history.
+func TestLongContextRetentionEvaluation(t *testing.T) {
+	workspace := t.TempDir()
+	const failure = "Tool error: verification failed: fixture_test.go:23 expected 42, got 41"
+	pinned := "Active structured plan:\nGoal: fix without editing generated.go\n[~] 1. verify — failing fixture_test.go:23"
+	client := &scriptedProvider{t: t, steps: []scriptedStep{
+		{check: func(request provider.Request) error {
+			if len(request.Tools) != 0 {
+				return fmt.Errorf("compaction request unexpectedly exposed tools")
+			}
+			if !strings.Contains(request.Messages[0].Content, "do not edit generated.go") || !strings.Contains(request.Messages[0].Content, failure) {
+				return fmt.Errorf("compaction source omitted constraints or failure: %s", request.Messages[0].Content)
+			}
+			return nil
+		}, response: provider.Response{Content: "Earlier investigation established the generated-file constraint."}},
+		{check: func(request provider.Request) error {
+			if !strings.Contains(request.System, pinned) {
+				return fmt.Errorf("active plan is not pinned: %s", request.System)
+			}
+			if len(request.Messages) == 0 || !strings.Contains(request.Messages[0].Content, failure) || !strings.Contains(request.Messages[0].Content, "Recent failure evidence retained verbatim") {
+				return fmt.Errorf("exact failure did not survive compaction: %+v", request.Messages)
+			}
+			return nil
+		}, response: provider.Response{Content: "Constraint and failure retained; safe to continue."}},
+	}}
+	cfg := appconfig.Defaults()
+	runtime := agent.New(agent.Options{
+		Client: client, ProviderName: "offline-evaluation", Model: "scripted",
+		ProviderConfig: appconfig.Provider{Type: "fixture", MaxTokens: 256, Context: 4_000},
+		Workspace:      workspace, Registry: tools.NewRegistry(), Permissions: permission.New(cfg.Permissions, nil),
+		MaxIterations: 4, MaxToolOutput: cfg.Options.MaxToolOutputBytes, PinnedContext: func() string { return pinned },
+	})
+	messages := []provider.Message{
+		{Role: "user", Content: "Fix the bug, but do not edit generated.go."},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "verify-1", Name: "run_command"}}},
+		{Role: "tool", ToolCallID: "verify-1", Content: failure},
+		{Role: "assistant", Content: "Investigating."},
+	}
+	for i := 0; i < 6; i++ {
+		messages = append(messages, provider.Message{Role: "user", Content: fmt.Sprintf("context item %d", i)})
+	}
+	runtime.SetMessages(messages)
+	if _, err := runtime.Compact(t.Context(), "preserve constraints and failures"); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := runtime.Run(t.Context(), "continue safely", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "Constraint and failure retained; safe to continue." || client.next != 2 {
+		t.Fatalf("answer=%q provider steps=%d", answer, client.next)
+	}
+}
+
+// TestConversationRewindEvaluation proves that selecting an earlier turn is
+// history branching only: recorded write calls are data and never execute.
+func TestConversationRewindEvaluation(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := session.OpenAt(t.TempDir(), workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original.AppendMessage(provider.Message{Role: "user", Content: "inspect first"})
+	original.AppendMessage(provider.Message{Role: "assistant", Content: "inspection complete"})
+	original.AppendEvent(event.New(event.KindTurnEnd))
+	original.AppendMessage(provider.Message{Role: "user", Content: "write danger.txt"})
+	original.AppendMessage(provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "write-2", Name: "write_file", Arguments: json.RawMessage(`{"path":"danger.txt","content":"must not appear"}`)}}})
+	original.AppendMessage(provider.Message{Role: "tool", ToolCallID: "write-2", Content: "wrote danger.txt"})
+	original.AppendMessage(provider.Message{Role: "assistant", Content: "write complete"})
+	original.AppendEvent(event.New(event.KindTurnEnd))
+	id := original.Meta.ID
+	original.Close()
+
+	rewound, err := store.Rewind(id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rewound.Close()
+	if messages := rewound.Active(); len(messages) != 2 || messages[1].Content != "inspection complete" {
+		t.Fatalf("rewound active context=%+v", messages)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "danger.txt")); !os.IsNotExist(err) {
+		t.Fatalf("rewind replayed a recorded write: %v", err)
+	}
+	source, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if source.Meta.Turns != 2 || len(source.TranscriptMessages()) != 6 {
+		t.Fatalf("source session changed: meta=%+v messages=%+v", source.Meta, source.TranscriptMessages())
+	}
+}
+
 func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, mode string) (*agent.Agent, interface{ Changed() []string }) {
 	t.Helper()
 	cfg := appconfig.Defaults()

@@ -431,6 +431,27 @@ to `PATH`, `HOME`, and a short list of other basics — this is the default
 automatically whenever the sandbox is enabled (`sandbox: "auto"` or
 `"require"`), and can be set explicitly without the sandbox too.
 
+### Durable conversation and retained tool output
+
+Session transcripts are operational history, not a secret vault. They can
+contain source text, prompts, tool arguments/results, command errors, and data
+returned by external services. When a returned string exceeds
+`options.max_tool_output_bytes`, a durable session may additionally retain up
+to 4 MiB of that result under an opaque ID; total retained-result storage is
+capped at 32 MiB per session. `read_tool_result` reads bounded ranges from this
+local copy and never reruns the originating action.
+
+Session JSONL and result-artifact files live under the workspace-specific
+directory in `~/.collomia/sessions/` (or `%USERPROFILE%\.collomia\sessions\`
+on Windows), outside the repository, with owner-only modes where the platform
+supports them. Artifacts remain outside model context until explicitly read,
+are framed as untrusted content, follow forks, and follow rewind branches only
+when referenced by the retained conversation prefix. They are removed with
+their session and excluded
+from support bundles. None of these properties redact arbitrary stored tool
+output or encrypt it at rest; protect the user account and delete sensitive
+sessions when they are no longer needed.
+
 ## Optional external reviewer
 
 `permissions.reviewer_command`, when set, runs before any non-read action

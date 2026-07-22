@@ -18,6 +18,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/skills"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
@@ -54,6 +55,8 @@ type Agent struct {
 	subagent            bool
 	onMessage           func(provider.Message)
 	onCompaction        func(summary provider.Message, replaced int)
+	pinnedContext       func() string
+	artifacts           *session.ArtifactManager
 	lifecycle           *hooks.Runner
 }
 
@@ -73,6 +76,11 @@ type Options struct {
 	OnMessage func(provider.Message)
 	// OnCompaction observes context compactions (summary + replaced count).
 	OnCompaction func(summary provider.Message, replaced int)
+	// PinnedContext returns authoritative session state that must survive
+	// compaction, such as the current structured plan.
+	PinnedContext func() string
+	// Artifacts retains bounded oversized tool results for on-demand reads.
+	Artifacts *session.ArtifactManager
 	// Hooks runs configured lifecycle-hook commands; nil disables hooks.
 	Hooks *hooks.Runner
 }
@@ -88,7 +96,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, lifecycle: opts.Hooks}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, lifecycle: opts.Hooks}
 }
 
 // appendMessage adds to the conversation and notifies the persistence hook.
@@ -300,7 +308,25 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	result, err := a.registry.ExecuteStream(ctx, call.Name, args, onOutput)
 	a.permissions.RecordOutcome(call.Name, action, err)
 	if len(result) > a.maxToolOutput {
-		result = result[:a.maxToolOutput] + "\n… tool output truncated …"
+		original := result
+		result = clipUTF8(original, a.maxToolOutput)
+		if a.artifacts != nil && call.Name != "read_tool_result" {
+			ref, artifactErr := a.artifacts.SaveArtifact(call.Name, original)
+			if artifactErr == nil {
+				completeness := "complete bounded copy"
+				if !ref.Complete {
+					completeness = "retained prefix"
+				}
+				result += fmt.Sprintf("\n… output omitted from active context; %s saved as session artifact %s (%d of %d returned bytes). Use read_tool_result with this id and byte ranges to inspect it without rerunning %s. …", completeness, ref.ID, ref.StoredBytes, ref.ReturnedBytes, call.Name)
+			} else {
+				result += "\n… tool output truncated; retaining the omitted output failed …"
+				warning := event.New(event.KindWarning)
+				warning.Text = "could not retain oversized output from " + call.Name + ": " + artifactErr.Error()
+				send(warning)
+			}
+		} else {
+			result += "\n… tool output truncated …"
+		}
 	}
 	if err != nil {
 		if result != "" {
@@ -336,7 +362,7 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "search_symbols", "diagnostics", "load_skill", "delegate",
+	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate",
 		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
 		return true
 	}
@@ -351,6 +377,12 @@ func (a *Agent) systemPrompt(plan bool) string {
 	sub := ""
 	if a.subagent {
 		sub = "\nYou are a bounded research sub-agent. Return a concise evidence-based report to the parent agent; do not attempt changes."
+	}
+	pinned := ""
+	if a.pinnedContext != nil {
+		if value := strings.TrimSpace(a.pinnedContext()); value != "" {
+			pinned = "\nPinned session state (authoritative; preserve across compaction):\n" + value + "\n"
+		}
 	}
 	return fmt.Sprintf(`You are Collomia, a careful and capable terminal coding agent.
 
@@ -370,9 +402,9 @@ Operating rules:
 - When implementation is complete, use detect_verification to find this project's real build/lint/test commands, run proportionate verification with run_command, and summarize the outcome clearly.
 - Tool errors are recoverable: diagnose them and try a safer approach.
 
-%s
+%s%s
 
-%s`, a.workspace, runtime.GOOS, runtime.GOARCH, mode, sub, a.projectInstructions, a.catalog.Summary())
+%s`, a.workspace, runtime.GOOS, runtime.GOARCH, mode, sub, a.projectInstructions, pinned, a.catalog.Summary())
 }
 
 // DelegateTask is one unit of work requested through the delegate tool.
@@ -706,9 +738,12 @@ type ContextBreakdown struct {
 	SystemPromptChars  int
 	InstructionsChars  int
 	SkillsSummaryChars int
+	PinnedStateChars   int
 	MessagesByRole     map[string]int
 	ToolResultChars    int
 	Summaries          int
+	ArtifactCount      int
+	ArtifactBytes      int
 	Estimated, Window  int
 }
 
@@ -716,10 +751,20 @@ func (a *Agent) ContextBreakdown() ContextBreakdown {
 	estimated, window := a.ContextEstimate()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	pinned := ""
+	if a.pinnedContext != nil {
+		pinned = strings.TrimSpace(a.pinnedContext())
+	}
+	totalSystem := len(a.systemPrompt(a.planMode))
+	baseSystem := totalSystem - len(a.projectInstructions) - len(a.catalog.Summary()) - len(pinned)
+	if baseSystem < 0 {
+		baseSystem = totalSystem
+	}
 	b := ContextBreakdown{
-		SystemPromptChars:  len(a.systemPrompt(a.planMode)),
+		SystemPromptChars:  baseSystem,
 		InstructionsChars:  len(a.projectInstructions),
 		SkillsSummaryChars: len(a.catalog.Summary()),
+		PinnedStateChars:   len(pinned),
 		MessagesByRole:     map[string]int{},
 		Estimated:          estimated,
 		Window:             window,
@@ -732,6 +777,11 @@ func (a *Agent) ContextBreakdown() ContextBreakdown {
 		if m.Role == "user" && strings.HasPrefix(m.Content, "[Context summary") {
 			b.Summaries++
 		}
+	}
+	if a.artifacts != nil {
+		stats := a.artifacts.Stats()
+		b.ArtifactCount = stats.Count
+		b.ArtifactBytes = stats.DiskBytes
 	}
 	return b
 }
@@ -791,7 +841,12 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	if err != nil {
 		return 0, err
 	}
-	summary := provider.Message{Role: "user", Content: "[Context summary — earlier conversation compressed to save space]\n" + response.Content}
+	failures := recentFailureEvidence(messages[:cut])
+	summaryContent := "[Context summary — earlier conversation compressed to save space]\n" + response.Content
+	if failures != "" {
+		summaryContent += "\n\n[Recent failure evidence retained verbatim]\n" + failures
+	}
+	summary := provider.Message{Role: "user", Content: summaryContent}
 	a.mu.Lock()
 	// The conversation only grows during a run, so the prefix we summarized
 	// is stable; re-derive the tail in case messages were appended.
@@ -821,4 +876,65 @@ func keys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+const retainedFailureBytes = 16 << 10
+
+const retainedFailureTruncation = "\n… failure evidence truncated at the 16 KiB retention limit …"
+
+// recentFailureEvidence keeps exact, bounded failure text outside the
+// provider-generated summary. This prevents compaction quality from silently
+// turning a still-relevant error into an inaccurate paraphrase.
+func recentFailureEvidence(messages []provider.Message) string {
+	var failures []string
+	total := 0
+	for i := len(messages) - 1; i >= 0 && len(failures) < 3; i-- {
+		message := messages[i]
+		if message.Role != "tool" || !isFailureResult(message.Content) {
+			continue
+		}
+		value := failureEvidence(message.Content)
+		if total+len(value) > retainedFailureBytes {
+			remaining := retainedFailureBytes - total
+			if remaining <= len(retainedFailureTruncation) {
+				break
+			}
+			value = clipUTF8(value, remaining-len(retainedFailureTruncation)) + retainedFailureTruncation
+		}
+		failures = append(failures, fmt.Sprintf("tool_call_id=%s\n%s", message.ToolCallID, value))
+		total += len(value)
+	}
+	for left, right := 0, len(failures)-1; left < right; left, right = left+1, right-1 {
+		failures[left], failures[right] = failures[right], failures[left]
+	}
+	return strings.Join(failures, "\n\n")
+}
+
+func isFailureResult(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.Contains(lower, "tool error:") ||
+		strings.HasPrefix(lower, "tool denied:") ||
+		strings.HasPrefix(lower, "tool blocked") ||
+		strings.Contains(lower, "tool call interrupted:")
+}
+
+func failureEvidence(value string) string {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"tool error:", "tool call interrupted:", "tool denied:", "tool blocked"} {
+		if index := strings.LastIndex(lower, marker); index >= 0 {
+			return value[index:]
+		}
+	}
+	return value
+}
+
+func clipUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	end := limit
+	for end > 0 && (value[end]&0xc0) == 0x80 {
+		end--
+	}
+	return value[:end]
 }

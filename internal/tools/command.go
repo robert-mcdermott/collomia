@@ -24,6 +24,11 @@ type RunCommandTool struct {
 	Workspace      string
 	DeniedPatterns []*regexp.Regexp
 	MaxOutputBytes int
+	// StreamOutputBytes can be lower than MaxOutputBytes when the runtime is
+	// retaining a larger bounded result as a session artifact. Live UI output
+	// remains at the configured preview size while the returned string carries
+	// enough data for the agent layer to create the artifact.
+	StreamOutputBytes int
 	// SandboxMode selects OS enforcement: off, auto, or require.
 	SandboxMode sandbox.Mode
 	// AllowNetwork permits network egress inside the sandbox.
@@ -126,7 +131,11 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
 	defer cancel()
-	buffer := &limitedBuffer{limit: t.MaxOutputBytes, onChunk: onOutput}
+	streamLimit := t.StreamOutputBytes
+	if streamLimit <= 0 {
+		streamLimit = t.MaxOutputBytes
+	}
+	buffer := &limitedBuffer{limit: t.MaxOutputBytes, streamLimit: streamLimit, onChunk: onOutput}
 	if sandboxWarning != "" {
 		_, _ = buffer.Write([]byte("sandbox warning: " + sandboxWarning + "\n"))
 	}
@@ -244,8 +253,10 @@ func shellArgv(command string) []string {
 
 type limitedBuffer struct {
 	bytes.Buffer
-	limit     int
-	truncated bool
+	limit       int
+	truncated   bool
+	streamLimit int
+	streamed    int
 	// onChunk, when set, observes every accepted chunk for live streaming.
 	onChunk func(string)
 }
@@ -273,15 +284,27 @@ func (b *limitedBuffer) ReadFrom(r io.Reader) (int64, error) {
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	original := len(p)
+	if b.onChunk != nil {
+		streamLimit := b.streamLimit
+		if streamLimit <= 0 {
+			streamLimit = b.limit
+		}
+		remaining := streamLimit - b.streamed
+		if remaining > 0 {
+			chunk := p
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+			}
+			b.onChunk(string(chunk))
+			b.streamed += len(chunk)
+		}
+	}
 	remaining := b.limit - b.Len()
 	if remaining > 0 {
 		if len(p) > remaining {
 			p = p[:remaining]
 		}
 		_, _ = b.Buffer.Write(p)
-		if b.onChunk != nil {
-			b.onChunk(string(p))
-		}
 	}
 	if original > remaining {
 		b.truncated = true

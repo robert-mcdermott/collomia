@@ -720,7 +720,7 @@ Usage:
   collo policy check <command…>       evaluate a command against permission rules without running it
   collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
   collo verify [focus]                detect and run this project's build/lint/test commands headlessly
-  collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
+  collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions
   collo skills [list|show|new|install|update|remove|enable|disable]  manage agent skills (project and --global scopes)
   collo mcp [list|show|add|remove|enable|disable|test]  manage persistent MCP servers (project and --global scopes)
   collo completion bash|zsh|fish|powershell  generate shell completion

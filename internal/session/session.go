@@ -87,6 +87,9 @@ func newID() string {
 }
 
 func (s *Store) path(id string) string { return filepath.Join(s.dir, id+".jsonl") }
+func (s *Store) artifactDir(id string) string {
+	return filepath.Join(s.dir, id+".artifacts")
+}
 
 // New creates and opens a fresh session.
 func (s *Store) New(providerName, model string) (*Session, error) {
@@ -205,6 +208,116 @@ func (s *Store) Fork(id string) (*Session, error) {
 		sess.Close()
 		return nil, err
 	}
+	if err := copyArtifactDir(s.artifactDir(id), s.artifactDir(meta.ID), nil); err != nil {
+		sess.Close()
+		_ = os.Remove(s.path(meta.ID))
+		_ = os.RemoveAll(s.artifactDir(meta.ID))
+		return nil, fmt.Errorf("copy session artifacts: %w", err)
+	}
+	return sess, nil
+}
+
+// Checkpoint is one completed conversational turn that can be used as a safe
+// rewind target. Prompt is display-only context for pickers and listings.
+type Checkpoint struct {
+	Turn   int
+	Prompt string
+}
+
+// Checkpoints returns completed turn boundaries without opening a provider or
+// executing recorded tools. Failed or interrupted turns do not become rewind
+// targets because they have no durable turn.end record.
+func (s *Store) Checkpoints(id string) ([]Checkpoint, error) {
+	records, err := s.readRecords(id)
+	if err != nil {
+		return nil, err
+	}
+	var checkpoints []Checkpoint
+	prompt := ""
+	for _, record := range records {
+		if record.Type == "message" && record.Message != nil && record.Message.Role == "user" {
+			prompt = record.Message.Content
+		}
+		if record.Type == "event" && record.Event != nil && record.Event.Kind == event.KindTurnEnd {
+			checkpoints = append(checkpoints, Checkpoint{Turn: len(checkpoints) + 1, Prompt: prompt})
+		}
+	}
+	return checkpoints, nil
+}
+
+// Rewind creates an independent session containing exactly the selected
+// number of completed turns. The source log and workspace are untouched, and
+// loading the result never replays any recorded tool call.
+func (s *Store) Rewind(id string, turns int) (*Session, error) {
+	if turns < 0 {
+		return nil, errors.New("rewind turn must not be negative")
+	}
+	source, err := s.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	sourceMeta := source.Meta
+	source.Close()
+	if turns >= sourceMeta.Turns {
+		return nil, fmt.Errorf("rewind turn must be earlier than the source session's %d completed turns", sourceMeta.Turns)
+	}
+	records, err := s.readRecords(id)
+	if err != nil {
+		return nil, err
+	}
+	selected := make([]Record, 0, len(records))
+	completed := 0
+	for _, record := range records {
+		if turns == 0 && record.Type != "meta" {
+			break
+		}
+		selected = append(selected, record)
+		if record.Type == "event" && record.Event != nil && record.Event.Kind == event.KindTurnEnd {
+			completed++
+			if completed == turns {
+				break
+			}
+		}
+	}
+	if turns > 0 && completed != turns {
+		return nil, fmt.Errorf("session has only %d completed turn boundaries", completed)
+	}
+	newMeta := sourceMeta
+	newMeta.ID = newID()
+	newMeta.ForkedFrom = id
+	newMeta.CreatedAt = time.Now().UTC()
+	newMeta.UpdatedAt = newMeta.CreatedAt
+	newMeta.Turns = turns
+	path := s.path(newMeta.ID)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	writeErr := writeRecords(file, selected)
+	if closeErr := file.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		_ = os.Remove(path)
+		return nil, writeErr
+	}
+	sess, err := s.Load(newMeta.ID)
+	if err != nil {
+		_ = os.Remove(path)
+		return nil, err
+	}
+	sess.Meta = newMeta
+	if err := sess.append(Record{Type: "meta", Meta: &newMeta}); err != nil {
+		sess.Close()
+		_ = os.Remove(path)
+		return nil, err
+	}
+	if err := copyArtifactDir(s.artifactDir(id), s.artifactDir(newMeta.ID), referencedArtifactIDs(selected)); err != nil {
+		sess.Close()
+		_ = os.Remove(path)
+		_ = os.RemoveAll(s.artifactDir(newMeta.ID))
+		return nil, fmt.Errorf("copy session artifacts: %w", err)
+	}
 	return sess, nil
 }
 
@@ -214,7 +327,134 @@ func (s *Store) Rename(id, title string) error {
 func (s *Store) Archive(id string, archived bool) error {
 	return s.amendMeta(id, func(m *Meta) { m.Archived = archived })
 }
-func (s *Store) Delete(id string) error { return os.Remove(s.path(id)) }
+func (s *Store) Delete(id string) error {
+	if err := os.Remove(s.path(id)); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(s.artifactDir(id)); err != nil {
+		return fmt.Errorf("remove session artifacts: %w", err)
+	}
+	return nil
+}
+
+// readRecords applies the same torn-tail rule as Load but does not open the
+// session for appends or synthesize interrupted tool results.
+func (s *Store) readRecords(id string) ([]Record, error) {
+	data, err := os.ReadFile(s.path(id))
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+	var records []Record
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record Record
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			if i >= len(lines)-2 {
+				continue
+			}
+			return nil, fmt.Errorf("session %s line %d is corrupt: %w", id, i+1, err)
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func writeRecords(w io.Writer, records []Record) error {
+	for _, record := range records {
+		data, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		payload := append(data, '\n')
+		written, err := w.Write(payload)
+		if err == nil && written != len(payload) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			return fmt.Errorf("write rewound session: %w", err)
+		}
+	}
+	return nil
+}
+
+// referencedArtifactIDs finds opaque artifact IDs that remain reachable from
+// a rewound record prefix. Rewind copies only these files, so discarded future
+// turns do not leak their retained tool output into the new branch.
+func referencedArtifactIDs(records []Record) map[string]bool {
+	referenced := map[string]bool{}
+	for _, record := range records {
+		data, err := json.Marshal(record)
+		if err != nil {
+			continue
+		}
+		for start := 0; start+24 <= len(data); start++ {
+			candidate := string(data[start : start+24])
+			if validArtifactID(candidate) {
+				referenced[candidate] = true
+				start += 23
+			}
+		}
+	}
+	return referenced
+}
+
+// copyArtifactDir copies every valid artifact when allowed is nil (a normal
+// fork), or only the named references for a conversation rewind.
+func copyArtifactDir(source, target string, allowed map[string]bool) error {
+	entries, err := os.ReadDir(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	created := false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		if !validArtifactID(id) || (allowed != nil && !allowed[id]) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() > ArtifactResultLimit {
+			return fmt.Errorf("invalid session artifact %s", entry.Name())
+		}
+		data, err := os.ReadFile(filepath.Join(source, entry.Name()))
+		if err != nil {
+			return err
+		}
+		if !created {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			created = true
+		}
+		path := filepath.Join(target, entry.Name())
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		written, writeErr := file.Write(data)
+		if writeErr == nil && written != len(data) {
+			writeErr = io.ErrShortWrite
+		}
+		if closeErr := file.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		if writeErr != nil {
+			return writeErr
+		}
+	}
+	return nil
+}
 
 func (s *Store) amendMeta(id string, mutate func(*Meta)) error {
 	sess, err := s.Load(id)

@@ -578,7 +578,7 @@ inspect.
 | Field | Meaning |
 | --- | --- |
 | `max_iterations` | Maximum model/tool iterations in one turn; defaults to `24`. |
-| `max_tool_output_bytes` | Per-result cap used by shell output and agent context; defaults to `65536`. |
+| `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -1581,7 +1581,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/status` | Show workspace, provider/model, capabilities, health, context, plan, autonomy, and configuration/trust state. |
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
-| `/context` | Show token usage, estimated active context, message counts, summaries, and context composition. |
+| `/context` | Show token usage, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
@@ -1600,6 +1600,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
 | `/sessions` | Fuzzy-pick and switch to another durable session in place. |
+| `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
@@ -2124,7 +2125,7 @@ collo support bundle [--output path] [--include-logs]
 collo policy check <command...>
 collo review [ref] [instructions...]
 collo verify [focus]
-collo sessions list|show|fork|rename|archive|unarchive|delete
+collo sessions list|show|fork|rewind|rename|archive|unarchive|delete
 collo skills list|show|new|install|update|remove|enable|disable
 collo mcp list|show|add|remove|enable|disable|test
 collo completion bash|zsh|fish|powershell
@@ -2188,6 +2189,7 @@ question broker can make the model-visible subset smaller.
 | `start_process` | Start a session-lifetime background command under command safety/sandbox policy. |
 | `list_processes` | List background process IDs, command, status, and uptime. |
 | `process_output` | Read the retained last 64 KiB, optionally the last N lines. |
+| `read_tool_result` | Page a bounded range from an oversized result retained by the active durable session; never reruns the source tool. |
 | `stop_process` | Stop one background process and its process group. |
 | `search_symbols` | Incremental definition search for Go, Python, JS/TS, and Rust. |
 | `diagnostics` | Run a configured/auto-detected language server over up to 20 same-language files. |
@@ -2198,9 +2200,12 @@ question broker can make the model-visible subset smaller.
 | `list_mcp_resources` / `read_mcp_resource` | Browse/read negotiated MCP resources when MCP is connected. |
 | `mcp_<server>_<tool>` | Dynamically registered MCP tool. |
 
-`options.max_tool_output_bytes` truncates what is returned to the agent even
-when a tool has its own larger internal display cap. Treat truncation markers
-as a cue to narrow the request, not evidence that unseen output was successful.
+`options.max_tool_output_bytes` caps the preview returned directly to the
+agent even when a tool has a larger internal display cap. During a durable
+session, an oversized returned string includes an opaque reference that
+`read_tool_result` can inspect in bounded ranges; in ephemeral mode it uses an
+ordinary truncation marker. In either case, omitted output is not evidence
+that an unseen operation succeeded—narrow the request or inspect the reference.
 
 ### File editing, diff, and undo
 
@@ -2982,6 +2987,7 @@ markers, and structured plan updates.
 collo sessions list
 collo sessions show <id>
 collo sessions fork <id>
+collo sessions rewind <id> <turn>
 collo sessions rename <id> "provider retry investigation"
 collo sessions archive <id>
 collo sessions unarchive <id>
@@ -2993,9 +2999,14 @@ collo run --resume <id> "Continue with the next step"
 ```
 
 `--continue` resumes the most recently updated unarchived session. `fork`
-copies history into an independent session that can diverge. Archive hides a
-session from `--continue` selection but does not delete it. Delete is permanent
-and requires `--yes`.
+copies the complete history into an independent session that can diverge.
+`rewind` creates a new session containing a prefix through the requested
+completed turn; `0` creates a branch before the first turn. The target must be
+earlier than the source session's current completed-turn count. Archive hides
+a session from `--continue` selection but does not delete it. Delete is
+permanent and requires `--yes`. `collo sessions show <id>` prints numbered
+completed-turn checkpoints before the transcript so scripts and terminal-only
+users can choose a rewind target deliberately.
 
 Within the TUI, `/sessions` or the configurable `alt+s` shortcut switches the
 transcript, plan, prompt history, unsent draft, and persistence hooks in place.
@@ -3003,6 +3014,15 @@ The shortcut is useful when a draft is already in the composer because opening
 the picker does not replace it. `/new` creates a fresh session while leaving
 the current one saved. Drafts are retained per session only while this TUI
 process remains open; unsent text is not added to durable history.
+
+`/rewind` opens a fuzzy list of durable completed-turn boundaries and switches
+to the new branch immediately; `/rewind 3` selects one directly. This is
+conversation rewind, not environment rollback. The source log is never
+truncated, restoration does not execute recorded tools, and Collomia does not
+change the workspace while creating the branch. Files changed by earlier or
+later turns, shell commands, package installs, deployments, remote MCP effects,
+and other external state remain as they are now. Use `/undo` for a compatible
+most-recent direct file edit, or use Git/worktrees for broader source recovery.
 
 On initial `--resume`/`--continue` and in-TUI switches, Collomia reconstructs
 the complete visible conversation from the durable transcript, including tool
@@ -3031,17 +3051,56 @@ accepted history up to the final torn line remains recoverable.
 `context_window` tells Collomia the model's usable context size. Provider token
 usage anchors estimates; when no fresh usage is available, the UI estimates at
 roughly four characters per token. `/context` breaks down system prompt,
-instructions, skill summary, tool results, user/assistant messages, and
-compaction summaries.
+instructions, pinned session state, skill summary, tool results,
+user/assistant messages, compaction summaries, and retained-result storage.
+
+The current structured plan is rendered into a pinned session-state section
+on every provider request. It is refreshed after `update_plan`, resume,
+in-process session switching, compaction, and rewind. Because it is outside the
+message history, compaction cannot remove it. `/tasks` shows the same plan the
+model receives.
 
 When estimated active context exceeds 80% of a known window and enough messages
 exist, Collomia asks the active provider to summarize older history. It keeps
 the six most recent messages verbatim and never splits a tool call from its
-results. `/compact [focus]` requests the same operation manually.
+results. Up to three recent failure results, bounded to 16 KiB in total, are
+copied verbatim into the summary record rather than trusting the provider to
+paraphrase them correctly. If that bound is reached, the retained evidence has
+an explicit truncation marker. `/compact [focus]` requests the same operation
+manually.
 
 Compaction changes only the model's active context. The full durable transcript
 is retained in the session JSONL file. Compaction itself consumes a provider
 request and tokens.
+
+### Oversized tool-result artifacts
+
+`options.max_tool_output_bytes` controls how much of one returned string can
+enter active model context. When a result exceeds that limit during a durable
+session, Collomia stores a bounded session-local copy and adds an opaque ID to
+the preview. The model can call `read_tool_result` with that ID, a byte
+`offset`, and a `limit` up to 65536 to inspect another range. This operation
+only reads stored bytes; it never reruns the command, MCP tool, or other action
+that produced them.
+
+Retention has fixed safety bounds:
+
+- At most 4 MiB is retained from one result.
+- At most 32 MiB is retained for one session.
+- A returned reference reports returned-string and retained sizes and whether the
+  copy is complete.
+- Artifacts follow session forks; rewind copies only artifacts referenced by
+  its retained conversation prefix, so those references remain usable without
+  carrying result data from discarded future turns. Deleting a session deletes
+  its artifact directory.
+- Ephemeral runs do not create artifacts; oversized results use the ordinary
+  truncation marker.
+
+Artifact contents are framed as untrusted tool output when read. They remain
+outside the prompt until requested and `/context` reports their count and disk
+size. This is context management, not secret redaction: arbitrary tool output
+can contain source, credentials, or personal data, so session storage must be
+protected like the transcript itself.
 
 ## Browser terminal
 
@@ -3106,6 +3165,7 @@ macOS/Linux and `%USERPROFILE%\.collomia\` on Windows:
 | State | Relative location under the global root |
 | --- | --- |
 | Sessions | `sessions/<workspace-name-and-hash>/*.jsonl` |
+| Oversized result artifacts | `sessions/<workspace-name-and-hash>/<session-id>.artifacts/*.json` |
 | Audit ledger | `audit/<workspace-name-and-hash>.jsonl` |
 | Trust database | `trust.json` |
 | MCP pins | `mcp-pins.json` |

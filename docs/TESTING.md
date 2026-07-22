@@ -78,6 +78,12 @@ Important failure-oriented tests include:
 - Session torn-tail recovery, dangling tool-call interruption, and injected
   short writes. A short write is latched so a later record cannot turn the
   recoverable final fragment into corruption in the middle of the log.
+- Long-context compaction with dynamically pinned plan state and exact bounded
+  failure evidence, plus oversized-result paging that proves the originating
+  tool executes only once.
+- Non-destructive conversation rewind at completed-turn boundaries, including
+  source-session preservation, artifact continuity, and a recorded mutating
+  tool call that remains inert during restoration.
 - Atomic patch rollback, external-edit-safe undo, symlink/path containment,
   shell analysis, and native sandbox enforcement.
 
