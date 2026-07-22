@@ -17,11 +17,43 @@ type ToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// ContentPart is an optional typed part attached to a message. Text-only
+// callers continue to use Message.Content. Image bytes are deliberately not
+// serialized into durable session JSONL: AttachmentID and the integrity
+// metadata are persisted, while the session attachment store resolves Data
+// immediately before a provider request.
+type ContentPart struct {
+	Type         string `json:"type"`
+	Text         string `json:"text,omitempty"`
+	AttachmentID string `json:"attachment_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	MediaType    string `json:"media_type,omitempty"`
+	Size         int    `json:"size,omitempty"`
+	SHA256       string `json:"sha256,omitempty"`
+	Data         []byte `json:"-"`
+}
+
+const (
+	ContentText  = "text"
+	ContentImage = "image"
+)
+
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       string        `json:"role"`
+	Content    string        `json:"content,omitempty"`
+	Parts      []ContentPart `json:"parts,omitempty"`
+	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+}
+
+// HasImages reports whether a request carries any typed image content.
+func (m Message) HasImages() bool {
+	for _, part := range m.Parts {
+		if part.Type == ContentImage {
+			return true
+		}
+	}
+	return false
 }
 
 type Request struct {

@@ -66,30 +66,38 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 	switch providerType {
 	case "openai":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.Constraints = []string{"Chat Completions adapter; model-specific features may be unknown; explicit max_tokens/temperature rejections are negotiated and remembered for the active model"}
 	case "openai-compatible":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.Constraints = []string{"compatible endpoints may implement a smaller model-specific subset; accepted request parameters remain unchanged, while explicit max_tokens/temperature rejections are negotiated for the active model"}
 	case "anthropic", "anthropic-compatible":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.Constraints = []string{"Messages adapter; provider reasoning deltas are surfaced, but signed thinking blocks and cache creation are not yet round-tripped"}
 	case "azure-openai":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.ModelDiscovery = CapabilityUnsupported
 		c.Constraints = []string{"deployment-scoped Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication; reasoning-model max_completion_tokens/default-temperature requirements are negotiated from explicit provider rejections"}
 	case "azure-foundry":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.Constraints = []string{"OpenAI v1 Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication; reasoning-model max_completion_tokens/default-temperature requirements are negotiated from explicit provider rejections"}
 	case "azure-foundry-anthropic":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
 	case "bedrock":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.PromptCaching = CapabilityUnsupported
 		c.ModelDiscovery = CapabilityUnsupported
 		c.Constraints = []string{"ConverseStream route; SigV4 AWS credentials or Bedrock bearer API key; model access and streaming support are governed by the AWS account, model, and region"}
 	case "bedrock-mantle":
 		c.Reasoning = CapabilityPartial
+		c.Images = CapabilityPartial
 		c.PromptCaching = CapabilityUnsupported
 		c.ModelDiscovery = CapabilityUnsupported
 		c.Constraints = []string{"Responses-style route; requests SSE and accepts synchronous JSON fallback"}
@@ -105,6 +113,11 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 func ValidateRequest(c Capabilities, req Request) error {
 	if len(req.Tools) > 0 && c.Tools == CapabilityUnsupported {
 		return fmt.Errorf("provider %s model %s does not support tool calling", c.ProviderType, c.Model)
+	}
+	for _, message := range req.Messages {
+		if message.HasImages() && c.Images == CapabilityUnsupported {
+			return fmt.Errorf("provider %s model %s does not support image input", c.ProviderType, c.Model)
+		}
 	}
 	if c.ContextWindow > 0 && req.MaxTokens > c.ContextWindow {
 		return fmt.Errorf("provider %s model %s requests %d output tokens, exceeding its configured %d-token context window", c.ProviderType, c.Model, req.MaxTokens, c.ContextWindow)

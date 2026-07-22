@@ -150,6 +150,64 @@ func TestPaletteFiltersAndRuns(t *testing.T) {
 	}
 }
 
+func TestImageAttachmentCommandsAndSessionScopedDrafts(t *testing.T) {
+	m := newTestModel(t)
+	imagePath := filepath.Join(m.runtime.Workspace, "screen shot.png")
+	image := append([]byte("\x89PNG\r\n\x1a\n"), []byte("fixture")...)
+	if err := os.WriteFile(imagePath, image, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if quit, cmd := (&m).slash(`/attach "screen shot.png"`); quit || cmd != nil {
+		t.Fatalf("attach quit=%v cmd=%v", quit, cmd)
+	}
+	if len(m.pendingAttachments) != 1 || m.pendingAttachments[0].part.MediaType != "image/png" {
+		t.Fatalf("pending=%+v", m.pendingAttachments)
+	}
+	(&m).slash("/attachments")
+	if got := m.blocks[len(m.blocks)-1].content; !strings.Contains(got, "screen shot.png") || !strings.Contains(got, "image/png") {
+		t.Fatalf("attachment panel=%q", got)
+	}
+	firstID := m.runtime.Session.Meta.ID
+	m.saveSessionDraft()
+	if err := m.runtime.NewSession(); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildTranscript()
+	if len(m.pendingAttachments) != 0 {
+		t.Fatal("pending attachment leaked into a new session")
+	}
+	m.saveSessionDraft()
+	if err := m.runtime.SwitchSession(firstID); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildTranscript()
+	if len(m.pendingAttachments) != 1 {
+		t.Fatal("pending attachment did not follow its session draft")
+	}
+	(&m).slash("/detach 1")
+	if len(m.pendingAttachments) != 0 {
+		t.Fatal("detach did not remove the pending image")
+	}
+}
+
+func TestImageAttachmentRejectsOutsideAndUnsupportedFiles(t *testing.T) {
+	m := newTestModel(t)
+	external := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(external, append([]byte("\x89PNG\r\n\x1a\n"), 'x'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.addImageAttachment(external); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("outside error=%v", err)
+	}
+	textPath := filepath.Join(m.runtime.Workspace, "fake.png")
+	if err := os.WriteFile(textPath, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.addImageAttachment("fake.png"); err == nil || !strings.Contains(err.Error(), "unsupported image type") {
+		t.Fatalf("unsupported error=%v", err)
+	}
+}
+
 func TestPaletteDismissAndTabComplete(t *testing.T) {
 	m := newTestModel(t)
 	m = typeKeys(t, m, "/the")

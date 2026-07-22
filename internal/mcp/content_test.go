@@ -4,6 +4,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 func TestExternalMCPFrameHasProvenanceAndContentBoundBoundary(t *testing.T) {
@@ -28,6 +31,20 @@ func TestExternalMCPFrameHasProvenanceAndContentBoundBoundary(t *testing.T) {
 	boundary := regexp.MustCompile(`COLLOMIA_EXTERNAL_MCP_DATA_[0-9a-f]{16}`).FindString(framed)
 	if boundary == "" || strings.Count(framed, boundary) != 2 {
 		t.Fatalf("content-bound boundary missing or ambiguous: %q", boundary)
+	}
+}
+
+func TestMCPImageContentPreservesTypedBytesAndVisibleProvenance(t *testing.T) {
+	data := []byte("\x89PNG\r\n\x1a\nfixture")
+	rendered := renderRichToolResult(&mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: "the chart peaks on Tuesday"},
+		&mcp.ImageContent{MIMEType: "image/png", Data: data},
+	}})
+	if !strings.Contains(rendered.Content, "the chart peaks") || !strings.Contains(rendered.Content, "typed binary content attached") {
+		t.Fatalf("rendered content=%q", rendered.Content)
+	}
+	if len(rendered.Parts) != 1 || rendered.Parts[0].Type != provider.ContentImage || rendered.Parts[0].MediaType != "image/png" || string(rendered.Parts[0].Data) != string(data) {
+		t.Fatalf("rendered parts=%+v", rendered.Parts)
 	}
 }
 

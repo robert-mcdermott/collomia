@@ -37,6 +37,7 @@ The current corpus covers these outcome-oriented scenarios:
 | Bug fix and verification | Agent loop, `edit_file`, change tracker, verification detection, `run_command` | Applies the intended edit, runs the fixture's real Go tests, and reports success only after passing output. |
 | Permission refusal | Agent loop, command analysis, permission manager | A headless `ask` run records denial, never starts the command, and continues with an honest answer. |
 | External MCP prompt injection | Agent loop, external tool, permission manager, built-in file tools | An allowed external read remains usable as evidence but can also request a write and forge a permission grant; the write is denied and no file changes. |
+| Multimodal attachment lifecycle | Session store, rooted workspace reads, prompt hooks, provider message model, TUI commands, provider encoders, MCP rich results | Image bytes stay outside JSONL, symlink escapes and hook-blocked retention fail closed, integrity checks hold, fork/rewind/delete preserve the right references, and text-only requests retain their old wire shape. |
 | Interrupted mutation recovery | Durable session store and recovery | Loading adds an interruption warning but never executes the recorded write. |
 | Long-context retention | Compaction, pinned plan, exact failure evidence | Compaction retains authoritative plan state and bounded exact failure evidence. |
 | Conversation rewind | Durable branch creation and restoration | Rewind preserves the source, never replays recorded tools, and leaves workspace state unchanged. |
@@ -77,6 +78,9 @@ Important failure-oriented tests include:
   cancellation after deltas, and response-body closure.
 - MCP disconnect/reconnect, failed and superseded catalog refresh, lifecycle,
   cancellation, and last-known-good registry preservation.
+- User-image request encoding for OpenAI Chat Completions, Anthropic Messages,
+  Responses-style inputs, and Bedrock Converse; MCP image bytes survive the
+  typed tool boundary and are session-retained before the following request.
 - Process timeout/cancellation and descendant cleanup.
 - Session torn-tail recovery, dangling tool-call interruption, and injected
   short writes. A short write is latched so a later record cannot turn the
@@ -96,6 +100,8 @@ Important failure-oriented tests include:
 - MCP content framing, control-character removal, bounded external schema and
   catalog metadata, and a full agent evaluation proving injected text cannot
   widen the permission decision for a file mutation.
+- Attachment type/size/quota/integrity enforcement, owner-only storage where
+  supported, session-scoped pending TUI drafts, and fork/rewind/delete cleanup.
 
 When adding a fault seam, keep production defaults on the real operating
 system implementation. Tests may inject writers, clocks, transports, or

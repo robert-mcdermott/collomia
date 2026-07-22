@@ -95,6 +95,79 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	}
 }
 
+func TestAgentRetainsAndResolvesTypedToolImages(t *testing.T) {
+	image := append([]byte("\x89PNG\r\n\x1a\n"), []byte("fixture")...)
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "external_chart", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "read chart"},
+		RunResult: func(context.Context, json.RawMessage, func(string)) (tools.Result, error) {
+			return tools.Result{Content: "chart data", Parts: []provider.ContentPart{{Type: provider.ContentImage, Name: "chart.png", MediaType: "image/png", Data: image}}}, nil
+		},
+	})
+	store, err := session.OpenAt(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "vision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	attachments := session.NewAttachmentManager()
+	attachments.Use(sess)
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "chart-1", Name: "external_chart", Arguments: json.RawMessage(`{}`)}}}, nil
+		}
+		last := request.Messages[len(request.Messages)-1]
+		if last.Role != "tool" || last.Content != "chart data" || len(last.Parts) != 1 || len(last.Parts[0].Data) == 0 || last.Parts[0].AttachmentID == "" {
+			t.Fatalf("resolved tool result=%+v", last)
+		}
+		return provider.Response{Content: "finished"}, nil
+	}}
+	a := New(Options{Client: client, ProviderName: "fixture", Model: "vision", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), Attachments: attachments, OnMessage: sess.AppendMessage})
+	if _, err := a.Run(t.Context(), "read it", nil); err != nil {
+		t.Fatal(err)
+	}
+	messages := sess.TranscriptMessages()
+	tool := messages[len(messages)-2]
+	if tool.Role != "tool" || len(tool.Parts) != 1 || tool.Parts[0].AttachmentID == "" || len(tool.Parts[0].Data) != 0 {
+		t.Fatalf("durable tool message=%+v", tool)
+	}
+}
+
+func TestAgentRetainsUserImagesAfterPromptGate(t *testing.T) {
+	image := append([]byte("\x89PNG\r\n\x1a\n"), []byte("user fixture")...)
+	storeDir := t.TempDir()
+	store, err := session.OpenAt(storeDir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "vision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	attachments := session.NewAttachmentManager()
+	attachments.Use(sess)
+	client := &fakeClient{chat: func(_ int, request provider.Request) (provider.Response, error) {
+		user := request.Messages[0]
+		if len(user.Parts) != 1 || len(user.Parts[0].Data) == 0 || user.Parts[0].AttachmentID == "" {
+			t.Fatalf("provider user message=%+v", user)
+		}
+		return provider.Response{Content: "seen"}, nil
+	}}
+	a := New(Options{Client: client, ProviderName: "fixture", Model: "vision", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), Attachments: attachments, OnMessage: sess.AppendMessage})
+	part := provider.ContentPart{Type: provider.ContentImage, Name: "screen.png", MediaType: "image/png", Size: len(image), Data: image}
+	if _, err := a.RunWithParts(t.Context(), "inspect this", []provider.ContentPart{part}, nil); err != nil {
+		t.Fatal(err)
+	}
+	persisted := sess.TranscriptMessages()[0].Parts[0]
+	if persisted.AttachmentID == "" || len(persisted.Data) != 0 || persisted.SHA256 == "" {
+		t.Fatalf("persisted user image=%+v", persisted)
+	}
+}
+
 func TestAgentMapsNormalizedProviderDeltasWithoutDuplicatingUsage(t *testing.T) {
 	a := New(Options{Client: streamingClient{}, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil)})
 	var reasoning, warning string
@@ -605,7 +678,7 @@ func TestExecuteToolAppliesContentOverride(t *testing.T) {
 	call := provider.ToolCall{ID: "1", Name: "write_file", Arguments: json.RawMessage(`{"path":"x.txt","content":"original content"}`)}
 	result := a.executeTool(t.Context(), call, false, func(event.Event) {})
 	if received != override {
-		t.Fatalf("tool received content=%q, want override %q (full result: %s)", received, override, result)
+		t.Fatalf("tool received content=%q, want override %q (full result: %s)", received, override, result.Content)
 	}
 }
 
@@ -676,15 +749,37 @@ func TestUserPromptHookBlocksTurn(t *testing.T) {
 		t.Fatal("provider must not be called for a blocked prompt")
 		return provider.Response{}, nil
 	}}
-	lifecycle := hooks.NewRunner(t.TempDir(), map[string][]appconfig.Hook{"user_prompt": {{Command: hookScript}}}, nil)
-	a := New(Options{Client: client, ProviderName: "fake", Model: "m", Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), Hooks: lifecycle})
-	_, err := a.Run(t.Context(), "hello", nil)
+	workspace := t.TempDir()
+	storeDir := t.TempDir()
+	store, err := session.OpenAt(storeDir, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fake", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	attachments := session.NewAttachmentManager()
+	attachments.Use(sess)
+	lifecycle := hooks.NewRunner(workspace, map[string][]appconfig.Hook{"user_prompt": {{Command: hookScript}}}, nil)
+	a := New(Options{Client: client, ProviderName: "fake", Model: "m", Workspace: workspace, Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), Hooks: lifecycle, Attachments: attachments, OnMessage: sess.AppendMessage})
+	image := fixtureImageForAgentTest()
+	_, err = a.RunWithParts(t.Context(), "hello", []provider.ContentPart{{Type: provider.ContentImage, Name: "blocked.png", MediaType: "image/png", Size: len(image), Data: image}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "prompts are frozen") {
 		t.Fatalf("expected prompt block, got %v", err)
 	}
 	if a.MessageCount() != 0 {
 		t.Fatalf("blocked prompt must not enter the conversation, got %d messages", a.MessageCount())
 	}
+	attachmentDir := filepath.Join(storeDir, sess.Meta.ID+".attachments")
+	if _, statErr := os.Stat(attachmentDir); !os.IsNotExist(statErr) {
+		t.Fatalf("blocked prompt retained attachment data: %v", statErr)
+	}
+}
+
+func fixtureImageForAgentTest() []byte {
+	return append([]byte("\x89PNG\r\n\x1a\n"), []byte("agent fixture")...)
 }
 
 func TestProviderErrorEventIncludesMachineReadableClassification(t *testing.T) {

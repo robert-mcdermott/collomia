@@ -522,7 +522,7 @@ and refuse to overwrite an existing path even if it appears during creation.
 
 ## Prompt injection
 
-Tool output, repository text, skills, and MCP responses are untrusted data. A
+Tool output, repository text, skills, and MCP responses are external data. A
 sufficiently capable injection can still steer the model, so prose is not the
 security boundary.
 
@@ -545,6 +545,28 @@ risk), denied commands, uninspectable-command prompts, repository/server trust
 gates, rooted structured-file mutations, and—when enabled—the OS sandbox. A
 credential-free adversarial evaluation verifies that an allowed MCP-like read
 containing a forged permission grant still cannot authorize a workspace write.
+
+## Image attachment storage
+
+User-selected and supported MCP-returned images are copied into the active
+session's per-user storage, never into the repository. Durable session JSONL
+contains only a random attachment ID, display name, MIME type, size, and
+SHA-256 digest; provider requests resolve the owner-only raw blob and verify its
+regular-file status, size, detected type, and digest immediately before send.
+Limits are 5 MiB per image, four images per turn/tool batch, and 24 MiB per
+session. Only PNG, JPEG, GIF, and WebP are accepted; active SVG and arbitrary
+binary files are refused. Fork copies attachments, rewind copies only IDs
+reachable from retained messages, and delete removes the attachment directory.
+
+Attaching an image is an explicit data disclosure to the selected provider.
+The submit-time read is anchored to the workspace directory, so changing a
+path component or symbolic link after selection cannot redirect it elsewhere
+in the user account. It does not redact pixels, strip EXIF or other embedded
+metadata, or determine whether a screenshot contains credentials. Inspect and
+sanitize images before sending them to a hosted model. Unsent selections are
+kept only in the running TUI; user images are copied only after the
+`user_prompt` hook accepts the submission, so a blocked turn leaves no blob.
+MCP images retain external-data provenance and never authorize a later action.
 
 ## Reporting
 

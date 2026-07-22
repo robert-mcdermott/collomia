@@ -8,11 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -186,4 +189,144 @@ func (m *Model) openPromptFilePicker() {
 	})
 	m.layout()
 	m.refresh()
+}
+
+func (m *Model) addImageAttachment(requested string) error {
+	if m.runtime.Session == nil || m.runtime.Attachments == nil {
+		return fmt.Errorf("image attachments require a durable session")
+	}
+	if m.runtime.Agent.Capabilities().Images == provider.CapabilityUnsupported {
+		providerName, model := m.runtime.Agent.Selection()
+		return fmt.Errorf("%s/%s does not support image input; switch to an image-capable model first", providerName, model)
+	}
+	if len(m.pendingAttachments) >= session.AttachmentTurnLimit {
+		return fmt.Errorf("a prompt may contain at most %d image attachments", session.AttachmentTurnLimit)
+	}
+	guard, err := tools.NewPathGuard(m.runtime.Workspace, false)
+	if err != nil {
+		return err
+	}
+	resolved, outside, err := guard.Resolve(requested)
+	if err != nil {
+		if outside {
+			return fmt.Errorf("attachment %q is outside the active workspace; copy it into the workspace before attaching it", requested)
+		}
+		return err
+	}
+	for _, attachment := range m.pendingAttachments {
+		if attachment.path == resolved {
+			return fmt.Errorf("%s is already attached", quoteComposerPath(requested))
+		}
+	}
+	part, err := session.InspectImage(resolved)
+	if err != nil {
+		return err
+	}
+	if rel, relErr := filepath.Rel(guard.Workspace, resolved); relErr == nil {
+		part.Name = safeAttachmentDisplayName(filepath.ToSlash(rel))
+	}
+	m.pendingAttachments = append(m.pendingAttachments, pendingAttachment{path: resolved, part: part})
+	m.addSystem(fmt.Sprintf("Attached image %s (%s, %s) to the pending prompt. It is copied into session storage only when you send the prompt.", quoteComposerPath(part.Name), part.MediaType, formatByteCount(part.Size)))
+	return nil
+}
+
+func (m *Model) readPendingAttachments() ([]provider.ContentPart, error) {
+	if len(m.pendingAttachments) == 0 {
+		return nil, nil
+	}
+	parts := make([]provider.ContentPart, 0, len(m.pendingAttachments))
+	for _, pending := range m.pendingAttachments {
+		part, err := session.ReadWorkspaceImage(m.runtime.Workspace, pending.path)
+		if err != nil {
+			return nil, fmt.Errorf("read attachment %q: %w", pending.part.Name, err)
+		}
+		part.Name = pending.part.Name
+		parts = append(parts, part)
+	}
+	return parts, nil
+}
+
+func (m *Model) showPendingAttachments() {
+	if len(m.pendingAttachments) == 0 {
+		m.addPanel("Pending attachments", "No images are attached to the pending prompt. Use /attach [workspace-image].")
+		return
+	}
+	lines := make([]string, 0, len(m.pendingAttachments))
+	for i, attachment := range m.pendingAttachments {
+		lines = append(lines, fmt.Sprintf("%d. %s — %s, %s", i+1, attachment.part.Name, attachment.part.MediaType, formatByteCount(attachment.part.Size)))
+	}
+	m.addPanel("Pending attachments", strings.Join(lines, "\n")+"\n\n/detach <number> removes one; /detach all removes every pending image.")
+}
+
+func (m *Model) detachImage(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: /detach <number|all>")
+	}
+	if strings.EqualFold(args[0], "all") {
+		count := len(m.pendingAttachments)
+		m.pendingAttachments = nil
+		m.addSystem(fmt.Sprintf("Removed %d pending image attachment(s).", count))
+		return nil
+	}
+	index, err := strconv.Atoi(args[0])
+	if err != nil || index < 1 || index > len(m.pendingAttachments) {
+		return fmt.Errorf("attachment number must be between 1 and %d", len(m.pendingAttachments))
+	}
+	removed := m.pendingAttachments[index-1]
+	m.pendingAttachments = append(m.pendingAttachments[:index-1], m.pendingAttachments[index:]...)
+	m.addSystem("Detached " + quoteComposerPath(removed.part.Name) + " from the pending prompt.")
+	return nil
+}
+
+func (m *Model) openImagePicker() {
+	var items []pickerItem
+	for _, item := range m.workspaceFiles() {
+		ext := strings.ToLower(filepath.Ext(item.id))
+		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".webp" {
+			items = append(items, item)
+		}
+	}
+	if len(items) == 0 {
+		m.addPanel("Attach image", "No PNG, JPEG, GIF, or WebP files are available in the workspace.")
+		return
+	}
+	m.picker = newPicker("Attach image", items, func(m *Model, item pickerItem) tea.Cmd {
+		if err := m.addImageAttachment(item.id); err != nil {
+			m.addError(err)
+		}
+		return nil
+	})
+	m.layout()
+	m.refresh()
+}
+
+func displayMessageWithAttachments(content string, parts []provider.ContentPart) string {
+	var names []string
+	for _, part := range parts {
+		if part.Type == provider.ContentImage {
+			names = append(names, fmt.Sprintf("%s (%s, %s)", part.Name, part.MediaType, formatByteCount(part.Size)))
+		}
+	}
+	if len(names) == 0 {
+		return content
+	}
+	return content + "\n\n[Attached images: " + strings.Join(names, "; ") + "]"
+}
+
+func safeAttachmentDisplayName(name string) string {
+	name = strings.ToValidUTF8(name, "�")
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f {
+			return -1
+		}
+		return r
+	}, name)
+	runes := []rune(name)
+	if len(runes) > 256 {
+		name = string(runes[:256]) + "…"
+	}
+	if name == "" {
+		return "image"
+	}
+	return name
 }

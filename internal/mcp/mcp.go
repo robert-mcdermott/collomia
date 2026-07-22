@@ -758,10 +758,10 @@ func (m *Manager) buildTools(ctx context.Context, server string, cfg appconfig.M
 			registered = append(registered, publicName)
 			// call runs the tool; when onOutput is set, server progress
 			// notifications stream through it live.
-			call := func(callCtx context.Context, raw json.RawMessage, onOutput func(string)) (string, error) {
+			call := func(callCtx context.Context, raw json.RawMessage, onOutput func(string)) (tools.Result, error) {
 				var args map[string]any
 				if err := json.Unmarshal(raw, &args); err != nil {
-					return "", err
+					return tools.Result{}, err
 				}
 				timeoutCtx, cancel := context.WithTimeout(callCtx, time.Duration(cfg.Timeout)*time.Second)
 				defer cancel()
@@ -773,9 +773,10 @@ func (m *Manager) buildTools(ctx context.Context, server string, cfg appconfig.M
 				}
 				response, err := session.CallTool(timeoutCtx, params)
 				if err != nil {
-					return "", err
+					return tools.Result{}, err
 				}
-				output := frameExternalMCPData("tool result", server, remote.Name, renderToolResult(response))
+				rendered := renderRichToolResult(response)
+				output := tools.Result{Content: frameExternalMCPData("tool result", server, remote.Name, rendered.Content), Parts: rendered.Parts}
 				if response.IsError {
 					return output, fmt.Errorf("MCP tool returned an error")
 				}
@@ -788,11 +789,8 @@ func (m *Manager) buildTools(ctx context.Context, server string, cfg appconfig.M
 						compactMetadata(server), compactMetadata(remote.Name), compactMetadata(remote.Description)),
 					InputSchema: schema,
 				},
-				Action: tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server},
-				Run: func(callCtx context.Context, raw json.RawMessage) (string, error) {
-					return call(callCtx, raw, nil)
-				},
-				RunStream: call,
+				Action:    tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server},
+				RunResult: call,
 			})
 		}
 		cursor = result.NextCursor

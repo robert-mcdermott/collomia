@@ -90,6 +90,9 @@ func (s *Store) path(id string) string { return filepath.Join(s.dir, id+".jsonl"
 func (s *Store) artifactDir(id string) string {
 	return filepath.Join(s.dir, id+".artifacts")
 }
+func (s *Store) attachmentDir(id string) string {
+	return filepath.Join(s.dir, id+".attachments")
+}
 
 // New creates and opens a fresh session.
 func (s *Store) New(providerName, model string) (*Session, error) {
@@ -214,6 +217,13 @@ func (s *Store) Fork(id string) (*Session, error) {
 		_ = os.RemoveAll(s.artifactDir(meta.ID))
 		return nil, fmt.Errorf("copy session artifacts: %w", err)
 	}
+	if err := copyAttachmentDir(s.attachmentDir(id), s.attachmentDir(meta.ID), nil); err != nil {
+		sess.Close()
+		_ = os.Remove(s.path(meta.ID))
+		_ = os.RemoveAll(s.artifactDir(meta.ID))
+		_ = os.RemoveAll(s.attachmentDir(meta.ID))
+		return nil, fmt.Errorf("copy session attachments: %w", err)
+	}
 	return sess, nil
 }
 
@@ -318,6 +328,13 @@ func (s *Store) Rewind(id string, turns int) (*Session, error) {
 		_ = os.RemoveAll(s.artifactDir(newMeta.ID))
 		return nil, fmt.Errorf("copy session artifacts: %w", err)
 	}
+	if err := copyAttachmentDir(s.attachmentDir(id), s.attachmentDir(newMeta.ID), referencedAttachmentIDs(selected)); err != nil {
+		sess.Close()
+		_ = os.Remove(path)
+		_ = os.RemoveAll(s.artifactDir(newMeta.ID))
+		_ = os.RemoveAll(s.attachmentDir(newMeta.ID))
+		return nil, fmt.Errorf("copy session attachments: %w", err)
+	}
 	return sess, nil
 }
 
@@ -333,6 +350,9 @@ func (s *Store) Delete(id string) error {
 	}
 	if err := os.RemoveAll(s.artifactDir(id)); err != nil {
 		return fmt.Errorf("remove session artifacts: %w", err)
+	}
+	if err := os.RemoveAll(s.attachmentDir(id)); err != nil {
+		return fmt.Errorf("remove session attachments: %w", err)
 	}
 	return nil
 }
@@ -401,6 +421,21 @@ func referencedArtifactIDs(records []Record) map[string]bool {
 	return referenced
 }
 
+func referencedAttachmentIDs(records []Record) map[string]bool {
+	referenced := map[string]bool{}
+	for _, record := range records {
+		if record.Message == nil {
+			continue
+		}
+		for _, part := range record.Message.Parts {
+			if part.Type == provider.ContentImage && validArtifactID(part.AttachmentID) {
+				referenced[part.AttachmentID] = true
+			}
+		}
+	}
+	return referenced
+}
+
 // copyArtifactDir copies every valid artifact when allowed is nil (a normal
 // fork), or only the named references for a conversation rewind.
 func copyArtifactDir(source, target string, allowed map[string]bool) error {
@@ -426,6 +461,61 @@ func copyArtifactDir(source, target string, allowed map[string]bool) error {
 		}
 		if !info.Mode().IsRegular() || info.Size() > ArtifactResultLimit {
 			return fmt.Errorf("invalid session artifact %s", entry.Name())
+		}
+		data, err := os.ReadFile(filepath.Join(source, entry.Name()))
+		if err != nil {
+			return err
+		}
+		if !created {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			created = true
+		}
+		path := filepath.Join(target, entry.Name())
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		written, writeErr := file.Write(data)
+		if writeErr == nil && written != len(data) {
+			writeErr = io.ErrShortWrite
+		}
+		if closeErr := file.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		if writeErr != nil {
+			return writeErr
+		}
+	}
+	return nil
+}
+
+// copyAttachmentDir copies bounded regular image blobs for a normal fork, or
+// only references reachable from the retained record prefix for rewind.
+func copyAttachmentDir(source, target string, allowed map[string]bool) error {
+	entries, err := os.ReadDir(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	created := false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".bin") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".bin")
+		if !validArtifactID(id) || (allowed != nil && !allowed[id]) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > AttachmentFileLimit {
+			return fmt.Errorf("invalid session attachment %s", entry.Name())
 		}
 		data, err := os.ReadFile(filepath.Join(source, entry.Name()))
 		if err != nil {

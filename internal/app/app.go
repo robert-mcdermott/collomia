@@ -43,6 +43,7 @@ type Runtime struct {
 	Sessions    *session.Store
 	Session     *session.Session
 	Artifacts   *session.ArtifactManager
+	Attachments *session.AttachmentManager
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
 	Team        *agent.Team
@@ -219,6 +220,8 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	}
 	artifacts := session.NewArtifactManager()
 	artifacts.Use(sess)
+	attachments := session.NewAttachmentManager()
+	attachments.Use(sess)
 	var artifactSink *session.ArtifactManager
 	if sess != nil {
 		registry.Add(session.ArtifactTool(artifacts))
@@ -239,7 +242,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	lifecycle := hooks.NewRunner(workspace, cfg.Hooks, func(note hooks.Note) {
 		logger.Warn("hook", "event", note.Event, "command", note.Command, "note", note.Text)
 	})
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, Artifacts: artifactSink, PinnedContext: func() string {
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, Artifacts: artifactSink, Attachments: attachments, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
 			return ""
@@ -265,7 +268,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		sessionID = sess.Meta.ID
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle}, nil
+	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle}, nil
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -491,6 +494,9 @@ func (r *Runtime) SwitchSession(id string) error {
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}
+	if r.Attachments != nil {
+		r.Attachments.Use(sess)
+	}
 	r.Agent.SetMessages(sess.Active())
 	sess.FlushInterrupted()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
@@ -515,6 +521,9 @@ func (r *Runtime) NewSession() error {
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}
+	if r.Attachments != nil {
+		r.Attachments.Use(sess)
+	}
 	r.Agent.Clear()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	attachBoard(r.Plan, sess)
@@ -536,6 +545,9 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	r.Session = sess
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
+	}
+	if r.Attachments != nil {
+		r.Attachments.Use(sess)
 	}
 	r.Agent.SetMessages(sess.Active())
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)

@@ -1590,6 +1590,9 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/skills list` | List active and disabled skills. |
 | `/agents` | Fuzzy-search delegated tasks and inspect status, task, duration, outcome, changed files, and retained worktree/branch details. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
+| `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
+| `/attachments` | List images attached to the pending prompt. |
+| `/detach <number\|all>` | Remove one or every pending image attachment. |
 | `/mcp ...` | Browse/manage MCP servers, resources, and prompts. |
 | `/tools` | List every tool currently registered. |
 | `/review [ref] [instructions...]` | Review uncommitted changes or changes relative to a ref, with an optional focus. |
@@ -1638,9 +1641,54 @@ source header plus the file contents; review or edit both before pressing
 enter. For a larger source file, mention it with `@` and let the agent inspect
 bounded portions instead.
 
-Current provider adapters accept text messages only. Image, audio, and binary
-files therefore produce a clear unsupported-input error instead of being
-silently flattened or sent to a provider that cannot represent them.
+### Image attachments
+
+Use `/attach` when the model should receive an image itself rather than a text
+reference to a workspace path:
+
+```text
+/attach screenshots/failure.png
+/attach "design references/dialog state.webp"
+/attach file:///workspace/screenshots/failure.png
+```
+
+With no path, `/attach` opens a fuzzy picker containing PNG, JPEG, GIF, and
+WebP files. You can also type `/attach ` and drag an image into terminals that
+paste the dropped path. Paths are parsed directly—no shell evaluates them—and
+may be quoted or use backslash-escaped spaces. Images must resolve to regular
+files inside the active workspace; symlink escapes and outside paths are
+refused.
+
+The status bar shows an `images N` badge while a prompt has pending images.
+Run `/attachments` to review their names, types, and sizes, `/detach 2` to
+remove one, or `/detach all` to remove them all. Pending images follow the
+unsent draft when you switch sessions inside the running TUI. Like the text
+draft, an unsent selection is not durable across application restarts.
+
+Collomia accepts at most four images per prompt, 5 MiB per image, and 24 MiB
+of retained images per session. The selected file is inspected when attached,
+then reopened through a workspace-rooted handle and copied into owner-only
+session storage only after the prompt is sent and its `user_prompt` hook
+accepts the turn. A path or symlink swap cannot redirect that final read
+outside the workspace, and a hook-blocked prompt leaves no attachment blob. The
+session record stores a random reference, media type, size, and SHA-256 digest
+rather than base64 bytes; Collomia rechecks size, type, and digest before every
+provider request. Fork copies the attachments, rewind copies only references
+reachable from retained turns, and session deletion removes them.
+
+Image capability is adapter- and model-dependent. OpenAI/compatible Chat
+Completions, Azure OpenAI/Foundry OpenAI, Anthropic/Foundry Claude, Bedrock
+ConverseStream, and Responses/Mantle adapters encode user images, but their
+capability remains `partial` because a selected model or compatible gateway
+may still be text-only. A known text-only adapter is rejected before network
+I/O; a partial endpoint can return its normal provider error. GIF and WebP are
+accepted by Collomia, though individual models may support a smaller format
+set. Audio, video, PDFs, SVG, raw clipboard image protocols, and image
+generation are not part of this workflow.
+
+Provider-reported usage replaces Collomia's approximation after a request.
+Until then, `/context` visibly reserves roughly 1,000 tokens per image; actual
+image token accounting varies by provider, model, resolution, and detail mode.
 
 ### Approval dialogs
 
@@ -2806,9 +2854,15 @@ Prompt expansion puts a provenance-framed server-generated prompt into the
 composer. Review and edit it before pressing Enter; expansion does not send it
 automatically and does not grant any tool permission.
 
-Tool content keeps structured/text and embedded resource data. Images/audio
-are represented to the text agent as explicit type-and-size markers, and
-resource links retain a URI that the resource tool can follow.
+Tool content keeps structured/text and embedded resource data. Images always
+retain an explicit type-and-size marker. When the active route supports rich
+tool-result images, bounded image bytes are also retained in session attachment
+storage and supplied to the next model turn; Anthropic Messages and Bedrock
+Converse support that path. OpenAI-compatible Chat Completions keeps the marker
+because multimodal tool-message content is not portable across gateways. Audio
+remains metadata-only, and resource links retain a URI that the resource tool
+can follow. Image content remains inside the same `EXTERNAL_MCP_DATA`
+provenance context and cannot grant permission.
 
 ### Progress, elicitation, and pinning
 
@@ -3081,7 +3135,9 @@ accepted history up to the final torn line remains recoverable.
 usage anchors estimates; when no fresh usage is available, the UI estimates at
 roughly four characters per token. `/context` breaks down system prompt,
 instructions, pinned session state, skill summary, tool results,
-user/assistant messages, compaction summaries, and retained-result storage.
+user/assistant messages, compaction summaries, image attachments, and
+retained-result storage. Before provider-reported usage is available, each
+image reserves a visible rough estimate of about 1,000 tokens.
 
 The current structured plan is rendered into a pinned session-state section
 on every provider request. It is refreshed after `update_plan`, resume,
@@ -3101,6 +3157,25 @@ manually.
 Compaction changes only the model's active context. The full durable transcript
 is retained in the session JSONL file. Compaction itself consumes a provider
 request and tokens.
+
+### Session image storage
+
+Submitted image bytes are stored as owner-only raw blobs beside the session,
+not base64-encoded into its append-only JSONL. Message records keep only a
+random attachment ID, name, MIME type, size, and SHA-256 digest. Every provider
+request reopens the regular file and verifies its size, detected type, and
+digest before attaching the bytes. A missing, replaced, or corrupted blob
+fails the turn visibly rather than silently sending different content.
+
+The fixed limits are 5 MiB per image, four images in one user/tool-result
+batch, and 24 MiB per session. Fork copies all referenced images; rewind copies
+only images reachable from its retained conversation prefix; delete removes
+the session attachment directory. Older image turns can be compacted: the
+durable transcript and blob remain, while the compacted summary records image
+metadata and normally relies on the surrounding assistant analysis for the
+visual conclusions. Unsent selections are in-process composer state and are
+not stored until an accepted submission; a prompt rejected by a `user_prompt`
+hook is not retained.
 
 ### Oversized tool-result artifacts
 

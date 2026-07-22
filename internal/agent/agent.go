@@ -57,6 +57,7 @@ type Agent struct {
 	onCompaction        func(summary provider.Message, replaced int)
 	pinnedContext       func() string
 	artifacts           *session.ArtifactManager
+	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
 }
 
@@ -81,6 +82,9 @@ type Options struct {
 	PinnedContext func() string
 	// Artifacts retains bounded oversized tool results for on-demand reads.
 	Artifacts *session.ArtifactManager
+	// Attachments resolves session-local image references immediately before
+	// provider requests and retains rich image results from tools.
+	Attachments *session.AttachmentManager
 	// Hooks runs configured lifecycle-hook commands; nil disables hooks.
 	Hooks *hooks.Runner
 }
@@ -96,7 +100,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, lifecycle: opts.Hooks}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks}
 }
 
 // appendMessage adds to the conversation and notifies the persistence hook.
@@ -131,8 +135,22 @@ func (a *Agent) SetMessages(messages []provider.Message) {
 }
 
 func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, error) {
+	return a.RunWithParts(ctx, prompt, nil, emit)
+}
+
+// RunWithParts submits a prompt with optional typed content. Existing
+// text-only callers use Run and retain identical request/session shapes.
+func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provider.ContentPart, emit Emit) (string, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return "", errors.New("prompt is empty")
+	}
+	if len(parts) > session.AttachmentTurnLimit {
+		return "", fmt.Errorf("a turn may contain at most %d attachments", session.AttachmentTurnLimit)
+	}
+	for _, part := range parts {
+		if part.Type != provider.ContentImage {
+			return "", fmt.Errorf("unsupported prompt content type %q", part.Type)
+		}
 	}
 	send := func(e event.Event) {
 		if emit != nil {
@@ -145,7 +163,13 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		send(errorEvent(blocked))
 		return "", blocked
 	}
-	a.appendMessage(provider.Message{Role: "user", Content: prompt})
+	retainedParts, err := a.retainPromptParts(parts)
+	if err != nil {
+		wrapped := fmt.Errorf("retain prompt attachments: %w", err)
+		send(errorEvent(wrapped))
+		return "", wrapped
+	}
+	a.appendMessage(provider.Message{Role: "user", Content: prompt, Parts: retainedParts})
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
 		if a.shouldCompact() {
 			if _, err := a.compact(ctx, "", send); err != nil {
@@ -164,6 +188,15 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		model := a.model
 		plan := a.planMode
 		a.mu.RUnlock()
+		if a.attachments != nil {
+			var resolveErr error
+			messages, resolveErr = a.attachments.ResolveMessages(messages)
+			if resolveErr != nil {
+				wrapped := fmt.Errorf("prepare provider attachments: %w", resolveErr)
+				send(errorEvent(wrapped))
+				return "", wrapped
+			}
+		}
 		if client == nil {
 			return "", errors.New("no provider client configured")
 		}
@@ -232,12 +265,50 @@ func (a *Agent) Run(ctx context.Context, prompt string, emit Emit) (string, erro
 		}
 		for _, call := range response.ToolCalls {
 			result := a.executeTool(ctx, call, plan, send)
-			a.appendMessage(provider.Message{Role: "tool", ToolCallID: call.ID, Content: result})
+			a.appendMessage(provider.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content, Parts: result.Parts})
 		}
 	}
-	err := fmt.Errorf("agent stopped after %d iterations", a.maxIterations)
+	err = fmt.Errorf("agent stopped after %d iterations", a.maxIterations)
 	send(errorEvent(err))
 	return "", err
+}
+
+// retainPromptParts moves in-memory user images into the durable session only
+// after lifecycle hooks accept the prompt. This prevents blocked prompts from
+// consuming attachment quota or leaving unreferenced files behind.
+func (a *Agent) retainPromptParts(parts []provider.ContentPart) ([]provider.ContentPart, error) {
+	retained := make([]provider.ContentPart, 0, len(parts))
+	savedIDs := make([]string, 0, len(parts))
+	cleanup := func() {
+		if a.attachments == nil {
+			return
+		}
+		for _, id := range savedIDs {
+			_ = a.attachments.Remove(id)
+		}
+	}
+	for _, part := range parts {
+		if part.AttachmentID != "" && len(part.Data) == 0 {
+			retained = append(retained, part)
+			continue
+		}
+		if len(part.Data) == 0 {
+			cleanup()
+			return nil, fmt.Errorf("image %q has neither data nor a session attachment reference", part.Name)
+		}
+		if a.attachments == nil || !a.attachments.Available() {
+			retained = append(retained, part)
+			continue
+		}
+		saved, err := a.attachments.SaveBytes(part.Name, part.MediaType, part.Data)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		retained = append(retained, saved)
+		savedIDs = append(savedIDs, saved.AttachmentID)
+	}
+	return retained, nil
 }
 
 // withOverriddenContent replaces a write_file call's proposed content with
@@ -269,13 +340,13 @@ func errorEvent(err error) event.Event {
 	return e
 }
 
-func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) string {
+func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) tools.Result {
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
-		return "Tool error: " + err.Error()
+		return tools.Result{Content: "Tool error: " + err.Error()}
 	}
 	if plan && action.Risk != tools.RiskRead {
-		return "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."
+		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}
 	}
 	grant, err := a.permissions.Authorize(ctx, call.Name, action)
 	decided := event.New(event.KindPermissionDecision)
@@ -284,17 +355,17 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	allowed := err == nil
 	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
 	if err != nil {
-		return "Tool denied: " + err.Error()
+		return tools.Result{Content: "Tool denied: " + err.Error()}
 	}
 	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
-		return "Tool blocked by hook: " + hookErr.Error()
+		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}
 	}
 	args := call.Arguments
 	if grant.ContentOverride != nil {
 		var overridden error
 		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
 		if overridden != nil {
-			return "Tool error: " + overridden.Error()
+			return tools.Result{Content: "Tool error: " + overridden.Error()}
 		}
 	}
 	start := event.New(event.KindToolStart)
@@ -305,11 +376,11 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
 	}
-	result, err := a.registry.ExecuteStream(ctx, call.Name, args, onOutput)
+	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
 	a.permissions.RecordOutcome(call.Name, action, err)
-	if len(result) > a.maxToolOutput {
-		original := result
-		result = clipUTF8(original, a.maxToolOutput)
+	if len(result.Content) > a.maxToolOutput {
+		original := result.Content
+		result.Content = clipUTF8(original, a.maxToolOutput)
 		if a.artifacts != nil && call.Name != "read_tool_result" {
 			ref, artifactErr := a.artifacts.SaveArtifact(call.Name, original)
 			if artifactErr == nil {
@@ -317,27 +388,28 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 				if !ref.Complete {
 					completeness = "retained prefix"
 				}
-				result += fmt.Sprintf("\n… output omitted from active context; %s saved as session artifact %s (%d of %d returned bytes). Use read_tool_result with this id and byte ranges to inspect it without rerunning %s. …", completeness, ref.ID, ref.StoredBytes, ref.ReturnedBytes, call.Name)
+				result.Content += fmt.Sprintf("\n… output omitted from active context; %s saved as session artifact %s (%d of %d returned bytes). Use read_tool_result with this id and byte ranges to inspect it without rerunning %s. …", completeness, ref.ID, ref.StoredBytes, ref.ReturnedBytes, call.Name)
 			} else {
-				result += "\n… tool output truncated; retaining the omitted output failed …"
+				result.Content += "\n… tool output truncated; retaining the omitted output failed …"
 				warning := event.New(event.KindWarning)
 				warning.Text = "could not retain oversized output from " + call.Name + ": " + artifactErr.Error()
 				send(warning)
 			}
 		} else {
-			result += "\n… tool output truncated …"
+			result.Content += "\n… tool output truncated …"
 		}
 	}
+	result.Parts = a.retainToolParts(call.Name, result.Parts, send)
 	if err != nil {
-		if result != "" {
-			result += "\n"
+		if result.Content != "" {
+			result.Content += "\n"
 		}
-		result += "Tool error: " + err.Error()
+		result.Content += "Tool error: " + err.Error()
 	}
 	done := event.New(event.KindToolResult)
-	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result, IsError: err != nil}
+	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil}
 	send(done)
-	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result)}}
+	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result.Content), "image_parts": len(result.Parts)}}
 	if err != nil {
 		endPayload.Error = err.Error()
 	}
@@ -346,6 +418,43 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
 	}
 	return result
+}
+
+func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, send Emit) []provider.ContentPart {
+	if len(parts) > session.AttachmentTurnLimit {
+		parts = parts[:session.AttachmentTurnLimit]
+		warning := event.New(event.KindWarning)
+		warning.Text = fmt.Sprintf("tool %s returned more than %d images; additional images were omitted", toolName, session.AttachmentTurnLimit)
+		send(warning)
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	if a.Capabilities().Images == provider.CapabilityUnsupported {
+		warning := event.New(event.KindWarning)
+		warning.Text = "the active provider does not support image input; binary tool images remain metadata-only"
+		send(warning)
+		return nil
+	}
+	retained := make([]provider.ContentPart, 0, len(parts))
+	for _, part := range parts {
+		if part.Type != provider.ContentImage || len(part.Data) == 0 {
+			continue
+		}
+		if a.attachments == nil || !a.attachments.Available() {
+			retained = append(retained, part)
+			continue
+		}
+		stored, err := a.attachments.SaveBytes(part.Name, part.MediaType, part.Data)
+		if err != nil {
+			warning := event.New(event.KindWarning)
+			warning.Text = "could not retain image returned by " + toolName + ": " + err.Error()
+			send(warning)
+			continue
+		}
+		retained = append(retained, stored)
+	}
+	return retained
 }
 
 func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
@@ -725,6 +834,15 @@ func (a *Agent) ContextEstimate() (estimated int, window int) {
 	}
 	for _, m := range a.messages[start:] {
 		chars += len(m.Content) + len(m.ToolCallID)
+		for _, part := range m.Parts {
+			if part.Type == provider.ContentImage {
+				// Image tokenization is provider/model-specific. Reserve a
+				// visible planning estimate until reported usage replaces it.
+				chars += 4 * 1024
+			} else {
+				chars += len(part.Text)
+			}
+		}
 		for _, c := range m.ToolCalls {
 			chars += len(c.Name) + len(c.Arguments)
 		}
@@ -744,6 +862,7 @@ type ContextBreakdown struct {
 	Summaries          int
 	ArtifactCount      int
 	ArtifactBytes      int
+	ImageCount         int
 	Estimated, Window  int
 }
 
@@ -776,6 +895,11 @@ func (a *Agent) ContextBreakdown() ContextBreakdown {
 		}
 		if m.Role == "user" && strings.HasPrefix(m.Content, "[Context summary") {
 			b.Summaries++
+		}
+		for _, part := range m.Parts {
+			if part.Type == provider.ContentImage {
+				b.ImageCount++
+			}
 		}
 	}
 	if a.artifacts != nil {
@@ -828,6 +952,11 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	var serialized strings.Builder
 	for _, m := range messages[:cut] {
 		fmt.Fprintf(&serialized, "[%s] %s\n", m.Role, m.Content)
+		for _, part := range m.Parts {
+			if part.Type == provider.ContentImage {
+				fmt.Fprintf(&serialized, "[attached image] %s (%s, %d bytes; binary remains in the durable transcript)\n", part.Name, part.MediaType, part.Size)
+			}
+		}
 		for _, call := range m.ToolCalls {
 			fmt.Fprintf(&serialized, "[tool-call] %s %s\n", call.Name, call.Arguments)
 		}

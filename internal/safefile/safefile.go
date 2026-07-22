@@ -107,6 +107,7 @@ func (t *Target) Close() error {
 }
 
 func (t *Target) ReadFile() ([]byte, error)   { return t.root.ReadFile(t.name) }
+func (t *Target) OpenFile() (*os.File, error) { return t.root.Open(t.name) }
 func (t *Target) Stat() (os.FileInfo, error)  { return t.root.Stat(t.name) }
 func (t *Target) Lstat() (os.FileInfo, error) { return t.root.Lstat(t.name) }
 func (t *Target) RootStat() (os.FileInfo, error) {

@@ -23,7 +23,7 @@ revision. The table below is the product-level contract.
 | --- | --- |
 | Initialization | Negotiates a revision and records server identity and capabilities. |
 | Transports | stdio and Streamable HTTP. |
-| Tools | Paginated discovery, JSON Schema definitions, calls, typed results, cancellation, and progress. |
+| Tools | Paginated discovery, JSON Schema definitions, calls, typed results (including bounded image passthrough on capable provider routes), cancellation, and progress. |
 | Tool list changes | Complete catalog is fetched and validated, then atomically replaces that server's registered tools. Failed refreshes keep the previous catalog. |
 | Resources | Paginated live listing and reads; text/binary metadata and embedded content are preserved as documented. |
 | Resource list changes | Marks the catalog pending until the next successful live list. |
@@ -64,8 +64,10 @@ independently.
 - Resource subscribe/unsubscribe and resource-updated notifications.
 - Standards-based OAuth discovery, login, refresh, logout, and token storage.
 - Sampling requests from servers.
-- Direct image/audio delivery to multimodal provider inputs; binary MCP content
-  is currently represented by safe type-and-size markers in text context.
+- Direct audio delivery to provider inputs. Images retain safe type-and-size
+  markers and additionally pass through as typed bytes for Anthropic Messages
+  and Bedrock Converse tool-result turns; OpenAI-compatible Chat Completions
+  remains marker-only because its tool-message image shape is not portable.
 
 MCP tasks were introduced as experimental in the 2025-11-25 specification.
 Collomia will not create a private task dialect while that surface and its SDK
@@ -77,7 +79,7 @@ Ordinary `go test ./...` uses in-memory MCP fixture servers and no external
 credentials. Together the fixtures cover:
 
 - initialization, identity, revision, and negotiated capabilities;
-- tools, resources, prompts, and rich result content;
+- tools, resources, prompts, and rich result content, including typed image-byte preservation;
 - dynamic tool/resource/prompt list-change notifications;
 - atomic hot refresh, notification coalescing, stale-session rejection, and
   preservation of the last-known-good tools when replacement validation fails;

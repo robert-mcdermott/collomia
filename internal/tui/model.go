@@ -21,6 +21,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/app"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
 )
@@ -31,6 +32,11 @@ import (
 type block struct {
 	role, title, content string
 	tool, summary        string
+}
+
+type pendingAttachment struct {
+	path string
+	part provider.ContentPart
 }
 type runMsg struct {
 	event *runtimeevent.Event
@@ -88,10 +94,12 @@ type Model struct {
 	transcript *transcriptState
 	diffView   *diffViewState
 
-	promptHistory []string
-	historyIndex  int
-	historyDraft  string
-	sessionDrafts map[string]string
+	promptHistory      []string
+	historyIndex       int
+	historyDraft       string
+	sessionDrafts      map[string]string
+	pendingAttachments []pendingAttachment
+	sessionAttachments map[string][]pendingAttachment
 
 	workspaceStatus     workspacestate.GitStatus
 	workspaceLoading    bool
@@ -120,7 +128,7 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	spin.Spinner = spinner.Points
 	m := Model{
 		runtime: runtime, broker: broker, input: in, spinner: spin,
-		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{},
+		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{}, sessionAttachments: map[string][]pendingAttachment{},
 		workspaceLoading: true, workspaceGeneration: 1,
 	}
 	m.applyTheme(theme)
@@ -448,8 +456,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // startTurn submits one prompt to the agent and begins streaming events.
 func (m *Model) startTurn(value string) tea.Cmd {
+	parts, err := m.readPendingAttachments()
+	if err != nil {
+		m.setComposerValue(value)
+		m.addError(err)
+		m.refresh()
+		return nil
+	}
 	m.recordPrompt(value)
-	m.blocks = append(m.blocks, block{role: "user", content: value})
+	m.blocks = append(m.blocks, block{role: "user", content: displayMessageWithAttachments(value, parts)})
+	m.pendingAttachments = nil
+	if key := m.sessionDraftKey(); key != "" {
+		delete(m.sessionAttachments, key)
+	}
 	m.busy = true
 	m.turnStarted = time.Now()
 	m.input.Blur()
@@ -459,7 +478,7 @@ func (m *Model) startTurn(value string) tea.Cmd {
 	events := m.runEvents
 	runtime := m.runtime
 	go func() {
-		final, err := runtime.Agent.Run(ctx, value, func(e runtimeevent.Event) {
+		final, err := runtime.Agent.RunWithParts(ctx, value, parts, func(e runtimeevent.Event) {
 			runtime.LogEvent(e)
 			events <- runMsg{event: &e}
 		})
@@ -1062,6 +1081,9 @@ func (m Model) renderStatusBar() string {
 	}
 	if running := m.runtime.Processes.Running(); running > 0 {
 		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("procs %d", running), m.theme.Secondary)
+	}
+	if len(m.pendingAttachments) > 0 {
+		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("images %d", len(m.pendingAttachments)), m.theme.Accent)
 	}
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 

@@ -106,6 +106,9 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if breakdown.ArtifactCount > 0 {
 			inspector += fmt.Sprintf("\n  retained results   %d artifact(s), %s on disk and outside the prompt", breakdown.ArtifactCount, formatByteCount(breakdown.ArtifactBytes))
 		}
+		if breakdown.ImageCount > 0 {
+			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
+		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
 		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
@@ -176,6 +179,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			break
 		}
 		if err := m.loadPromptFile(path); err != nil {
+			m.addError(err)
+		}
+	case "/attach":
+		path, err := promptPathArgument(line)
+		if err != nil {
+			m.addError(fmt.Errorf("usage: /attach [workspace-image]: %w", err))
+			break
+		}
+		if path == "" {
+			m.openImagePicker()
+			break
+		}
+		if err := m.addImageAttachment(path); err != nil {
+			m.addError(err)
+		}
+	case "/attachments":
+		m.showPendingAttachments()
+	case "/detach":
+		if err := m.detachImage(args); err != nil {
 			m.addError(err)
 		}
 	case "/mcp":

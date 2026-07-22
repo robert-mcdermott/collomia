@@ -71,8 +71,8 @@ func TestCapabilityDeclarationsPreserveImportantDifferences(t *testing.T) {
 	if bedrock.Reasoning != CapabilityPartial {
 		t.Fatalf("bedrock reasoning=%s", bedrock.Reasoning)
 	}
-	if openAI.Images != CapabilityUnsupported {
-		t.Fatal("the current text-only adapter must not claim vendor image support")
+	if openAI.Images != CapabilityPartial || bedrock.Images != CapabilityPartial {
+		t.Fatal("image-capable adapters must preserve model-specific uncertainty")
 	}
 }
 

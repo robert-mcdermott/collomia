@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 const maxMCPMetadataBytes = 1024
@@ -96,18 +97,24 @@ func sanitizeSchemaValue(value any) any {
 // silently dropping non-text parts: binary media becomes an explicit marker
 // carrying its type and size, resource links keep their URI and the hint
 // needed to follow them, and embedded resources contribute their text.
-func renderContent(parts []mcp.Content) []string {
-	var out []string
+type renderedMCPContent struct {
+	text   []string
+	images []provider.ContentPart
+}
+
+func renderRichContent(parts []mcp.Content) renderedMCPContent {
+	var out renderedMCPContent
 	for _, part := range parts {
 		switch c := part.(type) {
 		case *mcp.TextContent:
 			if c.Text != "" {
-				out = append(out, c.Text)
+				out.text = append(out.text, c.Text)
 			}
 		case *mcp.ImageContent:
-			out = append(out, fmt.Sprintf("[image %s, %d bytes — binary content not inlined]", c.MIMEType, len(c.Data)))
+			out.text = append(out.text, fmt.Sprintf("[image %s, %d bytes — typed binary content attached when the active provider route supports tool-result images]", c.MIMEType, len(c.Data)))
+			out.images = append(out.images, provider.ContentPart{Type: provider.ContentImage, Name: "MCP image", MediaType: c.MIMEType, Size: len(c.Data), Data: append([]byte(nil), c.Data...)})
 		case *mcp.AudioContent:
-			out = append(out, fmt.Sprintf("[audio %s, %d bytes — binary content not inlined]", c.MIMEType, len(c.Data)))
+			out.text = append(out.text, fmt.Sprintf("[audio %s, %d bytes — binary content not inlined]", c.MIMEType, len(c.Data)))
 		case *mcp.ResourceLink:
 			line := fmt.Sprintf("[resource link: %s", c.URI)
 			if c.Name != "" {
@@ -117,19 +124,21 @@ func renderContent(parts []mcp.Content) []string {
 			if c.Description != "" {
 				line += " " + c.Description
 			}
-			out = append(out, line)
+			out.text = append(out.text, line)
 		case *mcp.EmbeddedResource:
 			if c.Resource != nil {
-				out = append(out, renderResourceContents(c.Resource))
+				out.text = append(out.text, renderResourceContents(c.Resource))
 			}
 		default:
 			if data, err := json.Marshal(part); err == nil {
-				out = append(out, string(data))
+				out.text = append(out.text, string(data))
 			}
 		}
 	}
 	return out
 }
+
+func renderContent(parts []mcp.Content) []string { return renderRichContent(parts).text }
 
 // renderResourceContents renders one resources/read content entry.
 func renderResourceContents(rc *mcp.ResourceContents) string {
@@ -149,7 +158,12 @@ func renderResourceContents(rc *mcp.ResourceContents) string {
 // renderToolResult flattens a tool call's typed content while preserving
 // structured output and non-text markers.
 func renderToolResult(result *mcp.CallToolResult) string {
-	parts := renderContent(result.Content)
+	return renderRichToolResult(result).Content
+}
+
+func renderRichToolResult(result *mcp.CallToolResult) provider.Message {
+	rendered := renderRichContent(result.Content)
+	parts := rendered.text
 	if result.StructuredContent != nil {
 		if value, err := json.MarshalIndent(result.StructuredContent, "", "  "); err == nil {
 			parts = append(parts, string(value))
@@ -161,7 +175,7 @@ func renderToolResult(result *mcp.CallToolResult) string {
 			output = string(data)
 		}
 	}
-	return output
+	return provider.Message{Content: output, Parts: rendered.images}
 }
 
 // renderPromptResult renders a server prompt's messages as reviewable text
