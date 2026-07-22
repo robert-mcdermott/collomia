@@ -119,9 +119,12 @@ func Profile(policy Policy) (string, error) {
 	if !policy.AllowNetwork {
 		b.WriteString("(deny network*)\n")
 		// Local loopback stays open so builds can talk to local daemons
-		// (e.g. an Ollama server); remote egress is what we're denying.
-		b.WriteString("(allow network* (remote ip \"localhost:*\"))\n")
-		b.WriteString("(allow network* (local ip \"localhost:*\"))\n")
+		// (e.g. an Ollama server) or bind local dev servers. Keep the
+		// operation selectors narrow: a network* rule filtered only on the
+		// local address also matches outbound sockets and would reopen egress.
+		b.WriteString("(allow network-outbound (remote ip \"localhost:*\"))\n")
+		b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+		b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
 	}
 	return b.String(), nil
 }

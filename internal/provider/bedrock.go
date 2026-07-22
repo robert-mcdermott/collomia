@@ -183,7 +183,11 @@ func bedrockRequest(in Request) (map[string]any, error) {
 			// following user message. Collomia stores each result as a separate
 			// normalized message, so coalesce the consecutive result batch here.
 			for {
-				content = append(content, bedrockToolResult(msg))
+				result, err := bedrockToolResult(msg)
+				if err != nil {
+					return nil, err
+				}
+				content = append(content, result)
 				if i+1 >= len(in.Messages) || in.Messages[i+1].Role != "tool" {
 					break
 				}
@@ -191,9 +195,11 @@ func bedrockRequest(in Request) (map[string]any, error) {
 				msg = in.Messages[i]
 			}
 		default:
-			if msg.Content != "" {
-				content = append(content, map[string]any{"text": msg.Content})
+			parts, err := bedrockContentParts(msg)
+			if err != nil {
+				return nil, err
 			}
+			content = append(content, parts...)
 			for _, call := range msg.ToolCalls {
 				var input any
 				if err := json.Unmarshal(rawObject(call.Arguments), &input); err != nil {
@@ -225,12 +231,42 @@ func bedrockRequest(in Request) (map[string]any, error) {
 	return body, nil
 }
 
-func bedrockToolResult(msg Message) map[string]any {
+func bedrockToolResult(msg Message) (map[string]any, error) {
+	content, err := bedrockContentParts(msg)
+	if err != nil {
+		return nil, err
+	}
+	// Preserve the pre-multimodal shape for an empty string result. Bedrock
+	// requires at least one content block for every toolResult.
+	if len(content) == 0 {
+		content = []any{map[string]any{"text": msg.Content}}
+	}
 	return map[string]any{"toolResult": map[string]any{
 		"toolUseId": msg.ToolCallID,
-		"content":   []any{map[string]any{"text": msg.Content}},
+		"content":   content,
 		"status":    "success",
-	}}
+	}}, nil
+}
+
+func bedrockContentParts(message Message) ([]any, error) {
+	parts, err := messageContentParts(message)
+	if err != nil {
+		return nil, err
+	}
+	encoded := make([]any, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case ContentText:
+			encoded = append(encoded, map[string]any{"text": part.Text})
+		case ContentImage:
+			format, err := bedrockImageFormat(part.MediaType)
+			if err != nil {
+				return nil, err
+			}
+			encoded = append(encoded, map[string]any{"image": map[string]any{"format": format, "source": map[string]any{"bytes": imageBase64(part)}}})
+		}
+	}
+	return encoded, nil
 }
 
 func parseBedrockResponse(r io.Reader, onDelta func(Delta)) (Response, error) {

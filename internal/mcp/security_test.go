@@ -121,7 +121,7 @@ func TestProgressNotificationsStream(t *testing.T) {
 		streamed = append(streamed, chunk)
 		mu.Unlock()
 	})
-	if err != nil || out != "done" {
+	if err != nil || !strings.Contains(out, "done") || !strings.Contains(out, "BEGIN COLLOMIA_EXTERNAL_MCP_DATA_") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	wanted := []string{"progress: 1/2 — step 1", "progress: 2/2 — step 2"}
@@ -146,7 +146,7 @@ func TestProgressNotificationsStream(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// Plain Execute (no stream sink) still works and stays silent.
-	if out, err := registry.Execute(t.Context(), "mcp_docs_long", []byte(`{}`)); err != nil || out != "done" {
+	if out, err := registry.Execute(t.Context(), "mcp_docs_long", []byte(`{}`)); err != nil || !strings.Contains(out, "done") || !strings.Contains(out, "BEGIN COLLOMIA_EXTERNAL_MCP_DATA_") {
 		t.Fatalf("execute out=%q err=%v", out, err)
 	}
 }
@@ -202,10 +202,10 @@ func TestElicitationAsksTheUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "action=accept region=us-west-2" {
+	if !strings.Contains(out, "action=accept region=us-west-2") || !strings.Contains(out, "BEGIN COLLOMIA_EXTERNAL_MCP_DATA_") {
 		t.Fatalf("out=%q", out)
 	}
-	if len(asked) != 1 || !strings.Contains(asked[0], "MCP server docs asks: Which region?") || !strings.Contains(asked[0], "region") {
+	if len(asked) != 1 || !strings.Contains(asked[0], "External MCP server docs asks: Which region?") || !strings.Contains(asked[0], "region") {
 		t.Fatalf("asked=%v", asked)
 	}
 }
@@ -227,7 +227,7 @@ func TestElicitationDeclinedWhenUserCancels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "action=decline" {
+	if !strings.Contains(out, "action=decline") || !strings.Contains(out, "BEGIN COLLOMIA_EXTERNAL_MCP_DATA_") {
 		t.Fatalf("out=%q", out)
 	}
 }

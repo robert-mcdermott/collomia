@@ -42,6 +42,8 @@ type Runtime struct {
 	LogPath     string
 	Sessions    *session.Store
 	Session     *session.Session
+	Artifacts   *session.ArtifactManager
+	Attachments *session.AttachmentManager
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
 	Team        *agent.Team
@@ -216,20 +218,45 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if sess != nil {
 		attachBoard(board, sess)
 	}
+	artifacts := session.NewArtifactManager()
+	artifacts.Use(sess)
+	attachments := session.NewAttachmentManager()
+	attachments.Use(sess)
+	var artifactSink *session.ArtifactManager
+	if sess != nil {
+		registry.Add(session.ArtifactTool(artifacts))
+		artifactSink = artifacts
+		// Commands historically captured only the model-preview limit. Keep live
+		// output at that size, but retain enough returned data for the agent layer
+		// to create a bounded artifact when a command is noisier.
+		if item, ok := registry.Get("run_command"); ok {
+			if command, ok := item.(*tools.RunCommandTool); ok {
+				command.StreamOutputBytes = cfg.Options.MaxToolOutputBytes
+				command.MaxOutputBytes = max(cfg.Options.MaxToolOutputBytes, session.ArtifactResultLimit) + 1
+			}
+		}
+	}
 	if opts.Asker != nil {
 		registry.Add(askUserTool(opts.Asker))
 	}
 	lifecycle := hooks.NewRunner(workspace, cfg.Hooks, func(note hooks.Note) {
 		logger.Warn("hook", "event", note.Event, "command", note.Command, "note", note.Text)
 	})
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle}
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, PinnedContext: func() string {
+		current := board.Current()
+		if current == nil {
+			return ""
+		}
+		return "Active structured plan:\n" + current.Render()
+	}}
 	if sess != nil {
 		agentOptions.OnMessage = sess.AppendMessage
 		agentOptions.OnCompaction = sess.AppendCompaction
 	}
 	agentRuntime := agent.New(agentOptions)
 	team := agent.NewTeam()
-	agentRuntime.AddDelegationTool(cfg, opts.Approver, team)
+	attachTeam(team, sess)
+	agentRuntime.AddDelegationTool(cfg, opts.Approver, team, board)
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
 		sess.FlushInterrupted()
@@ -242,7 +269,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		sessionID = sess.Meta.ID
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle}, nil
+	return &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle}, nil
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -450,6 +477,41 @@ func attachBoard(board *plan.Board, sess *session.Session) {
 	board.Clear()
 }
 
+// attachTeam binds process-local delegated-agent observability to the active
+// durable session. Stored queued/running states are restored as interrupted by
+// Team.Restore and are never submitted back to the scheduler.
+func attachTeam(team *agent.Team, sess *session.Session) {
+	if team == nil {
+		return
+	}
+	team.SetObserver(nil)
+	if sess == nil {
+		team.Reset()
+		return
+	}
+	stored := sess.Delegates()
+	restored := make([]agent.DelegateStatus, 0, len(stored))
+	for _, status := range stored {
+		restored = append(restored, agent.DelegateStatusFromEvent(status))
+	}
+	team.Restore(restored)
+	persist := func(status agent.DelegateStatus) {
+		payload := status.Event()
+		update := event.New(event.KindDelegateUpdate)
+		update.Delegate = &payload
+		sess.AppendEvent(update)
+	}
+	team.SetObserver(persist)
+	// Persist the one-way recovery transition once. Subsequent resumes see a
+	// terminal interrupted record rather than repeatedly reinterpreting stale
+	// queued/running state.
+	for i, status := range team.Snapshot() {
+		if i < len(restored) && status.Status != restored[i].Status {
+			persist(status)
+		}
+	}
+}
+
 // SwitchSession loads another saved session into the running agent:
 // conversation, plan, and persistence hooks all move over. The previous
 // session file is closed; nothing about it is lost.
@@ -465,10 +527,17 @@ func (r *Runtime) SwitchSession(id string) error {
 		r.Session.Close()
 	}
 	r.Session = sess
+	if r.Artifacts != nil {
+		r.Artifacts.Use(sess)
+	}
+	if r.Attachments != nil {
+		r.Attachments.Use(sess)
+	}
 	r.Agent.SetMessages(sess.Active())
 	sess.FlushInterrupted()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	attachBoard(r.Plan, sess)
+	attachTeam(r.Team, sess)
 	return nil
 }
 
@@ -486,10 +555,43 @@ func (r *Runtime) NewSession() error {
 		r.Session.Close()
 	}
 	r.Session = sess
+	if r.Artifacts != nil {
+		r.Artifacts.Use(sess)
+	}
+	if r.Attachments != nil {
+		r.Attachments.Use(sess)
+	}
 	r.Agent.Clear()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	attachBoard(r.Plan, sess)
+	attachTeam(r.Team, sess)
 	return nil
+}
+
+// RewindSession creates and switches to a non-destructive branch ending at a
+// completed turn. The source session and workspace remain unchanged.
+func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error) {
+	if r.Sessions == nil || r.Session == nil {
+		return "", "", fmt.Errorf("session persistence is unavailable")
+	}
+	sourceID = r.Session.Meta.ID
+	sess, err := r.Sessions.Rewind(sourceID, turn)
+	if err != nil {
+		return sourceID, "", err
+	}
+	r.Session.Close()
+	r.Session = sess
+	if r.Artifacts != nil {
+		r.Artifacts.Use(sess)
+	}
+	if r.Attachments != nil {
+		r.Attachments.Use(sess)
+	}
+	r.Agent.SetMessages(sess.Active())
+	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	attachBoard(r.Plan, sess)
+	attachTeam(r.Team, sess)
+	return sourceID, sess.Meta.ID, nil
 }
 
 // askUserTool lets the model pause for a concise typed answer without
@@ -528,6 +630,11 @@ func (r *Runtime) Close() {
 		sessionID = r.Session.Meta.ID
 	}
 	r.Hooks.Fire(context.Background(), hooks.Payload{Event: "session_end", Workspace: r.Workspace, Subject: "session_end", Detail: map[string]any{"session_id": sessionID}})
+	if r.Team != nil {
+		// Queued and running delegated tasks never intentionally outlive the
+		// runtime; cancellation is requested before process/session teardown.
+		r.Team.StopAll()
+	}
 	if r.Processes != nil {
 		// Background processes never outlive the session.
 		r.Processes.StopAll()

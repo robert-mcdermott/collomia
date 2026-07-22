@@ -81,7 +81,7 @@ func TestEmbeddedJSONSchemaPublishesEveryEventKind(t *testing.T) {
 	wantKinds := []Kind{
 		KindSessionStart, KindTurnStart, KindTextDelta, KindReasoningDelta, KindToolCallDelta,
 		KindToolStart, KindToolOutput, KindToolResult, KindPermissionRequest, KindPermissionDecision,
-		KindFileChange, KindPlanUpdate, KindUsage, KindCompaction, KindWarning, KindError, KindTurnEnd, KindRunResult,
+		KindFileChange, KindPlanUpdate, KindDelegateUpdate, KindUsage, KindCompaction, KindWarning, KindError, KindTurnEnd, KindRunResult,
 	}
 	for _, kind := range wantKinds {
 		if !slices.Contains(schema.Properties.Kind.Enum, string(kind)) {

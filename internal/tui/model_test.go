@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,6 +147,64 @@ func TestPaletteFiltersAndRuns(t *testing.T) {
 	last := m.blocks[len(m.blocks)-1]
 	if last.role != "panel" || last.title != "Provider models" || !strings.Contains(last.content, "supported: tools") {
 		t.Fatalf("expected /models panel, got %+v", last)
+	}
+}
+
+func TestImageAttachmentCommandsAndSessionScopedDrafts(t *testing.T) {
+	m := newTestModel(t)
+	imagePath := filepath.Join(m.runtime.Workspace, "screen shot.png")
+	image := append([]byte("\x89PNG\r\n\x1a\n"), []byte("fixture")...)
+	if err := os.WriteFile(imagePath, image, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if quit, cmd := (&m).slash(`/attach "screen shot.png"`); quit || cmd != nil {
+		t.Fatalf("attach quit=%v cmd=%v", quit, cmd)
+	}
+	if len(m.pendingAttachments) != 1 || m.pendingAttachments[0].part.MediaType != "image/png" {
+		t.Fatalf("pending=%+v", m.pendingAttachments)
+	}
+	(&m).slash("/attachments")
+	if got := m.blocks[len(m.blocks)-1].content; !strings.Contains(got, "screen shot.png") || !strings.Contains(got, "image/png") {
+		t.Fatalf("attachment panel=%q", got)
+	}
+	firstID := m.runtime.Session.Meta.ID
+	m.saveSessionDraft()
+	if err := m.runtime.NewSession(); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildTranscript()
+	if len(m.pendingAttachments) != 0 {
+		t.Fatal("pending attachment leaked into a new session")
+	}
+	m.saveSessionDraft()
+	if err := m.runtime.SwitchSession(firstID); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuildTranscript()
+	if len(m.pendingAttachments) != 1 {
+		t.Fatal("pending attachment did not follow its session draft")
+	}
+	(&m).slash("/detach 1")
+	if len(m.pendingAttachments) != 0 {
+		t.Fatal("detach did not remove the pending image")
+	}
+}
+
+func TestImageAttachmentRejectsOutsideAndUnsupportedFiles(t *testing.T) {
+	m := newTestModel(t)
+	external := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(external, append([]byte("\x89PNG\r\n\x1a\n"), 'x'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.addImageAttachment(external); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("outside error=%v", err)
+	}
+	textPath := filepath.Join(m.runtime.Workspace, "fake.png")
+	if err := os.WriteFile(textPath, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.addImageAttachment("fake.png"); err == nil || !strings.Contains(err.Error(), "unsupported image type") {
+		t.Fatalf("unsupported error=%v", err)
 	}
 }
 
@@ -421,6 +480,62 @@ func TestNewSessionAndPickerSwitch(t *testing.T) {
 	m = press(t, m, tea.KeyEnter)
 	if m.picker == nil {
 		t.Fatal("/sessions should open the session picker")
+	}
+}
+
+func TestRewindCreatesConversationBranchWithoutChangingWorkspace(t *testing.T) {
+	m := newTestModel(t)
+	workspaceFile := filepath.Join(m.runtime.Workspace, "state.txt")
+	if err := os.WriteFile(workspaceFile, []byte("current workspace state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for turn := 1; turn <= 2; turn++ {
+		m.runtime.Session.AppendMessage(provider.Message{Role: "user", Content: fmt.Sprintf("prompt %d", turn)})
+		m.runtime.Session.AppendMessage(provider.Message{Role: "assistant", Content: fmt.Sprintf("answer %d", turn)})
+		m.runtime.Session.AppendEvent(runtimeevent.New(runtimeevent.KindTurnEnd))
+	}
+	originalID := m.runtime.Session.Meta.ID
+	if quit, cmd := (&m).slash("/rewind 1"); quit || cmd != nil {
+		t.Fatalf("rewind unexpectedly quit or returned command: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.runtime.Session.Meta.ID == originalID || m.runtime.Session.Meta.ForkedFrom != originalID || m.runtime.Session.Meta.Turns != 1 {
+		t.Fatalf("rewound session=%+v original=%s", m.runtime.Session.Meta, originalID)
+	}
+	if transcript := m.runtime.Session.TranscriptMessages(); len(transcript) != 2 || transcript[0].Content != "prompt 1" {
+		t.Fatalf("rewound transcript=%+v", transcript)
+	}
+	data, err := os.ReadFile(workspaceFile)
+	if err != nil || string(data) != "current workspace state" {
+		t.Fatalf("rewind changed workspace: data=%q err=%v", data, err)
+	}
+	original, err := m.runtime.Sessions.Load(originalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+	if original.Meta.Turns != 2 || len(original.TranscriptMessages()) != 4 {
+		t.Fatalf("original changed: meta=%+v transcript=%+v", original.Meta, original.TranscriptMessages())
+	}
+	if last := m.blocks[len(m.blocks)-1].content; !strings.Contains(last, "were not undone") {
+		t.Fatalf("rewind safety notice missing: %q", last)
+	}
+}
+
+func TestRewindWithoutArgumentOpensCompletedTurnPicker(t *testing.T) {
+	m := newTestModel(t)
+	for turn := 1; turn <= 2; turn++ {
+		m.runtime.Session.AppendMessage(provider.Message{Role: "user", Content: fmt.Sprintf("prompt %d", turn)})
+		m.runtime.Session.AppendMessage(provider.Message{Role: "assistant", Content: "done"})
+		m.runtime.Session.AppendEvent(runtimeevent.New(runtimeevent.KindTurnEnd))
+	}
+	if quit, cmd := (&m).slash("/rewind"); quit || cmd != nil {
+		t.Fatalf("rewind picker unexpectedly quit or returned command: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.picker == nil || m.picker.title != "Rewind conversation safely" {
+		t.Fatalf("rewind picker=%+v", m.picker)
+	}
+	if len(m.picker.matches) != 2 || m.picker.matches[0].id != "1" || m.picker.matches[1].id != "0" {
+		t.Fatalf("rewind targets=%+v", m.picker.matches)
 	}
 }
 

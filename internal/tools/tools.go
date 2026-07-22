@@ -50,11 +50,23 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// Result preserves optional typed content returned by a tool. Ordinary tools
+// return only Content; MCP tools can additionally return bounded image parts.
+type Result struct {
+	Content string
+	Parts   []provider.ContentPart
+}
+
 // Streamer is an optional Tool capability: tools that produce output
 // incrementally (long commands) implement it so the UI can show progress
 // live. The returned string is still the complete, bounded result.
 type Streamer interface {
 	ExecuteStream(ctx context.Context, args json.RawMessage, onOutput func(string)) (string, error)
+}
+
+// ResultStreamer is the typed counterpart to Streamer.
+type ResultStreamer interface {
+	ExecuteResultStream(ctx context.Context, args json.RawMessage, onOutput func(string)) (Result, error)
 }
 
 type Registry struct {
@@ -128,6 +140,21 @@ func (r *Registry) Names() []string {
 	return names
 }
 
+// Clone returns a point-in-time registry containing the same tool instances.
+// It is used for delegated agents so profile-specific visibility can be
+// applied without mutating the parent's live registry. Stateful tools remain
+// shared intentionally; the child's permission manager and plan mode still
+// govern every execution.
+func (r *Registry) Clone() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	clone := NewRegistry()
+	for _, tool := range r.tools {
+		clone.tools[tool.Definition().Name] = tool
+	}
+	return clone
+}
+
 func (r *Registry) Assess(name string, args json.RawMessage) (Action, error) {
 	tool, ok := r.Get(name)
 	if !ok {
@@ -157,11 +184,28 @@ func (r *Registry) ExecuteStream(ctx context.Context, name string, args json.Raw
 	return tool.Execute(ctx, args)
 }
 
+// ExecuteResultStream preserves typed content for tools that provide it and
+// adapts every existing string-only tool without changing its behavior.
+func (r *Registry) ExecuteResultStream(ctx context.Context, name string, args json.RawMessage, onOutput func(string)) (Result, error) {
+	tool, ok := r.Get(name)
+	if !ok {
+		return Result{}, fmt.Errorf("unknown tool %q", name)
+	}
+	if rich, can := tool.(ResultStreamer); can {
+		return rich.ExecuteResultStream(ctx, args, onOutput)
+	}
+	content, err := r.ExecuteStream(ctx, name, args, onOutput)
+	return Result{Content: content}, err
+}
+
 type Function struct {
 	Def      provider.ToolDefinition
 	Action   Action
 	AssessFn func(json.RawMessage) (Action, error)
 	Run      func(context.Context, json.RawMessage) (string, error)
+	// RunResult preserves typed content. When present it is used by both the
+	// typed registry path and the legacy string-only Execute method.
+	RunResult func(context.Context, json.RawMessage, func(string)) (Result, error)
 	// RunStream, when set, is preferred by ExecuteStream so the tool can
 	// surface incremental progress (MCP progress notifications, long
 	// commands) while still returning the complete result.
@@ -176,13 +220,29 @@ func (f Function) Assess(args json.RawMessage) (Action, error) {
 	return f.Action, nil
 }
 func (f Function) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	if f.RunResult != nil {
+		result, err := f.RunResult(ctx, args, nil)
+		return result.Content, err
+	}
 	return f.Run(ctx, args)
 }
 func (f Function) ExecuteStream(ctx context.Context, args json.RawMessage, onOutput func(string)) (string, error) {
+	if f.RunResult != nil {
+		result, err := f.RunResult(ctx, args, onOutput)
+		return result.Content, err
+	}
 	if f.RunStream != nil {
 		return f.RunStream(ctx, args, onOutput)
 	}
 	return f.Run(ctx, args)
+}
+
+func (f Function) ExecuteResultStream(ctx context.Context, args json.RawMessage, onOutput func(string)) (Result, error) {
+	if f.RunResult != nil {
+		return f.RunResult(ctx, args, onOutput)
+	}
+	content, err := f.ExecuteStream(ctx, args, onOutput)
+	return Result{Content: content}, err
 }
 
 func schema(value string) json.RawMessage { return json.RawMessage(value) }

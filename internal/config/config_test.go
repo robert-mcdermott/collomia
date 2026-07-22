@@ -471,6 +471,32 @@ func TestDefaultsValidate(t *testing.T) {
 	}
 }
 
+func TestValidateDelegatedAgentGovernance(t *testing.T) {
+	cfg := Defaults()
+	cfg.Agents["reviewer"] = AgentDefinition{
+		TokenBudget: 1000, TimeoutSeconds: 30, Skills: []string{"security-review"},
+		Permissions: AgentPermissions{Mode: "ask", Rules: []Rule{{Action: "deny", Tool: "run_command"}}},
+	}
+	cfg.Options.DelegateMaxConcurrency = 2
+	cfg.Options.DelegateProviderConcurrency = map[string]int{"ollama": 1}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid delegated-agent governance: %v", err)
+	}
+
+	profile := cfg.Agents["reviewer"]
+	profile.Permissions.Rules = []Rule{{Action: "allow", Tool: "run_command"}}
+	cfg.Agents["reviewer"] = profile
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "may only prompt or deny") {
+		t.Fatalf("profile allow rule should be rejected: %v", err)
+	}
+	profile.Permissions.Rules = nil
+	profile.Permissions.DeniedCommands = []string{"["}
+	cfg.Agents["reviewer"] = profile
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "denied_commands") {
+		t.Fatalf("bad profile command regex should be rejected: %v", err)
+	}
+}
+
 func TestValidateNotifications(t *testing.T) {
 	cfg := Defaults()
 	for _, ok := range []string{"", "on", "bell", "off", "Bell"} {

@@ -283,28 +283,33 @@ func (t WriteFileTool) Execute(_ context.Context, raw json.RawMessage) (string, 
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
 	}
-	p, _, err := t.Guard.Resolve(a.Path)
+	target, _, err := t.Guard.MutationTarget(a.Path)
 	if err != nil {
 		return "", err
 	}
-	if err = os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", err
-	}
+	defer target.Close()
+	p := target.Path()
 	mode := os.FileMode(0o644)
 	var before *string
-	if info, e := os.Stat(p); e == nil {
+	beforeMode := os.FileMode(0)
+	if info, e := target.Stat(); e == nil {
 		mode = info.Mode().Perm()
-		if data, readErr := os.ReadFile(p); readErr == nil {
-			text := string(data)
-			before = &text
+		beforeMode = mode
+		data, readErr := target.ReadFile()
+		if readErr != nil {
+			return "", fmt.Errorf("read existing target before replacement: %w", readErr)
 		}
+		text := string(data)
+		before = &text
+	} else if !errors.Is(e, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect write target: %w", e)
 	}
-	if err = os.WriteFile(p, []byte(a.Content), mode); err != nil {
+	if err = target.Replace([]byte(a.Content), mode); err != nil {
 		return "", err
 	}
 	if t.Tracker != nil {
 		after := a.Content
-		t.Tracker.Record(p, "write", before, &after)
+		t.Tracker.RecordWithMode(p, "write", before, &after, beforeMode, mode)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p), nil
 }
@@ -355,11 +360,13 @@ func (t EditFileTool) Execute(_ context.Context, raw json.RawMessage) (string, e
 	if a.Old == "" {
 		return "", errors.New("old_text must not be empty")
 	}
-	p, _, err := t.Guard.Resolve(a.Path)
+	target, _, err := t.Guard.MutationTarget(a.Path)
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(p)
+	defer target.Close()
+	p := target.Path()
+	data, err := target.ReadFile()
 	if err != nil {
 		return "", err
 	}
@@ -368,16 +375,16 @@ func (t EditFileTool) Execute(_ context.Context, raw json.RawMessage) (string, e
 		return "", fmt.Errorf("old_text must match exactly once (found %d)", count)
 	}
 	updated := strings.Replace(string(data), a.Old, a.New, 1)
-	info, err := os.Stat(p)
+	info, err := target.Stat()
 	if err != nil {
 		return "", err
 	}
-	if err = os.WriteFile(p, []byte(updated), info.Mode().Perm()); err != nil {
+	if err = target.Replace([]byte(updated), info.Mode().Perm()); err != nil {
 		return "", err
 	}
 	if t.Tracker != nil {
 		before := string(data)
-		t.Tracker.Record(p, "edit", &before, &updated)
+		t.Tracker.RecordWithMode(p, "edit", &before, &updated, info.Mode().Perm(), info.Mode().Perm())
 	}
 	return fmt.Sprintf("edited %s", p), nil
 }

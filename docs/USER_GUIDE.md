@@ -578,7 +578,9 @@ inspect.
 | Field | Meaning |
 | --- | --- |
 | `max_iterations` | Maximum model/tool iterations in one turn; defaults to `24`. |
-| `max_tool_output_bytes` | Per-result cap used by shell output and agent context; defaults to `65536`. |
+| `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
+| `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
+| `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -595,7 +597,18 @@ inspect.
 | `model` | Model override on the same provider as the parent. |
 | `instructions` | Role instructions prepended to the sub-agent prompt. |
 | `tools` | Tool-name allowlist; empty inherits the parent tool surface. |
+| `skills` | Skill-name allowlist; empty inherits the parent catalog. |
 | `max_iterations` | Per-agent iteration override; zero inherits the normal budget. |
+| `token_budget` | Maximum provider-reported input plus output tokens for the task; zero disables this additional limit. |
+| `timeout_seconds` | Queue plus execution deadline; zero means `600`, maximum `3600`. |
+| `permissions` | Child-only restrictions: optional stricter `mode`, additive `denied_tools`/`denied_commands`, and `prompt`/`deny` rules. `allow` rules are rejected. |
+
+Profile permissions cannot weaken their parent. The effective autonomy is the
+stricter mode; profile denials are added to inherited denials; profile rules
+are evaluated as an independent restriction layer and may only prompt or deny,
+so neither layer can mask the other's denial. Sandbox, networking,
+outside-workspace access, command environment, reviewer, catastrophic denials,
+and all other parent protections remain inherited unchanged.
 
 ### LSP field
 
@@ -1523,12 +1536,14 @@ collo --cwd /path/to/repository
 
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
-files, delegated-agent status, background processes, Git branch/upstream and
+files, a parent/child delegated-agent tree with bounded recent output, background processes, Git branch/upstream and
 working-tree counts, provider/sandbox/MCP/trust health, and a bounded list of
 recent permission decisions and tool failures. Git inspection is read-only,
 runs asynchronously with a short timeout, and reports non-Git workspaces
 normally; press `r` in the Session tab to refresh it. `/agents` provides a
-searchable view of each retained delegated outcome. Help lists commands,
+searchable view of each retained delegated outcome, and `alt+a` opens explicit
+inspect, steer, and stop actions for one active child while its parent turn is
+still running. Help lists commands,
 providers, tools, skills, MCP servers, themes, and keybindings.
 
 Markdown is rendered in the active theme. Fenced source code, expanded
@@ -1555,6 +1570,7 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `tab` | Complete the selected command/palette value. |
 | `ctrl+t` | Cycle Chat, Session, and Help. |
 | `alt+s` | Open the saved-session picker without replacing the current draft. |
+| `alt+a` | Inspect an active delegated agent, prepare steering guidance, or explicitly stop it without stopping siblings or the parent. |
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
@@ -1569,6 +1585,14 @@ Typing `/` filters commands by prefix and substring. Known first arguments for
 remain beside the composer; approvals and questions open as centered,
 theme-aware transient dialogs.
 
+While a provider turn is running, the composer remains available for a small
+local-control command lane: `/help`, `/status`, `/context`, `/tasks`, `/tools`,
+`/config`, `/attachments`, `/transcript`, `/diff`, read-only `/ps`, and
+`/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
+the composer as unsent drafts; they are not queued to the model or executed
+concurrently. If the agent asks a question, Collomia preserves and restores the
+draft around the question dialog.
+
 The global actions in this table are configurable. The Help tab always shows
 the effective bindings after defaults, user configuration, and project
 configuration are merged. See [Terminal behavior and keybindings](#terminal-behavior-and-keybindings).
@@ -1581,15 +1605,21 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/status` | Show workspace, provider/model, capabilities, health, context, plan, autonomy, and configuration/trust state. |
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
-| `/context` | Show token usage, estimated active context, message counts, summaries, and context composition. |
+| `/context` | Show token usage, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
 | `/skills` | Pick a skill and prefill a prompt that asks the agent to use it. |
 | `/skills list` | List active and disabled skills. |
-| `/agents` | Fuzzy-search delegated tasks and inspect status, task, duration, outcome, changed files, and retained worktree/branch details. |
+| `/agents` | Search and inspect current or persisted delegated tasks. |
+| `/agents stop <id-or-name>` | Cancel one queued or active child without cancelling siblings or the parent. |
+| `/agents steer <id> <guidance...>` | Queue bounded guidance for the child's next model boundary. It never answers an approval or grants permission. |
+| `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
+| `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
+| `/attachments` | List images attached to the pending prompt. |
+| `/detach <number\|all>` | Remove one or every pending image attachment. |
 | `/mcp ...` | Browse/manage MCP servers, resources, and prompts. |
 | `/tools` | List every tool currently registered. |
 | `/review [ref] [instructions...]` | Review uncommitted changes or changes relative to a ref, with an optional focus. |
@@ -1600,6 +1630,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
 | `/sessions` | Fuzzy-pick and switch to another durable session in place. |
+| `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
@@ -1637,9 +1668,54 @@ source header plus the file contents; review or edit both before pressing
 enter. For a larger source file, mention it with `@` and let the agent inspect
 bounded portions instead.
 
-Current provider adapters accept text messages only. Image, audio, and binary
-files therefore produce a clear unsupported-input error instead of being
-silently flattened or sent to a provider that cannot represent them.
+### Image attachments
+
+Use `/attach` when the model should receive an image itself rather than a text
+reference to a workspace path:
+
+```text
+/attach screenshots/failure.png
+/attach "design references/dialog state.webp"
+/attach file:///workspace/screenshots/failure.png
+```
+
+With no path, `/attach` opens a fuzzy picker containing PNG, JPEG, GIF, and
+WebP files. You can also type `/attach ` and drag an image into terminals that
+paste the dropped path. Paths are parsed directly—no shell evaluates them—and
+may be quoted or use backslash-escaped spaces. Images must resolve to regular
+files inside the active workspace; symlink escapes and outside paths are
+refused.
+
+The status bar shows an `images N` badge while a prompt has pending images.
+Run `/attachments` to review their names, types, and sizes, `/detach 2` to
+remove one, or `/detach all` to remove them all. Pending images follow the
+unsent draft when you switch sessions inside the running TUI. Like the text
+draft, an unsent selection is not durable across application restarts.
+
+Collomia accepts at most four images per prompt, 5 MiB per image, and 24 MiB
+of retained images per session. The selected file is inspected when attached,
+then reopened through a workspace-rooted handle and copied into owner-only
+session storage only after the prompt is sent and its `user_prompt` hook
+accepts the turn. A path or symlink swap cannot redirect that final read
+outside the workspace, and a hook-blocked prompt leaves no attachment blob. The
+session record stores a random reference, media type, size, and SHA-256 digest
+rather than base64 bytes; Collomia rechecks size, type, and digest before every
+provider request. Fork copies the attachments, rewind copies only references
+reachable from retained turns, and session deletion removes them.
+
+Image capability is adapter- and model-dependent. OpenAI/compatible Chat
+Completions, Azure OpenAI/Foundry OpenAI, Anthropic/Foundry Claude, Bedrock
+ConverseStream, and Responses/Mantle adapters encode user images, but their
+capability remains `partial` because a selected model or compatible gateway
+may still be text-only. A known text-only adapter is rejected before network
+I/O; a partial endpoint can return its normal provider error. GIF and WebP are
+accepted by Collomia, though individual models may support a smaller format
+set. Audio, video, PDFs, SVG, raw clipboard image protocols, and image
+generation are not part of this workflow.
+
+Provider-reported usage replaces Collomia's approximation after a request.
+Until then, `/context` visibly reserves roughly 1,000 tokens per image; actual
+image token accounting varies by provider, model, resolution, and detail mode.
 
 ### Approval dialogs
 
@@ -1792,6 +1868,7 @@ unambiguous.
 {
   "options": {
     "keybindings": {
+      "agent_control": "alt+a",
       "next_tab": "alt+t",
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
@@ -2124,7 +2201,7 @@ collo support bundle [--output path] [--include-logs]
 collo policy check <command...>
 collo review [ref] [instructions...]
 collo verify [focus]
-collo sessions list|show|fork|rename|archive|unarchive|delete
+collo sessions list|show|fork|rewind|rename|archive|unarchive|delete
 collo skills list|show|new|install|update|remove|enable|disable
 collo mcp list|show|add|remove|enable|disable|test
 collo completion bash|zsh|fish|powershell
@@ -2176,9 +2253,9 @@ question broker can make the model-visible subset smaller.
 | `read_file` | UTF-8 text with line numbers; defaults to 400 lines, maximum 5,000; files over 1 MiB must be read in chunks. |
 | `list_files` | Directory tree including hidden files; skips `.git` and session data; depth 1-8; maximum 5,000 entries. |
 | `search_files` | Go-regular-expression search with path/glob and result limits. |
-| `write_file` | Create/replace text, with diff preview, change tracking, hunk review, and undo support. |
-| `edit_file` | Replace one exact unique fragment; refuses missing or ambiguous matches. |
-| `apply_patch` | Validate and apply related create/update/delete operations atomically; nothing changes if validation fails. |
+| `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
+| `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |
+| `apply_patch` | Validate related create/update/delete operations before applying them through rooted atomic replacement and safe deletion, with rollback on a later publish failure. |
 | `run_command` | Shell command in workspace; default timeout 120 seconds, maximum 1,800; bounded/live output; optional Unix PTY. |
 | `git_status` | Read-only branch/ahead/behind/change status. |
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
@@ -2188,6 +2265,7 @@ question broker can make the model-visible subset smaller.
 | `start_process` | Start a session-lifetime background command under command safety/sandbox policy. |
 | `list_processes` | List background process IDs, command, status, and uptime. |
 | `process_output` | Read the retained last 64 KiB, optionally the last N lines. |
+| `read_tool_result` | Page a bounded range from an oversized result retained by the active durable session; never reruns the source tool. |
 | `stop_process` | Stop one background process and its process group. |
 | `search_symbols` | Incremental definition search for Go, Python, JS/TS, and Rust. |
 | `diagnostics` | Run a configured/auto-detected language server over up to 20 same-language files. |
@@ -2198,9 +2276,12 @@ question broker can make the model-visible subset smaller.
 | `list_mcp_resources` / `read_mcp_resource` | Browse/read negotiated MCP resources when MCP is connected. |
 | `mcp_<server>_<tool>` | Dynamically registered MCP tool. |
 
-`options.max_tool_output_bytes` truncates what is returned to the agent even
-when a tool has its own larger internal display cap. Treat truncation markers
-as a cue to narrow the request, not evidence that unseen output was successful.
+`options.max_tool_output_bytes` caps the preview returned directly to the
+agent even when a tool has a larger internal display cap. During a durable
+session, an oversized returned string includes an opaque reference that
+`read_tool_result` can inspect in bounded ranges; in ephemeral mode it uses an
+ordinary truncation marker. In either case, omitted output is not evidence
+that an unseen operation succeeded—narrow the request or inspect the reference.
 
 ### File editing, diff, and undo
 
@@ -2213,8 +2294,23 @@ floating dialog. After changes:
 ```
 
 Undo checks current content and refuses to overwrite a file changed outside the
-agent since its checkpoint. It is a local safety net, not version control. Keep
-work in Git and inspect `git diff` before committing.
+agent since its checkpoint. Direct writes, edits, patches, and undo anchor the
+final operation beneath the approved directory root. Replacements use a
+private same-directory file plus atomic rename instead of truncating an
+existing inode; parent-symlink swaps cannot redirect the rooted operation, an
+existing hard link's other name is not modified, and file permission bits are
+preserved where the platform exposes them. Deletes remove only the approved
+directory entry.
+
+These properties apply to Collomia's structured file tools, not an approved
+`run_command`. A multi-file patch is validated before it starts and rolls back
+rootedly on a later publication error, but it is not a transaction that locks
+out unrelated editors. Atomic publication creates a new inode, so hard-link
+identity is intentionally broken and platform-specific ACLs, extended
+attributes, or special ownership may not survive even though content and
+portable mode bits do. Use a reviewed metadata-aware command for files where
+those attributes matter. Undo remains a local safety net, not version control.
+Keep work in Git and inspect `git diff` before committing.
 
 ### Shell commands and PTY
 
@@ -2756,6 +2852,19 @@ Example scoped approval:
 
 Verify the remote server's behavior before granting a wildcard.
 
+Trust and permission do not make server content authoritative. Every MCP tool
+result, agent-read resource/catalog, and expanded prompt template is placed in
+an explicit `EXTERNAL_MCP_DATA` provenance frame naming its server, kind, and
+subject. Its handling guidance tells the model to use relevant factual and
+structured content while refusing embedded instructions or claimed
+permissions. Control characters are removed, descriptive schema/catalog
+metadata is bounded, and server-authored tool descriptions are labeled
+external/descriptive. Expanded prompts therefore include their provenance
+frame in the composer; review and edit the complete framed text before pressing
+Enter. The frame is a provenance signal, not a guarantee that a model cannot be
+influenced, so keep write, command, and additional external permissions scoped
+to what the server truly needs.
+
 ### Resources and prompts
 
 ```text
@@ -2769,12 +2878,19 @@ Resource listing shows URI, name, MIME type, and description; resource preview
 is capped in the TUI. The agent can call `list_mcp_resources` and
 `read_mcp_resource`, both external-risk and server-scoped.
 
-Prompt expansion puts the server-generated prompt into the composer. Review
-and edit it before pressing Enter; expansion does not send it automatically.
+Prompt expansion puts a provenance-framed server-generated prompt into the
+composer. Review and edit it before pressing Enter; expansion does not send it
+automatically and does not grant any tool permission.
 
-Tool content keeps structured/text and embedded resource data. Images/audio
-are represented to the text agent as explicit type-and-size markers, and
-resource links retain a URI that the resource tool can follow.
+Tool content keeps structured/text and embedded resource data. Images always
+retain an explicit type-and-size marker. When the active route supports rich
+tool-result images, bounded image bytes are also retained in session attachment
+storage and supplied to the next model turn; Anthropic Messages and Bedrock
+Converse support that path. OpenAI-compatible Chat Completions keeps the marker
+because multimodal tool-message content is not portable across gateways. Audio
+remains metadata-only, and resource links retain a URI that the resource tool
+can follow. Image content remains inside the same `EXTERNAL_MCP_DATA`
+provenance context and cannot grant permission.
 
 ### Progress, elicitation, and pinning
 
@@ -2900,9 +3016,10 @@ trusted project configuration.
 
 ## Sub-agents
 
-The `delegate` tool can run up to six bounded tasks per call with four active at
-once. It is useful for independent investigation, parallel reviews, or isolated
-implementation tasks.
+The `delegate` tool can submit up to six bounded tasks per call. One FIFO
+scheduler is shared by the session, with four active tasks by default, so two
+simultaneous delegate calls cannot create eight active children. It is useful
+for independent investigation, parallel reviews, or isolated implementation.
 
 Conceptual tool request:
 
@@ -2916,7 +3033,8 @@ Conceptual tool request:
     {
       "name": "retry-change",
       "task": "Implement bounded retry in the HTTP client and test it.",
-      "write": true
+      "write": true,
+      "plan_step": 2
     },
     {
       "name": "security-review",
@@ -2936,11 +3054,20 @@ sandbox policy.
 No sub-agent result is committed, merged, or pushed automatically. A clean
 write worktree is removed. A worktree with changes is left in place and its
 path/branch is reported for human review. When siblings modify the same path,
-the parent reports a conflict rather than attempting reconciliation.
+the parent reports a conflict rather than attempting reconciliation. Because
+all siblings start at the same `HEAD`, Collomia also compares zero-context
+hunks against that common base and labels known overlap or disjoint ranges.
+This analysis is advisory; disjoint worktrees are still never auto-merged.
 
-Each task has a 10-minute timeout and at most 16 model/tool iterations (or a
-lower configured/profile limit). Sub-agents do not receive the `delegate` tool,
-so delegation is not recursive.
+An optional `plan_step` associates a child and its returned evidence with an
+existing structured-plan step. Collomia refuses an unknown step or one whose
+declared dependencies are unfinished. This is metadata for coordination; it
+does not create an autonomous plan scheduler or mark the plan complete by
+itself.
+
+Queueing plus execution has a 10-minute default timeout, and each child has at
+most 16 model/tool iterations (or a lower configured/profile limit). Sub-agents
+do not receive the `delegate` tool, so delegation is not recursive.
 
 Named profiles specialize a sub-agent without defining another provider:
 
@@ -2957,24 +3084,120 @@ Named profiles specialize a sub-agent without defining another provider:
         "search_symbols",
         "git_diff"
       ],
-      "max_iterations": 12
+      "skills": ["security-review"],
+      "max_iterations": 12,
+      "token_budget": 50000,
+      "timeout_seconds": 600,
+      "permissions": {
+        "mode": "ask",
+        "denied_tools": ["run_command"],
+        "denied_commands": ["(?i)^example-destructive-command($|\\s)"],
+        "rules": [
+          {
+            "action": "deny",
+            "server": "production-*",
+            "reason": "review agents cannot call production MCP servers"
+          }
+        ]
+      }
     }
   }
 }
 ```
 
-The model override stays on the parent's provider. Omitted fields inherit the
-parent. A non-empty `tools` list restricts the child to those names. The
-Session tab and status bar show delegated work and retained outcomes. Run
-`/agents` to fuzzy-search those tasks; selecting one shows its task, mode,
-duration, redacted outcome, changed files, and any retained worktree/branch.
-Running agents are snapshots, so reopen the picker to refresh their status.
+The model override stays on the parent's provider. Empty `tools` and `skills`
+inherit the parent's visible surface; non-empty lists are allowlists. Hidden
+tools are enforced at execution too, so a model cannot call one merely by
+inventing its name.
+
+Profile permissions are deliberately one-way. Their `mode` is intersected
+with the parent's effective mode; `denied_tools` and `denied_commands` are
+additive; profile rules are a separate restriction layer and may only `prompt`
+or `deny`, so a prompt cannot mask a parent denial and a parent allow cannot
+mask a child denial. Configuration validation rejects `allow`. A profile cannot enable
+outside-workspace access, weaken sandboxing, enable command networking, expose
+more environment, or bypass parent/global/built-in denials.
+
+`token_budget` counts provider-reported input plus output tokens. Before each
+request Collomia reserves the estimated next input and reduces the requested
+output maximum to the remaining allowance, then checks the provider's reported
+usage afterward. Tokenizers and images are provider-specific, and a provider
+that omits usage cannot provide an exact token guarantee; iteration and timeout
+bounds still apply. `timeout_seconds` includes scheduler queue time and accepts
+up to 3600 seconds.
+
+Configure scheduler limits independently of profiles:
+
+```json
+{
+  "options": {
+    "delegate_max_concurrency": 4,
+    "delegate_provider_concurrency": {
+      "openrouter": 2,
+      "bedrock": 1
+    }
+  }
+}
+```
+
+Each parent result is bounded structured JSON containing the child's terminal
+status, summary/error, up to eight bounded tool-evidence entries, provider
+usage, token budget, changed file/hunk manifest, and retained worktree/branch.
+The raw child transcript is not injected wholesale into parent context. If the
+complete batch would exceed `max_tool_output_bytes`, Collomia compacts details
+while preserving valid JSON and every task's identity/status, and sets
+`truncated: true`; `/agents` retains the bounded per-task outcome for review.
+
+The Session tab shows the Collomia parent and its children as a tree, including
+queued, running, waiting-for-approval, cancelling, completed, failed,
+cancelled, timed-out, budget-exhausted, and interrupted states. Active entries
+include their current action and a bounded recent-output tail. `/agents`
+searches the snapshots and opens full bounded details.
+
+`/agents steer <id> <guidance...>` queues up to eight bounded steering updates.
+The child receives them as explicit parent guidance immediately before its next
+provider request. Steering cannot alter a provider call or tool already in
+flight, cannot answer a permission dialog, and contains an explicit reminder
+that it grants no permission. If the child finishes before another boundary,
+the undelivered count remains visible. `/agents stop <id-or-name>` cancels one.
+`alt+a` stays active during a busy turn and opens a second, deliberate action
+menu for inspect, steer, or stop. Approval dialogs name the requesting child.
+
+For a retained write worktree, `/agents apply <id>` opens a themed floating
+review. Use `[`/`]` (or left/right) to change files, up/down to change hunks,
+space to include/exclude one hunk, `x` to toggle a file, and enter to request
+integration. Before showing or applying anything, Collomia requires all of the
+following:
+
+- the saved path is still a worktree registered to the current repository;
+- its `collomia/*` branch still points at the recorded delegation base;
+- the parent copy of every selectable file still matches that base;
+- source and destination are regular UTF-8 text files, at most 1 MiB each and
+  4 MiB total for one review; and
+- no symlink, binary, oversized, mode-only, or otherwise unsupported entry is
+  selected.
+
+Integration uses the normal `integrate_delegate` permission decision, then
+rechecks parent and child bytes after the approval dialog. Selected text is
+published through the same rooted atomic file primitive as built-in writes;
+multi-file failure rolls back earlier entries. Integrated changes enter the
+ordinary session change tracker, so `/diff` and `/undo` can review or revert
+them. Collomia does not commit, Git-merge, push, delete the branch, or remove
+the worktree. Parent drift and other conflicts remain for explicit manual
+reconciliation.
+
+Delegation lifecycle snapshots and completed outcomes are persisted in the
+parent session. On resume, terminal outcomes remain inspectable; any recorded
+queued/running/approval state becomes `interrupted`. Collomia never re-enqueues
+it or repeats its provider/tool calls. Dirty worktrees remain available for
+manual inspection.
 
 ## Sessions and context
 
 Every run creates or resumes a durable per-workspace session. The append-only
 JSONL file includes metadata, full messages, runtime events, compaction
-markers, and structured plan updates.
+markers, structured plan updates, and bounded delegated-agent lifecycle/outcome
+snapshots. These agent records are observational and are never replayed as work.
 
 ### Session commands
 
@@ -2982,6 +3205,7 @@ markers, and structured plan updates.
 collo sessions list
 collo sessions show <id>
 collo sessions fork <id>
+collo sessions rewind <id> <turn>
 collo sessions rename <id> "provider retry investigation"
 collo sessions archive <id>
 collo sessions unarchive <id>
@@ -2993,9 +3217,14 @@ collo run --resume <id> "Continue with the next step"
 ```
 
 `--continue` resumes the most recently updated unarchived session. `fork`
-copies history into an independent session that can diverge. Archive hides a
-session from `--continue` selection but does not delete it. Delete is permanent
-and requires `--yes`.
+copies the complete history into an independent session that can diverge.
+`rewind` creates a new session containing a prefix through the requested
+completed turn; `0` creates a branch before the first turn. The target must be
+earlier than the source session's current completed-turn count. Archive hides
+a session from `--continue` selection but does not delete it. Delete is
+permanent and requires `--yes`. `collo sessions show <id>` prints numbered
+completed-turn checkpoints before the transcript so scripts and terminal-only
+users can choose a rewind target deliberately.
 
 Within the TUI, `/sessions` or the configurable `alt+s` shortcut switches the
 transcript, plan, prompt history, unsent draft, and persistence hooks in place.
@@ -3003,6 +3232,15 @@ The shortcut is useful when a draft is already in the composer because opening
 the picker does not replace it. `/new` creates a fresh session while leaving
 the current one saved. Drafts are retained per session only while this TUI
 process remains open; unsent text is not added to durable history.
+
+`/rewind` opens a fuzzy list of durable completed-turn boundaries and switches
+to the new branch immediately; `/rewind 3` selects one directly. This is
+conversation rewind, not environment rollback. The source log is never
+truncated, restoration does not execute recorded tools, and Collomia does not
+change the workspace while creating the branch. Files changed by earlier or
+later turns, shell commands, package installs, deployments, remote MCP effects,
+and other external state remain as they are now. Use `/undo` for a compatible
+most-recent direct file edit, or use Git/worktrees for broader source recovery.
 
 On initial `--resume`/`--continue` and in-TUI switches, Collomia reconstructs
 the complete visible conversation from the durable transcript, including tool
@@ -3031,17 +3269,77 @@ accepted history up to the final torn line remains recoverable.
 `context_window` tells Collomia the model's usable context size. Provider token
 usage anchors estimates; when no fresh usage is available, the UI estimates at
 roughly four characters per token. `/context` breaks down system prompt,
-instructions, skill summary, tool results, user/assistant messages, and
-compaction summaries.
+instructions, pinned session state, skill summary, tool results,
+user/assistant messages, compaction summaries, image attachments, and
+retained-result storage. Before provider-reported usage is available, each
+image reserves a visible rough estimate of about 1,000 tokens.
+
+The current structured plan is rendered into a pinned session-state section
+on every provider request. It is refreshed after `update_plan`, resume,
+in-process session switching, compaction, and rewind. Because it is outside the
+message history, compaction cannot remove it. `/tasks` shows the same plan the
+model receives.
 
 When estimated active context exceeds 80% of a known window and enough messages
 exist, Collomia asks the active provider to summarize older history. It keeps
 the six most recent messages verbatim and never splits a tool call from its
-results. `/compact [focus]` requests the same operation manually.
+results. Up to three recent failure results, bounded to 16 KiB in total, are
+copied verbatim into the summary record rather than trusting the provider to
+paraphrase them correctly. If that bound is reached, the retained evidence has
+an explicit truncation marker. `/compact [focus]` requests the same operation
+manually.
 
 Compaction changes only the model's active context. The full durable transcript
 is retained in the session JSONL file. Compaction itself consumes a provider
 request and tokens.
+
+### Session image storage
+
+Submitted image bytes are stored as owner-only raw blobs beside the session,
+not base64-encoded into its append-only JSONL. Message records keep only a
+random attachment ID, name, MIME type, size, and SHA-256 digest. Every provider
+request reopens the regular file and verifies its size, detected type, and
+digest before attaching the bytes. A missing, replaced, or corrupted blob
+fails the turn visibly rather than silently sending different content.
+
+The fixed limits are 5 MiB per image, four images in one user/tool-result
+batch, and 24 MiB per session. Fork copies all referenced images; rewind copies
+only images reachable from its retained conversation prefix; delete removes
+the session attachment directory. Older image turns can be compacted: the
+durable transcript and blob remain, while the compacted summary records image
+metadata and normally relies on the surrounding assistant analysis for the
+visual conclusions. Unsent selections are in-process composer state and are
+not stored until an accepted submission; a prompt rejected by a `user_prompt`
+hook is not retained.
+
+### Oversized tool-result artifacts
+
+`options.max_tool_output_bytes` controls how much of one returned string can
+enter active model context. When a result exceeds that limit during a durable
+session, Collomia stores a bounded session-local copy and adds an opaque ID to
+the preview. The model can call `read_tool_result` with that ID, a byte
+`offset`, and a `limit` up to 65536 to inspect another range. This operation
+only reads stored bytes; it never reruns the command, MCP tool, or other action
+that produced them.
+
+Retention has fixed safety bounds:
+
+- At most 4 MiB is retained from one result.
+- At most 32 MiB is retained for one session.
+- A returned reference reports returned-string and retained sizes and whether the
+  copy is complete.
+- Artifacts follow session forks; rewind copies only artifacts referenced by
+  its retained conversation prefix, so those references remain usable without
+  carrying result data from discarded future turns. Deleting a session deletes
+  its artifact directory.
+- Ephemeral runs do not create artifacts; oversized results use the ordinary
+  truncation marker.
+
+Artifact contents are framed as untrusted tool output when read. They remain
+outside the prompt until requested and `/context` reports their count and disk
+size. This is context management, not secret redaction: arbitrary tool output
+can contain source, credentials, or personal data, so session storage must be
+protected like the transcript itself.
 
 ## Browser terminal
 
@@ -3106,6 +3404,7 @@ macOS/Linux and `%USERPROFILE%\.collomia\` on Windows:
 | State | Relative location under the global root |
 | --- | --- |
 | Sessions | `sessions/<workspace-name-and-hash>/*.jsonl` |
+| Oversized result artifacts | `sessions/<workspace-name-and-hash>/<session-id>.artifacts/*.json` |
 | Audit ledger | `audit/<workspace-name-and-hash>.jsonl` |
 | Trust database | `trust.json` |
 | MCP pins | `mcp-pins.json` |

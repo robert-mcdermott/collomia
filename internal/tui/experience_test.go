@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
 	"github.com/muesli/termenv"
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/skills"
 )
 
@@ -102,6 +104,80 @@ func TestAgentPickerWithoutDelegatesExplainsFeature(t *testing.T) {
 	last := m.blocks[len(m.blocks)-1]
 	if last.role != "panel" || !strings.Contains(last.content, "delegate tool") {
 		t.Fatalf("expected delegated-agent guidance, got %+v", last)
+	}
+}
+
+func TestAgentControlPickerRequiresExplicitStopAction(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	m.runtime.Team.Enqueue(agent.DelegateStart{ID: "delegate-1", Name: "review", Task: "review", Cancel: cancel})
+	m.runtime.Team.MarkRunning("delegate-1")
+	m.openAgentControlPicker()
+	if m.picker == nil || len(m.picker.matches) != 1 {
+		t.Fatalf("agent control picker missing: %+v", m.picker)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.picker == nil || len(m.picker.matches) != 3 {
+		t.Fatalf("agent action picker missing: %+v", m.picker)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("selecting the active agent did not cancel its context")
+	}
+	status, _ := m.runtime.Team.Get("delegate-1")
+	if status.Status != agent.DelegateCancelling {
+		t.Fatalf("status=%s", status.Status)
+	}
+}
+
+func TestBusyComposerRunsOnlyLocalCommandsAndKeepsPromptDraft(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.setComposerValue("draft for the next turn")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.input.Value() != "draft for the next turn" || !m.busy {
+		t.Fatalf("busy prompt draft changed: value=%q busy=%t", m.input.Value(), m.busy)
+	}
+	if last := m.blocks[len(m.blocks)-1]; last.role != "system" || !strings.Contains(last.content, "Draft kept") {
+		t.Fatalf("missing draft notice: %+v", last)
+	}
+	m.setComposerValue("/status")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.input.Value() != "" || !m.busy {
+		t.Fatalf("local command did not run cleanly: value=%q busy=%t", m.input.Value(), m.busy)
+	}
+	if last := m.blocks[len(m.blocks)-1]; last.role != "panel" || last.title != "Status" {
+		t.Fatalf("status command did not run while busy: %+v", last)
+	}
+	m.setComposerValue("/model")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.input.Value() != "/model" {
+		t.Fatalf("unsafe busy command was not retained: %q", m.input.Value())
+	}
+}
+
+func TestBusyAgentSteeringCommandQueuesGuidance(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.runtime.Team.Enqueue(agent.DelegateStart{ID: "delegate-1", Name: "review", Task: "review"})
+	m.runtime.Team.MarkRunning("delegate-1")
+	m.setComposerValue("/agents steer delegate-1 inspect the cancellation path")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	status, _ := m.runtime.Team.Get("delegate-1")
+	if status.PendingGuidance != 1 || len(status.Guidance) != 1 || !strings.Contains(status.Guidance[0], "cancellation path") {
+		t.Fatalf("steering status=%+v", status)
 	}
 }
 

@@ -113,7 +113,7 @@ func TestProtocolConformanceAndCatalogListChanges(t *testing.T) {
 		t.Fatalf("pending catalogs after live reads=%v", pending)
 	}
 	out, err := registry.Execute(t.Context(), "mcp_fixture_beta", []byte(`{}`))
-	if err != nil || out != "ran beta" {
+	if err != nil || !strings.Contains(out, "ran beta") || !strings.Contains(out, "BEGIN COLLOMIA_EXTERNAL_MCP_DATA_") {
 		t.Fatalf("refreshed tool result=%q, %v", out, err)
 	}
 }

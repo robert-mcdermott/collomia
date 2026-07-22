@@ -38,7 +38,7 @@ func (m *Manager) elicit(ctx context.Context, server string, req *mcp.ElicitRequ
 	if params.URL != "" || params.Mode == "url" {
 		return &mcp.ElicitResult{Action: "decline"}, nil
 	}
-	preface := fmt.Sprintf("MCP server %s asks: %s", server, params.Message)
+	preface := fmt.Sprintf("External MCP server %s asks: %s", compactMetadata(server), compactMetadata(params.Message))
 	schema := parseElicitSchema(params.RequestedSchema)
 	if len(schema.Properties) == 0 {
 		// A bare confirmation without form fields.
@@ -63,13 +63,13 @@ func (m *Manager) elicit(ctx context.Context, server string, req *mcp.ElicitRequ
 	content := map[string]any{}
 	for i, name := range names {
 		field := schema.Properties[name]
-		label := name
+		label := compactMetadata(name)
 		if field.Title != "" {
-			label = field.Title + " (" + name + ")"
+			label = compactMetadata(field.Title) + " (" + compactMetadata(name) + ")"
 		}
 		question := fmt.Sprintf("%s — %s", preface, label)
 		if field.Description != "" {
-			question += ": " + field.Description
+			question += ": " + compactMetadata(field.Description)
 		}
 		if !required[name] {
 			question += " (optional; empty answer skips it)"
@@ -78,9 +78,14 @@ func (m *Manager) elicit(ctx context.Context, server string, req *mcp.ElicitRequ
 			question += " [esc declines the whole request]"
 		}
 		var options []string
+		displayedEnum := map[string]string{}
 		switch {
 		case len(field.Enum) > 0:
-			options = field.Enum
+			for _, option := range field.Enum {
+				display := compactMetadata(option)
+				options = append(options, display)
+				displayedEnum[display] = option
+			}
 		case field.Type == "boolean":
 			options = []string{"true", "false"}
 		}
@@ -89,6 +94,11 @@ func (m *Manager) elicit(ctx context.Context, server string, req *mcp.ElicitRequ
 			return &mcp.ElicitResult{Action: "decline"}, nil
 		}
 		answer = strings.TrimSpace(answer)
+		if original, ok := displayedEnum[answer]; ok {
+			// Keep the control-safe display separate from the exact protocol
+			// value returned to the server.
+			answer = original
+		}
 		if answer == "" {
 			if required[name] {
 				return &mcp.ElicitResult{Action: "decline"}, nil

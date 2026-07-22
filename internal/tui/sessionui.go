@@ -38,7 +38,7 @@ func restoredBlocks(messages []provider.Message) []block {
 				blocks = append(blocks, block{role: "system", content: "· older model context was compacted; complete conversation restored below ·"})
 				continue
 			}
-			blocks = append(blocks, block{role: "user", content: message.Content})
+			blocks = append(blocks, block{role: "user", content: displayMessageWithAttachments(message.Content, message.Parts)})
 		case "assistant":
 			if message.Content != "" {
 				blocks = append(blocks, block{role: "assistant", content: message.Content})
@@ -181,6 +181,7 @@ func (m *Model) sessionDraftKey() string {
 func (m *Model) saveSessionDraft() {
 	if key := m.sessionDraftKey(); key != "" {
 		m.sessionDrafts[key] = m.input.Value()
+		m.sessionAttachments[key] = append([]pendingAttachment(nil), m.pendingAttachments...)
 	}
 }
 
@@ -188,6 +189,9 @@ func (m *Model) restoreSessionDraft() {
 	value := ""
 	if key := m.sessionDraftKey(); key != "" {
 		value = m.sessionDrafts[key]
+		m.pendingAttachments = append([]pendingAttachment(nil), m.sessionAttachments[key]...)
+	} else {
+		m.pendingAttachments = nil
 	}
 	m.setComposerValue(value)
 }

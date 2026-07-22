@@ -16,7 +16,7 @@ const (
 )
 
 func (m Model) modalActive() bool {
-	return m.pending != nil || m.hunkReview != nil || m.question != nil
+	return m.pending != nil || m.hunkReview != nil || m.question != nil || m.agentIntegration != nil
 }
 
 // renderComposer keeps the normal screen layout stable behind a modal. The
@@ -34,6 +34,8 @@ func (m Model) renderComposer() string {
 		message = "Reviewing selected hunks"
 	} else if m.pending != nil {
 		message = "Approval required"
+	} else if m.agentIntegration != nil {
+		message = "Reviewing delegated changes"
 	}
 	return box.Height(3).Render(m.styles.muted.Render("  " + message + "…"))
 }

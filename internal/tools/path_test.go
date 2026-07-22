@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +30,85 @@ func TestPathGuardContainsWorkspaceAndSymlinks(t *testing.T) {
 		if _, outsideFlag, err := guard.Resolve(filepath.Join("escape", "secret")); err == nil || !outsideFlag {
 			t.Fatalf("symlink escape should fail: outside=%t err=%v", outsideFlag, err)
 		}
+	}
+}
+
+func TestWriteFileBreaksWorkspaceHardLinkInsteadOfMutatingOtherName(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	inside := filepath.Join(root, "inside.txt")
+	if err := os.WriteFile(outside, []byte("outside original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, inside); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	guard, err := NewPathGuard(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := WriteFileTool{Guard: guard}
+	if _, err := tool.Execute(t.Context(), json.RawMessage(`{"path":"inside.txt","content":"workspace replacement"}`)); err != nil {
+		t.Fatal(err)
+	}
+	outsideData, err := os.ReadFile(outside)
+	if err != nil || string(outsideData) != "outside original" {
+		t.Fatalf("outside hard link changed: %q err=%v", outsideData, err)
+	}
+	insideData, err := os.ReadFile(inside)
+	if err != nil || string(insideData) != "workspace replacement" {
+		t.Fatalf("workspace file not replaced: %q err=%v", insideData, err)
+	}
+}
+
+func TestWriteFileRejectsEscapingSymlinkWithMissingDescendants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ordinary Windows CI users cannot reliably create symbolic links")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := NewPathGuard(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := WriteFileTool{Guard: guard}
+	if _, err := tool.Execute(t.Context(), json.RawMessage(`{"path":"escape/nested/file.txt","content":"no"}`)); err == nil {
+		t.Fatal("escaping parent symlink unexpectedly succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "nested", "file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside file was created: %v", err)
+	}
+}
+
+func TestMutationTargetRejectsReplacedWorkspaceRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := NewPathGuard(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(base, "original-workspace")
+	if err := os.Rename(root, moved); err != nil {
+		t.Skipf("cannot replace workspace root on this platform: %v", err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target, _, err := guard.MutationTarget("payload.txt")
+	if target != nil {
+		_ = target.Close()
+	}
+	if err == nil {
+		t.Fatal("replacement workspace root unexpectedly accepted")
+	}
+	if _, err := os.Stat(filepath.Join(root, "payload.txt")); !os.IsNotExist(err) {
+		t.Fatalf("replacement workspace was modified: %v", err)
 	}
 }
 

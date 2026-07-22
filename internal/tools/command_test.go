@@ -231,6 +231,23 @@ func TestExecuteStreamDeliversLiveChunks(t *testing.T) {
 	}
 }
 
+func TestLimitedBufferCanRetainMoreThanItStreams(t *testing.T) {
+	var streamed strings.Builder
+	buffer := &limitedBuffer{limit: 12, streamLimit: 5, onChunk: func(chunk string) { streamed.WriteString(chunk) }}
+	if n, err := buffer.Write([]byte("abcdefgh")); err != nil || n != 8 {
+		t.Fatalf("first write n=%d err=%v", n, err)
+	}
+	if n, err := buffer.Write([]byte("ijklmnop")); err != nil || n != 8 {
+		t.Fatalf("second write n=%d err=%v", n, err)
+	}
+	if got := streamed.String(); got != "abcde" {
+		t.Fatalf("streamed=%q", got)
+	}
+	if got := buffer.String(); !strings.HasPrefix(got, "abcdefghijkl") || !strings.Contains(got, "output truncated") {
+		t.Fatalf("retained=%q", got)
+	}
+}
+
 func TestMinimalEnvStripsSecrets(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix env test")

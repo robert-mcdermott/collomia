@@ -4,12 +4,15 @@
 package diffmodel
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/robert-mcdermott/collomia/internal/safefile"
 )
 
 // Unified renders a unified diff between two contents. It uses a simple
@@ -150,11 +153,13 @@ func splitLines(s string) []string {
 // Snapshot is one recorded mutation: the state of a file before and after.
 // Before/After of nil mean the file did not exist on that side.
 type Snapshot struct {
-	Path   string
-	Op     string // write, edit, patch, delete
-	Before *string
-	After  *string
-	Time   time.Time
+	Path       string
+	Op         string // write, edit, patch, delete
+	Before     *string
+	After      *string
+	BeforeMode os.FileMode
+	AfterMode  os.FileMode
+	Time       time.Time
 }
 
 // FileDiff is one session-touched file rendered against its first-seen base.
@@ -178,20 +183,44 @@ type AlignedLine struct {
 // session-level diffs, and supports undoing the most recent mutation.
 type Tracker struct {
 	mu      sync.Mutex
+	root    string
+	rootID  safefile.RootIdentity
+	rootErr error
 	base    map[string]*string
 	history []Snapshot
 }
 
-func NewTracker() *Tracker { return &Tracker{base: map[string]*string{}} }
+// NewTracker optionally anchors undo beneath a workspace root. Built-in tools
+// always provide it; the variadic form keeps standalone diff tests and callers
+// source-compatible.
+func NewTracker(root ...string) *Tracker {
+	tracker := &Tracker{base: map[string]*string{}}
+	if len(root) > 0 {
+		tracker.root = root[0]
+		tracker.rootID, tracker.rootErr = safefile.CaptureRootIdentity(root[0])
+	}
+	return tracker
+}
 
 // Record stores one mutation. Call after the mutation succeeds.
 func (t *Tracker) Record(path, op string, before, after *string) {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	t.RecordWithMode(path, op, before, after, mode, mode)
+}
+
+// RecordWithMode stores the content and permission mode on both sides of a
+// mutation so undo can restore the prior file without silently changing its
+// executable or privacy bits.
+func (t *Tracker) RecordWithMode(path, op string, before, after *string, beforeMode, afterMode os.FileMode) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, seen := t.base[path]; !seen {
 		t.base[path] = before
 	}
-	t.history = append(t.history, Snapshot{Path: path, Op: op, Before: before, After: after, Time: time.Now().UTC()})
+	t.history = append(t.history, Snapshot{Path: path, Op: op, Before: before, After: after, BeforeMode: beforeMode.Perm(), AfterMode: afterMode.Perm(), Time: time.Now().UTC()})
 }
 
 // Changed lists the files touched this session, in first-touch order.
@@ -294,11 +323,19 @@ func (t *Tracker) Undo() (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("nothing to undo")
 	}
 	last := t.history[len(t.history)-1]
-	current, readErr := os.ReadFile(last.Path)
+	target, err := t.mutationTarget(last.Path)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("undo blocked: secure target: %w", err)
+	}
+	defer target.Close()
+	current, readErr := target.ReadFile()
 	switch {
 	case last.After == nil:
 		if readErr == nil {
 			return Snapshot{}, fmt.Errorf("undo blocked: %s exists but the last operation deleted it", last.Path)
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			return Snapshot{}, fmt.Errorf("undo blocked: cannot inspect %s: %v", last.Path, readErr)
 		}
 	case readErr != nil:
 		return Snapshot{}, fmt.Errorf("undo blocked: cannot read %s: %v", last.Path, readErr)
@@ -306,14 +343,50 @@ func (t *Tracker) Undo() (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("undo blocked: %s changed outside the agent since the last operation", last.Path)
 	}
 	if last.Before == nil {
-		if err := os.Remove(last.Path); err != nil {
+		if err := target.Remove(); err != nil {
 			return Snapshot{}, err
 		}
 	} else {
-		if err := os.WriteFile(last.Path, []byte(*last.Before), 0o644); err != nil {
+		mode := last.BeforeMode
+		if mode == 0 {
+			mode = 0o644
+		}
+		if err := target.Replace([]byte(*last.Before), mode); err != nil {
 			return Snapshot{}, err
 		}
 	}
 	t.history = t.history[:len(t.history)-1]
 	return last, nil
+}
+
+func (t *Tracker) mutationTarget(path string) (*safefile.Target, error) {
+	if t.root != "" {
+		rootAbs, rootErr := filepath.Abs(t.root)
+		pathAbs, pathErr := filepath.Abs(path)
+		if rootErr == nil && pathErr == nil {
+			rel, relErr := filepath.Rel(rootAbs, pathAbs)
+			inside := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+			if inside {
+				if t.rootErr != nil {
+					return nil, fmt.Errorf("workspace mutation root identity unavailable: %w", t.rootErr)
+				}
+				target, err := safefile.Open(rootAbs, pathAbs)
+				if err != nil {
+					return nil, err
+				}
+				if t.rootID.Valid() {
+					opened, identityErr := target.RootIdentity()
+					if identityErr != nil || !t.rootID.Same(opened) {
+						_ = target.Close()
+						if identityErr != nil {
+							return nil, identityErr
+						}
+						return nil, fmt.Errorf("workspace mutation root changed since startup")
+					}
+				}
+				return target, nil
+			}
+		}
+	}
+	return safefile.OpenParent(path)
 }

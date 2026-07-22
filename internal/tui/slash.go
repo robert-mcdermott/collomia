@@ -12,6 +12,10 @@ import (
 )
 
 func (m *Model) slash(line string) (bool, tea.Cmd) {
+	if m.busy && !busySlashAllowed(line) {
+		m.addError(fmt.Errorf("%s is unavailable while the current turn is running", strings.Fields(line)[0]))
+		return false, nil
+	}
 	parts := strings.Fields(line)
 	command := strings.ToLower(parts[0])
 	args := parts[1:]
@@ -97,11 +101,17 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			sessionID = "\nSession: " + m.runtime.Session.Meta.ID
 		}
 		breakdown := m.runtime.Agent.ContextBreakdown()
-		inspector := fmt.Sprintf("\n\nWhat the model sees each request (≈4 chars/token):\n  system prompt      ~%s tokens\n  project instructions ~%s tokens\n  skills summary     ~%s tokens\n  tool results       ~%s tokens across %d messages",
-			formatTokens(breakdown.SystemPromptChars/4), formatTokens(breakdown.InstructionsChars/4), formatTokens(breakdown.SkillsSummaryChars/4), formatTokens(breakdown.ToolResultChars/4), breakdown.MessagesByRole["tool"])
+		inspector := fmt.Sprintf("\n\nWhat the model sees each request (≈4 chars/token):\n  base system prompt ~%s tokens\n  project instructions ~%s tokens\n  pinned plan/state  ~%s tokens\n  skills summary     ~%s tokens\n  tool results       ~%s tokens across %d messages",
+			formatTokens(breakdown.SystemPromptChars/4), formatTokens(breakdown.InstructionsChars/4), formatTokens(breakdown.PinnedStateChars/4), formatTokens(breakdown.SkillsSummaryChars/4), formatTokens(breakdown.ToolResultChars/4), breakdown.MessagesByRole["tool"])
 		inspector += fmt.Sprintf("\n  conversation       %d user / %d assistant messages", breakdown.MessagesByRole["user"], breakdown.MessagesByRole["assistant"])
 		if breakdown.Summaries > 0 {
 			inspector += fmt.Sprintf("\n  compaction         %d summary block(s) replacing older history", breakdown.Summaries)
+		}
+		if breakdown.ArtifactCount > 0 {
+			inspector += fmt.Sprintf("\n  retained results   %d artifact(s), %s on disk and outside the prompt", breakdown.ArtifactCount, formatByteCount(breakdown.ArtifactBytes))
+		}
+		if breakdown.ImageCount > 0 {
+			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
 		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
 		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
@@ -161,6 +171,43 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		m.openSkillPicker()
 	case "/agents":
+		if len(args) > 0 {
+			switch args[0] {
+			case "stop":
+				if len(args) < 2 {
+					m.addError(fmt.Errorf("usage: /agents stop <id-or-name>"))
+					break
+				}
+				target := strings.Join(args[1:], " ")
+				if err := m.runtime.Team.Stop(target); err != nil {
+					m.addError(err)
+				} else {
+					m.addSystem("Cancellation requested for delegated agent " + target + ".")
+				}
+			case "steer":
+				if len(args) < 3 {
+					m.addError(fmt.Errorf("usage: /agents steer <id> <guidance…>"))
+					break
+				}
+				guidance := strings.Join(args[2:], " ")
+				if err := m.runtime.Team.Steer(args[1], guidance); err != nil {
+					m.addError(err)
+				} else {
+					m.addSystem("Guidance queued for delegated agent " + args[1] + "; it will be delivered at the next model boundary and grants no permissions.")
+				}
+			case "apply":
+				if len(args) != 2 {
+					m.addError(fmt.Errorf("usage: /agents apply <id>"))
+					break
+				}
+				if err := m.openAgentIntegration(args[1]); err != nil {
+					m.addError(err)
+				}
+			default:
+				m.addError(fmt.Errorf("usage: /agents [stop <id-or-name>|steer <id> <guidance…>|apply <id>]"))
+			}
+			break
+		}
 		m.openAgentPicker()
 	case "/prompt":
 		path, err := promptPathArgument(line)
@@ -173,6 +220,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			break
 		}
 		if err := m.loadPromptFile(path); err != nil {
+			m.addError(err)
+		}
+	case "/attach":
+		path, err := promptPathArgument(line)
+		if err != nil {
+			m.addError(fmt.Errorf("usage: /attach [workspace-image]: %w", err))
+			break
+		}
+		if path == "" {
+			m.openImagePicker()
+			break
+		}
+		if err := m.addImageAttachment(path); err != nil {
+			m.addError(err)
+		}
+	case "/attachments":
+		m.showPendingAttachments()
+	case "/detach":
+		if err := m.detachImage(args); err != nil {
 			m.addError(err)
 		}
 	case "/mcp":
@@ -235,6 +301,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.addPanel("Background processes", strings.Join(lines, "\n")+"\n\n/ps stop <id> stops one; all are stopped at exit.")
 	case "/sessions", "/resume":
 		m.openSessionPicker()
+	case "/rewind":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
+			break
+		}
+		if len(args) == 0 {
+			m.openRewindPicker()
+			break
+		}
+		if len(args) != 1 {
+			m.addError(fmt.Errorf("usage: /rewind [completed-turn-number]"))
+			break
+		}
+		turn, err := strconv.Atoi(args[0])
+		if err != nil || turn < 0 {
+			m.addError(fmt.Errorf("rewind target must be a non-negative completed turn number"))
+			break
+		}
+		m.rewindTo(turn)
 	case "/retry":
 		if m.busy {
 			m.addError(fmt.Errorf("wait for the current turn to finish first"))
@@ -278,9 +363,43 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 	return false, nil
 }
 
+// busySlashAllowed defines the deliberately small local-control lane that is
+// available while a provider turn is active. These commands inspect local
+// state or control a child; they never submit another model prompt, switch the
+// session/provider, change autonomy, or integrate workspace bytes.
+func busySlashAllowed(line string) bool {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "/help", "/status", "/context", "/tasks", "/tools", "/config", "/attachments", "/transcript", "/diff":
+		return len(fields) == 1
+	case "/ps":
+		return len(fields) == 1
+	case "/agents":
+		if len(fields) == 1 {
+			return true
+		}
+		return fields[1] == "stop" || fields[1] == "steer"
+	default:
+		return false
+	}
+}
+
 func (m *Model) addSystem(value string) {
 	m.blocks = append(m.blocks, block{role: "system", content: value})
 }
 func (m *Model) addError(err error) {
 	m.blocks = append(m.blocks, block{role: "error", content: err.Error()})
+}
+
+func formatByteCount(value int) string {
+	if value < 1024 {
+		return fmt.Sprintf("%d B", value)
+	}
+	if value < 1024*1024 {
+		return fmt.Sprintf("%.1f KiB", float64(value)/1024)
+	}
+	return fmt.Sprintf("%.1f MiB", float64(value)/(1024*1024))
 }

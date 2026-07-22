@@ -83,8 +83,12 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
+	messages, err := anthropicMessages(in.Messages)
+	if err != nil {
+		return Response{}, err
+	}
 	body := map[string]any{
-		"model": in.Model, "messages": anthropicMessages(in.Messages),
+		"model": in.Model, "messages": messages,
 		"max_tokens": in.MaxTokens, "stream": true,
 	}
 	if in.System != "" {
@@ -176,12 +180,20 @@ func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta f
 	return out, nil
 }
 
-func anthropicMessages(messages []Message) []any {
+func anthropicMessages(messages []Message) ([]any, error) {
 	out := make([]any, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Role == "tool" {
+			resultContent := any(msg.Content)
+			if len(msg.Parts) > 0 {
+				parts, err := anthropicContentParts(msg)
+				if err != nil {
+					return nil, err
+				}
+				resultContent = parts
+			}
 			out = append(out, map[string]any{"role": "user", "content": []any{map[string]any{
-				"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": msg.Content,
+				"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": resultContent,
 			}}})
 			continue
 		}
@@ -198,9 +210,34 @@ func anthropicMessages(messages []Message) []any {
 			out = append(out, map[string]any{"role": "assistant", "content": content})
 			continue
 		}
-		out = append(out, map[string]any{"role": msg.Role, "content": msg.Content})
+		if len(msg.Parts) > 0 {
+			parts, err := anthropicContentParts(msg)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, map[string]any{"role": msg.Role, "content": parts})
+		} else {
+			out = append(out, map[string]any{"role": msg.Role, "content": msg.Content})
+		}
 	}
-	return out
+	return out, nil
+}
+
+func anthropicContentParts(message Message) ([]any, error) {
+	parts, err := messageContentParts(message)
+	if err != nil {
+		return nil, err
+	}
+	encoded := make([]any, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case ContentText:
+			encoded = append(encoded, map[string]any{"type": "text", "text": part.Text})
+		case ContentImage:
+			encoded = append(encoded, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": part.MediaType, "data": imageBase64(part)}})
+		}
+	}
+	return encoded, nil
 }
 
 func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func(Delta)) (Response, error) {

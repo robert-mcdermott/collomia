@@ -80,6 +80,7 @@ func TestReadRejectsCorruptOrIncompleteTraces(t *testing.T) {
 		{"null known field", eventLine(1, "warning", `,"text":null`), `field "text" cannot be null`},
 		{"missing payload", eventLine(1, "tool.start", ``), `requires a non-null "tool" payload`},
 		{"permission missing allowed", eventLine(1, "permission.decision", `,"permission":{"tool":"run_command","summary":"run tests","risk":"execute"}`), `requires field "allowed"`},
+		{"invalid delegate status", eventLine(1, "delegate.update", `,"delegate":{"id":"d1","name":"review","status":"teleported"}`), `unsupported delegate status`},
 		{"orphan output", eventLine(1, "tool.output", `,"tool":{"name":"run_command","output":"x"}`), "has no active tool"},
 		{"tool outside turn", eventLine(1, "tool.start", `,"tool":{"name":"run_command"}`), "outside an active turn"},
 		{"missing result", eventLine(1, "turn.start", ``), "trace ended without a terminal run.result"},

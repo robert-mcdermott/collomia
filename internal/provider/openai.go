@@ -136,8 +136,12 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 
 func (c *OpenAIClient) chatBody(in Request) (map[string]any, error) {
 	useMaxCompletionTokens, omitTemperature := c.parameters.snapshot()
+	messages, err := openAIMessages(in)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
-		"model": in.Model, "messages": openAIMessages(in), "stream": true,
+		"model": in.Model, "messages": messages, "stream": true,
 		"stream_options": map[string]bool{"include_usage": true},
 	}
 	if in.MaxTokens > 0 {
@@ -281,13 +285,34 @@ func mentionsQuotedParameter(message, parameter string) bool {
 		strings.Contains(message, `"`+parameter+`"`)
 }
 
-func openAIMessages(in Request) []any {
+func openAIMessages(in Request) ([]any, error) {
 	messages := make([]any, 0, len(in.Messages)+1)
 	if in.System != "" {
 		messages = append(messages, map[string]any{"role": "system", "content": in.System})
 	}
 	for _, msg := range in.Messages {
-		out := map[string]any{"role": msg.Role, "content": msg.Content}
+		var content any = msg.Content
+		// Chat Completions supports image_url parts on user input. Its tool
+		// message content contract is not consistently multimodal across OpenAI-
+		// compatible endpoints, so retain the visible marker text for tool images
+		// instead of emitting a request shape many gateways reject.
+		if len(msg.Parts) > 0 && msg.Role != "tool" {
+			parts, err := messageContentParts(msg)
+			if err != nil {
+				return nil, err
+			}
+			encoded := make([]any, 0, len(parts))
+			for _, part := range parts {
+				switch part.Type {
+				case ContentText:
+					encoded = append(encoded, map[string]any{"type": "text", "text": part.Text})
+				case ContentImage:
+					encoded = append(encoded, map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageDataURL(part), "detail": "auto"}})
+				}
+			}
+			content = encoded
+		}
+		out := map[string]any{"role": msg.Role, "content": content}
 		if msg.ToolCallID != "" {
 			out["tool_call_id"] = msg.ToolCallID
 		}
@@ -303,7 +328,7 @@ func openAIMessages(in Request) []any {
 		}
 		messages = append(messages, out)
 	}
-	return messages
+	return messages, nil
 }
 
 type openAIToolDelta struct {

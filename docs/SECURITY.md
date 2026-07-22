@@ -57,6 +57,16 @@ grant allows them; they never ride along with autopilot.
   the built-in file tools only. A shell command is *not* path-checked — `cat
   /etc/passwd` runs if the command itself is approved. This is why command
   approval exists, and why the sandbox matters.
+- **Rooted file mutation** re-checks the approved target through an
+  operating-system directory root when `write_file`, `edit_file`,
+  `apply_patch`, or `/undo` performs its final operation. Parent traversal and
+  a parent symlink swapped during the operation cannot redirect that mutation
+  outside the authorized root. Replacements are written to a private file in
+  the same directory, synced, and atomically renamed; Collomia does not
+  truncate the old inode, so an existing hard link cannot turn a workspace
+  edit into an edit of another name. Deletes remove only the rooted directory
+  entry. The original permission mode is preserved across edits and undo where
+  the operating system exposes POSIX-style mode bits.
 - **Command analysis** (`internal/shell`) is conservative by design: it
   identifies common catastrophic outcomes, requires confirmation for known
   destructive operations, and prompts when it cannot resolve an effect. It is
@@ -66,6 +76,19 @@ grant allows them; they never ride along with autopilot.
 - **Denied-command regexes** are an additive defense-in-depth layer for local
   policy. Regexes cannot enumerate harm; the built-in structural checks do not
   depend on users maintaining regex syntax.
+
+Rooted mutation protects Collomia's structured file tools; it does not make an
+approved shell command use those primitives. `apply_patch` validates the whole
+change set before publishing and attempts rooted rollback if a later publish
+fails. It is not a filesystem transaction against unrelated concurrent
+writers: another program changing an approved file at the same time can still
+win before or after one atomic replacement. Keep important work in version
+control, inspect `/diff`, and use the OS sandbox when commands themselves are
+untrusted. Atomic publication deliberately creates a new inode: it preserves
+content and portable permission bits, but breaks hard-link identity and may not
+preserve platform-specific ACLs, extended attributes, or special ownership.
+Use a reviewed command or a metadata-aware external tool when those attributes
+are part of the file's contract.
 
 ## Command safety tiers
 
@@ -178,7 +201,9 @@ process and are not blocked by command-sandbox read/network policy.
   contents. This is a user-data boundary, not an attempt to hide public system
   configuration.
 - Network egress is denied unless `permissions.sandbox_allow_network` is
-  true (loopback stays open for local model servers).
+  true. Loopback connect, bind, and inbound operations stay open for local
+  model and development servers; those exceptions are operation-specific so
+  matching a local ephemeral address cannot accidentally reopen remote egress.
 - `sandbox-exec` is deprecated by Apple but functional; treated as
   best-effort OS enforcement, tested in `internal/tools/command_test.go`.
 
@@ -307,6 +332,62 @@ by `stop_process`, `/ps stop`, or automatically when the session ends
 its own worktree, which are stopped when that sub-agent's task finishes).
 Nothing started this way is expected to outlive the `collo` process.
 
+## Delegated-agent boundary
+
+Delegated agents use the same security boundary as the parent and can only be
+made more restrictive. An `agents.<name>` profile may choose a smaller tool or
+skill allowlist, add denied tools or command regexes, add `prompt`/`deny`
+permission rules, and lower the autonomy mode. Configuration validation rejects
+an agent-level `allow` rule. Parent and built-in denials remain additive, and a
+child cannot enable outside-workspace access, network access, user-data reads,
+or a weaker sandbox policy that the parent did not have. Disabled tools are
+checked again at execution time, not merely hidden from the model's tool list.
+
+Every child gets a distinct permission manager and audit ledger. A child
+approval is shown through the normal themed approval dialog with the delegated
+task name and ID, and approval affects only that proposed action. Write-capable
+children get independent Git worktrees; Collomia records their changed files
+and common-base hunk ranges but never commits, Git-merges, or chooses between
+sibling changes automatically. Retained worktrees may contain user-reviewable
+changes after a task ends. Optional `plan_step` metadata is validated against
+the current structured plan and its completed dependencies; it grants no new
+capability.
+
+The session-wide FIFO scheduler bounds total and per-provider concurrency.
+Each task also has a queue-inclusive timeout, maximum iteration count, and
+optional token budget. Token enforcement uses provider-reported usage when the
+adapter supplies it and estimates the next request before sending; providers
+may report usage only after a response, so a final response can exceed the
+configured token target. Timeouts and iteration limits remain the hard fallback.
+These controls limit agent work, not operating-system CPU or memory consumption.
+
+`/agents steer <id> <guidance...>` queues bounded guidance only for the child's
+next provider boundary. It cannot change an executing tool/provider call,
+answer a pending approval, or widen permissions; the model-visible wrapper
+states that steering grants no permission. `alt+a` exposes a deliberate
+inspect/steer/stop action menu, and `/agents stop <id-or-name>` cancels one
+queued or active child.
+
+`/agents apply <id>` is an explicit copy-and-review operation, not a Git merge.
+Collomia treats the durable worktree path as untrusted: it verifies Git still
+registers that exact directory and branch for the parent repository, requires
+the branch `HEAD` to equal the recorded base commit, rejects path traversal,
+symlinks, non-regular/binary/non-UTF-8/oversized files and mode-only changes,
+and refuses any parent file that no longer matches the base. The user selects
+text hunks in a floating review; normal `integrate_delegate` permission rules
+still apply. Both parent and child bytes are rechecked after interactive
+approval to close the approval-time race. Rooted atomic replacement/removal,
+multi-file rollback, and the ordinary change tracker then publish the selected
+content. The child worktree and branch are retained. Collomia never commits,
+pushes, silently reconciles conflicts, or deletes those recovery artifacts.
+
+Closing Collomia requests cancellation for every child and stops background
+processes owned by write agents. Durable sessions keep bounded status, summary,
+evidence, usage, and change manifests—not raw child transcripts. On resume,
+recorded completed outcomes remain visible and any nonterminal task becomes
+`interrupted`; it is never automatically scheduled again. This avoids duplicate
+mutations but means the user or parent must explicitly start replacement work.
+
 **PTY commands** (`run_command` with `pty: true`, Unix only) run in their
 own session (`setsid`) rather than merely a process group, because a
 pseudo-terminal's child processes attach to the session leader; killing the
@@ -431,6 +512,27 @@ to `PATH`, `HOME`, and a short list of other basics — this is the default
 automatically whenever the sandbox is enabled (`sandbox: "auto"` or
 `"require"`), and can be set explicitly without the sandbox too.
 
+### Durable conversation and retained tool output
+
+Session transcripts are operational history, not a secret vault. They can
+contain source text, prompts, tool arguments/results, command errors, and data
+returned by external services. When a returned string exceeds
+`options.max_tool_output_bytes`, a durable session may additionally retain up
+to 4 MiB of that result under an opaque ID; total retained-result storage is
+capped at 32 MiB per session. `read_tool_result` reads bounded ranges from this
+local copy and never reruns the originating action.
+
+Session JSONL and result-artifact files live under the workspace-specific
+directory in `~/.collomia/sessions/` (or `%USERPROFILE%\.collomia\sessions\`
+on Windows), outside the repository, with owner-only modes where the platform
+supports them. Artifacts remain outside model context until explicitly read,
+are framed as untrusted content, follow forks, and follow rewind branches only
+when referenced by the retained conversation prefix. They are removed with
+their session and excluded
+from support bundles. None of these properties redact arbitrary stored tool
+output or encrypt it at rest; protect the user account and delete sensitive
+sessions when they are no longer needed.
+
 ## Optional external reviewer
 
 `permissions.reviewer_command`, when set, runs before any non-read action
@@ -476,11 +578,51 @@ and refuse to overwrite an existing path even if it appears during creation.
 
 ## Prompt injection
 
-Tool output, repository text, skills, and MCP responses are declared
-untrusted data in the system prompt, but a sufficiently capable injection
-can still steer the model. The controls that hold regardless of what the
-model was told are: the permission pipeline, denied commands, uninspectable
-command prompts, the trust quarantine, and (when enabled) the OS sandbox.
+Tool output, repository text, skills, and MCP responses are external data. A
+sufficiently capable injection can still steer the model, so prose is not the
+security boundary.
+
+Every model-visible MCP tool result, resource, resource catalog, and expanded
+prompt template is wrapped in an `EXTERNAL_MCP_DATA` content-derived boundary
+that identifies its server, content type, subject, and byte count. Its handling
+guidance explicitly permits using relevant factual and structured data while
+refusing instructions, claimed authority, or claimed permissions embedded in
+the payload. Terminal control characters are removed. Server-supplied
+tool-schema descriptions/titles are labeled external and descriptive and are
+bounded; schema comments and examples are discarded. Catalog and elicitation
+metadata is likewise control-safe and bounded. A server's `trusted` setting
+authorizes Collomia to connect to and run that server; it does not give the
+server's returned text instructional authority.
+
+These frames make provenance clear to both users and models, but they are not
+an instruction-following guarantee. The controls that hold regardless of what
+the model was told are the permission pipeline (MCP calls remain external
+risk), denied commands, uninspectable-command prompts, repository/server trust
+gates, rooted structured-file mutations, and—when enabled—the OS sandbox. A
+credential-free adversarial evaluation verifies that an allowed MCP-like read
+containing a forged permission grant still cannot authorize a workspace write.
+
+## Image attachment storage
+
+User-selected and supported MCP-returned images are copied into the active
+session's per-user storage, never into the repository. Durable session JSONL
+contains only a random attachment ID, display name, MIME type, size, and
+SHA-256 digest; provider requests resolve the owner-only raw blob and verify its
+regular-file status, size, detected type, and digest immediately before send.
+Limits are 5 MiB per image, four images per turn/tool batch, and 24 MiB per
+session. Only PNG, JPEG, GIF, and WebP are accepted; active SVG and arbitrary
+binary files are refused. Fork copies attachments, rewind copies only IDs
+reachable from retained messages, and delete removes the attachment directory.
+
+Attaching an image is an explicit data disclosure to the selected provider.
+The submit-time read is anchored to the workspace directory, so changing a
+path component or symbolic link after selection cannot redirect it elsewhere
+in the user account. It does not redact pixels, strip EXIF or other embedded
+metadata, or determine whether a screenshot contains credentials. Inspect and
+sanitize images before sending them to a hosted model. Unsent selections are
+kept only in the running TUI; user images are copied only after the
+`user_prompt` hook accepts the submission, so a blocked turn leaves no blob.
+MCP images retain external-data provenance and never authorize a later action.
 
 ## Reporting
 

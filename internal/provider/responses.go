@@ -34,24 +34,9 @@ func (c *ResponsesClient) Capabilities() Capabilities {
 }
 
 func (c *ResponsesClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
-	input := make([]any, 0, len(in.Messages)+1)
-	if in.System != "" {
-		input = append(input, map[string]any{"role": "system", "content": in.System})
-	}
-	for _, msg := range in.Messages {
-		switch {
-		case msg.Role == "tool":
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": msg.Content})
-		case len(msg.ToolCalls) > 0:
-			if msg.Content != "" {
-				input = append(input, map[string]any{"role": "assistant", "content": msg.Content})
-			}
-			for _, call := range msg.ToolCalls {
-				input = append(input, map[string]any{"type": "function_call", "call_id": call.ID, "name": call.Name, "arguments": string(rawObject(call.Arguments))})
-			}
-		default:
-			input = append(input, map[string]any{"role": msg.Role, "content": msg.Content})
-		}
+	input, err := responsesInput(in)
+	if err != nil {
+		return Response{}, err
 	}
 	body := map[string]any{"model": in.Model, "input": input, "store": false, "stream": true}
 	if in.MaxTokens > 0 {
@@ -97,6 +82,46 @@ func (c *ResponsesClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	}
 	out, err := parseResponsesResponse(resp.Body, c.Label, onDelta)
 	return out, protocolError(c.Label, "decode responses response", err)
+}
+
+func responsesInput(in Request) ([]any, error) {
+	input := make([]any, 0, len(in.Messages)+1)
+	if in.System != "" {
+		input = append(input, map[string]any{"role": "system", "content": in.System})
+	}
+	for _, msg := range in.Messages {
+		switch {
+		case msg.Role == "tool":
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": msg.Content})
+		case len(msg.ToolCalls) > 0:
+			if msg.Content != "" {
+				input = append(input, map[string]any{"role": "assistant", "content": msg.Content})
+			}
+			for _, call := range msg.ToolCalls {
+				input = append(input, map[string]any{"type": "function_call", "call_id": call.ID, "name": call.Name, "arguments": string(rawObject(call.Arguments))})
+			}
+		default:
+			if len(msg.Parts) == 0 {
+				input = append(input, map[string]any{"role": msg.Role, "content": msg.Content})
+				continue
+			}
+			parts, err := messageContentParts(msg)
+			if err != nil {
+				return nil, err
+			}
+			content := make([]any, 0, len(parts))
+			for _, part := range parts {
+				switch part.Type {
+				case ContentText:
+					content = append(content, map[string]any{"type": "input_text", "text": part.Text})
+				case ContentImage:
+					content = append(content, map[string]any{"type": "input_image", "image_url": imageDataURL(part)})
+				}
+			}
+			input = append(input, map[string]any{"role": msg.Role, "content": content})
+		}
+	}
+	return input, nil
 }
 
 type responsesErrorPayload struct {

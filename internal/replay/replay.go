@@ -157,7 +157,7 @@ func validateEvent(line int, e event.Event, fields map[string]json.RawMessage) e
 	if !knownKind(e.Kind) {
 		return lineError(line, "unsupported event kind %q", e.Kind)
 	}
-	for _, name := range []string{"turn", "text", "tool", "permission", "file", "usage", "tool_call", "result", "provider", "error"} {
+	for _, name := range []string{"turn", "text", "tool", "permission", "file", "usage", "tool_call", "delegate", "result", "provider", "error"} {
 		if raw, ok := fields[name]; ok && string(raw) == "null" {
 			return lineError(line, "field %q cannot be null", name)
 		}
@@ -228,6 +228,22 @@ func validateEvent(line int, e event.Event, fields map[string]json.RawMessage) e
 		if err := validateUsage(line, e.Usage, fields["usage"]); err != nil {
 			return err
 		}
+	case event.KindDelegateUpdate:
+		if err := require("delegate", e.Delegate); err != nil {
+			return err
+		}
+		if _, err := requireObjectFields(line, string(e.Kind), "delegate", fields["delegate"], "id", "name", "status"); err != nil {
+			return err
+		}
+		if strings.TrimSpace(e.Delegate.ID) == "" || strings.TrimSpace(e.Delegate.Name) == "" || strings.TrimSpace(e.Delegate.Status) == "" {
+			return lineError(line, "delegate id, name, and status cannot be empty")
+		}
+		if !validDelegateStatus(e.Delegate.Status) {
+			return lineError(line, "unsupported delegate status %q", e.Delegate.Status)
+		}
+		if e.Delegate.TokenBudget < 0 || e.Delegate.TimeoutSeconds < 0 {
+			return lineError(line, "delegate token_budget and timeout_seconds cannot be negative")
+		}
 	case event.KindError:
 		if _, ok := fields["error"]; !ok || strings.TrimSpace(e.Error) == "" {
 			return lineError(line, "error requires a non-empty %q payload", "error")
@@ -249,6 +265,15 @@ func validateEvent(line int, e event.Event, fields map[string]json.RawMessage) e
 		}
 	}
 	return nil
+}
+
+func validDelegateStatus(status string) bool {
+	switch status {
+	case "queued", "running", "waiting_approval", "cancelling", "done", "error", "cancelled", "timed_out", "budget_exhausted", "interrupted":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateResult(line int, result *event.RunResult, raw json.RawMessage) error {
@@ -354,7 +379,7 @@ func knownKind(kind event.Kind) bool {
 	case event.KindSessionStart, event.KindTurnStart, event.KindTextDelta, event.KindReasoningDelta,
 		event.KindToolCallDelta, event.KindToolStart, event.KindToolOutput, event.KindToolResult,
 		event.KindPermissionRequest, event.KindPermissionDecision, event.KindFileChange,
-		event.KindPlanUpdate, event.KindUsage, event.KindCompaction, event.KindWarning,
+		event.KindPlanUpdate, event.KindDelegateUpdate, event.KindUsage, event.KindCompaction, event.KindWarning,
 		event.KindError, event.KindTurnEnd, event.KindRunResult:
 		return true
 	default:

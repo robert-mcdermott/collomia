@@ -23,6 +23,7 @@
         "permission.decision",
         "file.change",
         "plan.update",
+        "delegate.update",
         "usage",
         "context.compaction",
         "warning",
@@ -38,6 +39,7 @@
     "file": { "$ref": "#/$defs/fileChange" },
     "usage": { "$ref": "#/$defs/usage" },
     "tool_call": { "$ref": "#/$defs/toolCallDelta" },
+    "delegate": { "$ref": "#/$defs/delegateStatus" },
     "result": { "$ref": "#/$defs/runResult" },
     "provider": { "$ref": "#/$defs/providerFailure" },
     "error": { "type": "string" }
@@ -66,6 +68,10 @@
     {
       "if": { "properties": { "kind": { "const": "usage" } }, "required": ["kind"] },
       "then": { "required": ["usage"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "delegate.update" } }, "required": ["kind"] },
+      "then": { "required": ["delegate"] }
     },
     {
       "if": { "properties": { "kind": { "const": "error" } }, "required": ["kind"] },
@@ -146,6 +152,40 @@
         "output_tokens": { "type": "integer", "minimum": 0 },
         "cached_tokens": { "type": "integer", "minimum": 0 },
         "reasoning_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "delegateStatus": {
+      "type": "object",
+      "required": ["id", "name", "status"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "task": { "type": "string" },
+        "profile": { "type": "string" },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "write": { "type": "boolean" },
+        "plan_step": { "type": "integer", "minimum": 0 },
+        "status": { "enum": ["queued", "running", "waiting_approval", "cancelling", "done", "error", "cancelled", "timed_out", "budget_exhausted", "interrupted"] },
+        "current_action": { "type": "string" },
+        "recent_output": { "type": "string" },
+        "guidance": { "type": "array", "items": { "type": "string" } },
+        "pending_guidance": { "type": "integer", "minimum": 0 },
+        "summary": { "type": "string" },
+        "error": { "type": "string" },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "changed_files": { "type": "array", "items": { "type": "string" } },
+        "worktree": { "type": "string" },
+        "branch": { "type": "string" },
+        "base_commit": { "type": "string" },
+        "integrated_files": { "type": "array", "items": { "type": "string" } },
+        "usage": { "$ref": "#/$defs/usage" },
+        "token_budget": { "type": "integer", "minimum": 0 },
+        "timeout_seconds": { "type": "integer", "minimum": 0 },
+        "revision": { "type": "integer", "minimum": 0 },
+        "started": { "type": "string", "format": "date-time" },
+        "finished": { "type": "string", "format": "date-time" }
       }
     },
     "failure": {

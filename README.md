@@ -12,13 +12,13 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 - Interactive TUI with Markdown and syntax-highlighted code rendering, Chat/Session/Help tabs, a filtering slash-command palette with argument completion, fuzzy pickers for models/themes/sessions/delegated agents, `@` file/folder mentions, prompt-from-file, collapsible tool output, searchable/copyable transcript mode, responsive full-screen diff review, configurable global keys, and a status bar with live context, task-progress, active-agent, and background-process gauges.
 - Nineteen switchable themes (including Fred Hutch dark/light and the colorless `plain` mode) that also set the terminal background to match when color is enabled.
-- Streaming OpenAI-compatible, Anthropic-compatible, Responses-style, and native Bedrock ConverseStream conversations with tool calling, capability-aware live model discovery (`/model` and `/models`), request preflight, and automatic retry with backoff on transient failures.
+- Streaming OpenAI-compatible, Anthropic-compatible, Responses-style, and native Bedrock ConverseStream conversations with tool calling, capability-aware live model discovery (`/model` and `/models`), typed image input, request preflight, and automatic retry with backoff on transient failures.
 - Native AWS Bedrock Converse support and Bedrock Mantle Responses API support.
 - Azure OpenAI, Microsoft Foundry OpenAI/v1, and Microsoft Foundry Anthropic endpoint support.
 - Local Ollama, vLLM, LM Studio, Phlox-GW, and other OpenAI-compatible endpoints.
 - Three autonomy levels: `ask`, `workspace`, and `autopilot`, refined by ordered scoped permission rules (`allow`/`prompt`/`deny` on tool, path, command, host, or MCP server).
 - Conservative static command analysis: commands that cannot be fully read (substitutions, `eval`, inline interpreters) always require interactive approval, in every mode.
-- Workspace containment, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
+- Workspace containment, race-resistant rooted file mutation, hard-link-safe atomic replacement, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
 - OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem plus kernel-dependent TCP/UDP containment on Linux, both with `auto` and fail-closed `require` modes.
 - Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
@@ -26,13 +26,13 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Diagnostics: `collo doctor`, redacted `--debug` logging, a privacy-conscious `collo support bundle`, and a maintained [capability matrix](docs/CAPABILITIES.md).
 - Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
 - Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
-- MCP `stdio` and Streamable HTTP clients using the official Go SDK.
-- **Multi-agent delegation**: the `delegate` tool runs up to six sub-agent tasks concurrently (bounded to four at once). Read-only tasks share the workspace; write-capable tasks get their own isolated git worktree so parallel agents never race on the same files, with sibling-conflict detection across a batch. Optional named agent profiles (model, role instructions, tool allowlist) live in configuration.
+- MCP `stdio` and Streamable HTTP clients using the official Go SDK, with explicit external-data provenance framing for model-visible server output.
+- **Governed multi-agent delegation**: the `delegate` tool queues up to six sub-agent tasks through one session-wide scheduler (four active by default, with optional provider limits). Read-only tasks share the workspace; write-capable tasks get isolated Git worktrees. Named profiles restrict tools, skills, permissions, tokens, iterations, and time; structured outcomes carry evidence, usage, changes, and hunk-overlap warnings. `alt+a` inspects, steers, or stops one child without cancelling its siblings or parent, while `/agents apply <id>` reviews and selectively integrates safe text hunks.
 - **Background processes**: `start_process`/`list_processes`/`process_output`/`stop_process` run dev servers, watchers, and long test runs without blocking the turn, with the same safety analysis as `run_command`; `/ps` manages them from the TUI, and everything is stopped at session exit.
 - **Code intelligence**: `search_symbols` queries an incremental, ignore-aware definition index (Go, Python, JS/TS, Rust); `diagnostics` runs a real language server (gopls, pyright, typescript-language-server, rust-analyzer) and returns exact-position findings.
 - **Verification loop**: `detect_verification` finds the project's real build/lint/test commands from its own files (`go.mod`, `package.json`, `Cargo.toml`, …); `collo verify`/`/verify` runs them and ties outcomes to the plan.
 - Read-only planning mode with a structured, persisted plan artifact (`update_plan`, `/tasks`).
-- Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, and automatic context compaction.
+- Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, non-destructive turn rewind, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, pinned plan state, referenced oversized results, and automatic context compaction.
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), colorized diff previews at approval, and **hunk-level approval** — accept or reject individual hunks of a `write_file` change before it lands.
 - Read-only git inspection tools (status, diff, log, blame) that never commit or push.
 - `run_command` supports a pseudo-terminal (`pty: true`, Unix) for interactive-only or isatty-dependent programs.
@@ -162,7 +162,7 @@ collo support bundle [--output path] [--include-logs]  create a privacy-consciou
 collo policy check <command…>       evaluate a command against permission rules, without running it
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
-collo sessions [list|show|fork|rename|archive|unarchive|delete]  manage saved sessions
+collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions
 collo completion bash|zsh|fish|powershell  generate shell completion
 collo schema events                 print the embedded JSON Schema for JSONL events
 collo replay [--check] <trace|->    validate and safely render a completed JSONL run trace
@@ -309,7 +309,7 @@ Inside the TUI:
 | `/status` | Show workspace, provider, model, effective capabilities, plan, autonomy, and config status. |
 | `/model [provider/model]` | Show or switch the active provider and model (opens a fuzzy picker with no argument). |
 | `/models` | Show each provider's default model, effective capabilities, endpoint constraints, and live catalog availability when the adapter supports discovery. |
-| `/context` | Break down exactly what the model sees: system prompt, instructions, skills, tool results, conversation, compaction summaries, and the usage gauge. |
+| `/context` | Break down exactly what the model sees: base system prompt, instructions, pinned plan, skills, tool results, conversation, compaction summaries, retained-result storage, and the usage gauge. |
 | `/plan [on\|off]` | Toggle read-only planning mode. |
 | `/tasks` | Show the structured task plan the agent maintains. |
 | `/diff` | Open responsive unified/side-by-side review with file/hunk navigation and folding. |
@@ -319,14 +319,18 @@ Inside the TUI:
 | `/verify [focus]` | Detect and run the project's real build/lint/test commands, tying each outcome to a plan step. |
 | `/ps` | List background processes started this session; `/ps stop <id>` stops one. |
 | `/sessions` | Fuzzy-pick a saved session and resume it in place — transcript, plan, and persistence all move over. |
+| `/rewind [turn]` | Create and switch to a new conversation branch after an earlier completed turn; the source session and workspace stay unchanged. |
 | `/retry` | Load the previous prompt into the composer for review; it never sends or repeats tools automatically. |
 | `/new` | Start a fresh session; the current one stays saved. |
 | `/compact [focus]` | Summarize older context to free the model window. |
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one (fuzzy picker with no argument). |
 | `/skills [list]` | Fuzzy-pick a skill to use — choosing one pre-fills the prompt — or `list` to print them. |
-| `/agents` | Fuzzy-search delegated tasks from this session and inspect status, outcome, changed files, and retained worktree details. |
+| `/agents [stop\|steer\|apply …]` | Inspect delegated tasks, stop one, queue boundary-safe guidance, or review/apply selected text hunks from its retained worktree. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; with no path, open a fuzzy file picker. |
+| `/attach [workspace-image]` | Attach a bounded PNG, JPEG, GIF, or WebP to the pending prompt; with no path, open an image picker. |
+| `/attachments` | List images attached to the pending prompt. |
+| `/detach <number\|all>` | Remove one or every pending image before sending. |
 | `/mcp [subcommand]` | Browse MCP servers with a fuzzy picker, or manage them at runtime: `list`/`status` (health, identity, negotiated capabilities), `ping`, `reconnect`, `enable`/`disable`, `add`, `remove`. |
 | `/tools` | List the complete tool surface. |
 | `/config` | Show the active configuration source. |
@@ -335,9 +339,9 @@ Inside the TUI:
 
 Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/tools`, `/skills list`, `/mcp list`, `/config`, `/help`) render their output in a titled, theme-colored panel — the command's subject sits in the box border, body text is tinted with a readable shade derived from the theme (not the terminal's raw default color), and content wraps cleanly to the terminal width. Quick acknowledgements ("Theme switched…") stay as subtle one-line notes.
 
-Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace file/folder picker and safely quotes paths containing spaces. `/prompt` opens a text-file picker; `/prompt "docs/review prompt.md"` loads a named file into the composer, and you can type `/prompt ` then drag a workspace file into terminals that paste its path. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
+Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace file/folder picker and safely quotes paths containing spaces. `/prompt` opens a text-file picker; `/prompt "docs/review prompt.md"` loads a named file into the composer. `/attach` similarly opens an image picker, and `/attach ` accepts quoted, escaped, `file://`, or terminal-dropped workspace paths. The status bar shows the number of pending images; `/attachments` reviews them and `/detach` removes them before send. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
 
-`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, `ctrl+d` opens the session diff browser, and `alt+s` opens the saved-session picker without replacing an unsent draft. At the first or last visual line of the composer, ↑/↓ walks earlier prompts and returns to the exact draft you were editing; within multiline or soft-wrapped input, the same keys continue to move the cursor normally. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, active/finished delegated agents, running background processes, asynchronous Git branch/upstream/dirty state, provider/sandbox/MCP/trust health, and recent permission decisions or tool failures; press `r` there to refresh Git state. The status bar carries live task/agent/process badges. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
+`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, `ctrl+d` opens the session diff browser, `alt+s` opens saved sessions without replacing a draft, and `alt+a` opens inspect/steer/stop actions for an active child. While a turn runs, the composer accepts a deliberately small local-command lane (`/help`, `/status`, `/context`, `/tasks`, `/tools`, `/config`, `/attachments`, `/transcript`, `/diff`, read-only `/ps`, and `/agents` inspect/steer/stop). Ordinary text and unavailable commands remain unsent drafts until the turn ends; a child question temporarily preserves that draft. At the first or last visual line of the composer, ↑/↓ walks earlier prompts and returns to the exact draft you were editing; within multiline or soft-wrapped input, the same keys continue to move the cursor normally. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, a parent/child agent tree with bounded recent output, running background processes, asynchronous Git branch/upstream/dirty state, provider/sandbox/MCP/trust health, and recent permission decisions or tool failures; press `r` there to refresh Git state. The status bar carries live task/agent/process badges. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
 
@@ -411,7 +415,7 @@ Every provider has a local name and a protocol `type`. Secrets should normally b
 
 Collomia keeps an effective capability declaration for every provider/model selection. It distinguishes `supported`, `partial`, `unsupported`, and `unknown` for tool calling, streaming, reasoning, images, structured output, token usage, prompt caching, parallel tool calls, and model discovery; it also carries the configured context window and adapter-specific constraints. `/status`, `/model`, and `/models` expose this information. `/models` probes supported catalog endpoints concurrently and reports providers without a catalog as **unverified**, not incorrectly **unavailable**. Catalogs such as OpenAI-compatible `GET /models` often return names without feature metadata, so Collomia reports model-dependent facts as unknown instead of inferring capabilities from a model name.
 
-The declaration describes what Collomia's current adapter can send and consume, which may be smaller than the vendor API's complete feature set. Before any provider request, Collomia rejects a known contradiction (for example, sending tools through an adapter declared not to support them, or configuring a maximum output larger than the context window). Unknown and partial capabilities remain visible but do not cause speculative failures.
+The declaration describes what Collomia's current adapter can send and consume, which may be smaller than the vendor API's complete feature set. Built-in OpenAI/compatible, Anthropic/compatible, Azure OpenAI/Foundry, Bedrock ConverseStream, and Responses/Mantle adapters can encode typed user images. Because image support is model- and endpoint-dependent, these adapters report it as `partial` and let the selected service make the final determination. Before any provider request, Collomia rejects a known contradiction (for example, sending images or tools through an adapter declared not to support them, or configuring a maximum output larger than the context window). Unknown and partial capabilities remain visible but do not cause speculative failures.
 
 Streaming adapters normalize upstream events before they reach the agent: text, provider-supplied reasoning text/summaries, incremental tool-call arguments, complete usage snapshots, warnings, and classified errors all follow one contract. Tool arguments may be incomplete JSON while they stream; Collomia assembles and validates the final document before approval or execution. An HTTP failure before streaming starts can use the normal retry policy. An error carried inside a stream is returned without replaying the request, preventing duplicate deltas and surprise repeat billing.
 
@@ -887,7 +891,7 @@ workspace trust hash, so review `.collomia.json` and run `collo trust` before
 the entry becomes active. `test` connects, negotiates, pings, and validates
 advertised catalogs without invoking a tool or changing the MCP pin store.
 
-Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. `/mcp` opens a picker of connected servers; choosing one lists its tools with descriptions.
+Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. Model-visible tool results, resources/catalogs, and prompt templates are framed as `EXTERNAL_MCP_DATA` with explicit server/type/subject provenance. The handling guidance tells the model to use relevant factual and structured data while refusing embedded instructions or claimed permissions; control characters are removed and server-authored schema prose is labeled external/descriptive. Trusting a server permits the connection—it does not give its returned text instructional authority. `/mcp` opens a picker of connected servers; choosing one lists its tools with descriptions.
 
 Servers are also managed for the current TUI session without restarting:
 
@@ -920,7 +924,7 @@ Beyond tools, Collomia uses two more MCP capabilities when a server negotiates t
 - **Resources** — `/mcp resources <server>` browses what the server publishes (URI, type, size, description) and `/mcp resource <server> <uri>` previews one in the transcript. The agent has matching tools, `list_mcp_resources` and `read_mcp_resource`, classified as external calls scoped to the named server so permission rules keep matching.
 - **Prompts** — `/mcp prompts <server>` lists a server's prompt templates with their arguments; `/mcp prompt <server> <name> key=value …` expands one and places the result in the input box, so you review and edit the template output before anything is sent to the model.
 
-Tool results keep their typed content instead of being flattened: text and structured output come through as-is, embedded resources contribute their text, images and audio become explicit `[image image/png, N bytes]` markers, and resource links keep their URI along with a hint that `read_mcp_resource` can follow them.
+Tool results keep their typed content instead of being flattened: text and structured output come through as-is, embedded resources contribute their text, and resource links keep their URI along with a hint that `read_mcp_resource` can follow them. Images always retain an explicit `[image image/png, N bytes]` marker; when the active provider route supports typed tool-result images, Collomia also retains the bounded bytes in session attachment storage and supplies them to the next model turn. Anthropic Messages and Bedrock Converse support that rich tool-result path; OpenAI-compatible Chat Completions keeps the safe marker because tool-message image content is not portable across compatible gateways. Audio remains metadata-only.
 
 Three more protocol features are supported end to end:
 
@@ -974,16 +978,17 @@ The `delegate` tool lets the agent fan out bounded work to sub-agents instead of
 delegate({
   "tasks": [
     { "name": "investigate-auth", "task": "How does session expiry currently work?" },
-    { "name": "add-retry-logic", "task": "Add exponential-backoff retry to the HTTP client.", "write": true },
+    { "name": "add-retry-logic", "task": "Add exponential-backoff retry to the HTTP client.", "write": true, "plan_step": 2 },
     { "name": "security-pass", "task": "Look for injection risks in the new endpoint.", "agent": "reviewer" }
   ]
 })
 ```
 
-- Up to **6 tasks per call**, up to **4 running concurrently**. Each gets its own 10-minute timeout.
+- Up to **6 tasks per call**. A single FIFO scheduler shared by the session runs **4 concurrently by default**, so simultaneous `delegate` calls cannot each create their own four-task pool. `options.delegate_max_concurrency` changes the global bound and `options.delegate_provider_concurrency` can tighten it for a provider. Queue time counts against each task's timeout.
 - **Read-only by default**: a task without `"write": true` shares the parent workspace and can only investigate — cheap, and safe to run alongside anything else.
-- **Write-capable tasks are isolated**: `"write": true` gives that sub-agent its own `git worktree`, its own tool registry, its own permission manager, and its own audit ledger. Parallel writers can never race on the same files. Nothing is ever merged, committed, or pushed automatically — a worktree with real changes is left in place (path and branch reported back) for you to review and merge by hand; a worktree with no changes is cleaned up automatically. This requires the workspace to be a git repository.
-- **Sibling conflict detection**: once a batch finishes, files touched by more than one write-capable sub-agent's worktree are called out with a warning, so overlapping work is surfaced rather than silently lost.
+- **Write-capable tasks are isolated**: `"write": true` gives that sub-agent its own `git worktree`, its own tool registry, its own permission manager, and its own audit ledger. Parallel writers can never race on the same files. Nothing is ever merged, committed, or pushed automatically — a worktree with real changes is left in place (path and branch reported back) for `/agents apply <id>` or manual review; a worktree with no changes is cleaned up automatically. This requires the workspace to be a git repository.
+- **Sibling conflict detection**: once a batch finishes, files touched by more than one write-capable sub-agent's worktree are called out. Zero-context diffs against their common `HEAD` base distinguish overlapping hunks from disjoint changes where possible. This is guidance, never an automatic merge.
+- **Plan association**: optional `"plan_step": 2` links a task and its evidence to an existing structured-plan step. Unknown steps and steps with unfinished dependencies are refused; association does not autonomously execute the plan.
 - **Named agent profiles**: define reusable roles in configuration and select one per task with `"agent": "<name>"`:
 
   ```json
@@ -993,14 +998,26 @@ delegate({
         "model": "gpt-5.1-mini",
         "instructions": "You are a security reviewer. Focus only on injection, auth, and secrets handling.",
         "tools": ["read_file", "search_files", "search_symbols", "git_diff"],
-        "max_iterations": 12
+        "skills": ["security-review"],
+        "max_iterations": 12,
+        "token_budget": 50000,
+        "timeout_seconds": 600,
+        "permissions": {
+          "mode": "ask",
+          "denied_tools": ["run_command"],
+          "rules": [
+            {"action": "deny", "server": "production-*", "reason": "review agents cannot call production MCP servers"}
+          ]
+        }
       }
     }
   }
   ```
 
-  Any field a profile omits falls back to the parent agent's own setting (same model, no extra restrictions, default iteration budget).
-- The Session tab shows every delegated task's status, changed files, and worktree path; the status bar shows an `agents N` badge while any are running.
+  An empty `tools` or `skills` list inherits the parent's full visible set; a non-empty list is an allowlist. Profile permissions are one-way restrictions: their autonomy `mode` is intersected with the parent, denials accumulate, and profile rules may only `prompt` or `deny`. A child cannot enable outside-workspace access, network, a weaker sandbox, or an `allow` rule. The profile model remains on the parent's provider.
+- **Budgets and results**: `token_budget` counts provider-reported input plus output tokens. Before each request, Collomia reserves the estimated next input and caps requested output to the remainder; it checks reported usage afterward. Providers that omit usage cannot provide an exact token guarantee, so iteration and time limits remain the hard fallback. The parent receives bounded JSON containing status, summary, error, evidence from completed tools, usage, changed files/hunks, and worktree/branch—not the raw child transcript. Oversized batches remain valid JSON, preserve every task's identity/status, and mark compacted entries `truncated` for follow-up in `/agents`.
+- **Control and recovery**: the Session tab shows a parent/child tree with queued, running, waiting-for-approval, cancelling, completed, failed, timed-out, budget-exhausted, and interrupted states plus a bounded recent-output tail. `/agents steer <id> <guidance…>` queues guidance for the child's next provider boundary; it cannot alter an executing tool or answer an approval and explicitly grants no permissions. `/agents stop <id-or-name>` cancels one. `alt+a` exposes inspect/steer/stop actions while the parent runs. Lifecycle snapshots are stored in the parent session; resume restores outcomes but marks unfinished tasks `interrupted` and never restarts them or repeats tools.
+- **Selective integration**: `/agents apply <id>` opens a floating file/hunk review for a completed write task. Collomia verifies that the path is still this repository's registered worktree, that its `collomia/*` branch has not moved from the recorded base, and that each parent file still matches that base. It accepts only bounded regular UTF-8 text, runs the normal permission policy, rechecks both sides after approval, publishes selected hunks with rooted atomic mutations and rollback, and records them in `/diff`/`/undo`. Parent drift, symlinks, binary/oversized files, mode-only changes, or moved child branches require manual reconciliation. The branch and worktree remain; Collomia never commits or merges them.
 
 Sub-agents cannot recursively delegate.
 
@@ -1049,6 +1066,7 @@ Every conversation is a durable, crash-safe session (append-only JSONL, stored o
 collo sessions list
 collo sessions show <id>
 collo sessions fork <id>
+collo sessions rewind <id> <turn>   # 0 = before the first completed turn
 collo sessions rename <id> "auth refactor"
 collo sessions archive <id>
 collo sessions delete <id>
@@ -1056,7 +1074,16 @@ collo --resume <id>
 collo --continue          # resume the most recently updated session
 ```
 
-Inside the TUI, `/sessions` or `alt+s` opens a fuzzy picker that switches the **live** conversation in place — transcript, plan, prompt history, draft, and persistence hooks all move over, no restart needed — and `/new` starts a fresh one while the current session stays saved. Unsent drafts are kept per session for the lifetime of the running TUI; they are not written to durable history until submitted. Resuming reconstructs the complete visible conversation, including saved tool calls, results, and interruption warnings; it does not execute any restored tool. ↑/↓ at the composer boundary navigates that session's earlier prompts, while `/retry` loads the most recent one for review without submitting it. `collo sessions fork <id>` copies history into an independent session that shares the past but diverges from there. Loading tolerates a torn final write (a crash mid-append) and marks any tool call with no recorded result as interrupted rather than silently replaying it. A disk error or short write is latched, shown as failed persistence in the Session tab, and makes the current TUI/headless turn visibly fail; later records are not appended behind a torn tail. The context window is managed automatically: usage-anchored estimates trigger compaction above 80% of the model's window, summarizing older messages while keeping recent ones. Compaction shortens only model context; the full durable transcript remains visible after resume. `/compact [focus]` compacts on demand.
+Inside the TUI, `/sessions` or `alt+s` opens a fuzzy picker that switches the **live** conversation in place — transcript, plan, prompt history, draft, retained-result store, and persistence hooks all move over, no restart needed — and `/new` starts a fresh one while the current session stays saved. Unsent drafts are kept per session for the lifetime of the running TUI; they are not written to durable history until submitted. Resuming reconstructs the complete visible conversation, including saved tool calls, results, and interruption warnings; it does not execute any restored tool. ↑/↓ at the composer boundary navigates that session's earlier prompts, while `/retry` loads the most recent one for review without submitting it.
+
+`/rewind` opens completed-turn checkpoints; `/rewind 3` and `collo sessions rewind <id> 3` create a new branch ending after turn 3. Turn `0` means before the first completed turn. Rewind is deliberately non-destructive: the original session stays intact, saved tool calls are data rather than executable instructions, and the current workspace is not changed. It does not undo file edits, commands, deployments, MCP calls, or other external effects; use `/undo`, Git, or an isolated worktree for file recovery. `collo sessions fork <id>` remains the way to copy the complete current history.
+`collo sessions show <id>` prints the numbered completed-turn checkpoints before the transcript when choosing a CLI rewind target.
+
+Loading tolerates a torn final write (a crash mid-append) and marks any tool call with no recorded result as interrupted rather than silently replaying it. A disk error or short write is latched, shown as failed persistence in the Session tab, and makes the current TUI/headless turn visibly fail; later records are not appended behind a torn tail. The context window is managed automatically: usage-anchored estimates trigger compaction above 80% of the model's window, summarizing older messages while keeping recent ones. The active structured plan is pinned into every request outside compactable history, and up to 16 KiB of recent failure evidence is copied verbatim into the bounded summary record; reaching that limit is marked explicitly. Compaction shortens only model context; the full durable transcript remains visible after resume. `/compact [focus]` compacts on demand.
+
+When a tool returns more than `options.max_tool_output_bytes`, a bounded preview enters the model context and the omitted output is retained under the active session with an opaque artifact ID. The agent can page it with the read-only `read_tool_result` tool without rerunning the command, MCP call, or other originating action. Retention is capped at 4 MiB per result and 32 MiB per session; the reference says when only a prefix fit. These artifacts can contain the same sensitive data as tool output, use owner-only permissions where supported, follow forks/rewinds, and are deleted with the session.
+
+Submitted images are stored separately from session JSONL as owner-only raw blobs and referenced by random ID, MIME type, size, and SHA-256 digest. They are integrity-checked each time a provider request resolves them, capped at 5 MiB per image, four images per turn, and 24 MiB per session, copied by forks, filtered to retained references by rewind, and deleted with the session. Unsent image selections are in-process drafts only and are not copied until the prompt is sent. Image tokenization varies by provider; before reported usage is available, `/context` reserves an explicit rough estimate of about 1,000 tokens per image.
 
 ## Architecture
 
@@ -1075,7 +1102,7 @@ internal/sandbox                  OS sandbox backends (Seatbelt, Landlock)
 internal/policy                    scoped allow/prompt/deny rule matching
 internal/shell                      outcome-aware command safety analysis
 internal/audit                       permission-decision and outcome ledger
-internal/session                      durable session store, resume/fork, compaction
+internal/session                      durable session store, resume/fork/rewind, compaction, bounded result artifacts
 internal/plan                          structured plan artifact
 internal/event                          schema-versioned runtime event model
 internal/skills                          progressive skill discovery and loading
