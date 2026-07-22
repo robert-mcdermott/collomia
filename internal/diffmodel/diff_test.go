@@ -3,6 +3,7 @@ package diffmodel
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -98,5 +99,57 @@ func TestUndoRefusesExternalChanges(t *testing.T) {
 	os.WriteFile(path, []byte("user change\n"), 0o644)
 	if _, err := tracker.Undo(); err == nil || !strings.Contains(err.Error(), "changed outside") {
 		t.Fatalf("undo must refuse to clobber external edits, got %v", err)
+	}
+}
+
+func TestUndoRestoresOriginalModeWithAtomicReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+	before, after := "#!/bin/sh\necho before\n", "#!/bin/sh\necho after\n"
+	if err := os.WriteFile(path, []byte(after), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewTracker(dir)
+	tracker.RecordWithMode(path, "edit", &before, &after, 0o700, 0o755)
+	if _, err := tracker.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != before {
+		t.Fatalf("content=%q err=%v", data, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Fatalf("mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestUndoRejectsReplacedWorkspaceRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "file.txt")
+	before, after := "before", "after"
+	if err := os.WriteFile(path, []byte(after), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewTracker(root)
+	tracker.RecordWithMode(path, "edit", &before, &after, 0o600, 0o600)
+	if err := os.Rename(root, filepath.Join(base, "original-workspace")); err != nil {
+		t.Skipf("cannot replace workspace root on this platform: %v", err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tracker.Undo(); err == nil || !strings.Contains(err.Error(), "root changed") {
+		t.Fatalf("undo should reject a replacement workspace root, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("replacement workspace was modified: %v", err)
 	}
 }

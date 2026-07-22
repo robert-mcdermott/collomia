@@ -2177,9 +2177,9 @@ question broker can make the model-visible subset smaller.
 | `read_file` | UTF-8 text with line numbers; defaults to 400 lines, maximum 5,000; files over 1 MiB must be read in chunks. |
 | `list_files` | Directory tree including hidden files; skips `.git` and session data; depth 1-8; maximum 5,000 entries. |
 | `search_files` | Go-regular-expression search with path/glob and result limits. |
-| `write_file` | Create/replace text, with diff preview, change tracking, hunk review, and undo support. |
-| `edit_file` | Replace one exact unique fragment; refuses missing or ambiguous matches. |
-| `apply_patch` | Validate and apply related create/update/delete operations atomically; nothing changes if validation fails. |
+| `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
+| `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |
+| `apply_patch` | Validate related create/update/delete operations before applying them through rooted atomic replacement and safe deletion, with rollback on a later publish failure. |
 | `run_command` | Shell command in workspace; default timeout 120 seconds, maximum 1,800; bounded/live output; optional Unix PTY. |
 | `git_status` | Read-only branch/ahead/behind/change status. |
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
@@ -2218,8 +2218,23 @@ floating dialog. After changes:
 ```
 
 Undo checks current content and refuses to overwrite a file changed outside the
-agent since its checkpoint. It is a local safety net, not version control. Keep
-work in Git and inspect `git diff` before committing.
+agent since its checkpoint. Direct writes, edits, patches, and undo anchor the
+final operation beneath the approved directory root. Replacements use a
+private same-directory file plus atomic rename instead of truncating an
+existing inode; parent-symlink swaps cannot redirect the rooted operation, an
+existing hard link's other name is not modified, and file permission bits are
+preserved where the platform exposes them. Deletes remove only the approved
+directory entry.
+
+These properties apply to Collomia's structured file tools, not an approved
+`run_command`. A multi-file patch is validated before it starts and rolls back
+rootedly on a later publication error, but it is not a transaction that locks
+out unrelated editors. Atomic publication creates a new inode, so hard-link
+identity is intentionally broken and platform-specific ACLs, extended
+attributes, or special ownership may not survive even though content and
+portable mode bits do. Use a reviewed metadata-aware command for files where
+those attributes matter. Undo remains a local safety net, not version control.
+Keep work in Git and inspect `git diff` before committing.
 
 ### Shell commands and PTY
 
@@ -2761,6 +2776,19 @@ Example scoped approval:
 
 Verify the remote server's behavior before granting a wildcard.
 
+Trust and permission do not make server content authoritative. Every MCP tool
+result, agent-read resource/catalog, and expanded prompt template is placed in
+an explicit `EXTERNAL_MCP_DATA` provenance frame naming its server, kind, and
+subject. Its handling guidance tells the model to use relevant factual and
+structured content while refusing embedded instructions or claimed
+permissions. Control characters are removed, descriptive schema/catalog
+metadata is bounded, and server-authored tool descriptions are labeled
+external/descriptive. Expanded prompts therefore include their provenance
+frame in the composer; review and edit the complete framed text before pressing
+Enter. The frame is a provenance signal, not a guarantee that a model cannot be
+influenced, so keep write, command, and additional external permissions scoped
+to what the server truly needs.
+
 ### Resources and prompts
 
 ```text
@@ -2774,8 +2802,9 @@ Resource listing shows URI, name, MIME type, and description; resource preview
 is capped in the TUI. The agent can call `list_mcp_resources` and
 `read_mcp_resource`, both external-risk and server-scoped.
 
-Prompt expansion puts the server-generated prompt into the composer. Review
-and edit it before pressing Enter; expansion does not send it automatically.
+Prompt expansion puts a provenance-framed server-generated prompt into the
+composer. Review and edit it before pressing Enter; expansion does not send it
+automatically and does not grant any tool permission.
 
 Tool content keeps structured/text and embedded resource data. Images/audio
 are represented to the text agent as explicit type-and-size markers, and

@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/safefile"
 )
 
 // ApplyPatchTool applies a multi-file change set atomically: every operation
@@ -45,9 +45,10 @@ type resolvedOperation struct {
 	before *string
 	after  *string
 	mode   os.FileMode
+	target *safefile.Target
 }
 
-func (t ApplyPatchTool) resolve(raw json.RawMessage) ([]resolvedOperation, bool, error) {
+func (t ApplyPatchTool) resolve(raw json.RawMessage, secure bool) ([]resolvedOperation, bool, error) {
 	var input patchInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, false, err
@@ -58,53 +59,97 @@ func (t ApplyPatchTool) resolve(raw json.RawMessage) ([]resolvedOperation, bool,
 	outside := false
 	var ops []resolvedOperation
 	staged := map[string]*string{}
+	modes := map[string]os.FileMode{}
+	targets := map[string]*safefile.Target{}
+	fail := func(err error) ([]resolvedOperation, bool, error) {
+		for _, target := range targets {
+			_ = target.Close()
+		}
+		return nil, false, err
+	}
 	for i, op := range input.Operations {
-		abs, out, err := t.Guard.Resolve(op.Path)
+		var abs string
+		var out bool
+		var target *safefile.Target
+		var err error
+		if secure {
+			target, out, err = t.Guard.MutationTarget(op.Path)
+			if err == nil {
+				abs = target.Path()
+				if prior := targets[abs]; prior != nil {
+					_ = target.Close()
+					target = prior
+				} else {
+					targets[abs] = target
+				}
+			}
+		} else {
+			abs, out, err = t.Guard.Resolve(op.Path)
+		}
 		if err != nil {
-			return nil, false, fmt.Errorf("operations[%d]: %w", i, err)
+			return fail(fmt.Errorf("operations[%d]: %w", i, err))
 		}
 		outside = outside || out
-		resolved := resolvedOperation{patchOperation: op, abs: abs, mode: 0o644}
+		resolved := resolvedOperation{patchOperation: op, abs: abs, mode: 0o644, target: target}
 		// Later operations see earlier staged content, so multiple updates
 		// to one file validate in sequence.
 		current, seen := staged[abs]
 		if !seen {
-			if data, readErr := os.ReadFile(abs); readErr == nil {
+			var data []byte
+			var readErr error
+			if secure {
+				data, readErr = target.ReadFile()
+			} else {
+				data, readErr = os.ReadFile(abs)
+			}
+			if readErr == nil {
 				text := string(data)
 				current = &text
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				return fail(fmt.Errorf("operations[%d]: read %s: %w", i, op.Path, readErr))
 			}
-			if info, statErr := os.Stat(abs); statErr == nil {
+			var info os.FileInfo
+			var statErr error
+			if secure {
+				info, statErr = target.Stat()
+			} else {
+				info, statErr = os.Stat(abs)
+			}
+			if statErr == nil {
 				resolved.mode = info.Mode().Perm()
 			}
+			modes[abs] = resolved.mode
+		} else if mode := modes[abs]; mode != 0 {
+			resolved.mode = mode
 		}
 		resolved.before = current
 		switch op.Op {
 		case "create":
 			if current != nil {
-				return nil, false, fmt.Errorf("operations[%d]: %s already exists; use update", i, op.Path)
+				return fail(fmt.Errorf("operations[%d]: %s already exists; use update", i, op.Path))
 			}
 			content := op.Content
 			resolved.after = &content
 		case "update":
 			if current == nil {
-				return nil, false, fmt.Errorf("operations[%d]: %s does not exist; use create", i, op.Path)
+				return fail(fmt.Errorf("operations[%d]: %s does not exist; use create", i, op.Path))
 			}
 			if op.OldText == "" {
-				return nil, false, fmt.Errorf("operations[%d]: update requires old_text", i)
+				return fail(fmt.Errorf("operations[%d]: update requires old_text", i))
 			}
 			count := strings.Count(*current, op.OldText)
 			if count != 1 {
-				return nil, false, fmt.Errorf("operations[%d]: old_text must match %s exactly once (found %d); the file may differ from what you expect — re-read it", i, op.Path, count)
+				return fail(fmt.Errorf("operations[%d]: old_text must match %s exactly once (found %d); the file may differ from what you expect — re-read it", i, op.Path, count))
 			}
 			updated := strings.Replace(*current, op.OldText, op.NewText, 1)
 			resolved.after = &updated
 		case "delete":
 			if current == nil {
-				return nil, false, fmt.Errorf("operations[%d]: %s does not exist", i, op.Path)
+				return fail(fmt.Errorf("operations[%d]: %s does not exist", i, op.Path))
 			}
 			resolved.after = nil
 		default:
-			return nil, false, fmt.Errorf("operations[%d]: unknown op %q", i, op.Op)
+			return fail(fmt.Errorf("operations[%d]: unknown op %q", i, op.Op))
 		}
 		staged[abs] = resolved.after
 		ops = append(ops, resolved)
@@ -113,7 +158,7 @@ func (t ApplyPatchTool) resolve(raw json.RawMessage) ([]resolvedOperation, bool,
 }
 
 func (t ApplyPatchTool) Assess(raw json.RawMessage) (Action, error) {
-	ops, outside, err := t.resolve(raw)
+	ops, outside, err := t.resolve(raw, false)
 	if err != nil {
 		return Action{}, err
 	}
@@ -136,53 +181,79 @@ func (t ApplyPatchTool) Assess(raw json.RawMessage) (Action, error) {
 }
 
 func (t ApplyPatchTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
-	ops, _, err := t.resolve(raw)
+	ops, _, err := t.resolve(raw, true)
 	if err != nil {
 		return "", err
 	}
+	defer closePatchTargets(ops)
 	type applied struct {
 		abs    string
 		before *string
 		mode   os.FileMode
+		target *safefile.Target
 	}
 	var done []applied
-	rollback := func() {
+	rollback := func() error {
+		var failures []string
 		for i := len(done) - 1; i >= 0; i-- {
 			step := done[i]
 			if step.before == nil {
-				_ = os.Remove(step.abs)
+				if err := step.target.Remove(); err != nil && !errors.Is(err, os.ErrNotExist) {
+					failures = append(failures, err.Error())
+				}
 			} else {
-				_ = os.WriteFile(step.abs, []byte(*step.before), step.mode)
+				if err := step.target.Replace([]byte(*step.before), step.mode); err != nil {
+					failures = append(failures, err.Error())
+				}
 			}
 		}
+		if len(failures) > 0 {
+			return errors.New(strings.Join(failures, "; "))
+		}
+		return nil
 	}
 	for _, op := range ops {
 		var applyErr error
 		switch {
 		case op.after == nil:
-			applyErr = os.Remove(op.abs)
+			applyErr = op.target.Remove()
 		default:
-			if mkErr := os.MkdirAll(filepath.Dir(op.abs), 0o755); mkErr != nil {
-				applyErr = mkErr
-			} else {
-				applyErr = os.WriteFile(op.abs, []byte(*op.after), op.mode)
-			}
+			applyErr = op.target.Replace([]byte(*op.after), op.mode)
 		}
 		if applyErr != nil {
-			rollback()
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return "", fmt.Errorf("patch failed at %s; rollback also failed (%v): %w", op.Path, rollbackErr, applyErr)
+			}
 			return "", fmt.Errorf("patch failed at %s and was rolled back: %w", op.Path, applyErr)
 		}
-		done = append(done, applied{abs: op.abs, before: op.before, mode: op.mode})
+		done = append(done, applied{abs: op.abs, before: op.before, mode: op.mode, target: op.target})
 	}
 	changeset := map[string]any{"applied": []map[string]string{}}
 	var summary []map[string]string
 	for _, op := range ops {
 		if t.Tracker != nil {
-			t.Tracker.Record(op.abs, "patch:"+op.Op, op.before, op.after)
+			beforeMode, afterMode := op.mode, op.mode
+			if op.before == nil {
+				beforeMode = 0
+			}
+			if op.after == nil {
+				afterMode = 0
+			}
+			t.Tracker.RecordWithMode(op.abs, "patch:"+op.Op, op.before, op.after, beforeMode, afterMode)
 		}
 		summary = append(summary, map[string]string{"op": op.Op, "path": displayName(t.Guard.Workspace, op.abs)})
 	}
 	changeset["applied"] = summary
 	data, _ := json.Marshal(changeset)
 	return string(data), nil
+}
+
+func closePatchTargets(ops []resolvedOperation) {
+	closed := map[*safefile.Target]bool{}
+	for _, op := range ops {
+		if op.target != nil && !closed[op.target] {
+			_ = op.target.Close()
+			closed[op.target] = true
+		}
+	}
 }

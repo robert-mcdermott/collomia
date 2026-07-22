@@ -5,11 +5,13 @@ package sandbox
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMain also handles the backend's hidden re-exec shim. The real collo
@@ -62,6 +64,14 @@ func TestWindowsAppContainerWorker(t *testing.T) {
 		}
 		fmt.Printf("inside_read=%s outside_read=%s extra_read=%s\n", insideRead, outsideRead, extraRead)
 	}
+	if address := os.Getenv("COLLO_APPCONTAINER_NETWORK_TARGET"); address != "" {
+		network := "denied"
+		if conn, err := net.DialTimeout("tcp", address, time.Second); err == nil {
+			network = "ok"
+			_ = conn.Close()
+		}
+		fmt.Printf("network=%s\n", network)
+	}
 }
 
 func TestWindowsAppContainerConfinesWrites(t *testing.T) {
@@ -92,6 +102,11 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	if err := os.WriteFile(insideRead, []byte("inside-value"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
 
 	// Put the worker executable in the granted workspace so an AppContainer
 	// can read and execute it without broadening access to the Go build cache.
@@ -131,6 +146,7 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		"COLLO_APPCONTAINER_READ_INSIDE="+insideRead,
 		"COLLO_APPCONTAINER_READ_OUTSIDE="+secret,
 		"COLLO_APPCONTAINER_READ_EXTRA="+extra,
+		"COLLO_APPCONTAINER_NETWORK_TARGET="+listener.Addr().String(),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -138,6 +154,7 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	}
 	markerFound := false
 	readMarkerFound := false
+	networkMarkerFound := false
 	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(line) == "inside=ok outside=denied" {
 			markerFound = true
@@ -145,12 +162,18 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		if strings.TrimSpace(line) == "inside_read=ok outside_read=denied extra_read=ok" {
 			readMarkerFound = true
 		}
+		if strings.TrimSpace(line) == "network=denied" {
+			networkMarkerFound = true
+		}
 	}
 	if !markerFound {
 		t.Fatalf("enforcement mismatch: %q", strings.TrimSpace(string(out)))
 	}
 	if !readMarkerFound {
 		t.Fatalf("read enforcement mismatch: %q", strings.TrimSpace(string(out)))
+	}
+	if !networkMarkerFound {
+		t.Fatalf("network enforcement mismatch: %q", strings.TrimSpace(string(out)))
 	}
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("outside file exists despite AppContainer confinement")

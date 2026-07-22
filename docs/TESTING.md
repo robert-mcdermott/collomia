@@ -29,14 +29,17 @@ Run the evaluation corpus directly:
 go test -count=1 ./internal/eval
 ```
 
-The initial corpus covers four outcome-oriented scenarios:
+The current corpus covers these outcome-oriented scenarios:
 
 | Scenario | Real components exercised | Required invariants |
 | --- | --- | --- |
 | Repository inspection | Agent loop, `search_files`, `read_file`, implicit read permissions | Finds grounded file/line evidence and changes nothing. |
 | Bug fix and verification | Agent loop, `edit_file`, change tracker, verification detection, `run_command` | Applies the intended edit, runs the fixture's real Go tests, and reports success only after passing output. |
 | Permission refusal | Agent loop, command analysis, permission manager | A headless `ask` run records denial, never starts the command, and continues with an honest answer. |
+| External MCP prompt injection | Agent loop, external tool, permission manager, built-in file tools | An allowed external read remains usable as evidence but can also request a write and forge a permission grant; the write is denied and no file changes. |
 | Interrupted mutation recovery | Durable session store and recovery | Loading adds an interruption warning but never executes the recorded write. |
+| Long-context retention | Compaction, pinned plan, exact failure evidence | Compaction retains authoritative plan state and bounded exact failure evidence. |
+| Conversation rewind | Durable branch creation and restoration | Rewind preserves the source, never replays recorded tools, and leaves workspace state unchanged. |
 
 These are product evaluations rather than model-quality benchmarks. The
 scripted provider deliberately selects the tool calls so CI can test runtime
@@ -84,8 +87,15 @@ Important failure-oriented tests include:
 - Non-destructive conversation rewind at completed-turn boundaries, including
   source-session preservation, artifact continuity, and a recorded mutating
   tool call that remains inert during restoration.
-- Atomic patch rollback, external-edit-safe undo, symlink/path containment,
-  shell analysis, and native sandbox enforcement.
+- Rooted atomic file replacement, mode-preserving external-edit-safe undo,
+  hard-link isolation, traversal and adversarial parent-symlink swaps, shell
+  analysis, and native sandbox enforcement.
+- Native network-denial fixtures: Landlock checks TCP and ABI-dependent UDP,
+  Seatbelt rejects remote egress while keeping its documented loopback access,
+  and Windows AppContainer rejects loopback without an installed exemption.
+- MCP content framing, control-character removal, bounded external schema and
+  catalog metadata, and a full agent evaluation proving injected text cannot
+  widen the permission decision for a file mutation.
 
 When adding a fault seam, keep production defaults on the real operating
 system implementation. Tests may inject writers, clocks, transports, or

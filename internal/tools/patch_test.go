@@ -62,19 +62,20 @@ func TestApplyPatchValidationFailureChangesNothing(t *testing.T) {
 	}
 }
 
-func TestApplyPatchRollsBackOnApplyFailure(t *testing.T) {
+func TestApplyPatchInvalidParentChangesNothing(t *testing.T) {
 	tool, dir := patchTool(t)
 	original := "v1\n"
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte(original), 0o644)
 	os.WriteFile(filepath.Join(dir, "blocker"), []byte("i am a file"), 0o644)
-	// Second op tries to create a file beneath a path that is a regular
-	// file, which validates (target doesn't exist) but fails on MkdirAll.
+	// Second op tries to create a file beneath a path that is a regular file.
+	// Secure rooted validation detects that invalid parent before applying the
+	// first operation.
 	input := `{"operations":[
 		{"op":"update","path":"a.txt","old_text":"v1","new_text":"v2"},
 		{"op":"create","path":"blocker/nested.txt","content":"x"}
 	]}`
-	if _, err := tool.Execute(t.Context(), json.RawMessage(input)); err == nil || !strings.Contains(err.Error(), "rolled back") {
-		t.Fatalf("expected rollback error, got %v", err)
+	if _, err := tool.Execute(t.Context(), json.RawMessage(input)); err == nil {
+		t.Fatal("expected invalid-parent error")
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
 	if string(data) != original {

@@ -18,7 +18,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Local Ollama, vLLM, LM Studio, Phlox-GW, and other OpenAI-compatible endpoints.
 - Three autonomy levels: `ask`, `workspace`, and `autopilot`, refined by ordered scoped permission rules (`allow`/`prompt`/`deny` on tool, path, command, host, or MCP server).
 - Conservative static command analysis: commands that cannot be fully read (substitutions, `eval`, inline interpreters) always require interactive approval, in every mode.
-- Workspace containment, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
+- Workspace containment, race-resistant rooted file mutation, hard-link-safe atomic replacement, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
 - OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem plus kernel-dependent TCP/UDP containment on Linux, both with `auto` and fail-closed `require` modes.
 - Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
@@ -26,7 +26,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Diagnostics: `collo doctor`, redacted `--debug` logging, a privacy-conscious `collo support bundle`, and a maintained [capability matrix](docs/CAPABILITIES.md).
 - Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
 - Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
-- MCP `stdio` and Streamable HTTP clients using the official Go SDK.
+- MCP `stdio` and Streamable HTTP clients using the official Go SDK, with explicit external-data provenance framing for model-visible server output.
 - **Multi-agent delegation**: the `delegate` tool runs up to six sub-agent tasks concurrently (bounded to four at once). Read-only tasks share the workspace; write-capable tasks get their own isolated git worktree so parallel agents never race on the same files, with sibling-conflict detection across a batch. Optional named agent profiles (model, role instructions, tool allowlist) live in configuration.
 - **Background processes**: `start_process`/`list_processes`/`process_output`/`stop_process` run dev servers, watchers, and long test runs without blocking the turn, with the same safety analysis as `run_command`; `/ps` manages them from the TUI, and everything is stopped at session exit.
 - **Code intelligence**: `search_symbols` queries an incremental, ignore-aware definition index (Go, Python, JS/TS, Rust); `diagnostics` runs a real language server (gopls, pyright, typescript-language-server, rust-analyzer) and returns exact-position findings.
@@ -888,7 +888,7 @@ workspace trust hash, so review `.collomia.json` and run `collo trust` before
 the entry becomes active. `test` connects, negotiates, pings, and validates
 advertised catalogs without invoking a tool or changing the MCP pin store.
 
-Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. `/mcp` opens a picker of connected servers; choosing one lists its tools with descriptions.
+Remote tool names are exposed as `mcp_<server>_<tool>`. MCP tool annotations are never trusted to lower permissions: calls are classified as external and require approval unless that exact tool is allow-listed. Model-visible tool results, resources/catalogs, and prompt templates are framed as `EXTERNAL_MCP_DATA` with explicit server/type/subject provenance. The handling guidance tells the model to use relevant factual and structured data while refusing embedded instructions or claimed permissions; control characters are removed and server-authored schema prose is labeled external/descriptive. Trusting a server permits the connection—it does not give its returned text instructional authority. `/mcp` opens a picker of connected servers; choosing one lists its tools with descriptions.
 
 Servers are also managed for the current TUI session without restarting:
 

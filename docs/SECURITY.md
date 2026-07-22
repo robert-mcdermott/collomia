@@ -57,6 +57,16 @@ grant allows them; they never ride along with autopilot.
   the built-in file tools only. A shell command is *not* path-checked — `cat
   /etc/passwd` runs if the command itself is approved. This is why command
   approval exists, and why the sandbox matters.
+- **Rooted file mutation** re-checks the approved target through an
+  operating-system directory root when `write_file`, `edit_file`,
+  `apply_patch`, or `/undo` performs its final operation. Parent traversal and
+  a parent symlink swapped during the operation cannot redirect that mutation
+  outside the authorized root. Replacements are written to a private file in
+  the same directory, synced, and atomically renamed; Collomia does not
+  truncate the old inode, so an existing hard link cannot turn a workspace
+  edit into an edit of another name. Deletes remove only the rooted directory
+  entry. The original permission mode is preserved across edits and undo where
+  the operating system exposes POSIX-style mode bits.
 - **Command analysis** (`internal/shell`) is conservative by design: it
   identifies common catastrophic outcomes, requires confirmation for known
   destructive operations, and prompts when it cannot resolve an effect. It is
@@ -66,6 +76,19 @@ grant allows them; they never ride along with autopilot.
 - **Denied-command regexes** are an additive defense-in-depth layer for local
   policy. Regexes cannot enumerate harm; the built-in structural checks do not
   depend on users maintaining regex syntax.
+
+Rooted mutation protects Collomia's structured file tools; it does not make an
+approved shell command use those primitives. `apply_patch` validates the whole
+change set before publishing and attempts rooted rollback if a later publish
+fails. It is not a filesystem transaction against unrelated concurrent
+writers: another program changing an approved file at the same time can still
+win before or after one atomic replacement. Keep important work in version
+control, inspect `/diff`, and use the OS sandbox when commands themselves are
+untrusted. Atomic publication deliberately creates a new inode: it preserves
+content and portable permission bits, but breaks hard-link identity and may not
+preserve platform-specific ACLs, extended attributes, or special ownership.
+Use a reviewed command or a metadata-aware external tool when those attributes
+are part of the file's contract.
 
 ## Command safety tiers
 
@@ -178,7 +201,9 @@ process and are not blocked by command-sandbox read/network policy.
   contents. This is a user-data boundary, not an attempt to hide public system
   configuration.
 - Network egress is denied unless `permissions.sandbox_allow_network` is
-  true (loopback stays open for local model servers).
+  true. Loopback connect, bind, and inbound operations stay open for local
+  model and development servers; those exceptions are operation-specific so
+  matching a local ephemeral address cannot accidentally reopen remote egress.
 - `sandbox-exec` is deprecated by Apple but functional; treated as
   best-effort OS enforcement, tested in `internal/tools/command_test.go`.
 
@@ -497,11 +522,29 @@ and refuse to overwrite an existing path even if it appears during creation.
 
 ## Prompt injection
 
-Tool output, repository text, skills, and MCP responses are declared
-untrusted data in the system prompt, but a sufficiently capable injection
-can still steer the model. The controls that hold regardless of what the
-model was told are: the permission pipeline, denied commands, uninspectable
-command prompts, the trust quarantine, and (when enabled) the OS sandbox.
+Tool output, repository text, skills, and MCP responses are untrusted data. A
+sufficiently capable injection can still steer the model, so prose is not the
+security boundary.
+
+Every model-visible MCP tool result, resource, resource catalog, and expanded
+prompt template is wrapped in an `EXTERNAL_MCP_DATA` content-derived boundary
+that identifies its server, content type, subject, and byte count. Its handling
+guidance explicitly permits using relevant factual and structured data while
+refusing instructions, claimed authority, or claimed permissions embedded in
+the payload. Terminal control characters are removed. Server-supplied
+tool-schema descriptions/titles are labeled external and descriptive and are
+bounded; schema comments and examples are discarded. Catalog and elicitation
+metadata is likewise control-safe and bounded. A server's `trusted` setting
+authorizes Collomia to connect to and run that server; it does not give the
+server's returned text instructional authority.
+
+These frames make provenance clear to both users and models, but they are not
+an instruction-following guarantee. The controls that hold regardless of what
+the model was told are the permission pipeline (MCP calls remain external
+risk), denied commands, uninspectable-command prompts, repository/server trust
+gates, rooted structured-file mutations, and—when enabled—the OS sandbox. A
+credential-free adversarial evaluation verifies that an allowed MCP-like read
+containing a forged permission grant still cannot authorize a workspace write.
 
 ## Reporting
 

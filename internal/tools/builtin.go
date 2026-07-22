@@ -29,7 +29,7 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 	// explicit command_env setting always wins.
 	sandboxed := command.SandboxMode == sandbox.ModeAuto || command.SandboxMode == sandbox.ModeRequire
 	command.MinimalEnv = cfg.Permissions.CommandEnv == "minimal" || (cfg.Permissions.CommandEnv == "" && sandboxed)
-	tracker := diffmodel.NewTracker()
+	tracker := diffmodel.NewTracker(guard.Workspace)
 	procs := NewProcessManager()
 	registry := NewRegistry(
 		ReadFileTool{Guard: guard}, ListFilesTool{Guard: guard}, SearchFilesTool{Guard: guard},

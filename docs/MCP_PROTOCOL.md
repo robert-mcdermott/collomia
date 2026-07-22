@@ -37,6 +37,27 @@ revision. The table below is the product-level contract.
 the session. `/mcp reconnect <server>` is the stronger recovery action when the
 transport or remote implementation itself needs to be reinitialized.
 
+## External-data boundary
+
+MCP trust authorizes the configured connection and executable; it does not
+make server-authored text authoritative. Before MCP data becomes visible to a
+model, Collomia wraps tool results, resources and resource catalogs, and
+expanded prompt templates in a deterministic content-derived frame that names
+the server, content kind, subject, and normalized byte count. The frame states
+that the payload is data, not authority, permission, or a reason to call tools.
+Terminal controls are removed.
+
+Tool-schema descriptions and titles are bounded and labeled as external,
+descriptive MCP metadata; nonessential schema comments and examples are
+removed while the structural schema is preserved. Catalog, progress, and
+elicitation prose is also bounded and made control-safe. The frame explicitly
+tells the model to use relevant factual and structured data while refusing
+embedded instructions, claimed authority, or claimed permissions. These
+transformations preserve provenance and reduce prompt-injection ambiguity, but
+they do not replace permission checks: every MCP call remains external risk,
+and any write or command proposed after reading MCP content is authorized
+independently.
+
 ## Not implemented
 
 - Experimental MCP tasks and task status notifications.
@@ -62,6 +83,8 @@ credentials. Together the fixtures cover:
   preservation of the last-known-good tools when replacement validation fails;
 - progress routing, form elicitation, decline behavior, cancellation/timeouts,
   ping/reconnect/enable/disable/add/remove, and server pinning.
+- external-data provenance framing, delimiter/control-character attacks, bounded
+  schema/catalog metadata, and an agent-level injected-permission refusal.
 
 This suite validates Collomia's supported subset against the SDK's in-memory
 wire implementation. It is not a claim that every third-party MCP server is

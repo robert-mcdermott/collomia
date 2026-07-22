@@ -93,7 +93,7 @@ func TestPromptsListAndExpand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "Summarize doc://guide in three bullets." {
+	if !strings.Contains(text, "Summarize doc://guide in three bullets.") || !strings.Contains(text, `content_type: "prompt template"`) {
 		t.Fatalf("text=%q", text)
 	}
 }
@@ -119,7 +119,7 @@ func TestResourceToolsRegisteredAndWorking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Server docs:", "doc://guide", "text/markdown", "The user guide"} {
+	for _, want := range []string{"BEGIN COLLOMIA_EXTERNAL_MCP_DATA_", `source_server: "docs"`, "doc://guide", "text/markdown", "The user guide"} {
 		if !strings.Contains(listing, want) {
 			t.Fatalf("listing missing %q:\n%s", want, listing)
 		}

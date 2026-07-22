@@ -117,7 +117,7 @@ func (m *Manager) ReadResource(ctx context.Context, server, uri string) (string,
 	if len(parts) == 0 {
 		return "", fmt.Errorf("resource %s returned no content", uri)
 	}
-	return strings.Join(parts, "\n\n"), nil
+	return frameExternalMCPData("resource", server, uri, strings.Join(parts, "\n\n")), nil
 }
 
 // Prompts lists a server's prompt templates (paginated to completion).
@@ -206,7 +206,7 @@ func (m *Manager) GetPrompt(ctx context.Context, server, name string, args map[s
 	if text == "" {
 		return "", fmt.Errorf("prompt %s produced no text", name)
 	}
-	return text, nil
+	return frameExternalMCPData("prompt template", server, name, text), nil
 }
 
 // registerResourceTools adds the model-facing resource tools once MCP is in
@@ -244,20 +244,20 @@ func (m *Manager) registerResourceTools() {
 				}
 				var lines []string
 				for _, r := range resources {
-					line := "- " + r.URI
+					line := "- " + compactMetadata(r.URI)
 					if r.Name != "" && r.Name != r.URI {
-						line += " (" + r.Name + ")"
+						line += " (" + compactMetadata(r.Name) + ")"
 					}
 					if r.MIMEType != "" {
-						line += " [" + r.MIMEType + "]"
+						line += " [" + compactMetadata(r.MIMEType) + "]"
 					}
 					if r.Description != "" {
-						line += ": " + r.Description
+						line += ": " + compactMetadata(r.Description)
 					}
 					lines = append(lines, line)
 				}
 				if len(lines) > 0 {
-					sections = append(sections, fmt.Sprintf("Server %s:\n%s", server, strings.Join(lines, "\n")))
+					sections = append(sections, frameExternalMCPData("resource catalog", server, "list", strings.Join(lines, "\n")))
 				}
 			}
 			if len(sections) == 0 {

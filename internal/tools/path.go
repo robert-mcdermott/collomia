@@ -5,11 +5,44 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/robert-mcdermott/collomia/internal/safefile"
 )
 
 type PathGuard struct {
 	Workspace    string
 	AllowOutside bool
+	workspaceID  os.FileInfo
+}
+
+// MutationTarget resolves policy exactly as Resolve does, then anchors the
+// resulting path to an os.Root-backed safe mutation target. Workspace paths
+// cannot escape through a symlink swap between authorization and execution.
+// Explicitly allowed outside paths are anchored to their resolved parent.
+func (g *PathGuard) MutationTarget(requested string) (*safefile.Target, bool, error) {
+	resolved, outside, err := g.Resolve(requested)
+	if err != nil {
+		return nil, outside, err
+	}
+	root := g.Workspace
+	if outside {
+		root = filepath.Dir(resolved)
+	}
+	target, err := safefile.Open(root, resolved)
+	if err != nil {
+		return nil, outside, err
+	}
+	if !outside && g.workspaceID != nil {
+		opened, statErr := target.RootStat()
+		if statErr != nil || !os.SameFile(g.workspaceID, opened) {
+			_ = target.Close()
+			if statErr != nil {
+				return nil, outside, fmt.Errorf("verify workspace mutation root: %w", statErr)
+			}
+			return nil, outside, fmt.Errorf("workspace mutation root changed since startup")
+		}
+	}
+	return target, outside, nil
 }
 
 func NewPathGuard(workspace string, allowOutside bool) (*PathGuard, error) {
@@ -21,7 +54,14 @@ func NewPathGuard(workspace string, allowOutside bool) (*PathGuard, error) {
 	if err == nil {
 		abs = real
 	}
-	return &PathGuard{Workspace: filepath.Clean(abs), AllowOutside: allowOutside}, nil
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("workspace %s is not a directory", abs)
+	}
+	return &PathGuard{Workspace: filepath.Clean(abs), AllowOutside: allowOutside, workspaceID: info}, nil
 }
 
 func (g *PathGuard) Resolve(requested string) (resolved string, outside bool, err error) {
