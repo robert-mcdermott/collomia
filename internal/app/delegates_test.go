@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -31,8 +32,20 @@ func newIntegrationFixture(t *testing.T, approver permission.Approver) integrati
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is unavailable")
 	}
+	// Reproduce the Windows Actions default on every platform so the fixture's
+	// repository-local setting below is covered rather than merely documented.
+	globalGitConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	if err := os.WriteFile(globalGitConfig, []byte("[core]\n\tautocrlf = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalGitConfig)
 	workspace := t.TempDir()
 	runGitTest(t, workspace, "init", "-b", "main")
+	// The fixture compares parent and linked-worktree bytes. Do not inherit a
+	// developer or CI runner's global autocrlf setting, which can leave the
+	// freshly written parent as LF while converting the worktree checkout to
+	// CRLF and turn two edits into an unrelated whole-file replacement.
+	runGitTest(t, workspace, "config", "core.autocrlf", "false")
 	lines := make([]string, 14)
 	for i := range lines {
 		lines[i] = "line " + string(rune('A'+i))
@@ -48,6 +61,12 @@ func newIntegrationFixture(t *testing.T, approver permission.Approver) integrati
 	worktree := filepath.Join(t.TempDir(), "child")
 	branch := "collomia/integration-test"
 	runGitTest(t, workspace, "worktree", "add", "-b", branch, worktree, "HEAD")
+	delegatedFile := filepath.Join(worktree, "sample.txt")
+	parentBytes, parentErr := os.ReadFile(parentFile)
+	delegatedBytes, delegatedErr := os.ReadFile(delegatedFile)
+	if parentErr != nil || delegatedErr != nil || !bytes.Equal(parentBytes, delegatedBytes) {
+		t.Fatalf("integration fixture parent/worktree bytes differ: parent_err=%v delegated_err=%v", parentErr, delegatedErr)
+	}
 	t.Cleanup(func() {
 		_ = exec.Command("git", "-C", workspace, "worktree", "remove", "--force", worktree).Run()
 		_ = exec.Command("git", "-C", workspace, "branch", "-D", branch).Run()
@@ -66,7 +85,7 @@ func newIntegrationFixture(t *testing.T, approver permission.Approver) integrati
 		Permissions: permission.New(appconfig.Permissions{Mode: mode}, approver),
 		Changes:     diffmodel.NewTracker(workspace),
 	}
-	return integrationFixture{runtime: runtime, workspace: workspace, worktree: worktree, branch: branch, base: base, parentFile: parentFile, delegatedFile: filepath.Join(worktree, "sample.txt")}
+	return integrationFixture{runtime: runtime, workspace: workspace, worktree: worktree, branch: branch, base: base, parentFile: parentFile, delegatedFile: delegatedFile}
 }
 
 func TestDelegateIntegrationAppliesSelectedHunksAndRetainsWorktree(t *testing.T) {
