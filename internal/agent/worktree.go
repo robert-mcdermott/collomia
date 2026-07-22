@@ -33,9 +33,10 @@ func slugify(s string) string {
 // write-capable delegated agent, so parallel agents never race on the same
 // files. It is never merged, committed to, or pushed automatically.
 type worktree struct {
-	path   string
-	branch string
-	root   string // the origin repository workspace
+	path       string
+	branch     string
+	baseCommit string
+	root       string // the origin repository workspace
 }
 
 func isGitRepo(ctx context.Context, workspace string) bool {
@@ -46,6 +47,11 @@ func isGitRepo(ctx context.Context, workspace string) bool {
 // newWorktree creates a new branch and working tree off HEAD, isolated
 // under the system temp directory.
 func newWorktree(ctx context.Context, workspace, name string) (*worktree, error) {
+	baseOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return nil, fmt.Errorf("resolve delegated worktree base: %w", err)
+	}
+	baseCommit := strings.TrimSpace(string(baseOut))
 	base := filepath.Join(os.TempDir(), "collomia-worktrees")
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return nil, err
@@ -58,7 +64,7 @@ func newWorktree(ctx context.Context, workspace, name string) (*worktree, error)
 	if err != nil {
 		return nil, fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return &worktree{path: path, branch: branch, root: workspace}, nil
+	return &worktree{path: path, branch: branch, baseCommit: baseCommit, root: workspace}, nil
 }
 
 // changedFiles lists paths touched relative to the branch point.

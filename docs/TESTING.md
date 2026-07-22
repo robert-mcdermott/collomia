@@ -110,7 +110,17 @@ Important failure-oriented tests include:
   the guarantee that queued/running work resumes as inert `interrupted` state;
   common-base hunk comparison distinguishes overlapping and disjoint sibling
   edits without performing a merge.
-- TUI agent control selection and stop behavior while the parent turn is busy.
+- Bounded, exactly-once steering delivery at provider boundaries, structured
+  plan-step validation, recent-output tail limits, and operator metadata event
+  round trips.
+- TUI busy-composer behavior: local inspection/agent-control commands run,
+  while ordinary prompts and unsafe commands remain unsent drafts.
+- Delegated-worktree integration checks registered Git identity/base, supports
+  selective text hunks, records the result in the change tracker, retains the
+  worktree, refuses parent drift, and rechecks changes made while approval is
+  pending.
+- TUI agent action selection requires an explicit stop action rather than
+  making the first picker selection destructive.
 
 When adding a fault seam, keep production defaults on the real operating
 system implementation. Tests may inject writers, clocks, transports, or

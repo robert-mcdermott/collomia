@@ -56,22 +56,24 @@ const (
 var tabNames = [tabCount]string{"Chat", "Session", "Help"}
 
 type Model struct {
-	runtime       *app.Runtime
-	broker        *ApprovalBroker
-	viewport      viewport.Model
-	input         textarea.Model
-	spinner       spinner.Model
-	blocks        []block
-	width, height int
-	ready, busy   bool
-	runEvents     chan runMsg
-	cancel        context.CancelFunc
-	pending       *approvalEnvelope
-	hunkReview    *hunkReviewState
-	question      *questionEnvelope
-	picker        *picker
-	started       time.Time
-	turnStarted   time.Time
+	runtime          *app.Runtime
+	broker           *ApprovalBroker
+	viewport         viewport.Model
+	input            textarea.Model
+	spinner          spinner.Model
+	blocks           []block
+	width, height    int
+	ready, busy      bool
+	runEvents        chan runMsg
+	cancel           context.CancelFunc
+	pending          *approvalEnvelope
+	hunkReview       *hunkReviewState
+	question         *questionEnvelope
+	questionDraft    string
+	picker           *picker
+	agentIntegration *agentIntegrationState
+	started          time.Time
+	turnStarted      time.Time
 
 	theme  Theme
 	styles styles
@@ -200,10 +202,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case editorFinishedMsg:
 		m.finishExternalEditor(msg)
+	case agentIntegrationAppliedMsg:
+		m.busy = false
+		m.cancel = nil
+		m.input.Focus()
+		if msg.err != nil {
+			m.addError(msg.err)
+		} else {
+			m.addSystem(fmt.Sprintf("Integrated %d delegated file(s): %s. The isolated worktree and branch were retained.", len(msg.paths), strings.Join(msg.paths, ", ")))
+		}
+		cmds = append(cmds, m.refreshWorkspaceStatus())
+		m.layout()
+		m.refresh()
 	case questionMsg:
 		env := msg.envelope
 		m.question = &env
 		m.paletteOn = false
+		m.questionDraft = m.input.Value()
 		m.input.Reset()
 		m.input.Focus()
 		m.alert("Collomia has a question: " + env.question.Text)
@@ -240,8 +255,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		if m.busy {
 			cmds = append(cmds, cmd)
+			if m.tab == tabSession {
+				m.refresh()
+			}
 		}
 	case tea.KeyMsg:
+		if m.agentIntegration != nil {
+			return m.handleAgentIntegrationKey(msg)
+		}
 		if m.hunkReview != nil {
 			return m.handleHunkReviewKey(msg)
 		}
@@ -347,7 +368,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tabOffsets[m.tab] = m.viewport.YOffset
 			return m, nil
 		}
-		if key == "esc" && m.busy && m.cancel != nil {
+		if key == "esc" && m.busy && m.cancel != nil && !m.paletteOn {
 			m.cancel()
 			return m, nil
 		}
@@ -406,10 +427,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refresh()
 			return m, nil
 		}
-		if key == "enter" && !m.busy && !msg.Alt {
+		if key == "enter" && !msg.Alt {
 			value := strings.TrimSpace(m.input.Value())
 			if value == "" {
 				return m, nil
+			}
+			if m.busy {
+				if !strings.HasPrefix(value, "/") {
+					m.addSystem("Draft kept while the current turn runs. Use a local slash command now, or press enter after the turn finishes to send it.")
+					m.refresh()
+					return m, nil
+				}
+				if !busySlashAllowed(value) {
+					m.addError(fmt.Errorf("%s is unavailable while the current turn is running; the command remains in the composer", strings.Fields(value)[0]))
+					m.refresh()
+					return m, nil
+				}
+				m.input.Reset()
+				m.switchTab(tabChat)
+				quit, cmd := m.slash(value)
+				m.updatePalette()
+				m.layout()
+				m.refresh()
+				if quit {
+					return m, tea.Quit
+				}
+				return m, cmd
 			}
 			m.input.Reset()
 			m.switchTab(tabChat)
@@ -441,15 +484,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, cmd)
 	}
-	if !m.busy && m.pending == nil {
+	if m.pending == nil {
 		if key, isKey := msg.(tea.KeyMsg); isKey && key.String() != "up" && key.String() != "down" {
-			m.leavePromptHistory()
+			if !m.busy {
+				m.leavePromptHistory()
+			}
 		}
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		// Typing "@" at a word boundary opens the file-mention picker; the
 		// chosen path replaces the "@" in the prompt.
-		if key, isKey := msg.(tea.KeyMsg); isKey && key.Type == tea.KeyRunes && string(key.Runes) == "@" {
+		if key, isKey := msg.(tea.KeyMsg); !m.busy && isKey && key.Type == tea.KeyRunes && string(key.Runes) == "@" {
 			value := m.input.Value()
 			if strings.HasSuffix(value, "@") && (len(value) == 1 || isMentionBoundary(value[len(value)-2])) {
 				m.openFilePicker()
@@ -480,7 +525,7 @@ func (m *Model) startTurn(value string) tea.Cmd {
 	}
 	m.busy = true
 	m.turnStarted = time.Now()
-	m.input.Blur()
+	m.input.Focus()
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.runEvents = make(chan runMsg, 64)
@@ -588,7 +633,8 @@ func (m Model) handleQuestionKey(key tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 		m.question.reply <- answer
 		m.question = nil
 		m.blocks = append(m.blocks, block{role: "user", content: answer})
-		m.input.Reset()
+		m.setComposerValue(m.questionDraft)
+		m.questionDraft = ""
 		m.layout()
 		m.refresh()
 		return true, m, m.broker.wait()
@@ -596,7 +642,8 @@ func (m Model) handleQuestionKey(key tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
 		m.question.reply <- ""
 		m.question = nil
 		m.blocks = append(m.blocks, block{role: "system", content: "Question declined."})
-		m.input.Reset()
+		m.setComposerValue(m.questionDraft)
+		m.questionDraft = ""
 		m.layout()
 		m.refresh()
 		return true, m, m.broker.wait()
@@ -884,6 +931,11 @@ func (m *Model) sessionContent() string {
 
 	if agents := m.runtime.Team.Snapshot(); len(agents) > 0 {
 		b.WriteString(h("Agents") + "\n")
+		parentState := "idle"
+		if m.busy {
+			parentState = "working"
+		}
+		b.WriteString("  " + m.styles.accent.Render("Collomia") + " " + m.styles.muted.Render("(parent, "+parentState+")") + "\n")
 		marks := map[string]string{
 			agent.DelegateQueued: "○", agent.DelegateRunning: "◐", agent.DelegateWaitingApproval: "?", agent.DelegateCancelling: "◒",
 			agent.DelegateDone: "●", agent.DelegateError: "✗", agent.DelegateCancelled: "○", agent.DelegateTimedOut: "✗",
@@ -894,27 +946,37 @@ func (m *Model) sessionContent() string {
 			agent.DelegateDone: m.theme.Success, agent.DelegateError: m.theme.Error, agent.DelegateCancelled: m.theme.Muted, agent.DelegateTimedOut: m.theme.Error,
 			agent.DelegateBudgetExhausted: m.theme.Error, agent.DelegateInterrupted: m.theme.Error,
 		}
-		for _, a := range agents {
+		for index, a := range agents {
 			mark := lipgloss.NewStyle().Foreground(lipgloss.Color(colors[a.Status])).Render(marks[a.Status])
+			branchMark := "├─"
+			if index == len(agents)-1 {
+				branchMark = "└─"
+			}
 			kind := "read"
 			if a.Write {
 				kind = "write"
 			}
-			line := fmt.Sprintf("  %s %s  %s", mark, m.styles.accent.Render(m.runtime.Redactor.Redact(a.Name)), m.styles.muted.Render("("+kind+", "+delegateStatusLabel(a.Status)+")"))
+			line := fmt.Sprintf("  %s %s %s  %s", branchMark, mark, m.styles.accent.Render(m.runtime.Redactor.Redact(a.Name)), m.styles.muted.Render("("+kind+", "+delegateStatusLabel(a.Status)+")"))
+			if a.PlanStep > 0 {
+				line += m.styles.muted.Render(fmt.Sprintf(" · plan %d", a.PlanStep))
+			}
 			b.WriteString(line + "\n")
 			if a.Status == agent.DelegateQueued || a.Status == agent.DelegateRunning || a.Status == agent.DelegateWaitingApproval || a.Status == agent.DelegateCancelling {
 				if a.CurrentAction != "" {
-					b.WriteString(m.styles.muted.Render("      "+m.runtime.Redactor.Redact(a.CurrentAction)) + "\n")
+					b.WriteString(m.styles.muted.Render("       "+m.runtime.Redactor.Redact(a.CurrentAction)) + "\n")
+				}
+				if output := strings.Join(strings.Fields(m.runtime.Redactor.Redact(a.RecentOutput)), " "); output != "" {
+					b.WriteString(m.styles.muted.Render("       ↳ "+truncateRunes(output, 100)) + "\n")
 				}
 				continue
 			}
 			if len(a.Changed) > 0 {
-				b.WriteString(m.styles.muted.Render(fmt.Sprintf("      changed %d file(s) — worktree %s (branch %s)", len(a.Changed), a.Worktree, a.Branch)) + "\n")
+				b.WriteString(m.styles.muted.Render(fmt.Sprintf("       changed %d file(s) — /agents apply %s", len(a.Changed), a.ID)) + "\n")
 			} else if a.Error != "" {
 				b.WriteString(m.styles.muted.Render("      "+m.runtime.Redactor.Redact(a.Error)) + "\n")
 			}
 		}
-		b.WriteString(m.styles.muted.Render("  "+m.binding("agent_control")+" inspect/stop · /agents details") + "\n\n")
+		b.WriteString(m.styles.muted.Render("  "+m.binding("agent_control")+" inspect · /agents steer|stop|apply") + "\n\n")
 	}
 
 	b.WriteString(h("Providers") + "\n")
@@ -977,7 +1039,7 @@ func (m *Model) helpContent() string {
 		{"tab (palette)", "complete the selected command"},
 		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
 		{m.binding("session_picker"), "open saved sessions without replacing the draft"},
-		{m.binding("agent_control"), "inspect agents; while active, choose one to stop"},
+		{m.binding("agent_control"), "inspect active agents; use /agents to steer, stop, or apply"},
 		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
@@ -1039,6 +1101,8 @@ func (m Model) View() string {
 	sections = append(sections, m.renderStatusBar())
 	base := strings.Join(sections, "\n")
 	switch {
+	case m.agentIntegration != nil:
+		return placeOverlay(base, m.renderAgentIntegration(), m.width, m.height)
 	case m.hunkReview != nil:
 		return placeOverlay(base, m.renderHunkReview(), m.width, m.height)
 	case m.pending != nil:
@@ -1112,6 +1176,8 @@ func (m Model) renderStatusBar() string {
 	switch {
 	case m.hunkReview != nil:
 		right = m.styles.statusBase.Render("↑↓ move · space toggle · enter apply · esc back ")
+	case m.agentIntegration != nil:
+		right = m.styles.statusBase.Render("[ ] file · ↑↓ hunk · space toggle · enter apply · esc cancel ")
 	case m.pending != nil:
 		right = m.styles.statusBase.Render("y approve · a always · n deny ")
 	case m.question != nil:
@@ -1122,7 +1188,7 @@ func (m Model) renderStatusBar() string {
 		if m.runtime.Team.Active() > 0 {
 			right += m.styles.statusKey.Render(m.binding("agent_control")) + m.styles.statusBase.Render(" agents · ")
 		}
-		right += m.styles.statusBase.Render("esc cancel ")
+		right += m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" local commands · esc cancel ")
 	default:
 		right = m.styles.statusBase.Render("enter send · ") +
 			m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +

@@ -21,7 +21,7 @@ var slashCommands = []commandInfo{
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
-	{name: "/agents", args: "[stop <id-or-name>]", desc: "inspect delegated agents or cancel one"},
+	{name: "/agents", args: "[stop|steer|apply …]", desc: "inspect, guide, stop, or integrate delegated agents"},
 	{name: "/prompt", args: "[workspace-file]", desc: "load a UTF-8 text file into the composer"},
 	{name: "/attach", args: "[workspace-image]", desc: "attach a PNG, JPEG, GIF, or WebP image"},
 	{name: "/attachments", args: "", desc: "list images attached to the pending prompt"},
@@ -121,7 +121,7 @@ func (m *Model) updatePalette() bool {
 	}
 	open := false
 	var matches []commandInfo
-	if !m.busy && m.pending == nil && !m.paletteDismissed &&
+	if m.pending == nil && !m.paletteDismissed &&
 		strings.HasPrefix(value, "/") && !strings.Contains(value, "\n") {
 		fields := strings.Fields(value)
 		token := "/"
@@ -142,6 +142,16 @@ func (m *Model) updatePalette() bool {
 				matches = m.argumentMatches(fields[0], partial)
 				open = len(matches) > 0
 			}
+		}
+		if m.busy {
+			filtered := matches[:0]
+			for _, match := range matches {
+				if busySlashAllowed(match.name) {
+					filtered = append(filtered, match)
+				}
+			}
+			matches = filtered
+			open = len(matches) > 0
 		}
 	}
 	prevOpen, prevRows := m.paletteOn, len(m.palette)

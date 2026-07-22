@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,43 +25,53 @@ const (
 	DelegateInterrupted     = "interrupted"
 	maxDelegateEvidence     = 8
 	maxDelegateChangedFiles = 256
+	maxDelegateGuidance     = 8
+	maxDelegateRecentOutput = 4 << 10
 )
 
 // DelegateStatus is a bounded, durable snapshot of one delegated task. It is
 // safe to put in the parent session; it contains results and evidence, not a
 // raw child transcript.
 type DelegateStatus struct {
-	ID             string
-	Name           string
-	Task           string
-	Profile        string
-	Provider       string
-	Model          string
-	Write          bool
-	Status         string
-	CurrentAction  string
-	Summary        string
-	Error          string
-	Evidence       []string
-	Changed        []string
-	Worktree       string
-	Branch         string
-	Usage          provider.Usage
-	TokenBudget    int
-	TimeoutSeconds int
+	ID              string
+	Name            string
+	Task            string
+	Profile         string
+	Provider        string
+	Model           string
+	Write           bool
+	PlanStep        int
+	Status          string
+	CurrentAction   string
+	RecentOutput    string
+	Guidance        []string
+	PendingGuidance int
+	Summary         string
+	Error           string
+	Evidence        []string
+	Changed         []string
+	Worktree        string
+	Branch          string
+	BaseCommit      string
+	Integrated      []string
+	Usage           provider.Usage
+	TokenBudget     int
+	TimeoutSeconds  int
 	// Revision makes concurrent durable observer writes order-independent.
 	// It is monotonic for one task and has no model-visible meaning.
 	Revision uint64
 	Started  time.Time
 	Finished time.Time
 
-	cancel context.CancelFunc
+	cancel          context.CancelFunc
+	pendingGuidance []string
 }
 
 // DelegateStart describes a task before it enters the shared scheduler.
 type DelegateStart struct {
 	ID, Name, Task, Profile, Provider, Model string
 	Write                                    bool
+	PlanStep                                 int
 	TokenBudget, TimeoutSeconds              int
 	Cancel                                   context.CancelFunc
 }
@@ -87,7 +98,7 @@ func (t *Team) SetObserver(observer func(DelegateStatus)) {
 func (t *Team) Enqueue(start DelegateStart) {
 	status := DelegateStatus{
 		ID: start.ID, Name: start.Name, Task: start.Task, Profile: start.Profile,
-		Provider: start.Provider, Model: start.Model, Write: start.Write,
+		Provider: start.Provider, Model: start.Model, Write: start.Write, PlanStep: start.PlanStep,
 		Status: DelegateQueued, CurrentAction: "waiting for scheduler",
 		TokenBudget: start.TokenBudget, TimeoutSeconds: start.TimeoutSeconds,
 		Revision: 1, Started: time.Now(), cancel: start.Cancel,
@@ -139,13 +150,89 @@ func (t *Team) SetUsage(id string, usage provider.Usage) {
 	t.update(id, func(s *DelegateStatus) { s.Usage = usage })
 }
 
+// AppendOutput retains a small, control-safe tail for live inspection. It is
+// intentionally not observer-notified for every streaming token; the next
+// lifecycle update (and the terminal result) persists the latest bounded tail.
+func (t *Team) AppendOutput(id, chunk string) {
+	if chunk == "" {
+		return
+	}
+	t.mu.Lock()
+	status := t.items[id]
+	if status != nil && !terminalDelegateStatus(status.Status) {
+		status.RecentOutput = tailDelegateText(status.RecentOutput+chunk, maxDelegateRecentOutput)
+		status.Revision++
+	}
+	t.mu.Unlock()
+}
+
+// Steer queues bounded parent guidance for delivery at the child's next
+// provider boundary. It does not interrupt an executing tool, answer an
+// approval, or otherwise change the child's permission state.
+func (t *Team) Steer(idOrName, guidance string) error {
+	guidance = strings.TrimSpace(boundedDelegateText(guidance, 1024))
+	if guidance == "" {
+		return errors.New("steering guidance is empty")
+	}
+	t.mu.Lock()
+	selected, err := t.findActiveLocked(idOrName)
+	if err != nil {
+		t.mu.Unlock()
+		return err
+	}
+	if selected.Status == DelegateCancelling {
+		t.mu.Unlock()
+		return fmt.Errorf("delegated agent %q is cancelling", idOrName)
+	}
+	if len(selected.Guidance) >= maxDelegateGuidance {
+		t.mu.Unlock()
+		return fmt.Errorf("delegated agent %q already has the maximum %d steering updates", idOrName, maxDelegateGuidance)
+	}
+	selected.Guidance = append(selected.Guidance, guidance)
+	selected.pendingGuidance = append(selected.pendingGuidance, guidance)
+	selected.PendingGuidance = len(selected.pendingGuidance)
+	selected.Revision++
+	boundDelegateStatus(selected)
+	snapshot := copyDelegateStatus(*selected)
+	observer := t.observer
+	t.mu.Unlock()
+	if observer != nil {
+		observer(snapshot)
+	}
+	return nil
+}
+
+// TakeSteering drains guidance exactly once. The child calls it immediately
+// before constructing a provider request, which is the only safe point to
+// alter its conversational instructions.
+func (t *Team) TakeSteering(id string) []string {
+	t.mu.Lock()
+	status := t.items[id]
+	if status == nil || len(status.pendingGuidance) == 0 || terminalDelegateStatus(status.Status) {
+		t.mu.Unlock()
+		return nil
+	}
+	out := append([]string(nil), status.pendingGuidance...)
+	status.pendingGuidance = nil
+	status.PendingGuidance = 0
+	status.Revision++
+	boundDelegateStatus(status)
+	snapshot := copyDelegateStatus(*status)
+	observer := t.observer
+	t.mu.Unlock()
+	if observer != nil {
+		observer(snapshot)
+	}
+	return out
+}
+
 // Finish retains the original API. New code uses FinishDetailed so usage and
 // evidence survive in the durable parent inbox.
 func (t *Team) Finish(id, summary string, changed []string, worktree, branch string, err error) {
-	t.FinishDetailed(id, summary, nil, changed, worktree, branch, provider.Usage{}, err)
+	t.FinishDetailed(id, summary, nil, changed, worktree, branch, "", provider.Usage{}, err)
 }
 
-func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, worktree, branch string, usage provider.Usage, err error) {
+func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, worktree, branch, baseCommit string, usage provider.Usage, err error) {
 	t.update(id, func(s *DelegateStatus) {
 		s.Finished = time.Now()
 		s.Summary = summary
@@ -153,6 +240,7 @@ func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, wo
 		s.Changed = append([]string(nil), changed...)
 		s.Worktree = worktree
 		s.Branch = branch
+		s.BaseCommit = baseCommit
 		s.Usage = usage
 		s.CurrentAction = ""
 		s.cancel = nil
@@ -179,30 +267,10 @@ func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, wo
 // unique name is accepted for TUI convenience.
 func (t *Team) Stop(idOrName string) error {
 	t.mu.Lock()
-	var selected *DelegateStatus
-	if item := t.items[idOrName]; item != nil {
-		selected = item
-	} else {
-		for _, id := range t.order {
-			item := t.items[id]
-			if item.Name != idOrName || terminalDelegateStatus(item.Status) {
-				continue
-			}
-			if selected != nil {
-				t.mu.Unlock()
-				return fmt.Errorf("more than one active delegated agent is named %q; use its id", idOrName)
-			}
-			selected = item
-		}
-	}
-	if selected == nil {
+	selected, err := t.findActiveLocked(idOrName)
+	if err != nil {
 		t.mu.Unlock()
-		return fmt.Errorf("unknown delegated agent %q", idOrName)
-	}
-	if terminalDelegateStatus(selected.Status) {
-		status := selected.Status
-		t.mu.Unlock()
-		return fmt.Errorf("delegated agent %q already finished (%s)", idOrName, status)
+		return err
 	}
 	if selected.Status == DelegateCancelling {
 		t.mu.Unlock()
@@ -223,6 +291,38 @@ func (t *Team) Stop(idOrName string) error {
 		cancel()
 	}
 	return nil
+}
+
+func (t *Team) findActiveLocked(idOrName string) (*DelegateStatus, error) {
+	if item := t.items[idOrName]; item != nil {
+		if terminalDelegateStatus(item.Status) {
+			return nil, fmt.Errorf("delegated agent %q already finished (%s)", idOrName, item.Status)
+		}
+		return item, nil
+	}
+	var selected *DelegateStatus
+	for _, id := range t.order {
+		item := t.items[id]
+		if item.Name != idOrName || terminalDelegateStatus(item.Status) {
+			continue
+		}
+		if selected != nil {
+			return nil, fmt.Errorf("more than one active delegated agent is named %q; use its id", idOrName)
+		}
+		selected = item
+	}
+	if selected == nil {
+		return nil, fmt.Errorf("unknown active delegated agent %q", idOrName)
+	}
+	return selected, nil
+}
+
+// MarkIntegrated records files explicitly copied into the parent workspace.
+// The child worktree remains available and is never removed automatically.
+func (t *Team) MarkIntegrated(id string, paths []string) {
+	t.update(id, func(s *DelegateStatus) {
+		s.Integrated = additiveValues(s.Integrated, paths)
+	})
 }
 
 // StopAll requests cancellation for every queued or running task. It is used
@@ -246,6 +346,8 @@ func (t *Team) Restore(statuses []DelegateStatus) {
 	for _, status := range statuses {
 		status = copyDelegateStatus(status)
 		status.cancel = nil
+		status.pendingGuidance = nil
+		status.PendingGuidance = 0
 		if !terminalDelegateStatus(status.Status) {
 			status.Status = DelegateInterrupted
 			status.CurrentAction = ""
@@ -326,6 +428,9 @@ func (t *Team) notify(status DelegateStatus) {
 func copyDelegateStatus(status DelegateStatus) DelegateStatus {
 	status.Evidence = append([]string(nil), status.Evidence...)
 	status.Changed = append([]string(nil), status.Changed...)
+	status.Guidance = append([]string(nil), status.Guidance...)
+	status.Integrated = append([]string(nil), status.Integrated...)
+	status.pendingGuidance = append([]string(nil), status.pendingGuidance...)
 	status.cancel = nil
 	return status
 }
@@ -338,10 +443,24 @@ func boundDelegateStatus(status *DelegateStatus) {
 	status.Provider = boundedDelegateText(status.Provider, 512)
 	status.Model = boundedDelegateText(status.Model, 1024)
 	status.CurrentAction = boundedDelegateText(status.CurrentAction, 2<<10)
+	status.RecentOutput = tailDelegateText(status.RecentOutput, maxDelegateRecentOutput)
 	status.Summary = boundedDelegateText(status.Summary, 16<<10)
 	status.Error = boundedDelegateText(status.Error, 4<<10)
 	status.Worktree = boundedDelegateText(status.Worktree, 4<<10)
 	status.Branch = boundedDelegateText(status.Branch, 1024)
+	status.BaseCommit = boundedDelegateText(status.BaseCommit, 128)
+	if len(status.Guidance) > maxDelegateGuidance {
+		status.Guidance = status.Guidance[:maxDelegateGuidance]
+	}
+	for i := range status.Guidance {
+		status.Guidance[i] = boundedDelegateText(status.Guidance[i], 1024)
+	}
+	if len(status.Integrated) > maxDelegateChangedFiles {
+		status.Integrated = status.Integrated[:maxDelegateChangedFiles]
+	}
+	for i := range status.Integrated {
+		status.Integrated[i] = boundedDelegateText(status.Integrated[i], 1024)
+	}
 	if len(status.Evidence) > maxDelegateEvidence {
 		status.Evidence = status.Evidence[:maxDelegateEvidence]
 	}
@@ -354,6 +473,18 @@ func boundDelegateStatus(status *DelegateStatus) {
 	for i := range status.Changed {
 		status.Changed[i] = boundedDelegateText(status.Changed[i], 1024)
 	}
+}
+
+func tailDelegateText(value string, limit int) string {
+	value = boundedDelegateText(value, len(value))
+	if len(value) <= limit {
+		return value
+	}
+	value = value[len(value)-limit:]
+	for len(value) > 0 && value[0]&0xc0 == 0x80 {
+		value = value[1:]
+	}
+	return "…" + value
 }
 
 func terminalDelegateStatus(status string) bool {
@@ -369,11 +500,12 @@ func terminalDelegateStatus(status string) bool {
 func (status DelegateStatus) Event() event.DelegateStatus {
 	return event.DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
-		Provider: status.Provider, Model: status.Model, Write: status.Write,
+		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
 		Status: status.Status, CurrentAction: status.CurrentAction,
+		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
 		Summary: status.Summary, Error: status.Error,
 		Evidence: append([]string(nil), status.Evidence...), ChangedFiles: append([]string(nil), status.Changed...),
-		Worktree: status.Worktree, Branch: status.Branch,
+		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, IntegratedFiles: append([]string(nil), status.Integrated...),
 		Usage:       event.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,
@@ -386,11 +518,12 @@ func (status DelegateStatus) Event() event.DelegateStatus {
 func DelegateStatusFromEvent(status event.DelegateStatus) DelegateStatus {
 	return DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
-		Provider: status.Provider, Model: status.Model, Write: status.Write,
+		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
 		Status: status.Status, CurrentAction: status.CurrentAction,
+		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
 		Summary: status.Summary, Error: status.Error,
 		Evidence: append([]string(nil), status.Evidence...), Changed: append([]string(nil), status.ChangedFiles...),
-		Worktree: status.Worktree, Branch: status.Branch,
+		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, Integrated: append([]string(nil), status.IntegratedFiles...),
 		Usage:       provider.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,

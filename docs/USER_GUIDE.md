@@ -1536,13 +1536,14 @@ collo --cwd /path/to/repository
 
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
-files, delegated-agent status, background processes, Git branch/upstream and
+files, a parent/child delegated-agent tree with bounded recent output, background processes, Git branch/upstream and
 working-tree counts, provider/sandbox/MCP/trust health, and a bounded list of
 recent permission decisions and tool failures. Git inspection is read-only,
 runs asynchronously with a short timeout, and reports non-Git workspaces
 normally; press `r` in the Session tab to refresh it. `/agents` provides a
-searchable view of each retained delegated outcome, and `alt+a` can stop one
-active child while its parent turn is still running. Help lists commands,
+searchable view of each retained delegated outcome, and `alt+a` opens explicit
+inspect, steer, and stop actions for one active child while its parent turn is
+still running. Help lists commands,
 providers, tools, skills, MCP servers, themes, and keybindings.
 
 Markdown is rendered in the active theme. Fenced source code, expanded
@@ -1569,7 +1570,7 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `tab` | Complete the selected command/palette value. |
 | `ctrl+t` | Cycle Chat, Session, and Help. |
 | `alt+s` | Open the saved-session picker without replacing the current draft. |
-| `alt+a` | Inspect delegated agents; while children are active, choose one to cancel without stopping siblings or the parent. |
+| `alt+a` | Inspect an active delegated agent, prepare steering guidance, or explicitly stop it without stopping siblings or the parent. |
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
@@ -1583,6 +1584,14 @@ Typing `/` filters commands by prefix and substring. Known first arguments for
 `/theme`, `/autonomy`, `/plan`, and `/model` are completed fuzzily. These menus
 remain beside the composer; approvals and questions open as centered,
 theme-aware transient dialogs.
+
+While a provider turn is running, the composer remains available for a small
+local-control command lane: `/help`, `/status`, `/context`, `/tasks`, `/tools`,
+`/config`, `/attachments`, `/transcript`, `/diff`, read-only `/ps`, and
+`/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
+the composer as unsent drafts; they are not queued to the model or executed
+concurrently. If the agent asks a question, Collomia preserves and restores the
+draft around the question dialog.
 
 The global actions in this table are configurable. The Help tab always shows
 the effective bindings after defaults, user configuration, and project
@@ -1603,7 +1612,10 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/theme [name]` | Pick or switch themes for this process. |
 | `/skills` | Pick a skill and prefill a prompt that asks the agent to use it. |
 | `/skills list` | List active and disabled skills. |
-| `/agents [stop <id-or-name>]` | Inspect delegated tasks and persisted outcomes or cancel one. During a running turn use `alt+a`. |
+| `/agents` | Search and inspect current or persisted delegated tasks. |
+| `/agents stop <id-or-name>` | Cancel one queued or active child without cancelling siblings or the parent. |
+| `/agents steer <id> <guidance...>` | Queue bounded guidance for the child's next model boundary. It never answers an approval or grants permission. |
+| `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
 | `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
 | `/attachments` | List images attached to the pending prompt. |
@@ -3021,7 +3033,8 @@ Conceptual tool request:
     {
       "name": "retry-change",
       "task": "Implement bounded retry in the HTTP client and test it.",
-      "write": true
+      "write": true,
+      "plan_step": 2
     },
     {
       "name": "security-review",
@@ -3045,6 +3058,12 @@ the parent reports a conflict rather than attempting reconciliation. Because
 all siblings start at the same `HEAD`, Collomia also compares zero-context
 hunks against that common base and labels known overlap or disjoint ranges.
 This analysis is advisory; disjoint worktrees are still never auto-merged.
+
+An optional `plan_step` associates a child and its returned evidence with an
+existing structured-plan step. Collomia refuses an unknown step or one whose
+declared dependencies are unfinished. This is metadata for coordination; it
+does not create an autonomous plan scheduler or mark the plan complete by
+itself.
 
 Queueing plus execution has a 10-minute default timeout, and each child has at
 most 16 model/tool iterations (or a lower configured/profile limit). Sub-agents
@@ -3129,12 +3148,43 @@ complete batch would exceed `max_tool_output_bytes`, Collomia compacts details
 while preserving valid JSON and every task's identity/status, and sets
 `truncated: true`; `/agents` retains the bounded per-task outcome for review.
 
-The Session tab shows queued, running, waiting-for-approval, cancelling,
-completed, failed, cancelled, timed-out, budget-exhausted, and interrupted
-states. `/agents` searches the snapshots and opens details. `/agents stop
-<id-or-name>` cancels one when the composer is available; `alt+a` stays active
-during a busy turn and opens a picker that cancels only the chosen child.
-Approval dialogs name the requesting child.
+The Session tab shows the Collomia parent and its children as a tree, including
+queued, running, waiting-for-approval, cancelling, completed, failed,
+cancelled, timed-out, budget-exhausted, and interrupted states. Active entries
+include their current action and a bounded recent-output tail. `/agents`
+searches the snapshots and opens full bounded details.
+
+`/agents steer <id> <guidance...>` queues up to eight bounded steering updates.
+The child receives them as explicit parent guidance immediately before its next
+provider request. Steering cannot alter a provider call or tool already in
+flight, cannot answer a permission dialog, and contains an explicit reminder
+that it grants no permission. If the child finishes before another boundary,
+the undelivered count remains visible. `/agents stop <id-or-name>` cancels one.
+`alt+a` stays active during a busy turn and opens a second, deliberate action
+menu for inspect, steer, or stop. Approval dialogs name the requesting child.
+
+For a retained write worktree, `/agents apply <id>` opens a themed floating
+review. Use `[`/`]` (or left/right) to change files, up/down to change hunks,
+space to include/exclude one hunk, `x` to toggle a file, and enter to request
+integration. Before showing or applying anything, Collomia requires all of the
+following:
+
+- the saved path is still a worktree registered to the current repository;
+- its `collomia/*` branch still points at the recorded delegation base;
+- the parent copy of every selectable file still matches that base;
+- source and destination are regular UTF-8 text files, at most 1 MiB each and
+  4 MiB total for one review; and
+- no symlink, binary, oversized, mode-only, or otherwise unsupported entry is
+  selected.
+
+Integration uses the normal `integrate_delegate` permission decision, then
+rechecks parent and child bytes after the approval dialog. Selected text is
+published through the same rooted atomic file primitive as built-in writes;
+multi-file failure rolls back earlier entries. Integrated changes enter the
+ordinary session change tracker, so `/diff` and `/undo` can review or revert
+them. Collomia does not commit, Git-merge, push, delete the branch, or remove
+the worktree. Parent drift and other conflicts remain for explicit manual
+reconciliation.
 
 Delegation lifecycle snapshots and completed outcomes are persisted in the
 parent session. On resume, terminal outcomes remain inspectable; any recorded

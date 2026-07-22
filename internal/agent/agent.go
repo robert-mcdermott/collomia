@@ -17,6 +17,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
+	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/skills"
@@ -69,6 +70,7 @@ type Agent struct {
 	auditRedact         func(string) string
 	onUsage             func(provider.Usage)
 	onAction            func(string)
+	takeSteering        func() []string
 }
 
 type Options struct {
@@ -106,6 +108,9 @@ type Options struct {
 	OnUsage func(provider.Usage)
 	// OnAction observes the child's current provider-side activity.
 	OnAction func(string)
+	// TakeSteering returns parent guidance queued for the next provider
+	// boundary. It is used only by delegated agents.
+	TakeSteering func() []string
 }
 
 func New(opts Options) *Agent {
@@ -119,7 +124,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering}
 }
 
 // appendMessage adds to the conversation and notifies the persistence hook.
@@ -201,6 +206,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			return "", ctx.Err()
 		default:
 		}
+		a.applySteering()
 		a.mu.RLock()
 		messages := append([]provider.Message(nil), a.messages...)
 		client := a.client
@@ -313,6 +319,25 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	err = fmt.Errorf("agent stopped after %d iterations", a.maxIterations)
 	send(errorEvent(err))
 	return "", err
+}
+
+// applySteering installs queued parent guidance as an explicit conversational
+// update only between iterations. It cannot affect an in-flight provider call,
+// executing tool, or pending permission decision.
+func (a *Agent) applySteering() {
+	a.mu.RLock()
+	take := a.takeSteering
+	a.mu.RUnlock()
+	if take == nil {
+		return
+	}
+	for _, guidance := range take() {
+		guidance = strings.TrimSpace(guidance)
+		if guidance == "" {
+			continue
+		}
+		a.appendMessage(provider.Message{Role: "user", Content: "Parent steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance})
+	}
 }
 
 // retainPromptParts moves in-memory user images into the durable session only
@@ -584,6 +609,9 @@ type DelegateTask struct {
 	// instructions, tool allowlist, iteration budget). Empty uses the
 	// parent's own model and full tool set.
 	Agent string `json:"agent,omitempty"`
+	// PlanStep associates the child result with an existing structured plan
+	// step. It does not create or autonomously execute a plan.
+	PlanStep int `json:"plan_step,omitempty"`
 }
 
 // AddDelegationTool registers the delegate tool: a concurrency-limited
@@ -591,7 +619,11 @@ type DelegateTask struct {
 // read-only in the shared workspace or write-capable in its own isolated
 // git worktree, and reports back one structured summary per task (the
 // "parent inbox") rather than raw child transcripts.
-func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Approver, team *Team) {
+func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Approver, team *Team, boards ...*plan.Board) {
+	var board *plan.Board
+	if len(boards) > 0 {
+		board = boards[0]
+	}
 	scheduler := NewScheduler(cfg.Options.DelegateMaxConcurrency, cfg.Options.DelegateProviderConcurrency)
 	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
 	if len(cfg.Agents) > 0 {
@@ -602,7 +634,7 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		sort.Strings(names)
 		desc += " Named agent profiles available via \"agent\": " + strings.Join(names, ", ") + "."
 	}
-	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"agent":{"type":"string","description":"optional named agent profile from configuration"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
+	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"agent":{"type":"string","description":"optional named agent profile from configuration"},"plan_step":{"type":"integer","minimum":1,"description":"optional existing structured plan step ID associated with this task"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
 	assess := func(raw json.RawMessage) (tools.Action, error) {
 		var input struct {
 			Tasks []DelegateTask `json:"tasks"`
@@ -642,7 +674,7 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 			wg.Add(1)
 			go func(i int, t DelegateTask) {
 				defer wg.Done()
-				results[i] = a.runScheduledDelegate(ctx, i, t, cfg, approver, team, scheduler)
+				results[i] = a.runScheduledDelegate(ctx, i, t, cfg, approver, team, scheduler, board)
 				names[i] = results[i].Name
 				changed[i] = results[i].ChangedFiles
 				hunks[i] = results[i].ChangedHunks
@@ -674,6 +706,7 @@ type DelegateResult struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`
 	Profile        string         `json:"profile,omitempty"`
+	PlanStep       int            `json:"plan_step,omitempty"`
 	Status         string         `json:"status"`
 	Summary        string         `json:"summary,omitempty"`
 	Error          string         `json:"error,omitempty"`
@@ -682,6 +715,7 @@ type DelegateResult struct {
 	ChangedHunks   []DelegateHunk `json:"changed_hunks,omitempty"`
 	Worktree       string         `json:"worktree,omitempty"`
 	Branch         string         `json:"branch,omitempty"`
+	BaseCommit     string         `json:"base_commit,omitempty"`
 	InputTokens    int            `json:"input_tokens,omitempty"`
 	OutputTokens   int            `json:"output_tokens,omitempty"`
 	TokenBudget    int            `json:"token_budget,omitempty"`
@@ -755,7 +789,7 @@ func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int)
 	for i, result := range results {
 		minimal[i] = DelegateResult{
 			ID: boundedDelegateText(result.ID, 128), Name: boundedDelegateText(result.Name, 64),
-			Profile: boundedDelegateText(result.Profile, 64), Status: result.Status,
+			Profile: boundedDelegateText(result.Profile, 64), PlanStep: result.PlanStep, Status: result.Status,
 			Error: boundedDelegateText(result.Error, 128), TokenBudget: result.TokenBudget,
 			TimeoutSeconds: result.TimeoutSeconds, Truncated: true,
 		}
@@ -884,7 +918,7 @@ func sortedKeys(m map[string][]string) []string {
 // runScheduledDelegate admits one task through the session-wide scheduler,
 // records every lifecycle transition in Team, and returns the bounded parent
 // inbox result. Queueing is included in the task timeout.
-func (a *Agent) runScheduledDelegate(parent context.Context, index int, task DelegateTask, cfg appconfig.Config, approver permission.Approver, team *Team, scheduler *Scheduler) DelegateResult {
+func (a *Agent) runScheduledDelegate(parent context.Context, index int, task DelegateTask, cfg appconfig.Config, approver permission.Approver, team *Team, scheduler *Scheduler, board *plan.Board) DelegateResult {
 	name := strings.TrimSpace(task.Name)
 	if name == "" {
 		name = fmt.Sprintf("task-%d", index+1)
@@ -914,24 +948,27 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if team != nil {
 		team.Enqueue(DelegateStart{
 			ID: id, Name: name, Task: task.Task, Profile: task.Agent,
-			Provider: providerName, Model: model, Write: task.Write,
+			Provider: providerName, Model: model, Write: task.Write, PlanStep: task.PlanStep,
 			TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
 		})
 	}
 	finishError := func(err error) DelegateResult {
 		if team != nil {
-			team.FinishDetailed(id, "", nil, nil, "", "", provider.Usage{}, err)
+			team.FinishDetailed(id, "", nil, nil, "", "", "", provider.Usage{}, err)
 			if status, ok := team.Get(id); ok {
 				return delegateResult(status)
 			}
 		}
-		return DelegateResult{ID: id, Name: name, Profile: task.Agent, Status: DelegateError, Error: err.Error(), TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
 	}
 	if strings.TrimSpace(task.Task) == "" {
 		return finishError(errors.New("empty task"))
 	}
 	if profileErr != nil {
 		return finishError(profileErr)
+	}
+	if err := validatePlanAssignment(board, task.PlanStep); err != nil {
+		return finishError(err)
 	}
 	release, err := scheduler.Acquire(taskCtx, providerName)
 	if err != nil {
@@ -943,10 +980,10 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	}
 
 	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "agent": task.Agent, "token_budget": profile.TokenBudget, "timeout_seconds": timeoutSeconds}})
-	output, evidence, changed, hunks, worktreePath, branch, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
+	output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
 	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_end", Workspace: a.workspace, Subject: name, Paths: changed, Error: errorString(runErr), Detail: map[string]any{"id": id, "status": delegateTerminalStatus(runErr), "input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens}})
 	if team != nil {
-		team.FinishDetailed(id, boundedDelegateText(output, 16<<10), evidence, changed, worktreePath, branch, usage, runErr)
+		team.FinishDetailed(id, boundedDelegateText(output, 16<<10), evidence, changed, worktreePath, branch, baseCommit, usage, runErr)
 		if status, ok := team.Get(id); ok {
 			result := delegateResult(status)
 			result.ChangedHunks = boundedDelegateHunks(hunks)
@@ -957,7 +994,34 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), Worktree: worktreePath, Branch: branch, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+}
+
+func validatePlanAssignment(board *plan.Board, stepID int) error {
+	if stepID == 0 {
+		return nil
+	}
+	if board == nil || board.Current() == nil {
+		return fmt.Errorf("plan step %d was requested but there is no active structured plan", stepID)
+	}
+	current := board.Current()
+	states := make(map[int]string, len(current.Steps))
+	var selected *plan.Step
+	for i := range current.Steps {
+		states[current.Steps[i].ID] = current.Steps[i].Status
+		if current.Steps[i].ID == stepID {
+			selected = &current.Steps[i]
+		}
+	}
+	if selected == nil {
+		return fmt.Errorf("unknown plan step %d", stepID)
+	}
+	for _, dependency := range selected.DependsOn {
+		if states[dependency] != "done" && states[dependency] != "skipped" {
+			return fmt.Errorf("plan step %d depends on unfinished step %d", stepID, dependency)
+		}
+	}
+	return nil
 }
 
 func boundedDelegateHunks(hunks []DelegateHunk) []DelegateHunk {
@@ -972,7 +1036,7 @@ func boundedDelegateHunks(hunks []DelegateHunk) []DelegateHunk {
 	return bounded
 }
 
-func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch string, usage provider.Usage, runErr error) {
+func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch, baseCommit string, usage provider.Usage, runErr error) {
 	a.mu.RLock()
 	client, providerName, model, providerConfig := a.client, a.providerName, a.model, a.providerConfig
 	workspace, parentRegistry := a.workspace, a.registry
@@ -1031,18 +1095,18 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	if task.Write {
 		childPlan = false
 		if !isGitRepo(ctx, workspace) {
-			return "", nil, nil, nil, "", "", provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
+			return "", nil, nil, nil, "", "", "", provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
 		}
 		var err error
 		wt, err = newWorktree(ctx, workspace, task.Name)
 		if err != nil {
-			return "", nil, nil, nil, "", "", provider.Usage{}, err
+			return "", nil, nil, nil, "", "", "", provider.Usage{}, err
 		}
 		childWorkspace = wt.path
 		reg, _, childProcs, buildErr := tools.Builtins(wt.path, childConfig)
 		if buildErr != nil {
 			wt.remove(ctx)
-			return "", nil, nil, nil, "", "", provider.Usage{}, buildErr
+			return "", nil, nil, nil, "", "", "", provider.Usage{}, buildErr
 		}
 		defer childProcs.StopAll()
 		if discovered, discoverErr := skills.Discover(childWorkspace, cfg.ProjectTrusted); discoverErr == nil {
@@ -1086,8 +1150,31 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 				team.SetAction(id, action)
 			}
 		},
+		TakeSteering: func() []string {
+			if team == nil {
+				return nil
+			}
+			return team.TakeSteering(id)
+		},
 	})
 	emit := func(runtimeEvent event.Event) {
+		if team != nil {
+			chunk := ""
+			switch runtimeEvent.Kind {
+			case event.KindTextDelta, event.KindReasoningDelta:
+				chunk = runtimeEvent.Text
+			case event.KindToolOutput:
+				if runtimeEvent.Tool != nil {
+					chunk = runtimeEvent.Tool.Output
+				}
+			}
+			if chunk != "" {
+				if auditRedact != nil {
+					chunk = auditRedact(chunk)
+				}
+				team.AppendOutput(id, chunk)
+			}
+		}
 		if team != nil && runtimeEvent.Kind == event.KindToolStart && runtimeEvent.Tool != nil {
 			team.SetAction(id, runtimeEvent.Tool.Name+": "+runtimeEvent.Tool.Summary)
 		}
@@ -1117,10 +1204,10 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		if len(changed) == 0 {
 			wt.remove(context.WithoutCancel(ctx))
 		} else {
-			branch, worktreePath = wt.branch, wt.path
+			branch, worktreePath, baseCommit = wt.branch, wt.path, wt.baseCommit
 		}
 	}
-	return output, evidence, changed, hunks, worktreePath, branch, usage, runErr
+	return output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr
 }
 
 func restrictAgentPermissions(parent appconfig.Permissions, child appconfig.AgentPermissions) appconfig.Permissions {
@@ -1164,9 +1251,9 @@ func additiveValues(inherited, additions []string) []string {
 
 func delegateResult(status DelegateStatus) DelegateResult {
 	return DelegateResult{
-		ID: status.ID, Name: status.Name, Profile: status.Profile, Status: status.Status,
+		ID: status.ID, Name: status.Name, Profile: status.Profile, PlanStep: status.PlanStep, Status: status.Status,
 		Summary: status.Summary, Error: status.Error, Evidence: status.Evidence,
-		ChangedFiles: status.Changed, Worktree: status.Worktree, Branch: status.Branch,
+		ChangedFiles: status.Changed, Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
 		InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens,
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds,
 	}

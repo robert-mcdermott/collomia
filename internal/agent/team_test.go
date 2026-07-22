@@ -93,12 +93,59 @@ func TestTeamBoundsDurableDelegatePayloads(t *testing.T) {
 	for i := range changed {
 		changed[i] = strings.Repeat("p", 2048)
 	}
-	team.FinishDetailed("d1", strings.Repeat("s", 20<<10), evidence, changed, "", "", provider.Usage{}, nil)
+	team.FinishDetailed("d1", strings.Repeat("s", 20<<10), evidence, changed, "", "", "", provider.Usage{}, nil)
 	status, _ := team.Get("d1")
 	if len(status.Evidence) != maxDelegateEvidence || len(status.Changed) != maxDelegateChangedFiles {
 		t.Fatalf("unbounded collections: evidence=%d changed=%d", len(status.Evidence), len(status.Changed))
 	}
 	if len(status.Summary) > 16<<10 || len(status.Task) > 16<<10 || len(status.Evidence[0]) > 1024 || len(status.Changed[0]) > 1024 {
 		t.Fatalf("unbounded strings: task=%d summary=%d evidence=%d changed=%d", len(status.Task), len(status.Summary), len(status.Evidence[0]), len(status.Changed[0]))
+	}
+}
+
+func TestTeamSteeringIsBoundedDurableAndDrainedOnce(t *testing.T) {
+	team := NewTeam()
+	team.Enqueue(DelegateStart{ID: "d1", Name: "review"})
+	team.MarkRunning("d1")
+	if err := team.Steer("d1", "focus on the parser boundary"); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := team.Get("d1")
+	if status.PendingGuidance != 1 || len(status.Guidance) != 1 || status.Guidance[0] != "focus on the parser boundary" {
+		t.Fatalf("queued steering=%+v", status)
+	}
+	guidance := team.TakeSteering("d1")
+	if len(guidance) != 1 || guidance[0] != "focus on the parser boundary" {
+		t.Fatalf("drained=%q", guidance)
+	}
+	if again := team.TakeSteering("d1"); len(again) != 0 {
+		t.Fatalf("guidance delivered twice: %q", again)
+	}
+	status, _ = team.Get("d1")
+	if status.PendingGuidance != 0 || len(status.Guidance) != 1 {
+		t.Fatalf("durable guidance history lost: %+v", status)
+	}
+}
+
+func TestTeamRecentOutputKeepsOnlyBoundedTail(t *testing.T) {
+	team := NewTeam()
+	team.Start("d1", "review", "review", false)
+	team.AppendOutput("d1", strings.Repeat("x", maxDelegateRecentOutput+200))
+	status, _ := team.Get("d1")
+	if len(status.RecentOutput) > maxDelegateRecentOutput+len("…") || !strings.HasPrefix(status.RecentOutput, "…") {
+		t.Fatalf("recent output was not a bounded tail: bytes=%d prefix=%q", len(status.RecentOutput), status.RecentOutput[:min(4, len(status.RecentOutput))])
+	}
+}
+
+func TestDelegateStatusEventRoundTripPreservesOperatorMetadata(t *testing.T) {
+	original := DelegateStatus{
+		ID: "d1", Name: "writer", Task: "implement", Write: true, PlanStep: 3,
+		Status: DelegateDone, RecentOutput: "tests passed", Guidance: []string{"run the focused test"},
+		Summary: "done", Changed: []string{"a.go"}, Integrated: []string{"a.go"},
+		Worktree: "/tmp/worktree", Branch: "collomia/writer", BaseCommit: "abcdef",
+	}
+	restored := DelegateStatusFromEvent(original.Event())
+	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 {
+		t.Fatalf("restored=%+v", restored)
 	}
 }

@@ -256,7 +256,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	agentRuntime := agent.New(agentOptions)
 	team := agent.NewTeam()
 	attachTeam(team, sess)
-	agentRuntime.AddDelegationTool(cfg, opts.Approver, team)
+	agentRuntime.AddDelegationTool(cfg, opts.Approver, team, board)
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
 		sess.FlushInterrupted()

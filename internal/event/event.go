@@ -174,27 +174,33 @@ type Usage struct {
 // delegated task. Lifecycle updates replace earlier snapshots with the same
 // ID when a session is restored; no stored task is ever executed by replay.
 type DelegateStatus struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Task           string    `json:"task,omitempty"`
-	Profile        string    `json:"profile,omitempty"`
-	Provider       string    `json:"provider,omitempty"`
-	Model          string    `json:"model,omitempty"`
-	Write          bool      `json:"write,omitempty"`
-	Status         string    `json:"status"`
-	CurrentAction  string    `json:"current_action,omitempty"`
-	Summary        string    `json:"summary,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	Evidence       []string  `json:"evidence,omitempty"`
-	ChangedFiles   []string  `json:"changed_files,omitempty"`
-	Worktree       string    `json:"worktree,omitempty"`
-	Branch         string    `json:"branch,omitempty"`
-	Usage          Usage     `json:"usage,omitempty"`
-	TokenBudget    int       `json:"token_budget,omitempty"`
-	TimeoutSeconds int       `json:"timeout_seconds,omitempty"`
-	Revision       uint64    `json:"revision,omitempty"`
-	Started        time.Time `json:"started,omitempty"`
-	Finished       time.Time `json:"finished,omitempty"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Task            string    `json:"task,omitempty"`
+	Profile         string    `json:"profile,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Write           bool      `json:"write,omitempty"`
+	PlanStep        int       `json:"plan_step,omitempty"`
+	Status          string    `json:"status"`
+	CurrentAction   string    `json:"current_action,omitempty"`
+	RecentOutput    string    `json:"recent_output,omitempty"`
+	Guidance        []string  `json:"guidance,omitempty"`
+	PendingGuidance int       `json:"pending_guidance,omitempty"`
+	Summary         string    `json:"summary,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	Evidence        []string  `json:"evidence,omitempty"`
+	ChangedFiles    []string  `json:"changed_files,omitempty"`
+	Worktree        string    `json:"worktree,omitempty"`
+	Branch          string    `json:"branch,omitempty"`
+	BaseCommit      string    `json:"base_commit,omitempty"`
+	IntegratedFiles []string  `json:"integrated_files,omitempty"`
+	Usage           Usage     `json:"usage,omitempty"`
+	TokenBudget     int       `json:"token_budget,omitempty"`
+	TimeoutSeconds  int       `json:"timeout_seconds,omitempty"`
+	Revision        uint64    `json:"revision,omitempty"`
+	Started         time.Time `json:"started,omitempty"`
+	Finished        time.Time `json:"finished,omitempty"`
 }
 
 // New returns an Event stamped with the schema version and current time.

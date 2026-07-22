@@ -12,6 +12,10 @@ import (
 )
 
 func (m *Model) slash(line string) (bool, tea.Cmd) {
+	if m.busy && !busySlashAllowed(line) {
+		m.addError(fmt.Errorf("%s is unavailable while the current turn is running", strings.Fields(line)[0]))
+		return false, nil
+	}
 	parts := strings.Fields(line)
 	command := strings.ToLower(parts[0])
 	args := parts[1:]
@@ -168,15 +172,39 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.openSkillPicker()
 	case "/agents":
 		if len(args) > 0 {
-			if len(args) < 2 || args[0] != "stop" {
-				m.addError(fmt.Errorf("usage: /agents [stop <id-or-name>]"))
-				break
-			}
-			target := strings.Join(args[1:], " ")
-			if err := m.runtime.Team.Stop(target); err != nil {
-				m.addError(err)
-			} else {
-				m.addSystem("Cancellation requested for delegated agent " + target + ".")
+			switch args[0] {
+			case "stop":
+				if len(args) < 2 {
+					m.addError(fmt.Errorf("usage: /agents stop <id-or-name>"))
+					break
+				}
+				target := strings.Join(args[1:], " ")
+				if err := m.runtime.Team.Stop(target); err != nil {
+					m.addError(err)
+				} else {
+					m.addSystem("Cancellation requested for delegated agent " + target + ".")
+				}
+			case "steer":
+				if len(args) < 3 {
+					m.addError(fmt.Errorf("usage: /agents steer <id> <guidance…>"))
+					break
+				}
+				guidance := strings.Join(args[2:], " ")
+				if err := m.runtime.Team.Steer(args[1], guidance); err != nil {
+					m.addError(err)
+				} else {
+					m.addSystem("Guidance queued for delegated agent " + args[1] + "; it will be delivered at the next model boundary and grants no permissions.")
+				}
+			case "apply":
+				if len(args) != 2 {
+					m.addError(fmt.Errorf("usage: /agents apply <id>"))
+					break
+				}
+				if err := m.openAgentIntegration(args[1]); err != nil {
+					m.addError(err)
+				}
+			default:
+				m.addError(fmt.Errorf("usage: /agents [stop <id-or-name>|steer <id> <guidance…>|apply <id>]"))
 			}
 			break
 		}
@@ -333,6 +361,30 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.addError(fmt.Errorf("unknown command %s; use /help", command))
 	}
 	return false, nil
+}
+
+// busySlashAllowed defines the deliberately small local-control lane that is
+// available while a provider turn is active. These commands inspect local
+// state or control a child; they never submit another model prompt, switch the
+// session/provider, change autonomy, or integrate workspace bytes.
+func busySlashAllowed(line string) bool {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "/help", "/status", "/context", "/tasks", "/tools", "/config", "/attachments", "/transcript", "/diff":
+		return len(fields) == 1
+	case "/ps":
+		return len(fields) == 1
+	case "/agents":
+		if len(fields) == 1 {
+			return true
+		}
+		return fields[1] == "stop" || fields[1] == "steer"
+	default:
+		return false
+	}
 }
 
 func (m *Model) addSystem(value string) {

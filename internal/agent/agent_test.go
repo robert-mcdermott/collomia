@@ -19,6 +19,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
+	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/skills"
@@ -1055,5 +1056,52 @@ func TestProviderErrorEventIncludesMachineReadableClassification(t *testing.T) {
 	}
 	if e.Provider.Name != "openrouter/glm" || e.Provider.Operation != "chat" || e.Provider.Kind != "rate_limit" || e.Provider.StatusCode != 429 || !e.Provider.Retryable || e.Provider.RetryAfterMS != 3000 || e.Provider.RequestID != "req-123" {
 		t.Fatalf("provider failure=%+v", e.Provider)
+	}
+}
+
+func TestSteeringBecomesExplicitBoundaryMessageWithoutPermissionGrant(t *testing.T) {
+	client := &fakeClient{chat: func(_ int, request provider.Request) (provider.Response, error) {
+		if len(request.Messages) != 2 {
+			t.Fatalf("messages=%+v", request.Messages)
+		}
+		last := request.Messages[1]
+		if last.Role != "user" || !strings.Contains(last.Content, "Parent steering update") || !strings.Contains(last.Content, "does not grant permissions") || !strings.Contains(last.Content, "focus on tests") {
+			t.Fatalf("steering message=%+v", last)
+		}
+		return provider.Response{Content: "done"}, nil
+	}}
+	delivered := false
+	agent := New(Options{
+		Client: client, ProviderName: "fake", Model: "m", Workspace: t.TempDir(),
+		Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		TakeSteering: func() []string {
+			if delivered {
+				return nil
+			}
+			delivered = true
+			return []string{"focus on tests"}
+		},
+	})
+	if _, err := agent.Run(t.Context(), "review", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidatePlanAssignmentRequiresKnownStepAndCompletedDependencies(t *testing.T) {
+	board := plan.NewBoard()
+	if err := board.Set(plan.Plan{Goal: "ship", Steps: []plan.Step{{ID: 1, Title: "inspect", Status: "pending"}, {ID: 2, Title: "implement", Status: "pending", DependsOn: []int{1}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePlanAssignment(board, 9); err == nil || !strings.Contains(err.Error(), "unknown plan step") {
+		t.Fatalf("unknown step error=%v", err)
+	}
+	if err := validatePlanAssignment(board, 2); err == nil || !strings.Contains(err.Error(), "unfinished step 1") {
+		t.Fatalf("dependency error=%v", err)
+	}
+	if err := board.Set(plan.Plan{Goal: "ship", Steps: []plan.Step{{ID: 1, Title: "inspect", Status: "done"}, {ID: 2, Title: "implement", Status: "pending", DependsOn: []int{1}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePlanAssignment(board, 2); err != nil {
+		t.Fatal(err)
 	}
 }

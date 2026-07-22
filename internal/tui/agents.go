@@ -58,14 +58,14 @@ func (m *Model) openAgentPicker() {
 	m.refresh()
 }
 
-// openAgentControlPicker remains available while the parent turn is busy. A
-// deliberate selection cancels only that child; ctrl+c/esc dismiss the picker
-// and do not cancel the parent turn.
+// openAgentControlPicker remains available while the parent turn is busy. It
+// opens inspection rather than making Enter destructive; stop and steering
+// remain explicit slash commands whose IDs are shown in the details panel.
 func (m *Model) openAgentControlPicker() {
 	var items []pickerItem
 	for _, status := range m.runtime.Team.Snapshot() {
 		if status.Status == agent.DelegateQueued || status.Status == agent.DelegateRunning || status.Status == agent.DelegateWaitingApproval {
-			desc := delegateStatusLabel(status.Status)
+			desc := delegateStatusLabel(status.Status) + " · enter to inspect"
 			if status.CurrentAction != "" {
 				desc += " · " + m.runtime.Redactor.Redact(status.CurrentAction)
 			}
@@ -73,19 +73,44 @@ func (m *Model) openAgentControlPicker() {
 		}
 	}
 	if len(items) == 0 {
-		m.addPanel("Delegated agents", "No queued or running delegated agents can be stopped.")
+		m.addPanel("Delegated agents", "No queued or running delegated agents can be controlled.")
 		return
 	}
-	m.picker = newPicker("Stop delegated agent", items, func(m *Model, item pickerItem) tea.Cmd {
-		if err := m.runtime.Team.Stop(item.id); err != nil {
-			m.addError(err)
-		} else {
-			m.addSystem("Cancellation requested for delegated agent " + item.title + " (" + item.id + ").")
+	m.picker = newPicker("Active delegated agents", items, func(m *Model, item pickerItem) tea.Cmd {
+		if status, ok := m.runtime.Team.Get(item.id); ok {
+			m.openAgentActionPicker(status)
 		}
 		return nil
 	})
 	m.layout()
 	m.refresh()
+}
+
+func (m *Model) openAgentActionPicker(status agent.DelegateStatus) {
+	items := []pickerItem{
+		{id: "inspect", title: "Inspect", desc: "show task, output, evidence, budget, and controls"},
+		{id: "steer", title: "Steer", desc: "prepare bounded guidance for the next model boundary"},
+		{id: "stop", title: "Stop", desc: "cancel only this delegated agent"},
+	}
+	m.picker = newPicker("Agent · "+status.Name, items, func(m *Model, item pickerItem) tea.Cmd {
+		switch item.id {
+		case "inspect":
+			if current, ok := m.runtime.Team.Get(status.ID); ok {
+				m.addPanel("Agent · "+current.Name, m.renderAgentDetails(current))
+			}
+		case "steer":
+			m.setComposerValue("/agents steer " + status.ID + " ")
+			m.input.Focus()
+			m.addSystem("Type guidance after the agent ID and press enter. It will be delivered only at the next model boundary and grants no permissions.")
+		case "stop":
+			if err := m.runtime.Team.Stop(status.ID); err != nil {
+				m.addError(err)
+			} else {
+				m.addSystem("Cancellation requested for delegated agent " + status.Name + " (" + status.ID + ").")
+			}
+		}
+		return nil
+	})
 }
 
 func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
@@ -102,6 +127,9 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	}
 	if status.Profile != "" {
 		lines = append(lines, "Profile:  "+m.runtime.Redactor.Redact(status.Profile))
+	}
+	if status.PlanStep > 0 {
+		lines = append(lines, fmt.Sprintf("Plan step: %d", status.PlanStep))
 	}
 	if status.Provider != "" || status.Model != "" {
 		lines = append(lines, "Provider: "+m.runtime.Redactor.Redact(status.Provider+"/"+status.Model))
@@ -123,6 +151,15 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	}
 	if status.Error != "" {
 		lines = append(lines, "", "Error:", m.runtime.Redactor.Redact(status.Error))
+	}
+	if len(status.Guidance) > 0 {
+		lines = append(lines, "", fmt.Sprintf("Steering (%d, %d pending):", len(status.Guidance), status.PendingGuidance))
+		for _, guidance := range status.Guidance {
+			lines = append(lines, "- "+m.runtime.Redactor.Redact(guidance))
+		}
+	}
+	if strings.TrimSpace(status.RecentOutput) != "" {
+		lines = append(lines, "", "Recent output:", m.runtime.Redactor.Redact(status.RecentOutput))
 	}
 	if len(status.Evidence) > 0 {
 		lines = append(lines, "", fmt.Sprintf("Evidence (%d):", len(status.Evidence)))
@@ -146,12 +183,31 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	if status.Branch != "" {
 		lines = append(lines, "Branch:   "+status.Branch)
 	}
+	if status.BaseCommit != "" {
+		lines = append(lines, "Base:     "+status.BaseCommit)
+	}
+	if len(status.Integrated) > 0 {
+		lines = append(lines, "", fmt.Sprintf("Integrated files (%d):", len(status.Integrated)))
+		for _, path := range status.Integrated {
+			lines = append(lines, "- "+path)
+		}
+	}
 	if status.Status == agent.DelegateQueued || status.Status == agent.DelegateRunning || status.Status == agent.DelegateWaitingApproval || status.Status == agent.DelegateCancelling {
-		lines = append(lines, "", "The picker is a snapshot. Reopen /agents to refresh, or use "+m.binding("agent_control")+" to stop an active child.")
+		lines = append(lines, "", "Control:", "/agents steer "+status.ID+" <guidance…>", "/agents stop "+status.ID)
+	} else if status.Write && len(status.Changed) > 0 && status.Worktree != "" {
+		lines = append(lines, "", "Review and selectively integrate:", "/agents apply "+status.ID)
 	}
 	return strings.Join(lines, "\n")
 }
 
 func delegateStatusLabel(status string) string {
 	return strings.ReplaceAll(status, "_", " ")
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:max(0, limit-1)]) + "…"
 }

@@ -347,9 +347,11 @@ Every child gets a distinct permission manager and audit ledger. A child
 approval is shown through the normal themed approval dialog with the delegated
 task name and ID, and approval affects only that proposed action. Write-capable
 children get independent Git worktrees; Collomia records their changed files
-and common-base hunk ranges but never commits, merges, or chooses between
+and common-base hunk ranges but never commits, Git-merges, or chooses between
 sibling changes automatically. Retained worktrees may contain user-reviewable
-changes after a task ends.
+changes after a task ends. Optional `plan_step` metadata is validated against
+the current structured plan and its completed dependencies; it grants no new
+capability.
 
 The session-wide FIFO scheduler bounds total and per-provider concurrency.
 Each task also has a queue-inclusive timeout, maximum iteration count, and
@@ -359,7 +361,26 @@ may report usage only after a response, so a final response can exceed the
 configured token target. Timeouts and iteration limits remain the hard fallback.
 These controls limit agent work, not operating-system CPU or memory consumption.
 
-`/agents stop <id-or-name>` and `alt+a` cancel one queued or active child.
+`/agents steer <id> <guidance...>` queues bounded guidance only for the child's
+next provider boundary. It cannot change an executing tool/provider call,
+answer a pending approval, or widen permissions; the model-visible wrapper
+states that steering grants no permission. `alt+a` exposes a deliberate
+inspect/steer/stop action menu, and `/agents stop <id-or-name>` cancels one
+queued or active child.
+
+`/agents apply <id>` is an explicit copy-and-review operation, not a Git merge.
+Collomia treats the durable worktree path as untrusted: it verifies Git still
+registers that exact directory and branch for the parent repository, requires
+the branch `HEAD` to equal the recorded base commit, rejects path traversal,
+symlinks, non-regular/binary/non-UTF-8/oversized files and mode-only changes,
+and refuses any parent file that no longer matches the base. The user selects
+text hunks in a floating review; normal `integrate_delegate` permission rules
+still apply. Both parent and child bytes are rechecked after interactive
+approval to close the approval-time race. Rooted atomic replacement/removal,
+multi-file rollback, and the ordinary change tracker then publish the selected
+content. The child worktree and branch are retained. Collomia never commits,
+pushes, silently reconciles conflicts, or deletes those recovery artifacts.
+
 Closing Collomia requests cancellation for every child and stops background
 processes owned by write agents. Durable sessions keep bounded status, summary,
 evidence, usage, and change manifests—not raw child transcripts. On resume,
