@@ -8,7 +8,9 @@ and unattended workflows.
 
 For the exact security boundary, read [Security model](SECURITY.md). For a
 generated statement of what is implemented today, read the [capability
-matrix](CAPABILITIES.md).
+matrix](CAPABILITIES.md). Installation, verification, upgrades, and rollback
+also have a focused [installation guide](INSTALLING.md); maintainers should use
+the [release guide](RELEASING.md).
 
 ## Contents
 
@@ -48,21 +50,25 @@ Release assets are named:
 | Linux | `collo-linux-amd64` | `collo-linux-arm64` |
 | Windows | `collo-windows-amd64.exe` | `collo-windows-arm64.exe` |
 
-Every release also includes `checksums.txt` with SHA-256 digests.
+Every release also includes `checksums.txt` with SHA-256 digests and
+`collomia.cdx.json`, a CycloneDX dependency SBOM. The release workflow publishes
+GitHub/Sigstore provenance and SBOM attestations for stronger verification.
 
 ### macOS and Linux: install with curl and sh
 
 The repository installer detects the operating system and CPU, downloads the
-matching release binary and checksum manifest, verifies SHA-256, and installs
-`collo` without `sudo`:
+matching release binary and checksum manifest, requires exactly one matching
+SHA-256 entry, tests the downloaded executable, and atomically installs `collo`
+without `sudo`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh | sh
 ```
 
-The default destination is `$HOME/.local/bin/collo`. Make sure that directory
-is on `PATH`:
+The installer does not modify `PATH`, create application data, or start
+Collomia. The default destination is `$HOME/.local/bin/collo`. Make sure that
+directory is on `PATH`:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
@@ -82,7 +88,7 @@ Installer overrides:
 # Install a particular release tag.
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh |
-  COLLO_VERSION=v1.2.3 sh
+  COLLO_VERSION=v0.1.3 sh
 
 # Install somewhere else.
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -106,74 +112,64 @@ sh install.sh
 
 ### Windows: install with PowerShell
 
-The following PowerShell process detects AMD64 or ARM64, downloads the latest
-release and checksum manifest, verifies the binary, installs it under the
-current user's local application directory, and adds that directory to the
-user `PATH` if needed. It does not require an elevated shell.
+Download and inspect the repository-owned PowerShell installer, then run it.
+It detects AMD64 or ARM64, downloads the binary and checksum manifest, requires
+exactly one valid SHA-256 entry, tests the downloaded executable, and only then
+replaces the installed `collo.exe`. It does not require elevation. PATH changes
+are explicit through `-AddToPath`.
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$Repository = 'robert-mcdermott/collomia'
-$Version = 'latest' # Or a tag such as 'v1.2.3'.
-$Arch = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
-  'X64'   { 'amd64' }
-  'Arm64' { 'arm64' }
-  default { throw "Unsupported Windows architecture: $_" }
-}
-$Asset = "collo-windows-$Arch.exe"
-$Base = if ($Version -eq 'latest') {
-  "https://github.com/$Repository/releases/latest/download"
-} else {
-  "https://github.com/$Repository/releases/download/$Version"
-}
-$Temp = Join-Path ([IO.Path]::GetTempPath()) ("collo-install-" + [guid]::NewGuid())
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Collomia'
-
-New-Item -ItemType Directory -Path $Temp | Out-Null
-try {
-  Invoke-WebRequest "$Base/$Asset" -OutFile (Join-Path $Temp $Asset)
-  Invoke-WebRequest "$Base/checksums.txt" -OutFile (Join-Path $Temp 'checksums.txt')
-  $Line = Get-Content (Join-Path $Temp 'checksums.txt') |
-    Where-Object { $_ -match "\s+$([regex]::Escape($Asset))$" } |
-    Select-Object -First 1
-  if (-not $Line) { throw "No checksum found for $Asset" }
-  $Expected = ($Line -split '\s+')[0].ToLowerInvariant()
-  $Actual = (Get-FileHash (Join-Path $Temp $Asset) -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($Actual -ne $Expected) { throw "Checksum verification failed for $Asset" }
-
-  New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-  Copy-Item (Join-Path $Temp $Asset) (Join-Path $InstallDir 'collo.exe') -Force
-
-  $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-  $Entries = @($UserPath -split ';' | Where-Object { $_ })
-  if ($Entries -notcontains $InstallDir) {
-    $NewPath = (@($Entries) + $InstallDir) -join ';'
-    [Environment]::SetEnvironmentVariable('Path', $NewPath, 'User')
-  }
-} finally {
-  Remove-Item $Temp -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-Write-Host "Installed collo.exe to $InstallDir"
-Write-Host 'Open a new PowerShell window, then run: collo --version'
+$Installer = Join-Path $env:TEMP 'install-collo.ps1'
+[Net.ServicePointManager]::SecurityProtocol = `
+  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -UseBasicParsing `
+  'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
+  -OutFile $Installer
+Get-Content $Installer
+Unblock-File $Installer
+& $Installer -AddToPath
 ```
 
-To install a pinned version, replace `$Version = 'latest'` with the exact
-release tag. Existing PowerShell windows do not see a user `PATH` change; open
-a new one before invoking `collo` by name.
+The default executable location is
+`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`. Install a pinned release or
+choose another directory with:
+
+```powershell
+& $Installer -Version v0.2.0-beta.1 -InstallDir "$HOME\bin" -AddToPath
+```
+
+`COLLO_VERSION`, `COLLO_INSTALL_DIR`, and `COLLO_REPOSITORY` provide equivalent
+defaults. Omit `-AddToPath` when shell configuration must remain unchanged.
+Close a running Collomia process before upgrading because Windows may refuse to
+replace an executable in use. The focused [installation guide](INSTALLING.md)
+also provides a direct `Invoke-WebRequest` binary workflow for organizations
+that prohibit downloaded PowerShell scripts.
 
 ### Manual binary installation
 
 You can install any release without the scripts:
 
-1. Download the binary for your platform and `checksums.txt` from the same
-   GitHub release.
+1. Download the binary for your platform, `checksums.txt`, and optionally the
+   CycloneDX `collomia.cdx.json` SBOM from the same GitHub release.
 2. Verify SHA-256 with `sha256sum`, `shasum -a 256`, or PowerShell
    `Get-FileHash -Algorithm SHA256`.
 3. On macOS/Linux, make it executable with `chmod 0755` and rename it to
    `collo`. On Windows, rename it to `collo.exe`.
 4. Move it into a directory on `PATH`.
 5. Run `collo --version` and `collo doctor`.
+
+Checksums detect corruption but do not protect against replacement of both the
+binary and manifest. Release artifacts also carry GitHub/Sigstore provenance:
+
+```sh
+gh attestation verify collo-linux-amd64 \
+  --repo robert-mcdermott/collomia \
+  --signer-workflow robert-mcdermott/collomia/.github/workflows/release.yml
+```
+
+Raw macOS and Windows beta binaries are not yet platform code-signed or Apple
+notarized. Review [beta status](BETA.md) and the complete verification and
+rollback guidance in [Installing Collomia](INSTALLING.md).
 
 ### Build from source
 
@@ -186,12 +182,19 @@ go build -o collo ./cmd/collo
 ./collo --version
 ```
 
-The release build script runs tests and builds all six platform/architecture
-targets into `dist/`:
+The release build script validates `VERSION`, runs uncached tests, and builds
+all six platform/architecture targets through a private staging directory so a
+failed build cannot publish a partial replacement:
 
 ```sh
-scripts/build-release.sh
+scripts/build-release.sh --clean
 ```
+
+Its default commit-derived timestamp makes repeated clean builds from the same
+commit deterministic. The tag-triggered release workflow additionally runs
+the complete cross-platform gates, generates the SBOM and attestations, runs
+the generated artifacts natively, and creates a draft release. Maintainers
+should follow [Releasing Collomia](RELEASING.md).
 
 ## Five-minute setup
 

@@ -643,5 +643,29 @@ MCP images retain external-data provenance and never authorize a later action.
 
 ## Reporting
 
-Security issues: open a GitHub issue marked security, or contact the
-maintainer directly.
+Follow the repository [security policy](../SECURITY.md). Use GitHub private
+vulnerability reporting rather than a public issue when exploit details,
+credentials, private source, or user data may be involved.
+
+## Release supply-chain boundary
+
+Tagged beta releases are built only after the exact commit passes the
+Linux/macOS/Windows build, uncached test, race, vet, installer, deterministic
+evaluation, bounded fuzz, module-integrity, and reachable-vulnerability gates.
+The build date comes from the tagged commit rather than the runner clock.
+Generated binaries execute on native Linux, macOS, and Windows runners before
+the workflow creates a draft release.
+
+`checksums.txt` covers every binary and the CycloneDX SBOM. A checksum from the
+same release detects corruption and mismatched files but cannot defend against
+replacement of both the file and manifest. The release workflow therefore
+also creates GitHub/Sigstore SLSA provenance attestations and attaches the SBOM
+as an attested predicate for the binaries. Verification can bind the exact
+file to this repository and `.github/workflows/release.yml`; it does not prove
+that the source or dependencies are vulnerability-free.
+
+The beta binaries are not yet Authenticode-signed, Apple-signed, or notarized.
+GitHub/Sigstore provenance authenticates workflow origin but does not satisfy
+operating-system platform-signing policy. See [Installing
+Collomia](INSTALLING.md), [beta limitations](BETA.md), and [the maintainer
+release process](RELEASING.md).

@@ -166,10 +166,37 @@ runners have different timing.
 ## CI layout
 
 The main test matrix runs build, fresh (`-count=1`) unit/integration/evaluation
-tests, fresh race detection, and `go vet` on Ubuntu, macOS, and Windows. A
-separate Ubuntu quality job runs the offline evaluation package once without
-cache reuse and performs short fuzz campaigns. Release builds wait for both
-jobs.
+tests, fresh race detection, `go vet`, and the native shell or PowerShell
+installer tests on Ubuntu, macOS, and Windows. A separate Ubuntu quality job
+verifies downloaded modules, runs pinned `govulncheck`, runs the offline
+evaluation package once without cache reuse, and performs short fuzz
+campaigns. Release builds wait for both jobs.
+
+Run installer regressions locally with:
+
+```sh
+scripts/test-install.sh
+```
+
+```powershell
+./scripts/test-install.ps1
+```
+
+The shell fixture exercises latest and pinned URLs, checksum verification,
+successful upgrade and pinned rollback, duplicate-manifest rejection, atomic
+publication, and preservation of an existing binary after a failed upgrade
+without making a network request. The PowerShell fixture covers the same
+install/upgrade/rollback/failure lifecycle with native fixture executables plus
+architecture/version selection and strict checksum parsing. The release
+workflow additionally downloads and executes the actual Windows release
+artifact on a native runner.
+
+On a version tag, the dedicated release workflow repeats the complete
+cross-platform qualification against the tagged commit, runs the security and
+deterministic quality gates, checks tag/`VERSION` equality and main-branch
+ancestry, generates all artifacts plus the CycloneDX SBOM, and executes the
+produced binary on all three operating systems. Only then can it attest the
+artifacts and create a draft release.
 
 Golden terminal fixtures normalize line endings and padding so the same
 semantic screen is stable across operating systems. Use semantic assertions

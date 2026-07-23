@@ -2,7 +2,7 @@
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with built-in OS sandbox backends on all three platforms — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
-New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. CI and integration authors can use the dedicated [automation and JSONL contract](docs/AUTOMATION.md). Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
+New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. The focused [installation guide](docs/INSTALLING.md) covers checksum and provenance verification, upgrades, and rollback; [beta status](docs/BETA.md) states the current limitations. CI and integration authors can use the dedicated [automation and JSONL contract](docs/AUTOMATION.md). Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
@@ -58,14 +58,37 @@ ollama pull qwen3-coder
 collo init --global --with-reference
 ```
 
-Once releases are published, macOS and Linux can install a checksum-verified binary without `sudo`:
+macOS and Linux can install the latest stable release without `sudo`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh | sh
 ```
 
-The installer writes to `$HOME/.local/bin` by default. Set `COLLO_INSTALL_DIR` or `COLLO_VERSION` to override the destination or pin a release. Windows users can download `collo-windows-amd64.exe` or `collo-windows-arm64.exe` and the checksum manifest from GitHub Releases.
+The installer writes to `$HOME/.local/bin` by default, verifies the release
+checksum, and replaces an existing binary only after the new one passes its
+version check. Set `COLLO_INSTALL_DIR` or `COLLO_VERSION` to override the
+destination or pin a release.
+
+On Windows, download and run the checksum-verifying PowerShell installer. The
+explicit `-AddToPath` option updates the current user's PATH:
+
+```powershell
+$Installer = Join-Path $env:TEMP 'install-collo.ps1'
+[Net.ServicePointManager]::SecurityProtocol = `
+  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -UseBasicParsing `
+  'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
+  -OutFile $Installer
+Get-Content $Installer
+Unblock-File $Installer
+& $Installer -AddToPath
+```
+
+Each release also publishes a CycloneDX SBOM and GitHub/Sigstore provenance
+attestations. See [Installing Collomia](docs/INSTALLING.md) for direct binary
+downloads, version pinning, stronger `gh attestation verify` checks, upgrade,
+rollback, and unsigned macOS/Windows binary guidance.
 
 ## Configuration
 
@@ -1125,16 +1148,32 @@ The provider-neutral message and tool representation keeps protocol translation 
 ## Release builds
 
 ```sh
-scripts/build-release.sh
+scripts/build-release.sh --clean
 ```
 
-Release identity defaults to the value in `VERSION`; `COLLO_VERSION`, `COLLO_COMMIT`, and `COLLO_BUILD_DATE` can override the embedded metadata for automated builds.
+`VERSION` is the release source of truth and must contain a semantic version
+such as `v0.2.0-beta.1`. The script runs uncached tests by default, builds into
+a private staging directory, and publishes new files only after all targets
+succeed. `--skip-tests` is reserved for an already-qualified CI job.
+
+Release identity defaults to `VERSION`, the current commit, and that commit's
+timestamp, so repeated clean builds use stable metadata. Tracked local changes
+add `-dirty` to the commit. `COLLO_VERSION`, `COLLO_COMMIT`, and
+`COLLO_BUILD_DATE` can override these values for automation.
 
 The script runs tests and creates static binaries plus SHA-256 checksums under `dist/` for:
 
 - macOS ARM64 and AMD64
 - Linux ARM64 and AMD64
 - Windows ARM64 and AMD64
+
+Pushing an annotated or signed tag that exactly matches `VERSION` runs the
+full macOS/Linux/Windows release gate, vulnerability scan, deterministic
+evaluations, fuzz smoke tests, native artifact execution, CycloneDX SBOM
+generation, and GitHub/Sigstore attestation. It creates a **draft** release for
+human review; tags containing a suffix such as `-beta.1` are marked as
+prereleases. Follow [the release guide](docs/RELEASING.md) for the complete
+operator checklist.
 
 ## Development
 

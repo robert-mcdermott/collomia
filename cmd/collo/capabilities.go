@@ -96,6 +96,7 @@ func capabilityMatrix() []capabilityRow {
 		{"diagnostics", "privacy-conscious support bundle", "implemented", "`collo support bundle`; local-only anonymous config/provider/MCP/sandbox/Git health, recent opaque failure IDs, and capability manifest; no config values, source, prompts, sessions, audits, or log content by default; bounded redacted logs are explicit opt-in"},
 		{"quality", "offline agent evaluations", "experimental", "credential-free real agent/permission/tool/session scenarios cover repository inspection, bug fix/verification, permission refusal, external injection, recovery/rewind, long context, governed parallel delegation, and selective worktree integration under Windows-style Git settings; broader task corpus remains roadmap work"},
 		{"quality", "parser fuzz smoke tests", "implemented", "bounded replay, config validation, shell analysis, and diff/hunk fuzz targets run in the Linux CI quality job"},
+		{"quality", "beta release supply chain", "experimental", "tag-matched draft releases require cross-platform test/race/vet, installer tests, vulnerability scan, eval/fuzz gates, and native artifact smoke tests; publish checksums, CycloneDX SBOM, and GitHub/Sigstore attestations; native platform signing and package managers remain"},
 		{"platform", "macOS / Linux / Windows builds", "implemented", "CI-tested; browser terminal requires macOS/Linux until ConPTY support is added"},
 	}
 }
