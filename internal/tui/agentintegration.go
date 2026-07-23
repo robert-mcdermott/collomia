@@ -128,7 +128,7 @@ func (m Model) handleAgentIntegrationKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(func() tea.Msg {
 			paths, err := runtime.ApplyDelegateIntegration(ctx, id, selections)
 			return agentIntegrationAppliedMsg{paths: paths, err: err}
-		}, m.spinner.Tick)
+		}, m.progressTick())
 	}
 	m.refresh()
 	return m, nil

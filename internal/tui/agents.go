@@ -151,6 +151,9 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	}
 	if status.Error != "" {
 		lines = append(lines, "", "Error:", m.runtime.Redactor.Redact(status.Error))
+		if status.FailureID != "" {
+			lines = append(lines, "Failure ID: "+status.FailureID)
+		}
 	}
 	if len(status.Guidance) > 0 {
 		lines = append(lines, "", fmt.Sprintf("Steering (%d, %d pending):", len(status.Guidance), status.PendingGuidance))

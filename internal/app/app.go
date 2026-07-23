@@ -62,7 +62,7 @@ func (r *Runtime) LogEvent(e event.Event) {
 	if e.Error != "" {
 		errText = e.Error
 	}
-	r.Logger.Debug("event", "kind", string(e.Kind), "tool", tool, "error", errText)
+	r.Logger.Debug("event", "kind", string(e.Kind), "tool", tool, "error", errText, "failure_id", e.FailureID)
 	if r.Session != nil {
 		r.Session.AppendEvent(e)
 	}

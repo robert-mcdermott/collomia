@@ -62,6 +62,9 @@ type Event struct {
 	Result     *RunResult       `json:"result,omitempty"`
 	Provider   *ProviderFailure `json:"provider,omitempty"`
 	Error      string           `json:"error,omitempty"`
+	// FailureID is an opaque per-failure correlation value. It contains no
+	// session, provider, path, prompt, or credential material.
+	FailureID string `json:"failure_id,omitempty"`
 }
 
 // ToolCallDelta carries an incremental provider tool request. ArgumentsDelta
@@ -157,6 +160,7 @@ const (
 // Failure adds machine-readable error classification to run.result. Error
 // remains the human-readable message for schema-v1 compatibility.
 type Failure struct {
+	ID        string           `json:"id,omitempty"`
 	Kind      FailureKind      `json:"kind"`
 	Retryable bool             `json:"retryable,omitempty"`
 	Provider  *ProviderFailure `json:"provider,omitempty"`
@@ -189,6 +193,7 @@ type DelegateStatus struct {
 	PendingGuidance int       `json:"pending_guidance,omitempty"`
 	Summary         string    `json:"summary,omitempty"`
 	Error           string    `json:"error,omitempty"`
+	FailureID       string    `json:"failure_id,omitempty"`
 	Evidence        []string  `json:"evidence,omitempty"`
 	ChangedFiles    []string  `json:"changed_files,omitempty"`
 	Worktree        string    `json:"worktree,omitempty"`

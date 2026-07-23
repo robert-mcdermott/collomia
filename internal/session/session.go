@@ -571,6 +571,9 @@ type Session struct {
 	// task. Stored updates are inert data and are never scheduled during load.
 	delegates     map[string]event.DelegateStatus
 	delegateOrder []string
+	// recentEvents is a bounded in-memory projection source for operator UIs.
+	// The append-only JSONL remains the complete durable event history.
+	recentEvents []event.Event
 
 	store              *Store
 	mu                 sync.Mutex
@@ -578,6 +581,8 @@ type Session struct {
 	writeErr           error
 	pendingInterrupted []provider.Message
 }
+
+const recentEventLimit = 2048
 
 type recordFile interface {
 	Write([]byte) (int, error)
@@ -611,10 +616,23 @@ func (sess *Session) replay(record Record) {
 	case "plan":
 		sess.PlanRaw = record.Plan
 	case "event":
-		if record.Event != nil && record.Event.Kind == event.KindDelegateUpdate && record.Event.Delegate != nil {
-			sess.applyDelegate(*record.Event.Delegate)
+		if record.Event != nil {
+			sess.retainEvent(*record.Event)
+			if record.Event.Kind == event.KindDelegateUpdate && record.Event.Delegate != nil {
+				sess.applyDelegate(*record.Event.Delegate)
+			}
 		}
 	}
+}
+
+func (sess *Session) retainEvent(e event.Event) {
+	if len(sess.recentEvents) >= recentEventLimit {
+		copy(sess.recentEvents, sess.recentEvents[len(sess.recentEvents)-recentEventLimit+1:])
+		sess.recentEvents = sess.recentEvents[:recentEventLimit]
+		sess.recentEvents[recentEventLimit-1] = e
+		return
+	}
+	sess.recentEvents = append(sess.recentEvents, e)
 }
 
 func (sess *Session) applyDelegate(status event.DelegateStatus) {
@@ -744,20 +762,30 @@ func (sess *Session) AppendEvent(e event.Event) {
 	if e.Kind == event.KindTextDelta || e.Kind == event.KindToolCallDelta || e.Kind == event.KindToolOutput {
 		return // deltas and streamed chunks are reconstructable from results
 	}
+	sess.mu.Lock()
+	sess.retainEvent(e)
 	if e.Kind == event.KindTurnEnd {
-		sess.mu.Lock()
 		sess.Meta.Turns++
 		sess.Meta.UpdatedAt = time.Now().UTC()
-		meta := sess.Meta
-		sess.mu.Unlock()
-		_ = sess.append(Record{Type: "meta", Meta: &meta})
 	}
 	if e.Kind == event.KindDelegateUpdate && e.Delegate != nil {
-		sess.mu.Lock()
 		sess.applyDelegate(*e.Delegate)
-		sess.mu.Unlock()
+	}
+	meta := sess.Meta
+	sess.mu.Unlock()
+	if e.Kind == event.KindTurnEnd {
+		_ = sess.append(Record{Type: "meta", Meta: &meta})
 	}
 	_ = sess.append(Record{Type: "event", Event: &e})
+}
+
+// RecentEvents returns the newest durable runtime events retained in memory.
+// It is intended for read-only operator projections; the session JSONL is the
+// complete source when an archival audit needs more history.
+func (sess *Session) RecentEvents() []event.Event {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return append([]event.Event(nil), sess.recentEvents...)
 }
 
 // Delegates returns the latest inert delegated-task snapshots in creation

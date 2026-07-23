@@ -387,6 +387,9 @@ evidence, usage, and change manifests—not raw child transcripts. On resume,
 recorded completed outcomes remain visible and any nonterminal task becomes
 `interrupted`; it is never automatically scheduled again. This avoids duplicate
 mutations but means the user or parent must explicitly start replacement work.
+Cancellation is honored while a child is queued, calling a provider, or waiting
+for approval. A cancelled approval returns no permission and cannot publish the
+proposed mutation; late child updates cannot revive a cancelling task.
 
 **PTY commands** (`run_command` with `pty: true`, Unix only) run in their
 own session (`setsid`) rather than merely a process group, because a
@@ -533,6 +536,16 @@ from support bundles. None of these properties redact arbitrary stored tool
 output or encrypt it at rest; protect the user account and delete sensitive
 sessions when they are no longer needed.
 
+`/activity` is a read-only projection of these already-recorded runtime
+events. Opening, filtering, searching, or copying from it never contacts a
+provider, starts a process, grants permission, or replays a tool. Its UI keeps
+only the newest 500 projected entries and redacts displayed text with the
+active runtime redactor; the durable session log may contain older and more
+detailed records. Activity text can still contain paths, tool summaries, and
+other session content, so terminal clipboard copies should be handled like
+transcript copies. Opaque `err-…` IDs contain no embedded prompt, path,
+provider, session, or credential information.
+
 ## Optional external reviewer
 
 `permissions.reviewer_command`, when set, runs before any non-read action
@@ -564,6 +577,10 @@ records, and logs. Configuration validation failures are represented by a
 generic status because detailed validator errors can echo user-defined names,
 paths, patterns, or values. Default collection also suppresses environment
 expansion, so `api_key_env` and MCP environment references are not fetched.
+The manifest may contain up to eight recent opaque failure IDs collected from
+bounded debug-log tails. Each ID is random and contains no error text, path,
+session, provider, prompt, or secret. Only the identifier is copied; log
+messages and attributes remain excluded unless the user requests logs.
 
 Logs require the explicit `--include-logs` flag and are bounded to five files,
 1 MiB per file, and 3 MiB total. Configured/common credential values are
@@ -626,5 +643,29 @@ MCP images retain external-data provenance and never authorize a later action.
 
 ## Reporting
 
-Security issues: open a GitHub issue marked security, or contact the
-maintainer directly.
+Follow the repository [security policy](../SECURITY.md). Use GitHub private
+vulnerability reporting rather than a public issue when exploit details,
+credentials, private source, or user data may be involved.
+
+## Release supply-chain boundary
+
+Tagged beta releases are built only after the exact commit passes the
+Linux/macOS/Windows build, uncached test, race, vet, installer, deterministic
+evaluation, bounded fuzz, module-integrity, and reachable-vulnerability gates.
+The build date comes from the tagged commit rather than the runner clock.
+Generated binaries execute on native Linux, macOS, and Windows runners before
+the workflow creates a draft release.
+
+`checksums.txt` covers every binary and the CycloneDX SBOM. A checksum from the
+same release detects corruption and mismatched files but cannot defend against
+replacement of both the file and manifest. The release workflow therefore
+also creates GitHub/Sigstore SLSA provenance attestations and attaches the SBOM
+as an attested predicate for the binaries. Verification can bind the exact
+file to this repository and `.github/workflows/release.yml`; it does not prove
+that the source or dependencies are vulnerability-free.
+
+The beta binaries are not yet Authenticode-signed, Apple-signed, or notarized.
+GitHub/Sigstore provenance authenticates workflow origin but does not satisfy
+operating-system platform-signing policy. See [Installing
+Collomia](INSTALLING.md), [beta limitations](BETA.md), and [the maintainer
+release process](RELEASING.md).

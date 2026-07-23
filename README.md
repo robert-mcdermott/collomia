@@ -2,7 +2,7 @@
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with built-in OS sandbox backends on all three platforms — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
-New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. CI and integration authors can use the dedicated [automation and JSONL contract](docs/AUTOMATION.md). Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
+New users and advanced operators should start with the [complete Collomia user guide](docs/USER_GUIDE.md), which covers installation on every platform, configuration layering, every provider and authentication mode, permissions and sandboxes, LSP, MCP, hooks, skills, sub-agents, sessions, automation, and troubleshooting. The focused [installation guide](docs/INSTALLING.md) covers checksum and provenance verification, upgrades, and rollback; [beta status](docs/BETA.md) states the current limitations. CI and integration authors can use the dedicated [automation and JSONL contract](docs/AUTOMATION.md). Linux operators enabling sandboxing also have a dedicated [Landlock setup and compatibility guide](docs/LINUX_SANDBOX.md).
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
@@ -43,7 +43,9 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 ## Build and run
 
-Collomia requires Go 1.26 or later to build. The resulting executable has no Go runtime dependency.
+Collomia requires Go 1.26.5 or later to build. The patch-level minimum keeps
+release binaries on a standard-library security-fixed Go toolchain. The
+resulting executable has no Go runtime dependency.
 
 ```sh
 go build -o collo ./cmd/collo
@@ -58,14 +60,37 @@ ollama pull qwen3-coder
 collo init --global --with-reference
 ```
 
-Once releases are published, macOS and Linux can install a checksum-verified binary without `sudo`:
+macOS and Linux can install the latest stable release without `sudo`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh | sh
 ```
 
-The installer writes to `$HOME/.local/bin` by default. Set `COLLO_INSTALL_DIR` or `COLLO_VERSION` to override the destination or pin a release. Windows users can download `collo-windows-amd64.exe` or `collo-windows-arm64.exe` and the checksum manifest from GitHub Releases.
+The installer writes to `$HOME/.local/bin` by default, verifies the release
+checksum, and replaces an existing binary only after the new one passes its
+version check. Set `COLLO_INSTALL_DIR` or `COLLO_VERSION` to override the
+destination or pin a release.
+
+On Windows, download and run the checksum-verifying PowerShell installer. The
+explicit `-AddToPath` option updates the current user's PATH:
+
+```powershell
+$Installer = Join-Path $env:TEMP 'install-collo.ps1'
+[Net.ServicePointManager]::SecurityProtocol = `
+  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -UseBasicParsing `
+  'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
+  -OutFile $Installer
+Get-Content $Installer
+Unblock-File $Installer
+& $Installer -AddToPath
+```
+
+Each release also publishes a CycloneDX SBOM and GitHub/Sigstore provenance
+attestations. See [Installing Collomia](docs/INSTALLING.md) for direct binary
+downloads, version pinning, stronger `gh attestation verify` checks, upgrade,
+rollback, and unsigned macOS/Windows binary guidance.
 
 ## Configuration
 
@@ -208,7 +233,7 @@ collo run --jsonl --autopilot "Run the test suite and report failures" | jq .
 collo run --jsonl --ephemeral --plan "Inspect this checkout without saving a conversation" | jq .
 ```
 
-With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and an actual run always ends with a `run.result` record after successful argument parsing — including prompt, configuration, provider, permission, timeout, and cancellation failures (`--help`/`--version` remain informational commands). Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event and the final result. Print the exact contract with `collo schema events`; see the [automation guide](docs/AUTOMATION.md) for all fields, failure kinds, and pipeline patterns.
+With `--jsonl`, every event is one schema-versioned JSON line (secrets redacted), and an actual run always ends with a `run.result` record after successful argument parsing — including prompt, configuration, provider, permission, timeout, and cancellation failures (`--help`/`--version` remain informational commands). Provider streams use `text.delta`, `reasoning.delta`, `tool.call.delta` (id/name plus incremental `arguments_delta`, completed by `done`), `usage`, and `warning`; a tool is never executed from those fragments, only from the provider's complete validated call. Provider failures add a classified `provider` object to the preceding `error` event and the final result. Failed/cancelled runs also carry one opaque per-occurrence `failure_id`, repeated as `result.failure.id`, so the TUI, JSONL, debug log, and support bundle can be correlated without encoding user data in the identifier. Print the exact contract with `collo schema events`; see the [automation guide](docs/AUTOMATION.md) for all fields, failure kinds, and pipeline patterns.
 
 ```json
 {"schema":1,"kind":"run.result","result":{"status":"ok","answer":"…","session_id":"a1b2c3","changed_files":["main.go"],"duration_ms":8412},"usage":{"input_tokens":5210,"output_tokens":644}}
@@ -249,7 +274,9 @@ The default archive is written under `~/.collomia/support/` on macOS/Linux or
 read-only: it does not initialize providers or MCP servers and makes no network
 requests. Default collection also leaves environment-backed provider and MCP
 values unresolved. The archive contains an anonymous health manifest and the
-generated capability matrix. It excludes configuration values, environment
+generated capability matrix. The manifest may include up to eight opaque
+recent failure IDs collected from bounded log tails, but no associated log
+messages or attributes. It excludes configuration values, environment
 variables, provider endpoints/models, MCP definitions, workspace paths, source
 files, prompts, transcripts, sessions, audit records, and debug logs.
 
@@ -314,6 +341,7 @@ Inside the TUI:
 | `/tasks` | Show the structured task plan the agent maintains. |
 | `/diff` | Open responsive unified/side-by-side review with file/hunk navigation and folding. |
 | `/transcript` | Search and copy the complete raw TUI transcript. |
+| `/activity` | Search and category-filter the bounded session activity timeline; copy a selected failure ID with `y`. |
 | `/undo` | Revert the agent's most recent file change (refuses to clobber files you edited outside the agent). |
 | `/review [ref] [instructions…]` | Read-only code review of uncommitted changes (`-` or no ref) or changes vs any ref; extra words become custom reviewer instructions. |
 | `/verify [focus]` | Detect and run the project's real build/lint/test commands, tying each outcome to a plan step. |
@@ -341,7 +369,9 @@ Informational commands (`/status`, `/context`, `/ps`, `/tasks`, `/models`, `/too
 
 Typing `/` opens a command palette that filters as you type and completes argument values (`/theme dra…`, `/autonomy …`, `/model …`): ↑/↓ selects, `tab` completes, `enter` runs, `esc` dismisses. Typing `@` opens a fuzzy workspace file/folder picker and safely quotes paths containing spaces. `/prompt` opens a text-file picker; `/prompt "docs/review prompt.md"` loads a named file into the composer. `/attach` similarly opens an image picker, and `/attach ` accepts quoted, escaped, `file://`, or terminal-dropped workspace paths. The status bar shows the number of pending images; `/attachments` reviews them and `/detach` removes them before send. These fuzzy menus keep their compact position beside the composer. Approvals, hunk review, and questions use centered floating dialogs instead: they preserve the surrounding transcript, take keyboard focus while active, match the selected theme, and disappear as soon as the action is resolved.
 
-`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, `ctrl+d` opens the session diff browser, `alt+s` opens saved sessions without replacing a draft, and `alt+a` opens inspect/steer/stop actions for an active child. While a turn runs, the composer accepts a deliberately small local-command lane (`/help`, `/status`, `/context`, `/tasks`, `/tools`, `/config`, `/attachments`, `/transcript`, `/diff`, read-only `/ps`, and `/agents` inspect/steer/stop). Ordinary text and unavailable commands remain unsent drafts until the turn ends; a child question temporarily preserves that draft. At the first or last visual line of the composer, ↑/↓ walks earlier prompts and returns to the exact draft you were editing; within multiline or soft-wrapped input, the same keys continue to move the cursor normally. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, a parent/child agent tree with bounded recent output, running background processes, asynchronous Git branch/upstream/dirty state, provider/sandbox/MCP/trust health, and recent permission decisions or tool failures; press `r` there to refresh Git state. The status bar carries live task/agent/process badges. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
+`ctrl+t` cycles the Chat, Session, and Help tabs, `ctrl+o` expands or collapses finished tool output, `ctrl+y` opens transcript search/copy, `ctrl+d` opens the session diff browser, `alt+s` opens saved sessions without replacing a draft, and `alt+a` opens inspect/steer/stop actions for an active child. `/activity` opens a full-screen, searchable event-derived timeline; `f` cycles the categories present, `n`/`N` walks search matches, and `y` copies the selected failure ID when one exists. While a turn runs, the composer accepts a deliberately small local-command lane (`/help`, `/status`, `/context`, `/tasks`, `/tools`, `/config`, `/attachments`, `/transcript`, `/activity`, `/diff`, read-only `/ps`, and `/agents` inspect/steer/stop). Ordinary text and unavailable commands remain unsent drafts until the turn ends; a child question temporarily preserves that draft. At the first or last visual line of the composer, ↑/↓ walks earlier prompts and returns to the exact draft you were editing; within multiline or soft-wrapped input, the same keys continue to move the cursor normally. Page-up pauses live follow without moving the prompt cursor; `end` returns to the bottom and resumes it. These global keys can be remapped through `options.keybindings`, and Help always displays the effective values. The Session tab shows the live task plan, changed files, a parent/child agent tree with bounded recent output, running background processes, asynchronous Git branch/upstream/dirty state, provider/sandbox/MCP/trust health with recovery hints, and recent activity; press `r` there to refresh Git state. The status bar carries live task/agent/process badges. Fenced code in assistant messages is syntax-highlighted with the language named after the opening fence (for example, a fence labeled `go`). Expanded `read_file` results select a lexer from the filename, and `git_diff` results receive diff highlighting, so source remains readable in the normal Chat transcript as well as in approval previews. Syntax colors follow the active theme; `plain`/`NO_COLOR` disables them. Use `--no-alt-screen` when you prefer native terminal scrollback.
+
+Animations remain enabled by default. Users who prefer a static progress marker can set `"reduced_motion": true` under `options`; this changes only decorative motion and never disables composer input, slash commands, cancellation, or agent controls.
 
 When an approval or question is waiting, or a turn longer than ten seconds finishes, Collomia rings the terminal bell **and** posts a desktop notification through the terminal (the OSC 9 sequence — iTerm2, WezTerm, Ghostty, Kitty, and Windows Terminal support it; most only surface it while the window is unfocused, and unsupported terminals ignore it). Tune this with:
 
@@ -1120,16 +1150,32 @@ The provider-neutral message and tool representation keeps protocol translation 
 ## Release builds
 
 ```sh
-scripts/build-release.sh
+scripts/build-release.sh --clean
 ```
 
-Release identity defaults to the value in `VERSION`; `COLLO_VERSION`, `COLLO_COMMIT`, and `COLLO_BUILD_DATE` can override the embedded metadata for automated builds.
+`VERSION` is the release source of truth and must contain a semantic version
+such as `v0.2.0-beta.1`. The script runs uncached tests by default, builds into
+a private staging directory, and publishes new files only after all targets
+succeed. `--skip-tests` is reserved for an already-qualified CI job.
+
+Release identity defaults to `VERSION`, the current commit, and that commit's
+timestamp, so repeated clean builds use stable metadata. Tracked local changes
+add `-dirty` to the commit. `COLLO_VERSION`, `COLLO_COMMIT`, and
+`COLLO_BUILD_DATE` can override these values for automation.
 
 The script runs tests and creates static binaries plus SHA-256 checksums under `dist/` for:
 
 - macOS ARM64 and AMD64
 - Linux ARM64 and AMD64
 - Windows ARM64 and AMD64
+
+Pushing an annotated or signed tag that exactly matches `VERSION` runs the
+full macOS/Linux/Windows release gate, vulnerability scan, deterministic
+evaluations, fuzz smoke tests, native artifact execution, CycloneDX SBOM
+generation, and GitHub/Sigstore attestation. It creates a **draft** release for
+human review; tags containing a suffix such as `-beta.1` are marked as
+prereleases. Follow [the release guide](docs/RELEASING.md) for the complete
+operator checklist.
 
 ## Development
 
@@ -1139,9 +1185,10 @@ go test -race ./...
 go vet ./...
 ```
 
-The CI quality job also runs the offline agent evaluations and short fuzzing
-campaigns for replay, configuration validation, shell analysis, and diff/hunk
-parsing. See [docs/TESTING.md](docs/TESTING.md) for the evaluation scenarios,
+The cross-platform matrix runs tests and race detection without test-result
+cache reuse. The CI quality job also runs the offline agent evaluations and
+short fuzzing campaigns for replay, configuration validation, shell analysis,
+and diff/hunk parsing. See [docs/TESTING.md](docs/TESTING.md) for the evaluation scenarios,
 local fuzz commands, CI coverage, and guidance for adding regression cases.
 
 These commands run the recorded provider contracts used by CI and never need

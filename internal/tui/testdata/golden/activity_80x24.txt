@@ -1,0 +1,9 @@
+ Activity all · 3/3
+  12:00:00 [active] turn Turn started · 1
+  12:00:01 [success] permission run_command allowed
+    go test ./... · via interactive
+▸ 12:00:02 [error] tool run_command failed
+    unit tests failed
+    failure err-0123456789abcdef
+
+f filter · / search · n/N match · ↑↓/page move · y copy item or failure ID · esc

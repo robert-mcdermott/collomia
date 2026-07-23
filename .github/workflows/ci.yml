@@ -15,30 +15,41 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.x'
+          go-version-file: go.mod
           cache: true
-      - run: go build ./...
-      - run: go test ./...
-      - run: go test -race ./...
-      - run: go vet ./...
+      - name: Build
+        run: go build ./...
+      - name: Cross-platform unit, integration, and evaluation tests
+        run: go test -count=1 ./...
+      - name: Race detector
+        run: go test -race -count=1 ./...
+      - name: Static analysis
+        run: go vet ./...
+      - name: Test shell installer
+        if: runner.os != 'Windows'
+        run: scripts/test-install.sh
+      - name: Test PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-install.ps1
 
   release-builds:
     needs: [test, quality]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.x'
+          go-version-file: go.mod
           cache: true
       - run: chmod +x scripts/build-release.sh
       - run: scripts/build-release.sh
         env:
           COLLO_VERSION: ci
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: collo-binaries
           path: dist/
@@ -46,11 +57,15 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.x'
+          go-version-file: go.mod
           cache: true
+      - name: Verify downloaded modules
+        run: go mod verify
+      - name: Scan reachable Go dependencies
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Deterministic offline agent evaluations
         run: go test -count=1 ./internal/eval
       - name: Replay parser fuzz smoke test

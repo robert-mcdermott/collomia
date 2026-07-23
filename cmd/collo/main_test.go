@@ -160,7 +160,7 @@ func TestRunResultEmitterProducesOneTerminalVerdict(t *testing.T) {
 		t.Fatal(decodeErr)
 	}
 	if final.Kind != event.KindRunResult || final.Result == nil || final.Result.Status != "error" ||
-		final.Result.Failure == nil || final.Result.Failure.Kind != event.FailureUsage || !final.Result.Partial || !final.Result.Ephemeral || !final.Result.Refused || final.Result.SessionID != "" {
+		final.FailureID == "" || final.Result.Failure == nil || final.Result.Failure.ID != final.FailureID || final.Result.Failure.Kind != event.FailureUsage || !final.Result.Partial || !final.Result.Ephemeral || !final.Result.Refused || final.Result.SessionID != "" {
 		t.Fatalf("final=%+v", final)
 	}
 }

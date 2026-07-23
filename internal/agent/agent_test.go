@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/plan"
@@ -844,6 +846,78 @@ func TestDelegateTaskCanBeCancelledIndividually(t *testing.T) {
 	}
 }
 
+func TestDelegateCancellationWhileWaitingForApproval(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	workspace := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", workspace}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "initial")
+
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"pending.txt","content":"must not land\n"}`)}}}, nil
+		}
+		return provider.Response{Content: "unexpected continuation"}, nil
+	}}
+	registry, _, processes, err := tools.Builtins(workspace, appconfig.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(processes.StopAll)
+	approvalStarted := make(chan struct{})
+	approver := func(ctx context.Context, _ permission.Request) (permission.Decision, error) {
+		close(approvalStarted)
+		<-ctx.Done()
+		return permission.Decision{}, ctx.Err()
+	}
+	cfg := appconfig.Defaults()
+	cfg.Permissions.Mode = "ask"
+	a := New(Options{Client: client, ProviderName: "fixture", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: workspace, Registry: registry, Permissions: permission.New(cfg.Permissions, approver), MaxIterations: 4})
+	team := NewTeam()
+	a.AddDelegationTool(cfg, approver, team)
+	done := make(chan string, 1)
+	go func() {
+		result, _ := registry.Execute(t.Context(), "delegate", json.RawMessage(`{"tasks":[{"name":"approval-wait","task":"write only after approval","write":true}]}`))
+		done <- result
+	}()
+	select {
+	case <-approvalStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("delegated approval did not start")
+	}
+	status := team.Snapshot()[0]
+	if status.Status != DelegateWaitingApproval {
+		t.Fatalf("status before cancellation=%+v", status)
+	}
+	if err := team.Stop(status.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		decoded := decodeDelegateResults(t, result)
+		if len(decoded.Tasks) != 1 || decoded.Tasks[0].Status != DelegateCancelled || !failureid.Valid(decoded.Tasks[0].FailureID) {
+			t.Fatalf("cancelled approval result=%s", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("approval-waiting delegate did not stop")
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "pending.txt")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled approval mutated the parent workspace: %v", err)
+	}
+}
+
 func TestDelegateReportsSiblingConflicts(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -1050,12 +1124,36 @@ func TestProviderErrorEventIncludesMachineReadableClassification(t *testing.T) {
 		StatusCode: 429, Retryable: true, RetryAfter: 3 * time.Second, RequestID: "req-123",
 		Message: "rate limited",
 	}
-	e := errorEvent(err)
+	tracked := failureid.Ensure(err)
+	e := errorEvent(tracked)
 	if e.Provider == nil {
 		t.Fatal("provider classification missing from error event")
 	}
 	if e.Provider.Name != "openrouter/glm" || e.Provider.Operation != "chat" || e.Provider.Kind != "rate_limit" || e.Provider.StatusCode != 429 || !e.Provider.Retryable || e.Provider.RetryAfterMS != 3000 || e.Provider.RequestID != "req-123" {
 		t.Fatalf("provider failure=%+v", e.Provider)
+	}
+	if e.FailureID == "" || e.FailureID != failureid.ID(tracked) {
+		t.Fatalf("failure correlation missing: event=%q error=%q", e.FailureID, failureid.ID(tracked))
+	}
+}
+
+func TestRunReturnsSameFailureIDPublishedByErrorEvent(t *testing.T) {
+	client := &fakeClient{chat: func(_ int, _ provider.Request) (provider.Response, error) {
+		return provider.Response{}, errors.New("fixture provider failed")
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fixture", Model: "m",
+		ProviderConfig: appconfig.Provider{MaxTokens: 32}, Workspace: t.TempDir(),
+		Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+	})
+	var published string
+	_, err := a.Run(t.Context(), "hello", func(e event.Event) {
+		if e.Kind == event.KindError {
+			published = e.FailureID
+		}
+	})
+	if err == nil || !failureid.Valid(published) || failureid.ID(err) != published {
+		t.Fatalf("error=%v returned_id=%q published_id=%q", err, failureid.ID(err), published)
 	}
 }
 

@@ -8,7 +8,9 @@ and unattended workflows.
 
 For the exact security boundary, read [Security model](SECURITY.md). For a
 generated statement of what is implemented today, read the [capability
-matrix](CAPABILITIES.md).
+matrix](CAPABILITIES.md). Installation, verification, upgrades, and rollback
+also have a focused [installation guide](INSTALLING.md); maintainers should use
+the [release guide](RELEASING.md).
 
 ## Contents
 
@@ -48,21 +50,25 @@ Release assets are named:
 | Linux | `collo-linux-amd64` | `collo-linux-arm64` |
 | Windows | `collo-windows-amd64.exe` | `collo-windows-arm64.exe` |
 
-Every release also includes `checksums.txt` with SHA-256 digests.
+Every release also includes `checksums.txt` with SHA-256 digests and
+`collomia.cdx.json`, a CycloneDX dependency SBOM. The release workflow publishes
+GitHub/Sigstore provenance and SBOM attestations for stronger verification.
 
 ### macOS and Linux: install with curl and sh
 
 The repository installer detects the operating system and CPU, downloads the
-matching release binary and checksum manifest, verifies SHA-256, and installs
-`collo` without `sudo`:
+matching release binary and checksum manifest, requires exactly one matching
+SHA-256 entry, tests the downloaded executable, and atomically installs `collo`
+without `sudo`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh | sh
 ```
 
-The default destination is `$HOME/.local/bin/collo`. Make sure that directory
-is on `PATH`:
+The installer does not modify `PATH`, create application data, or start
+Collomia. The default destination is `$HOME/.local/bin/collo`. Make sure that
+directory is on `PATH`:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
@@ -82,7 +88,7 @@ Installer overrides:
 # Install a particular release tag.
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh |
-  COLLO_VERSION=v1.2.3 sh
+  COLLO_VERSION=v0.1.3 sh
 
 # Install somewhere else.
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -106,68 +112,45 @@ sh install.sh
 
 ### Windows: install with PowerShell
 
-The following PowerShell process detects AMD64 or ARM64, downloads the latest
-release and checksum manifest, verifies the binary, installs it under the
-current user's local application directory, and adds that directory to the
-user `PATH` if needed. It does not require an elevated shell.
+Download and inspect the repository-owned PowerShell installer, then run it.
+It detects AMD64 or ARM64, downloads the binary and checksum manifest, requires
+exactly one valid SHA-256 entry, tests the downloaded executable, and only then
+replaces the installed `collo.exe`. It does not require elevation. PATH changes
+are explicit through `-AddToPath`.
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$Repository = 'robert-mcdermott/collomia'
-$Version = 'latest' # Or a tag such as 'v1.2.3'.
-$Arch = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
-  'X64'   { 'amd64' }
-  'Arm64' { 'arm64' }
-  default { throw "Unsupported Windows architecture: $_" }
-}
-$Asset = "collo-windows-$Arch.exe"
-$Base = if ($Version -eq 'latest') {
-  "https://github.com/$Repository/releases/latest/download"
-} else {
-  "https://github.com/$Repository/releases/download/$Version"
-}
-$Temp = Join-Path ([IO.Path]::GetTempPath()) ("collo-install-" + [guid]::NewGuid())
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Collomia'
-
-New-Item -ItemType Directory -Path $Temp | Out-Null
-try {
-  Invoke-WebRequest "$Base/$Asset" -OutFile (Join-Path $Temp $Asset)
-  Invoke-WebRequest "$Base/checksums.txt" -OutFile (Join-Path $Temp 'checksums.txt')
-  $Line = Get-Content (Join-Path $Temp 'checksums.txt') |
-    Where-Object { $_ -match "\s+$([regex]::Escape($Asset))$" } |
-    Select-Object -First 1
-  if (-not $Line) { throw "No checksum found for $Asset" }
-  $Expected = ($Line -split '\s+')[0].ToLowerInvariant()
-  $Actual = (Get-FileHash (Join-Path $Temp $Asset) -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($Actual -ne $Expected) { throw "Checksum verification failed for $Asset" }
-
-  New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-  Copy-Item (Join-Path $Temp $Asset) (Join-Path $InstallDir 'collo.exe') -Force
-
-  $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-  $Entries = @($UserPath -split ';' | Where-Object { $_ })
-  if ($Entries -notcontains $InstallDir) {
-    $NewPath = (@($Entries) + $InstallDir) -join ';'
-    [Environment]::SetEnvironmentVariable('Path', $NewPath, 'User')
-  }
-} finally {
-  Remove-Item $Temp -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-Write-Host "Installed collo.exe to $InstallDir"
-Write-Host 'Open a new PowerShell window, then run: collo --version'
+$Installer = Join-Path $env:TEMP 'install-collo.ps1'
+[Net.ServicePointManager]::SecurityProtocol = `
+  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -UseBasicParsing `
+  'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
+  -OutFile $Installer
+Get-Content $Installer
+Unblock-File $Installer
+& $Installer -AddToPath
 ```
 
-To install a pinned version, replace `$Version = 'latest'` with the exact
-release tag. Existing PowerShell windows do not see a user `PATH` change; open
-a new one before invoking `collo` by name.
+The default executable location is
+`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`. Install a pinned release or
+choose another directory with:
+
+```powershell
+& $Installer -Version v0.2.0-beta.1 -InstallDir "$HOME\bin" -AddToPath
+```
+
+`COLLO_VERSION`, `COLLO_INSTALL_DIR`, and `COLLO_REPOSITORY` provide equivalent
+defaults. Omit `-AddToPath` when shell configuration must remain unchanged.
+Close a running Collomia process before upgrading because Windows may refuse to
+replace an executable in use. The focused [installation guide](INSTALLING.md)
+also provides a direct `Invoke-WebRequest` binary workflow for organizations
+that prohibit downloaded PowerShell scripts.
 
 ### Manual binary installation
 
 You can install any release without the scripts:
 
-1. Download the binary for your platform and `checksums.txt` from the same
-   GitHub release.
+1. Download the binary for your platform, `checksums.txt`, and optionally the
+   CycloneDX `collomia.cdx.json` SBOM from the same GitHub release.
 2. Verify SHA-256 with `sha256sum`, `shasum -a 256`, or PowerShell
    `Get-FileHash -Algorithm SHA256`.
 3. On macOS/Linux, make it executable with `chmod 0755` and rename it to
@@ -175,9 +158,23 @@ You can install any release without the scripts:
 4. Move it into a directory on `PATH`.
 5. Run `collo --version` and `collo doctor`.
 
+Checksums detect corruption but do not protect against replacement of both the
+binary and manifest. Release artifacts also carry GitHub/Sigstore provenance:
+
+```sh
+gh attestation verify collo-linux-amd64 \
+  --repo robert-mcdermott/collomia \
+  --signer-workflow robert-mcdermott/collomia/.github/workflows/release.yml
+```
+
+Raw macOS and Windows beta binaries are not yet platform code-signed or Apple
+notarized. Review [beta status](BETA.md) and the complete verification and
+rollback guidance in [Installing Collomia](INSTALLING.md).
+
 ### Build from source
 
-Building requires Go 1.26 or later:
+Building requires Go 1.26.5 or later. Collomia pins the patch-level minimum
+because Go standard-library security fixes are shipped in patch releases:
 
 ```sh
 git clone https://github.com/robert-mcdermott/collomia.git
@@ -186,12 +183,19 @@ go build -o collo ./cmd/collo
 ./collo --version
 ```
 
-The release build script runs tests and builds all six platform/architecture
-targets into `dist/`:
+The release build script validates `VERSION`, runs uncached tests, and builds
+all six platform/architecture targets through a private staging directory so a
+failed build cannot publish a partial replacement:
 
 ```sh
-scripts/build-release.sh
+scripts/build-release.sh --clean
 ```
+
+Its default commit-derived timestamp makes repeated clean builds from the same
+commit deterministic. The tag-triggered release workflow additionally runs
+the complete cross-platform gates, generates the SBOM and attestations, runs
+the generated artifacts natively, and creates a draft release. Maintainers
+should follow [Releasing Collomia](RELEASING.md).
 
 ## Five-minute setup
 
@@ -585,6 +589,7 @@ inspect.
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
+| `reduced_motion` | Optional static working indicator. Defaults to `false`, so animations remain enabled; it never changes input, commands, cancellation, or other controls. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
 | `editor` | Optional direct external-editor command and argument list used by `e` in `/diff`. Arguments support `{file}`, `{line}`, and `{column}`. |
@@ -1536,9 +1541,10 @@ collo --cwd /path/to/repository
 
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
-files, a parent/child delegated-agent tree with bounded recent output, background processes, Git branch/upstream and
-working-tree counts, provider/sandbox/MCP/trust health, and a bounded list of
-recent permission decisions and tool failures. Git inspection is read-only,
+files, a parent/child delegated-agent tree with bounded recent output,
+background processes, Git branch/upstream and working-tree counts,
+provider/sandbox/MCP/trust health with concise recovery actions, and bounded
+recent activity. Git inspection is read-only,
 runs asynchronously with a short timeout, and reports non-Git workspaces
 normally; press `r` in the Session tab to refresh it. `/agents` provides a
 searchable view of each retained delegated outcome, and `alt+a` opens explicit
@@ -1551,10 +1557,21 @@ Markdown is rendered in the active theme. Fenced source code, expanded
 Tool output is initially compact and can be expanded without leaving the
 conversation.
 
+`/activity` opens the bounded in-memory operator timeline retained for the
+current session: turns, completed tool events, permission decisions, file
+changes, plan updates, delegated-agent state, context compaction, warnings,
+and failures. It is projected from the same durable runtime events used by
+headless output and session recovery; opening it does not execute a tool,
+contact a provider, or replay prior work. The UI retains at most the newest
+500 projected entries, while the append-only session JSONL remains the durable
+record. Press `f` to cycle only categories present, `/` to search, `n`/`N` to
+move between matches, arrow/page keys to navigate, and `y` to copy the selected
+failure ID (or the selected activity text when no failure ID exists).
+
 The layout adapts to narrow terminals: below 44 columns the header shows only
 the active tab, status content is truncated rather than wrapping into the
-composer, and full-screen transcript/diff views use the available rows. The
-80x24 layout is a supported baseline. Resizing preserves a manually scrolled
+composer, and full-screen transcript/activity/diff views use the available
+rows. The 80x24 layout is a supported baseline. Resizing preserves a manually scrolled
 chat position; new streaming output no longer pulls you to the bottom. Press
 `end` to resume live follow.
 
@@ -1574,6 +1591,9 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
+| `f` in Activity | Cycle the activity categories present in this session. |
+| `/`, then `n` / `N` in Activity | Search activity and move between matches. |
+| `y` in Activity | Copy the selected failure ID, or the activity text when no ID is present. |
 | `r` in Session | Refresh the asynchronous Git workspace summary. |
 | `page up` / `page down` | Scroll the transcript. |
 | `home` / `end` | Jump to the top or bottom; `end` resumes live follow. |
@@ -1587,8 +1607,8 @@ theme-aware transient dialogs.
 
 While a provider turn is running, the composer remains available for a small
 local-control command lane: `/help`, `/status`, `/context`, `/tasks`, `/tools`,
-`/config`, `/attachments`, `/transcript`, `/diff`, read-only `/ps`, and
-`/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
+`/config`, `/attachments`, `/transcript`, `/activity`, `/diff`, read-only
+`/ps`, and `/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
 the composer as unsent drafts; they are not queued to the model or executed
 concurrently. If the agent asks a question, Collomia preserves and restores the
 draft around the question dialog.
@@ -1626,6 +1646,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/verify [focus]` | Detect and run project verification commands, recording plan results. |
 | `/diff` | Open the interactive session diff viewer. |
 | `/transcript` | Open the complete raw transcript for search, navigation, and copy. |
+| `/activity` | Search and category-filter the bounded event-derived session timeline; `y` copies a selected failure ID when present. |
 | `/undo` | Revert the most recent tracked agent file change when the file has not diverged externally. |
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
@@ -1856,6 +1877,22 @@ Persist the preference, or force the default for one invocation with
 }
 ```
 
+Animations also remain enabled by default. To replace the decorative working
+spinner with a static marker:
+
+```json
+{
+  "options": {
+    "reduced_motion": true
+  }
+}
+```
+
+This setting affects only decorative progress motion. The composer remains
+editable, the busy-safe slash-command lane remains available, and cancellation,
+approvals, questions, and agent controls behave exactly as they do with the
+animated indicator.
+
 Global navigation keys can be remapped by action. Each omitted action inherits
 its earlier/default binding, so a project may override just one user binding.
 Supported values are `ctrl+letter`, `alt+letter`, `f1` through `f12`, `pgup`,
@@ -2082,6 +2119,13 @@ Retrieve only the final verdict from a saved stream:
 ```sh
 tail -n 1 run.jsonl | jq '.result, .usage'
 ```
+
+Failed and cancelled runs also carry one opaque correlation value at the event
+level (`failure_id`) and inside `result.failure.id`. The same ID is shown by the
+TUI and written to debug logs. It identifies one occurrence, not a category:
+reproducing the same problem generates a new ID. The ID contains no prompt,
+path, provider, session, or credential data and should not be parsed beyond
+matching it across diagnostics.
 
 Provider-originated error events include a `provider` object with kind, HTTP
 status, retryability, retry delay, operation, and request ID when available.
@@ -3476,6 +3520,10 @@ expanding environment-backed provider or MCP values. The default bundle contains
   deployments, endpoints, profiles, or credential references.
 - Aggregate MCP enabled/disabled/trusted counts without server definitions.
 - Git availability/repository status and effective sandbox capability status.
+- Up to eight recent opaque failure IDs for correlating the report with local
+  diagnostics. The bundle reads only bounded debug-log tails for these values;
+  it does not copy their messages or attributes unless logs are explicitly
+  requested.
 - The capability matrix generated by the same binary.
 
 The default bundle excludes configuration values, all environment variable
@@ -3511,6 +3559,12 @@ collo doctor --strict
 ```
 
 Then reproduce with `--debug` if the failure is not explained.
+
+When the TUI reports `Failure ID: err-…`, include that ID in the issue. A
+headless JSONL run exposes the same value as `failure_id` and
+`result.failure.id`. A default support bundle includes up to eight recent IDs,
+which lets maintainers match a report to a separately reviewed debug log
+without placing error text in the default archive.
 
 For a problem report, prefer a reviewed `collo support bundle` over copying
 whole configuration, session, audit, or environment files. Add
@@ -3649,6 +3703,8 @@ occurs. Prefer a narrow fix over globally disabling controls.
 ### TUI colors, notifications, or rendering look wrong
 
 - Set `NO_COLOR=1` or choose `/theme plain` for limited terminals.
+- Set `options.reduced_motion` to `true` if you prefer a static progress
+  marker; omit it or set it to `false` to retain the normal animations.
 - Ensure stdout is a real TTY; use `collo run` for redirected output.
 - For tmux background changes, enable `allow-passthrough`.
 - Terminal OSC support controls background and desktop notifications; missing

@@ -34,6 +34,7 @@ func WriteStarter(path string, global bool) error {
 		DelegateMaxConcurrency      int               `json:"delegate_max_concurrency"`
 		DelegateProviderConcurrency map[string]int    `json:"delegate_provider_concurrency"`
 		AlternateScreen             bool              `json:"alternate_screen"`
+		ReducedMotion               bool              `json:"reduced_motion"`
 		Keybindings                 map[string]string `json:"keybindings"`
 	}
 	type starterConfig struct {
@@ -80,6 +81,7 @@ func WriteStarter(path string, global bool) error {
 			DelegateMaxConcurrency:      4,
 			DelegateProviderConcurrency: map[string]int{},
 			AlternateScreen:             true,
+			ReducedMotion:               false,
 			Keybindings:                 DefaultKeybindings(),
 		}
 	} else {
@@ -334,6 +336,9 @@ const configReferenceJSONC = `
     // true uses a clean full-screen buffer. false keeps the final TUI frame
     // in the terminal's native scrollback; --no-alt-screen overrides it.
     "alternate_screen": true,
+    // Optional. false preserves the animated working indicator. true uses a
+    // static marker without changing input, cancellation, or other controls.
+    "reduced_motion": false,
     // Global TUI actions are remappable. Approval/question decision keys stay
     // fixed and are always shown in their dialog.
     "keybindings": {

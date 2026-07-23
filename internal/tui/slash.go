@@ -265,6 +265,8 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.openDiffView()
 	case "/transcript":
 		m.openTranscriptView()
+	case "/activity":
+		m.openActivityView()
 	case "/undo":
 		snapshot, err := m.runtime.Changes.Undo()
 		if err != nil {
@@ -373,7 +375,7 @@ func busySlashAllowed(line string) bool {
 		return false
 	}
 	switch strings.ToLower(fields[0]) {
-	case "/help", "/status", "/context", "/tasks", "/tools", "/config", "/attachments", "/transcript", "/diff":
+	case "/help", "/status", "/context", "/tasks", "/tools", "/config", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
 	case "/ps":
 		return len(fields) == 1

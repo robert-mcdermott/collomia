@@ -42,7 +42,8 @@
     "delegate": { "$ref": "#/$defs/delegateStatus" },
     "result": { "$ref": "#/$defs/runResult" },
     "provider": { "$ref": "#/$defs/providerFailure" },
-    "error": { "type": "string" }
+    "error": { "type": "string" },
+    "failure_id": { "type": "string", "pattern": "^err-[0-9a-f]{16}$" }
   },
   "allOf": [
     {
@@ -174,6 +175,7 @@
         "pending_guidance": { "type": "integer", "minimum": 0 },
         "summary": { "type": "string" },
         "error": { "type": "string" },
+        "failure_id": { "type": "string", "pattern": "^err-[0-9a-f]{16}$" },
         "evidence": { "type": "array", "items": { "type": "string" } },
         "changed_files": { "type": "array", "items": { "type": "string" } },
         "worktree": { "type": "string" },
@@ -193,6 +195,7 @@
       "required": ["kind"],
       "additionalProperties": true,
       "properties": {
+        "id": { "type": "string", "pattern": "^err-[0-9a-f]{16}$" },
         "kind": { "enum": ["usage", "configuration", "permission", "provider", "timeout", "cancelled", "runtime"] },
         "retryable": { "type": "boolean" },
         "provider": { "$ref": "#/$defs/providerFailure" }

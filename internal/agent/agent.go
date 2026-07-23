@@ -15,6 +15,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/audit"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/plan"
@@ -184,26 +185,26 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	send(event.New(event.KindTurnStart))
 	if err := a.lifecycle.Gate(ctx, hooks.Payload{Event: "user_prompt", Workspace: a.workspace, Subject: "user_prompt", Prompt: prompt}); err != nil {
 		blocked := fmt.Errorf("prompt blocked by hook: %w", err)
-		send(errorEvent(blocked))
+		blocked = reportError(send, blocked)
 		return "", blocked
 	}
 	retainedParts, err := a.retainPromptParts(parts)
 	if err != nil {
 		wrapped := fmt.Errorf("retain prompt attachments: %w", err)
-		send(errorEvent(wrapped))
+		wrapped = reportError(send, wrapped)
 		return "", wrapped
 	}
 	a.appendMessage(provider.Message{Role: "user", Content: prompt, Parts: retainedParts})
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
 		if a.shouldCompact() {
 			if _, err := a.compact(ctx, "", send); err != nil {
-				send(errorEvent(fmt.Errorf("automatic compaction failed: %w", err)))
+				reportError(send, fmt.Errorf("automatic compaction failed: %w", err))
 			}
 		}
 		select {
 		case <-ctx.Done():
-			send(errorEvent(ctx.Err()))
-			return "", ctx.Err()
+			err := reportError(send, ctx.Err())
+			return "", err
 		default:
 		}
 		a.applySteering()
@@ -218,12 +219,13 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			messages, resolveErr = a.attachments.ResolveMessages(messages)
 			if resolveErr != nil {
 				wrapped := fmt.Errorf("prepare provider attachments: %w", resolveErr)
-				send(errorEvent(wrapped))
+				wrapped = reportError(send, wrapped)
 				return "", wrapped
 			}
 		}
 		if client == nil {
-			return "", errors.New("no provider client configured")
+			err := reportError(send, errors.New("no provider client configured"))
+			return "", err
 		}
 		a.mu.RLock()
 		onAction := a.onAction
@@ -235,14 +237,14 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		defs := a.toolDefinitions(plan)
 		requestMaxTokens, budgetErr := a.nextRequestMaxTokens()
 		if budgetErr != nil {
-			send(errorEvent(budgetErr))
+			budgetErr = reportError(send, budgetErr)
 			return "", budgetErr
 		}
 		req := provider.Request{Model: model, System: a.systemPrompt(plan), Messages: messages, Tools: defs, MaxTokens: requestMaxTokens, Temperature: a.providerConfig.Temperature}
 		if reporter, ok := client.(provider.CapabilityReporter); ok {
 			if err := provider.ValidateRequest(reporter.Capabilities(), req); err != nil {
 				wrapped := fmt.Errorf("provider capability preflight: %w", err)
-				send(errorEvent(wrapped))
+				wrapped = reportError(send, wrapped)
 				return "", wrapped
 			}
 		}
@@ -276,7 +278,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			}
 		})
 		if err != nil {
-			send(errorEvent(err))
+			err = reportError(send, err)
 			return "", err
 		}
 		a.mu.Lock()
@@ -303,7 +305,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 		if budget > 0 && usage.InputTokens+usage.OutputTokens > budget {
 			err := fmt.Errorf("%w: provider reported %d tokens after a limit of %d", ErrTokenBudgetExceeded, usage.InputTokens+usage.OutputTokens, budget)
-			send(errorEvent(err))
+			err = reportError(send, err)
 			return response.Content, err
 		}
 		if len(response.ToolCalls) == 0 {
@@ -317,7 +319,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 	}
 	err = fmt.Errorf("agent stopped after %d iterations", a.maxIterations)
-	send(errorEvent(err))
+	err = reportError(send, err)
 	return "", err
 }
 
@@ -396,6 +398,7 @@ func withOverriddenContent(toolName string, args json.RawMessage, content string
 func errorEvent(err error) event.Event {
 	e := event.New(event.KindError)
 	e.Error = err.Error()
+	e.FailureID = failureid.ID(err)
 	if providerErr, ok := provider.AsError(err); ok {
 		e.Provider = &event.ProviderFailure{
 			Name: providerErr.Provider, Operation: providerErr.Operation,
@@ -405,6 +408,14 @@ func errorEvent(err error) event.Event {
 		}
 	}
 	return e
+}
+
+func reportError(send Emit, err error) error {
+	err = failureid.Ensure(err)
+	if send != nil {
+		send(errorEvent(err))
+	}
+	return err
 }
 
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) tools.Result {
@@ -710,6 +721,7 @@ type DelegateResult struct {
 	Status         string         `json:"status"`
 	Summary        string         `json:"summary,omitempty"`
 	Error          string         `json:"error,omitempty"`
+	FailureID      string         `json:"failure_id,omitempty"`
 	Evidence       []string       `json:"evidence,omitempty"`
 	ChangedFiles   []string       `json:"changed_files,omitempty"`
 	ChangedHunks   []DelegateHunk `json:"changed_hunks,omitempty"`
@@ -790,7 +802,7 @@ func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int)
 		minimal[i] = DelegateResult{
 			ID: boundedDelegateText(result.ID, 128), Name: boundedDelegateText(result.Name, 64),
 			Profile: boundedDelegateText(result.Profile, 64), PlanStep: result.PlanStep, Status: result.Status,
-			Error: boundedDelegateText(result.Error, 128), TokenBudget: result.TokenBudget,
+			Error: boundedDelegateText(result.Error, 128), FailureID: result.FailureID, TokenBudget: result.TokenBudget,
 			TimeoutSeconds: result.TimeoutSeconds, Truncated: true,
 		}
 	}
@@ -953,13 +965,14 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		})
 	}
 	finishError := func(err error) DelegateResult {
+		err = failureid.Ensure(err)
 		if team != nil {
 			team.FinishDetailed(id, "", nil, nil, "", "", "", provider.Usage{}, err)
 			if status, ok := team.Get(id); ok {
 				return delegateResult(status)
 			}
 		}
-		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
 	}
 	if strings.TrimSpace(task.Task) == "" {
 		return finishError(errors.New("empty task"))
@@ -994,7 +1007,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
 }
 
 func validatePlanAssignment(board *plan.Board, stepID int) error {
@@ -1252,7 +1265,7 @@ func additiveValues(inherited, additions []string) []string {
 func delegateResult(status DelegateStatus) DelegateResult {
 	return DelegateResult{
 		ID: status.ID, Name: status.Name, Profile: status.Profile, PlanStep: status.PlanStep, Status: status.Status,
-		Summary: status.Summary, Error: status.Error, Evidence: status.Evidence,
+		Summary: status.Summary, Error: status.Error, FailureID: status.FailureID, Evidence: status.Evidence,
 		ChangedFiles: status.Changed, Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
 		InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens,
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds,

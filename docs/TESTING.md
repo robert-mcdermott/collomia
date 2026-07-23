@@ -41,6 +41,8 @@ The current corpus covers these outcome-oriented scenarios:
 | Interrupted mutation recovery | Durable session store and recovery | Loading adds an interruption warning but never executes the recorded write. |
 | Long-context retention | Compaction, pinned plan, exact failure evidence | Compaction retains authoritative plan state and bounded exact failure evidence. |
 | Conversation rewind | Durable branch creation and restoration | Rewind preserves the source, never replays recorded tools, and leaves workspace state unchanged. |
+| Governed parallel delegation | Real delegate tool, shared FIFO scheduler, structured plan, read-only child, isolated write child | Both children run concurrently, retain plan association/evidence, and the write appears only in its retained worktree. |
+| Selective delegated integration | Git worktree validation, common-base diff, hunk picker model, rooted publication, change tracker, real Go verification | With a Windows-style inherited `core.autocrlf=true`, parent and child remain byte-stable; one of two hunks lands, tests pass, and the child worktree remains available. |
 
 These are product evaluations rather than model-quality benchmarks. The
 scripted provider deliberately selects the tool calls so CI can test runtime
@@ -110,6 +112,10 @@ Important failure-oriented tests include:
   the guarantee that queued/running work resumes as inert `interrupted` state;
   common-base hunk comparison distinguishes overlapping and disjoint sibling
   edits without performing a merge.
+- Delegate cancellation at the scheduler queue, provider-call, and interactive
+  approval boundaries. Cancelling an approval-waiting child cannot publish its
+  proposed write, revive the child through a late state update, or cancel a
+  sibling.
 - Bounded, exactly-once steering delivery at provider boundaries, structured
   plan-step validation, recent-output tail limits, and operator metadata event
   round trips.
@@ -119,20 +125,78 @@ Important failure-oriented tests include:
   selective text hunks, records the result in the change tracker, retains the
   worktree, refuses parent drift, and rechecks changes made while approval is
   pending.
+- Cross-platform Git fixtures explicitly override inherited configuration and
+  reproduce `core.autocrlf=true`; nested mixed-case paths, LF/CRLF conversion,
+  Git-significant executable bits, and Windows-irrelevant permission bits are
+  tested according to each platform's semantics.
+- One opaque failure ID remains stable across the returned error, JSONL error
+  and final-result records, TUI diagnostic, durable delegate status, debug log,
+  and support-bundle correlation metadata. Tests validate the ID shape without
+  depending on a particular random value.
 - TUI agent action selection requires an explicit stop action rather than
   making the first picker selection destructive.
+- The activity projection excludes streaming noise, retains a fixed newest
+  window, restores from durable events without replay, and keeps explicit
+  status words in plain mode. TUI tests cover filtering, search, failure-ID
+  copy fallback, resize, and the opt-in static progress marker while proving
+  the composer and busy controls remain available.
 
 When adding a fault seam, keep production defaults on the real operating
 system implementation. Tests may inject writers, clocks, transports, or
 providers, but normal runtime behavior should not depend on test-only global
 state.
 
+## Performance benchmarks
+
+The performance checks are diagnostic benchmarks rather than flaky wall-clock
+CI gates. Run them on a quiet machine when changing session projection or TUI
+rendering:
+
+```sh
+go test -run '^$' -bench 'ProjectLargeSession' -benchmem ./internal/activity
+go test -run '^$' -bench 'ActivityView500Items' -benchmem ./internal/tui
+```
+
+The first projects 10,000 durable events into the fixed 500-entry operator
+window. The second renders that maximum-size activity view. Unit tests enforce
+the structural memory bounds and cross-platform screen dimensions; benchmark
+numbers provide a local regression signal without failing CI because two
+runners have different timing.
+
 ## CI layout
 
-The main test matrix runs build, unit/integration tests, race detection, and
-`go vet` on Ubuntu, macOS, and Windows. A separate Ubuntu quality job runs the
-offline evaluation package once without cache reuse and performs short fuzz
+The main test matrix runs build, fresh (`-count=1`) unit/integration/evaluation
+tests, fresh race detection, `go vet`, and the native shell or PowerShell
+installer tests on Ubuntu, macOS, and Windows. A separate Ubuntu quality job
+verifies downloaded modules, runs pinned `govulncheck`, runs the offline
+evaluation package once without cache reuse, and performs short fuzz
 campaigns. Release builds wait for both jobs.
+
+Run installer regressions locally with:
+
+```sh
+scripts/test-install.sh
+```
+
+```powershell
+./scripts/test-install.ps1
+```
+
+The shell fixture exercises latest and pinned URLs, checksum verification,
+successful upgrade and pinned rollback, duplicate-manifest rejection, atomic
+publication, and preservation of an existing binary after a failed upgrade
+without making a network request. The PowerShell fixture covers the same
+install/upgrade/rollback/failure lifecycle with native fixture executables plus
+architecture/version selection and strict checksum parsing. The release
+workflow additionally downloads and executes the actual Windows release
+artifact on a native runner.
+
+On a version tag, the dedicated release workflow repeats the complete
+cross-platform qualification against the tagged commit, runs the security and
+deterministic quality gates, checks tag/`VERSION` equality and main-branch
+ancestry, generates all artifacts plus the CycloneDX SBOM, and executes the
+produced binary on all three operating systems. Only then can it attest the
+artifacts and create a draft release.
 
 Golden terminal fixtures normalize line endings and padding so the same
 semantic screen is stable across operating systems. Use semantic assertions

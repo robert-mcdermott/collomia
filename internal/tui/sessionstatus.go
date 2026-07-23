@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	mcpclient "github.com/robert-mcdermott/collomia/internal/mcp"
 	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
 )
@@ -14,13 +13,6 @@ import (
 type workspaceStatusMsg struct {
 	generation int
 	status     workspacestate.GitStatus
-}
-
-type sessionActivity struct {
-	kind    string
-	tool    string
-	summary string
-	ok      bool
 }
 
 func inspectWorkspaceCmd(root string, generation int) tea.Cmd {
@@ -33,44 +25,6 @@ func (m *Model) refreshWorkspaceStatus() tea.Cmd {
 	m.workspaceGeneration++
 	m.workspaceLoading = true
 	return inspectWorkspaceCmd(m.runtime.Workspace, m.workspaceGeneration)
-}
-
-func (m *Model) recordSessionActivity(e runtimeevent.Event) {
-	activity := sessionActivity{}
-	switch e.Kind {
-	case runtimeevent.KindPermissionDecision:
-		if e.Permission == nil {
-			return
-		}
-		activity.kind = "permission"
-		activity.tool = e.Permission.Tool
-		activity.summary = e.Permission.Summary
-		activity.ok = e.Permission.Allowed
-		decision := "denied"
-		if activity.ok {
-			decision = "allowed"
-		}
-		if e.Permission.Source != "" {
-			activity.summary = strings.TrimSpace(activity.summary + " · " + decision + " via " + e.Permission.Source)
-		} else {
-			activity.summary = strings.TrimSpace(activity.summary + " · " + decision)
-		}
-	case runtimeevent.KindToolResult:
-		if e.Tool == nil || !e.Tool.IsError {
-			return
-		}
-		activity.kind = "tool failure"
-		activity.tool = e.Tool.Name
-		activity.summary = e.Tool.Summary
-		activity.ok = false
-	default:
-		return
-	}
-	const retained = 8
-	m.recentActivity = append(m.recentActivity, activity)
-	if len(m.recentActivity) > retained {
-		m.recentActivity = append([]sessionActivity(nil), m.recentActivity[len(m.recentActivity)-retained:]...)
-	}
 }
 
 func (m Model) gitStatusText() string {
@@ -111,6 +65,15 @@ func (m Model) projectTrustText() string {
 	return "no project configuration"
 }
 
+func (m Model) projectConfigurationQuarantined() bool {
+	for _, layer := range m.runtime.Config.Layers {
+		if layer.Name == "project" {
+			return !layer.Applied
+		}
+	}
+	return false
+}
+
 func (m Model) mcpHealthText() string {
 	statuses := m.runtime.MCP.Statuses()
 	if len(statuses) == 0 {
@@ -130,4 +93,13 @@ func (m Model) mcpHealthText() string {
 		return "status unknown"
 	}
 	return strings.Join(parts, " / ")
+}
+
+func (m Model) mcpNeedsAttention() bool {
+	for _, status := range m.runtime.MCP.Statuses() {
+		if status.Status == mcpclient.StatusError || status.Status == mcpclient.StatusUntrusted {
+			return true
+		}
+	}
+	return false
 }

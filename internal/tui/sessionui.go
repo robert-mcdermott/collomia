@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/activity"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
@@ -18,8 +19,10 @@ type savedToolCall struct {
 // resuming never makes accepted conversation or tool evidence disappear.
 func (m *Model) rebuildTranscript() {
 	var messages []provider.Message
+	m.activities = nil
 	if m.runtime.Session != nil {
 		messages = m.runtime.Session.TranscriptMessages()
+		m.activities = activity.Project(m.runtime.Session.RecentEvents(), activity.DefaultLimit)
 	}
 	m.blocks = restoredBlocks(messages)
 	m.resetPromptHistory(messages)

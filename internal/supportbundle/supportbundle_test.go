@@ -40,7 +40,18 @@ func TestCreateDefaultBundleExcludesSensitiveMaterial(t *testing.T) {
 	if err := os.MkdirAll(logs, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(logs, "debug.log"), []byte("secret="+secret+" workspace="+workspace), 0o600); err != nil {
+	const failureID = "err-0123456789abcdef"
+	logData, err := json.Marshal(map[string]string{
+		"time":       "2026-07-21T12:00:00Z",
+		"msg":        "event",
+		"failure_id": failureID,
+		"error":      "secret=" + secret + " workspace=" + workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logData = append(logData, '\n')
+	if err := os.WriteFile(filepath.Join(logs, "debug.log"), logData, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,6 +87,9 @@ func TestCreateDefaultBundleExcludesSensitiveMaterial(t *testing.T) {
 	}
 	if manifest.SchemaVersion != SchemaVersion || manifest.Privacy.LogsRequested || manifest.Privacy.LogsIncluded || manifest.Health.Providers.Types["openai-compatible"] < 1 {
 		t.Fatalf("manifest=%+v", manifest)
+	}
+	if len(manifest.Health.RecentFailureIDs) != 1 || manifest.Health.RecentFailureIDs[0] != failureID {
+		t.Fatalf("recent failure IDs=%v", manifest.Health.RecentFailureIDs)
 	}
 	for _, layer := range manifest.Health.Configuration.Layers {
 		for _, key := range layer.Keys {
