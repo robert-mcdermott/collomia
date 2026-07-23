@@ -117,6 +117,17 @@ jobs:
             -notimestamp \
             -output dist/collomia.cdx.json \
             .
+          serial_seed="$(printf '%s' "$GITHUB_REPOSITORY:$GITHUB_SHA" | sha256sum | cut -d' ' -f1)"
+          serial_uuid="${serial_seed:0:8}-${serial_seed:8:4}-8${serial_seed:13:3}-8${serial_seed:17:3}-${serial_seed:20:12}"
+          jq --arg serial "urn:uuid:$serial_uuid" \
+            '.serialNumber = $serial' \
+            dist/collomia.cdx.json > dist/collomia.cdx.json.tmp
+          mv dist/collomia.cdx.json.tmp dist/collomia.cdx.json
+          jq -e '
+            .bomFormat == "CycloneDX" and
+            (.specVersion | type == "string") and
+            (.serialNumber | test("^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$"))
+          ' dist/collomia.cdx.json >/dev/null
       - name: Checksum and inspect release assets
         shell: bash
         run: |
