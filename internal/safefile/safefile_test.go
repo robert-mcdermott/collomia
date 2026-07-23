@@ -2,9 +2,11 @@ package safefile
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -47,6 +49,65 @@ func TestReplaceIsAtomicAndBreaksHardLinks(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestReplaceWriteFailurePreservesOriginalAndCleansTemporary(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.json")
+	if err := os.WriteFile(path, []byte("accepted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := Open(root, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	target.writeTemp = func(file *os.File, data []byte) error {
+		if _, err := file.Write(data[:len(data)/2]); err != nil {
+			return err
+		}
+		return io.ErrUnexpectedEOF
+	}
+	if err := target.Replace([]byte("interrupted replacement"), 0o600); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("replace error=%v", err)
+	}
+	assertOriginalAndNoTemps(t, root, path, "accepted")
+}
+
+func TestReplacePublishFailurePreservesOriginalAndCleansTemporary(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.json")
+	if err := os.WriteFile(path, []byte("accepted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := Open(root, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	publishErr := errors.New("injected publish interruption")
+	target.publishTemp = func(*os.Root, string, string) error { return publishErr }
+	if err := target.Replace([]byte("unpublished replacement"), 0o600); !errors.Is(err, publishErr) {
+		t.Fatalf("replace error=%v", err)
+	}
+	assertOriginalAndNoTemps(t, root, path, "accepted")
+}
+
+func assertOriginalAndNoTemps(t *testing.T, root, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != want {
+		t.Fatalf("published file=%q err=%v, want %q", data, err, want)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".collomia-") && strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("interrupted replacement left temporary file %q", entry.Name())
+		}
 	}
 }
 

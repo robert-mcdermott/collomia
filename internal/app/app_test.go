@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -56,6 +57,37 @@ func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testi
 	}
 	if info, err := os.Stat(filepath.Join(home, ".collomia", "audit")); err != nil || !info.IsDir() {
 		t.Fatalf("audit infrastructure should remain available: info=%v err=%v", info, err)
+	}
+}
+
+func TestRuntimeCloseCancelsActiveDelegates(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime.Team.Enqueue(agent.DelegateStart{ID: "active", Name: "worker", Task: "wait", Cancel: cancel})
+	runtime.Close()
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("runtime close did not cancel active delegated work")
+	}
+}
+
+func BenchmarkRuntimeStartup(b *testing.B) {
+	home := b.TempDir()
+	b.Setenv("HOME", home)
+	b.Setenv("USERPROFILE", home)
+	workspace := b.TempDir()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runtime, err := New(context.Background(), Options{Workspace: workspace, Ephemeral: true})
+		if err != nil {
+			b.Fatal(err)
+		}
+		runtime.Close()
 	}
 }
 

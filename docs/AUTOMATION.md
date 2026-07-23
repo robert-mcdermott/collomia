@@ -46,6 +46,10 @@ Collomia may add optional fields to schema v1. Consumers should validate known
 fields and tolerate new optional fields as described by their chosen JSON
 decoder. For that reason, the published schema permits additional properties
 while still validating all known fields and kind-specific required payloads.
+New event kinds require an explicit compatibility decision because existing
+strict replay consumers reject unknown kinds. The repository's
+[compatibility and migration policy](COMPATIBILITY.md) defines the complete
+versioning contract.
 
 ## Event kinds
 

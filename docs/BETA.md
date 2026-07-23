@@ -42,6 +42,9 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   endpoint.
 - The project has extensive automated security tests but has not completed the
   independent security review required for 1.0.
+- Configuration, event, and session formats have explicit version checks and a
+  documented [compatibility policy](COMPATIBILITY.md), but downgrading a global
+  state directory after a newer release has written to it is not guaranteed.
 
 Do not advertise the beta as safe for unattended production changes,
 deployments, credential-bearing automation, or security-critical environments.

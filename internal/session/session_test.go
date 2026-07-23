@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -99,6 +101,67 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionRecordsWriteCurrentSchemaVersion(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+	data, err := os.ReadFile(store.path(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record Record
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.SchemaVersion != RecordSchemaVersion {
+		t.Fatalf("record schema_version=%d, want %d", record.SchemaVersion, RecordSchemaVersion)
+	}
+}
+
+func TestSessionLoadsLegacyV1RecordsWithAdditiveFields(t *testing.T) {
+	store := testStore(t)
+	id := "legacy-v1"
+	input := strings.Join([]string{
+		`{"type":"meta","time":"2026-07-23T00:00:00Z","meta":{"id":"legacy-v1","workspace":"/workspace","provider":"fixture","model":"model","created_at":"2026-07-23T00:00:00Z","updated_at":"2026-07-23T00:00:00Z","future_meta":"ignored"},"future_record":{"value":1}}`,
+		`{"type":"message","time":"2026-07-23T00:00:01Z","message":{"role":"user","content":"legacy message","future_message":true}}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(store.path(id), []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if messages := sess.TranscriptMessages(); len(messages) != 1 || messages[0].Content != "legacy message" {
+		t.Fatalf("legacy transcript=%+v", messages)
+	}
+}
+
+func TestSessionRejectsNewerRecordSchema(t *testing.T) {
+	store := testStore(t)
+	id := "future"
+	meta := Meta{
+		ID: id, Workspace: "/workspace", Provider: "fixture", Model: "model",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(Record{SchemaVersion: RecordSchemaVersion + 1, Type: "meta", Time: time.Now().UTC(), Meta: &meta})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.path(id), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(id); err == nil || !strings.Contains(err.Error(), "unsupported schema_version") {
+		t.Fatalf("future session schema error=%v", err)
+	}
+}
+
 func TestOpenUsesGlobalRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -163,6 +226,43 @@ func TestInterruptedToolCallIsMarkedNotReplayed(t *testing.T) {
 	last := active[len(active)-1]
 	if last.Role != "tool" || last.ToolCallID != "t1" || !strings.Contains(last.Content, "interrupted") {
 		t.Fatalf("dangling tool call must be marked interrupted: %+v", last)
+	}
+}
+
+func BenchmarkLoadLongSession(b *testing.B) {
+	store, err := OpenAt(b.TempDir(), "/workspace")
+	if err != nil {
+		b.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < 2_000; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		sess.AppendMessage(provider.Message{Role: role, Content: fmt.Sprintf("message %04d with bounded representative content", i)})
+		if i%20 == 19 {
+			sess.AppendEvent(event.New(event.KindTurnEnd))
+		}
+	}
+	if err := sess.Err(); err != nil {
+		b.Fatal(err)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loaded, err := store.Load(id)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(loaded.TranscriptMessages()) != 2_000 {
+			b.Fatalf("loaded %d messages", len(loaded.TranscriptMessages()))
+		}
+		loaded.Close()
 	}
 }
 

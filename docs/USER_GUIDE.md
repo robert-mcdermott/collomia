@@ -474,7 +474,10 @@ activate that file.
 
 `schema_version` is currently `1`. A missing version is treated as version 1.
 A file declaring a schema newer than the running binary is rejected with an
-instruction to upgrade Collomia.
+instruction to upgrade Collomia. Collomia does not silently rewrite
+configuration. The supported-format, upgrade, downgrade, and future migration
+rules are defined in the
+[compatibility and migration policy](COMPATIBILITY.md).
 
 ## Complete configuration reference
 
@@ -3307,6 +3310,14 @@ persistence failure and stops appending records behind the torn tail. The
 current turn fails visibly in the TUI or headless result, and the Session tab
 shows persistence as failed. Resolve the storage problem before continuing;
 accepted history up to the final torn line remains recoverable.
+
+Every newly written session record carries `schema_version: 1`; older records
+without that field are treated as legacy version 1. Additive optional fields
+remain readable, while a newer record schema is rejected before Collomia opens
+the session for appending. Back up the global `.collomia` directory before a
+major upgrade when its sessions are important. Downgrading a state directory
+already used by a newer release is not guaranteed; see the
+[compatibility and migration policy](COMPATIBILITY.md).
 
 ### Context estimation and compaction
 

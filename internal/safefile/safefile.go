@@ -22,6 +22,10 @@ type Target struct {
 	root *os.Root
 	name string
 	abs  string
+	// Per-target fault seams keep interruption tests deterministic without
+	// introducing mutable process-global hooks. Nil uses the real OS path.
+	writeTemp   func(*os.File, []byte) error
+	publishTemp func(*os.Root, string, string) error
 }
 
 // RootIdentity is a stable, opaque identity for one directory. Capture uses an
@@ -223,7 +227,11 @@ func (t *Target) Replace(data []byte, mode os.FileMode) error {
 			return fmt.Errorf("make temporary file private: %w", err)
 		}
 	}
-	if err := writeAll(file, data); err != nil {
+	writeTemp := t.writeTemp
+	if writeTemp == nil {
+		writeTemp = func(file *os.File, data []byte) error { return writeAll(file, data) }
+	}
+	if err := writeTemp(file, data); err != nil {
 		return fmt.Errorf("write temporary file: %w", err)
 	}
 	if err := file.Chmod(publishMode); err != nil {
@@ -235,7 +243,13 @@ func (t *Target) Replace(data []byte, mode os.FileMode) error {
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close temporary file: %w", err)
 	}
-	if err := t.root.Rename(tempName, t.name); err != nil {
+	publishTemp := t.publishTemp
+	if publishTemp == nil {
+		publishTemp = func(root *os.Root, oldName, newName string) error {
+			return root.Rename(oldName, newName)
+		}
+	}
+	if err := publishTemp(t.root, tempName, t.name); err != nil {
 		return fmt.Errorf("publish atomic replacement: %w", err)
 	}
 	cleanup = false

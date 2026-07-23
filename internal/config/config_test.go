@@ -324,6 +324,24 @@ func TestSchemaVersionTooNewIsRejected(t *testing.T) {
 	}
 }
 
+func TestLegacyV1ConfigWithoutSchemaKeepsLenientCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, `{
+	  "default_model": "legacy-model",
+	  "future_optional_field": {"ignored": true}
+	}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SchemaVersion != CurrentSchemaVersion || cfg.DefaultModel != "legacy-model" {
+		t.Fatalf("legacy config=%+v", cfg)
+	}
+	if _, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll, Strict: true}); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("strict compatibility check error=%v", err)
+	}
+}
+
 func TestStrictModeRejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	writeProject(t, dir, `{"defualt_model":"typo"}`)

@@ -39,13 +39,20 @@ type Meta struct {
 	Turns      int       `json:"turns,omitempty"`
 }
 
+// RecordSchemaVersion identifies the durable session-log record shape.
+// Records written before this field was introduced omit schema_version and
+// are treated as version 1. Additive optional fields do not require a bump;
+// incompatible record semantics do.
+const RecordSchemaVersion = 1
+
 // Record is one line of the session log. Type selects the payload.
 type Record struct {
-	Type    string            `json:"type"` // meta, message, event, compaction, plan
-	Time    time.Time         `json:"time"`
-	Meta    *Meta             `json:"meta,omitempty"`
-	Message *provider.Message `json:"message,omitempty"`
-	Event   *event.Event      `json:"event,omitempty"`
+	SchemaVersion int               `json:"schema_version,omitempty"`
+	Type          string            `json:"type"` // meta, message, event, compaction, plan
+	Time          time.Time         `json:"time"`
+	Meta          *Meta             `json:"meta,omitempty"`
+	Message       *provider.Message `json:"message,omitempty"`
+	Event         *event.Event      `json:"event,omitempty"`
 	// Replaced is set on compaction records: how many active messages the
 	// summary message replaces.
 	Replaced int             `json:"replaced,omitempty"`
@@ -166,6 +173,9 @@ func (s *Store) Load(id string) (*Session, error) {
 				continue
 			}
 			return nil, fmt.Errorf("session %s line %d is corrupt: %w", id, i+1, err)
+		}
+		if err := validateRecordVersion(id, i+1, record); err != nil {
+			return nil, err
 		}
 		sess.replay(record)
 	}
@@ -377,13 +387,30 @@ func (s *Store) readRecords(id string) ([]Record, error) {
 			}
 			return nil, fmt.Errorf("session %s line %d is corrupt: %w", id, i+1, err)
 		}
+		if err := validateRecordVersion(id, i+1, record); err != nil {
+			return nil, err
+		}
 		records = append(records, record)
 	}
 	return records, nil
 }
 
+func validateRecordVersion(id string, line int, record Record) error {
+	version := record.SchemaVersion
+	if version == 0 {
+		version = 1 // legacy records written before explicit versioning
+	}
+	if version != RecordSchemaVersion {
+		return fmt.Errorf("session %s line %d uses unsupported schema_version %d (this build supports %d)", id, line, version, RecordSchemaVersion)
+	}
+	return nil
+}
+
 func writeRecords(w io.Writer, records []Record) error {
 	for _, record := range records {
+		if record.SchemaVersion == 0 {
+			record.SchemaVersion = RecordSchemaVersion
+		}
 		data, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -682,6 +709,7 @@ func (sess *Session) markInterrupted() {
 }
 
 func (sess *Session) append(record Record) error {
+	record.SchemaVersion = RecordSchemaVersion
 	record.Time = time.Now().UTC()
 	data, err := json.Marshal(record)
 	if err != nil {

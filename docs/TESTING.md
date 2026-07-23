@@ -35,11 +35,15 @@ The current corpus covers these outcome-oriented scenarios:
 | --- | --- | --- |
 | Repository inspection | Agent loop, `search_files`, `read_file`, implicit read permissions | Finds grounded file/line evidence and changes nothing. |
 | Bug fix and verification | Agent loop, `edit_file`, change tracker, verification detection, `run_command` | Applies the intended edit, runs the fixture's real Go tests, and reports success only after passing output. |
+| Behavior-preserving refactor | Agent loop, `read_file`, atomic `apply_patch`, change tracker, `run_command` | Removes duplication through one grounded patch, preserves behavior, and reports completion only after the existing tests pass. |
+| Generated tests | Agent loop, `read_file`, `write_file`, change tracker, `run_command` | Creates boundary-focused tests and executes the fixture's real Go test suite before reporting success. |
+| Grounded code review | Review prompt, `git_status`, `git_diff`, `read_file` | Identifies a real boundary regression at the exact file/line and leaves the worktree unchanged. |
 | Permission refusal | Agent loop, command analysis, permission manager | A headless `ask` run records denial, never starts the command, and continues with an honest answer. |
 | External MCP prompt injection | Agent loop, external tool, permission manager, built-in file tools | An allowed external read remains usable as evidence but can also request a write and forge a permission grant; the write is denied and no file changes. |
 | Multimodal attachment lifecycle | Session store, rooted workspace reads, prompt hooks, provider message model, TUI commands, provider encoders, MCP rich results | Image bytes stay outside JSONL, symlink escapes and hook-blocked retention fail closed, integrity checks hold, fork/rewind/delete preserve the right references, and text-only requests retain their old wire shape. |
 | Interrupted mutation recovery | Durable session store and recovery | Loading adds an interruption warning but never executes the recorded write. |
 | Long-context retention | Compaction, pinned plan, exact failure evidence | Compaction retains authoritative plan state and bounded exact failure evidence. |
+| Compaction decision quality | Manual compaction and the following provider request | User constraints, decisions, files, test strategy, and recent observations remain available after compression. |
 | Conversation rewind | Durable branch creation and restoration | Rewind preserves the source, never replays recorded tools, and leaves workspace state unchanged. |
 | Governed parallel delegation | Real delegate tool, shared FIFO scheduler, structured plan, read-only child, isolated write child | Both children run concurrently, retain plan association/evidence, and the write appears only in its retained worktree. |
 | Selective delegated integration | Git worktree validation, common-base diff, hunk picker model, rooted publication, change tracker, real Go verification | With a Windows-style inherited `core.autocrlf=true`, parent and child remain byte-stable; one of two hunks lands, tests pass, and the child worktree remains available. |
@@ -87,6 +91,12 @@ Important failure-oriented tests include:
 - Session torn-tail recovery, dangling tool-call interruption, and injected
   short writes. A short write is latched so a later record cannot turn the
   recoverable final fragment into corruption in the middle of the log.
+- Rooted atomic replacement with injected temporary-write and publication
+  failures. The accepted destination remains byte-for-byte unchanged and
+  private temporary files are removed on both paths.
+- Explicit session-record compatibility: current writes carry version 1,
+  legacy version-1 records without the field and additive fields still load,
+  and newer schemas fail before append.
 - Long-context compaction with dynamically pinned plan state and exact bounded
   failure evidence, plus oversized-result paging that proves the originating
   tool executes only once.
@@ -121,6 +131,9 @@ Important failure-oriented tests include:
   round trips.
 - TUI busy-composer behavior: local inspection/agent-control commands run,
   while ordinary prompts and unsafe commands remain unsent drafts.
+- Provider-call and TUI cancellation remain responsive without starting a tool
+  or losing the current composer draft; runtime teardown cancels active
+  delegated work.
 - Delegated-worktree integration checks registered Git identity/base, supports
   selective text hunks, records the result in the change tracker, retains the
   worktree, refuses parent drift, and rechecks changes made while approval is
@@ -153,15 +166,22 @@ CI gates. Run them on a quiet machine when changing session projection or TUI
 rendering:
 
 ```sh
+go test -run '^$' -bench 'RuntimeStartup' -benchmem ./internal/app
 go test -run '^$' -bench 'ProjectLargeSession' -benchmem ./internal/activity
+go test -run '^$' -bench 'IndexLargeWorkspaceQuery|IndexWarmRefresh' -benchmem ./internal/index
+go test -run '^$' -bench 'LoadLongSession' -benchmem ./internal/session
 go test -run '^$' -bench 'ActivityView500Items' -benchmem ./internal/tui
+go test -run '^$' -bench 'ChatViewLongTranscript' -benchmem ./internal/tui
 ```
 
-The first projects 10,000 durable events into the fixed 500-entry operator
-window. The second renders that maximum-size activity view. Unit tests enforce
-the structural memory bounds and cross-platform screen dimensions; benchmark
-numbers provide a local regression signal without failing CI because two
-runners have different timing.
+These cover runtime construction, projection of 10,000 durable events into the
+fixed 500-entry operator window, cold query and warm refresh of a 2,000-file
+symbol index, restoration of a 2,000-message session, the maximum activity
+view, and a 500-block syntax-highlighted chat transcript. The Linux quality
+job executes each benchmark once so panics, runaway allocations, and fixture
+breakage are visible in CI logs. It does not compare wall-clock timings across
+runners. Unit tests enforce structural retention and screen bounds; benchmark
+numbers remain diagnostic until a stable same-hardware baseline exists.
 
 ## CI layout
 
@@ -170,7 +190,9 @@ tests, fresh race detection, `go vet`, and the native shell or PowerShell
 installer tests on Ubuntu, macOS, and Windows. A separate Ubuntu quality job
 verifies downloaded modules, runs pinned `govulncheck`, runs the offline
 evaluation package once without cache reuse, and performs short fuzz
-campaigns. Release builds wait for both jobs.
+campaigns. It also runs one iteration of the diagnostic performance baseline
+without a timing threshold. Release builds wait for both jobs, and tagged
+release qualification repeats the same quality baseline.
 
 Run installer regressions locally with:
 

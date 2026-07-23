@@ -34,6 +34,27 @@ func TestJSONLWriterEmitsOneLinePerEvent(t *testing.T) {
 	}
 }
 
+func TestSchemaV1TypedConsumerToleratesAdditiveFields(t *testing.T) {
+	input := `{
+	  "schema": 1,
+	  "time": "2026-07-23T00:00:00Z",
+	  "kind": "tool.result",
+	  "tool": {
+	    "name": "read_file",
+	    "output": "ok",
+	    "future_tool_detail": {"value": 1}
+	  },
+	  "future_top_level": true
+	}`
+	var decoded Event
+	if err := json.Unmarshal([]byte(input), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Schema != SchemaVersion || decoded.Kind != KindToolResult || decoded.Tool == nil || decoded.Tool.Name != "read_file" || decoded.Tool.Output != "ok" {
+		t.Fatalf("additive schema-v1 event=%+v", decoded)
+	}
+}
+
 func TestRunResultRoundTrips(t *testing.T) {
 	e := New(KindRunResult)
 	e.FailureID = "err-0123456789abcdef"

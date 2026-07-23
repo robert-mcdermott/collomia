@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/robert-mcdermott/collomia/internal/app"
 )
 
 func TestConfiguredGlobalKeybindingAndEffectiveHelp(t *testing.T) {
@@ -20,6 +22,30 @@ func TestConfiguredGlobalKeybindingAndEffectiveHelp(t *testing.T) {
 	}
 	if help := m.helpContent(); !strings.Contains(help, "alt+t") {
 		t.Fatalf("help does not show effective binding:\n%s", help)
+	}
+}
+
+func TestBusyTurnCancellationRemainsInteractive(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.busy = true
+	m.cancel = cancel
+	m.setComposerValue("draft survives cancellation")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("cancelling an active turn unexpectedly quit the TUI")
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("ctrl+c did not cancel the active turn")
+	}
+	if !m.busy || m.input.Value() != "draft survives cancellation" || !m.input.Focused() {
+		t.Fatalf("cancel request blocked interaction: busy=%t draft=%q focused=%t", m.busy, m.input.Value(), m.input.Focused())
+	}
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Cancelling current turn") {
+		t.Fatalf("cancel acknowledgement is not visible:\n%s", view)
 	}
 }
 
@@ -41,6 +67,34 @@ func TestChatScrollPositionSurvivesStreamingRefresh(t *testing.T) {
 	m = press(t, m, tea.KeyEnd)
 	if !m.chatFollow || !m.viewport.AtBottom() {
 		t.Fatal("end should resume live follow at the bottom")
+	}
+}
+
+func BenchmarkChatViewLongTranscript(b *testing.B) {
+	home := b.TempDir()
+	b.Setenv("HOME", home)
+	b.Setenv("USERPROFILE", home)
+	runtime, err := app.New(context.Background(), app.Options{Workspace: b.TempDir(), Ephemeral: true})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer runtime.Close()
+	m := New(runtime, NewApprovalBroker(), "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+	for i := 0; i < 500; i++ {
+		if i%2 == 0 {
+			m.blocks = append(m.blocks, block{role: "user", content: "Inspect the representative repository state."})
+		} else {
+			m.blocks = append(m.blocks, block{role: "assistant", content: "The repository state is stable.\n\n```go\nfunc example() {}\n```"})
+		}
+	}
+	_ = m.chatContent() // initialize the cached renderer outside the timer
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if output := m.chatContent(); len(output) == 0 {
+			b.Fatal("empty chat render")
+		}
 	}
 }
 
