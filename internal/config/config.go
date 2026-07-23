@@ -231,9 +231,14 @@ type Options struct {
 	// DelegateProviderConcurrency optionally applies a tighter limit to tasks
 	// using a named provider. Omitted providers inherit the session-wide limit.
 	DelegateProviderConcurrency map[string]int `json:"delegate_provider_concurrency,omitempty"`
-	DisabledTools               []string       `json:"disabled_tools,omitempty"`
-	TranscriptDirectory         string         `json:"transcript_directory,omitempty"`
-	Theme                       string         `json:"theme,omitempty"`
+	// AgentIntegration controls who may publish retained delegated-worktree
+	// changes into the parent workspace. "manual" (the default) exposes only
+	// /agents apply; "reviewed" additionally gives the primary agent bounded
+	// inspect/apply tools backed by the same guarded integration path.
+	AgentIntegration    string   `json:"agent_integration,omitempty"`
+	DisabledTools       []string `json:"disabled_tools,omitempty"`
+	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
+	Theme               string   `json:"theme,omitempty"`
 	// AlternateScreen controls whether the interactive TUI uses the terminal's
 	// alternate screen buffer. It defaults to true; disabling it keeps the
 	// final screen in native terminal scrollback.
@@ -286,6 +291,7 @@ func Defaults() Config {
 		Options: Options{
 			MaxIterations:      24,
 			MaxToolOutputBytes: 64 * 1024,
+			AgentIntegration:   "manual",
 			AlternateScreen:    true,
 			Keybindings:        DefaultKeybindings(),
 		},
@@ -471,6 +477,10 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	if c.Options.DelegateProviderConcurrency == nil {
 		c.Options.DelegateProviderConcurrency = map[string]int{}
 	}
+	if c.Options.AgentIntegration == "" {
+		c.Options.AgentIntegration = "manual"
+	}
+	c.Options.AgentIntegration = strings.ToLower(strings.TrimSpace(c.Options.AgentIntegration))
 	if c.Options.Keybindings == nil {
 		c.Options.Keybindings = DefaultKeybindings()
 	}
@@ -745,6 +755,11 @@ func (c Config) ValidateFields() []FieldError {
 		if limit < 1 || limit > 6 {
 			errs = append(errs, FieldError{"options.delegate_provider_concurrency." + name, "must be between 1 and 6"})
 		}
+	}
+	switch c.Options.AgentIntegration {
+	case "", "manual", "reviewed":
+	default:
+		errs = append(errs, FieldError{"options.agent_integration", fmt.Sprintf("must be manual or reviewed (got %q)", c.Options.AgentIntegration)})
 	}
 	switch strings.ToLower(c.Options.Notifications) {
 	case "", "on", "bell", "off":

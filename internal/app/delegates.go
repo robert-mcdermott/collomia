@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
+	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/safefile"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
@@ -32,7 +35,11 @@ const (
 // permission approval so this snapshot can never authorize stale bytes.
 type DelegateIntegration struct {
 	ID, Name, Worktree, Branch, BaseCommit string
-	Files                                  []DelegateIntegrationFile
+	// ReviewToken binds a primary-agent review to the exact parent/base/child
+	// bytes and modes in Files. It is not an authorization credential; apply
+	// still runs the normal permission engine and all post-approval checks.
+	ReviewToken string
+	Files       []DelegateIntegrationFile
 }
 
 type DelegateIntegrationFile struct {
@@ -48,6 +55,13 @@ type DelegateIntegrationFile struct {
 type DelegateIntegrationSelection struct {
 	Path string
 	Keep []bool
+}
+
+type delegateIntegrationMutation struct {
+	path                             string
+	before, after, expectedChild     *string
+	beforeMode, afterMode, childMode os.FileMode
+	preview                          string
 }
 
 // PrepareDelegateIntegration validates a retained delegated worktree and
@@ -112,6 +126,7 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 		}
 		preview.Files = append(preview.Files, file)
 	}
+	preview.ReviewToken = delegateIntegrationReviewToken(preview)
 	return preview, nil
 }
 
@@ -120,38 +135,83 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 // stale parent file. Multi-file publication rolls back earlier entries if a
 // later rooted mutation fails.
 func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selections []DelegateIntegrationSelection) ([]string, error) {
-	preview, err := r.PrepareDelegateIntegration(ctx, id)
+	_, mutations, action, err := r.prepareDelegateIntegrationMutations(ctx, id, selections)
 	if err != nil {
+		r.markDelegateIntegration(id, "blocked", err)
 		return nil, err
 	}
-	type mutation struct {
-		path                             string
-		before, after, expectedChild     *string
-		beforeMode, afterMode, childMode os.FileMode
-		preview                          string
+	if _, err := r.Permissions.Authorize(ctx, "integrate_delegate", action); err != nil {
+		status := "blocked"
+		if errors.Is(err, permission.ErrDenied) {
+			status = "rejected"
+		}
+		r.markDelegateIntegration(id, status, err)
+		return nil, err
+	}
+	return r.publishDelegateIntegration(ctx, id, mutations, true)
+}
+
+// PrepareReviewedDelegateIntegrationAction validates a primary-agent review
+// token and returns the exact write action that the outer agent loop must
+// authorize. Execute then calls ApplyReviewedDelegateIntegration, avoiding a
+// second permission prompt while retaining the same publication checks used
+// by /agents apply.
+func (r *Runtime) PrepareReviewedDelegateIntegrationAction(ctx context.Context, id, reviewToken string, selections []DelegateIntegrationSelection) (tools.Action, error) {
+	preview, _, action, err := r.prepareDelegateIntegrationMutations(ctx, id, selections)
+	if err != nil {
+		return tools.Action{}, err
+	}
+	if reviewToken == "" || reviewToken != preview.ReviewToken {
+		return tools.Action{}, errors.New("delegated changes changed or were not reviewed; call inspect_delegate_changes again")
+	}
+	return action, nil
+}
+
+// ApplyReviewedDelegateIntegration publishes an already-authorized
+// primary-agent selection. Callers must obtain the Action above and pass it
+// through the ordinary agent permission pipeline immediately before this
+// method. The review token and current bytes are checked again here.
+func (r *Runtime) ApplyReviewedDelegateIntegration(ctx context.Context, id, reviewToken string, selections []DelegateIntegrationSelection) ([]string, error) {
+	preview, mutations, _, err := r.prepareDelegateIntegrationMutations(ctx, id, selections)
+	if err != nil {
+		r.markDelegateIntegration(id, "blocked", err)
+		return nil, err
+	}
+	if reviewToken == "" || reviewToken != preview.ReviewToken {
+		err = errors.New("delegated changes changed after review; call inspect_delegate_changes again")
+		r.markDelegateIntegration(id, "blocked", err)
+		return nil, err
+	}
+	return r.publishDelegateIntegration(ctx, id, mutations, false)
+}
+
+func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id string, selections []DelegateIntegrationSelection) (*DelegateIntegration, []delegateIntegrationMutation, tools.Action, error) {
+	preview, err := r.PrepareDelegateIntegration(ctx, id)
+	if err != nil {
+		return nil, nil, tools.Action{}, err
 	}
 	files := make(map[string]DelegateIntegrationFile, len(preview.Files))
 	for _, file := range preview.Files {
 		files[file.Path] = file
 	}
-	mutations := make([]mutation, 0, len(selections))
+	mutations := make([]delegateIntegrationMutation, 0, len(selections))
 	for _, selection := range selections {
 		file, ok := files[selection.Path]
 		if !ok {
-			return nil, fmt.Errorf("delegated file %q is no longer present", selection.Path)
+			return nil, nil, tools.Action{}, fmt.Errorf("delegated file %q is no longer present", selection.Path)
 		}
 		if file.Conflict != "" {
-			return nil, fmt.Errorf("cannot integrate %s: %s", file.Path, file.Conflict)
+			return nil, nil, tools.Action{}, fmt.Errorf("cannot integrate %s: %s", file.Path, file.Conflict)
 		}
 		if file.AlreadyApplied || file.Unified == "" {
 			continue
 		}
 		hunks, err := diffmodel.ParseHunks(file.Unified)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", file.Path, err)
+			return nil, nil, tools.Action{}, fmt.Errorf("parse %s: %w", file.Path, err)
 		}
 		if len(selection.Keep) != len(hunks) {
-			return nil, fmt.Errorf("selection for %s has %d flags for %d hunks", file.Path, len(selection.Keep), len(hunks))
+			return nil, nil, tools.Action{}, fmt.Errorf("selection for %s has %d flags for %d hunks", file.Path, len(selection.Keep), len(hunks))
 		}
 		selected := false
 		all := true
@@ -169,17 +229,17 @@ func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selec
 		} else {
 			value, applyErr := diffmodel.ApplyHunks(contentString(file.Before), hunks, selection.Keep)
 			if applyErr != nil {
-				return nil, fmt.Errorf("apply selected hunks for %s: %w", file.Path, applyErr)
+				return nil, nil, tools.Action{}, fmt.Errorf("apply selected hunks for %s: %w", file.Path, applyErr)
 			}
 			after = &value
 			if all {
 				afterMode = file.AfterMode
 			}
 		}
-		mutations = append(mutations, mutation{path: file.Path, before: cloneText(file.Before), after: after, expectedChild: cloneText(file.After), beforeMode: file.BeforeMode, afterMode: afterMode, childMode: file.AfterMode, preview: diffmodel.Unified(file.Path, contentString(file.Before), contentString(after))})
+		mutations = append(mutations, delegateIntegrationMutation{path: file.Path, before: cloneText(file.Before), after: after, expectedChild: cloneText(file.After), beforeMode: file.BeforeMode, afterMode: afterMode, childMode: file.AfterMode, preview: diffmodel.Unified(file.Path, contentString(file.Before), contentString(after))})
 	}
 	if len(mutations) == 0 {
-		return nil, errors.New("no delegated hunks were selected")
+		return nil, nil, tools.Action{}, errors.New("no delegated hunks were selected")
 	}
 	paths := make([]string, len(mutations))
 	var combined strings.Builder
@@ -188,14 +248,15 @@ func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selec
 		combined.WriteString(mutation.preview)
 	}
 	action := tools.Action{Risk: tools.RiskWrite, Summary: fmt.Sprintf("integrate %d file(s) from delegated agent %s (%s)", len(mutations), preview.Name, id), Paths: paths, Preview: combined.String()}
-	if _, err := r.Permissions.Authorize(ctx, "integrate_delegate", action); err != nil {
-		return nil, err
-	}
+	return preview, mutations, action, nil
+}
 
+func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mutations []delegateIntegrationMutation, fireHooks bool) ([]string, error) {
 	// Approval may have taken arbitrarily long. Re-read every source and target
 	// and refuse if either side changed while the dialog was open.
 	fresh, err := r.PrepareDelegateIntegration(ctx, id)
 	if err != nil {
+		r.markDelegateIntegration(id, "blocked", err)
 		return nil, err
 	}
 	freshFiles := make(map[string]DelegateIntegrationFile, len(fresh.Files))
@@ -207,11 +268,13 @@ func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selec
 		if !ok || file.Conflict != "" || file.AlreadyApplied ||
 			!sameOSFileState(file.Before, file.BeforeMode, mutation.before, mutation.beforeMode) ||
 			!sameOSFileState(file.After, file.AfterMode, mutation.expectedChild, mutation.childMode) {
-			return nil, fmt.Errorf("%s changed while integration approval was pending; review again", mutation.path)
+			err = fmt.Errorf("%s changed while integration approval was pending; review again", mutation.path)
+			r.markDelegateIntegration(id, "blocked", err)
+			return nil, err
 		}
 	}
 
-	applied := make([]mutation, 0, len(mutations))
+	applied := make([]delegateIntegrationMutation, 0, len(mutations))
 	rollback := func() {
 		for i := len(applied) - 1; i >= 0; i-- {
 			_ = replaceRooted(r.Workspace, applied[i].path, applied[i].before, applied[i].beforeMode)
@@ -220,7 +283,9 @@ func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selec
 	for _, mutation := range mutations {
 		if err := replaceRooted(r.Workspace, mutation.path, mutation.after, mutation.afterMode); err != nil {
 			rollback()
-			return nil, fmt.Errorf("integrate %s: %w", mutation.path, err)
+			err = fmt.Errorf("integrate %s: %w", mutation.path, err)
+			r.markDelegateIntegration(id, "blocked", err)
+			return nil, err
 		}
 		applied = append(applied, mutation)
 	}
@@ -229,7 +294,7 @@ func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selec
 		if r.Changes != nil {
 			r.Changes.RecordWithMode(absolute, "delegate integration", mutation.before, mutation.after, mutation.beforeMode, mutation.afterMode)
 		}
-		if r.Hooks != nil {
+		if fireHooks && r.Hooks != nil {
 			r.Hooks.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: r.Workspace, Subject: "integrate_delegate", Tool: "integrate_delegate", Paths: []string{absolute}})
 		}
 	}
@@ -237,8 +302,54 @@ func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selec
 	for i, mutation := range mutations {
 		integrated[i] = mutation.path
 	}
-	r.Team.MarkIntegrated(id, integrated)
+	outcome := "partial"
+	if current, prepareErr := r.PrepareDelegateIntegration(ctx, id); prepareErr == nil {
+		complete := true
+		for _, file := range current.Files {
+			if !file.AlreadyApplied {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			outcome = "integrated"
+		}
+	}
+	r.Team.MarkIntegrationOutcome(id, outcome, integrated, "")
 	return integrated, nil
+}
+
+func (r *Runtime) markDelegateIntegration(id, status string, err error) {
+	if r.Team == nil {
+		return
+	}
+	message := ""
+	if err != nil {
+		message = err.Error()
+		if r.Redactor != nil {
+			message = r.Redactor.Redact(message)
+		}
+	}
+	r.Team.MarkIntegrationOutcome(id, status, nil, message)
+}
+
+func delegateIntegrationReviewToken(preview *DelegateIntegration) string {
+	var canonical bytes.Buffer
+	fmt.Fprintf(&canonical, "%q|%q|%q|%q|", preview.ID, preview.Branch, preview.BaseCommit, preview.Worktree)
+	for _, file := range preview.Files {
+		fmt.Fprintf(&canonical, "%q|%o|%o|%t|%q|%q|", file.Path, file.BeforeMode, file.AfterMode, file.AlreadyApplied, file.Conflict, file.Unified)
+		for _, content := range []*string{file.Before, file.After} {
+			if content == nil {
+				canonical.WriteString("-1|")
+				continue
+			}
+			fmt.Fprintf(&canonical, "%d:", len(*content))
+			canonical.WriteString(*content)
+			canonical.WriteByte('|')
+		}
+	}
+	sum := sha256.Sum256(canonical.Bytes())
+	return "review-" + hex.EncodeToString(sum[:])
 }
 
 func validateDelegateWorktree(ctx context.Context, workspace, worktree, branch, base string) error {

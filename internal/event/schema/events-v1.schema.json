@@ -182,6 +182,8 @@
         "branch": { "type": "string" },
         "base_commit": { "type": "string" },
         "integrated_files": { "type": "array", "items": { "type": "string" } },
+        "integration_status": { "enum": ["reviewed", "reviewed_with_conflicts", "integrated", "partial", "blocked", "rejected"] },
+        "integration_error": { "type": "string" },
         "usage": { "$ref": "#/$defs/usage" },
         "token_budget": { "type": "integer", "minimum": 0 },
         "timeout_seconds": { "type": "integer", "minimum": 0 },

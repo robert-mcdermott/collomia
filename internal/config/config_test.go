@@ -529,6 +529,20 @@ func TestValidateNotifications(t *testing.T) {
 	}
 }
 
+func TestValidateAgentIntegration(t *testing.T) {
+	cfg := Defaults()
+	for _, mode := range []string{"manual", "reviewed"} {
+		cfg.Options.AgentIntegration = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("agent integration %q should validate: %v", mode, err)
+		}
+	}
+	cfg.Options.AgentIntegration = "automatic"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "options.agent_integration") {
+		t.Fatal("expected options.agent_integration error")
+	}
+}
+
 func TestValidateExternalEditor(t *testing.T) {
 	cfg := Defaults()
 	cfg.Options.Editor = EditorOptions{Command: "code", Args: []string{"--goto", "{file}:{line}:{column}"}}

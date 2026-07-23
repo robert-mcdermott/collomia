@@ -180,10 +180,23 @@ func TestDelegateStatusEventRoundTripPreservesOperatorMetadata(t *testing.T) {
 		Status: DelegateDone, RecentOutput: "tests passed", Guidance: []string{"run the focused test"},
 		Summary: "done", FailureID: "err-0123456789abcdef", Changed: []string{"a.go"}, Integrated: []string{"a.go"},
 		Worktree: "/tmp/worktree", Branch: "collomia/writer", BaseCommit: "abcdef",
+		IntegrationStatus: "partial", IntegrationError: "one hunk remains",
 	}
 	restored := DelegateStatusFromEvent(original.Event())
-	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 {
+	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 || restored.IntegrationStatus != "partial" || restored.IntegrationError != "one hunk remains" {
 		t.Fatalf("restored=%+v", restored)
+	}
+}
+
+func TestTeamTracksDelegateIntegrationDisposition(t *testing.T) {
+	team := NewTeam()
+	team.Start("d1", "writer", "write", true)
+	team.Finish("d1", "done", []string{"a.go"}, "/tmp/worktree", "collomia/writer", nil)
+	team.MarkIntegrationReview("d1", "reviewed", "")
+	team.MarkIntegrationOutcome("d1", "partial", []string{"a.go"}, "one hunk remains")
+	status, _ := team.Get("d1")
+	if status.IntegrationStatus != "partial" || status.IntegrationError != "one hunk remains" || len(status.Integrated) != 1 {
+		t.Fatalf("status=%+v", status)
 	}
 }
 

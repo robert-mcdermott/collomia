@@ -52,6 +52,16 @@ func (m *Model) openAgentIntegration(id string) error {
 			state.keep[i][j] = true
 		}
 	}
+	reviewStatus := "reviewed"
+	for _, file := range preview.Files {
+		if file.Conflict != "" {
+			reviewStatus = "reviewed_with_conflicts"
+			break
+		}
+	}
+	if m.runtime.Team != nil {
+		m.runtime.Team.MarkIntegrationReview(id, reviewStatus, "")
+	}
 	m.agentIntegration = state
 	m.input.Blur()
 	m.layout()

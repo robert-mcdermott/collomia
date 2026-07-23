@@ -80,7 +80,10 @@ Do not assume every reserved kind appears in every current CLI stream.
 When present, its `delegate` object includes stable identity/profile/provider,
 `plan_step`, lifecycle state/current action, bounded `recent_output`, steering
 history plus `pending_guidance`, evidence and changed/integrated file lists,
-usage/budgets, and retained worktree/branch/base metadata. These are
+optional `integration_status`/`integration_error`, usage/budgets, and retained
+worktree/branch/base metadata. Integration status describes a user/primary
+reviewed-copy disposition (`reviewed`, `reviewed_with_conflicts`, `integrated`,
+`partial`, `blocked`, or `rejected`), not a Git merge. These are
 observations only: replay never restarts a child, delivers stored guidance, or
 integrates stored changes. Consumers must tolerate additive fields.
 

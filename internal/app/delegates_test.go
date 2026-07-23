@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
 type integrationFixture struct {
@@ -131,7 +134,7 @@ func TestDelegateIntegrationAppliesSelectedHunksAndRetainsWorktree(t *testing.T)
 		t.Fatalf("worktree was removed: %v", err)
 	}
 	status, _ := fixture.runtime.Team.Get("d1")
-	if len(status.Integrated) != 1 || status.Integrated[0] != "sample.txt" {
+	if len(status.Integrated) != 1 || status.Integrated[0] != "sample.txt" || status.IntegrationStatus != "partial" {
 		t.Fatalf("integrated status=%+v", status)
 	}
 	if changed := fixture.runtime.Changes.Changed(); len(changed) != 1 || changed[0] != fixture.parentFile {
@@ -191,6 +194,143 @@ func TestDelegateIntegrationRechecksAfterApproval(t *testing.T) {
 	}
 	if string(data) != "user changed during approval\n" {
 		t.Fatalf("parent edit was overwritten: %q", data)
+	}
+}
+
+func TestReviewedDelegateIntegrationRequiresInspectAndUsesOnePermissionDecision(t *testing.T) {
+	approvals := 0
+	approver := func(_ context.Context, request permission.Request) (permission.Decision, error) {
+		approvals++
+		if request.Tool != "integrate_delegate" {
+			t.Fatalf("permission tool=%q", request.Tool)
+		}
+		if len(request.Action.Paths) != 1 || !strings.Contains(request.Action.Preview, "line B from child") {
+			t.Fatalf("permission action=%+v", request.Action)
+		}
+		return permission.Decision{Allow: true}, nil
+	}
+	fixture := newIntegrationFixture(t, approver)
+	data, err := os.ReadFile(fixture.delegatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := strings.Replace(string(data), "line B", "line B from child", 1)
+	child = strings.Replace(child, "line L", "line L from child", 1)
+	if err := os.WriteFile(fixture.delegatedFile, []byte(child), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.Config.Options.AgentIntegration = "reviewed"
+	fixture.runtime.Registry = tools.NewRegistry()
+	fixture.runtime.addReviewedIntegrationTools()
+
+	rawReview, err := fixture.runtime.Registry.Execute(t.Context(), InspectDelegateChangesTool, json.RawMessage(`{"id":"d1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review delegateReviewDocument
+	if err := json.Unmarshal([]byte(rawReview), &review); err != nil {
+		t.Fatal(err)
+	}
+	if review.ReviewToken == "" || len(review.Files) != 1 || len(review.Files[0].Hunks) != 2 {
+		t.Fatalf("review=%+v", review)
+	}
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.IntegrationStatus != "reviewed" {
+		t.Fatalf("integration status=%+v", status)
+	}
+
+	apply := json.RawMessage(fmt.Sprintf(`{"id":"d1","review_token":%q,"all":true}`, review.ReviewToken))
+	action, err := fixture.runtime.Registry.Assess(ApplyDelegateChangesTool, apply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := fixture.runtime.Registry.Get(ApplyDelegateChangesTool)
+	identity, identityOK := item.(tools.PermissionIdentity)
+	if !ok || !identityOK || identity.PermissionToolName() != "integrate_delegate" {
+		t.Fatal("reviewed apply did not preserve the integrate_delegate permission identity")
+	}
+	if _, err := fixture.runtime.Permissions.Authorize(t.Context(), identity.PermissionToolName(), action); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.runtime.Registry.Execute(t.Context(), ApplyDelegateChangesTool, apply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approvals != 1 {
+		t.Fatalf("permission decisions=%d want 1", approvals)
+	}
+	if !strings.Contains(result, `"integration_status": "integrated"`) {
+		t.Fatalf("result=%s", result)
+	}
+	parent, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(parent), "line B from child") || !strings.Contains(string(parent), "line L from child") {
+		t.Fatalf("reviewed integration result:\n%s", parent)
+	}
+}
+
+func TestReviewedDelegateIntegrationRejectsStaleReviewToken(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	if err := os.WriteFile(fixture.delegatedFile, []byte("first child version\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.Config.Options.AgentIntegration = "reviewed"
+	fixture.runtime.Registry = tools.NewRegistry()
+	fixture.runtime.addReviewedIntegrationTools()
+	rawReview, err := fixture.runtime.Registry.Execute(t.Context(), InspectDelegateChangesTool, json.RawMessage(`{"id":"d1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review delegateReviewDocument
+	if err := json.Unmarshal([]byte(rawReview), &review); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.delegatedFile, []byte("changed after review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	apply := json.RawMessage(fmt.Sprintf(`{"id":"d1","review_token":%q,"all":true}`, review.ReviewToken))
+	if _, err := fixture.runtime.Registry.Assess(ApplyDelegateChangesTool, apply); err == nil || !strings.Contains(err.Error(), "changed after review") {
+		t.Fatalf("stale review should fail before authorization: %v", err)
+	}
+	parent, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(parent), "changed after review") {
+		t.Fatal("stale child bytes reached parent")
+	}
+}
+
+func TestManualAgentIntegrationDoesNotExposePrimaryTools(t *testing.T) {
+	runtime := &Runtime{Config: appconfig.Defaults(), Registry: tools.NewRegistry()}
+	runtime.addReviewedIntegrationTools()
+	if _, ok := runtime.Registry.Get(InspectDelegateChangesTool); ok {
+		t.Fatal("manual mode exposed inspect_delegate_changes")
+	}
+	if _, ok := runtime.Registry.Get(ApplyDelegateChangesTool); ok {
+		t.Fatal("manual mode exposed apply_delegate_changes")
+	}
+}
+
+func TestReviewedDelegateIntegrationRecordsOuterPermissionDenial(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	fixture.runtime.Config.Options.AgentIntegration = "reviewed"
+	fixture.runtime.Registry = tools.NewRegistry()
+	fixture.runtime.addReviewedIntegrationTools()
+	item, ok := fixture.runtime.Registry.Get(ApplyDelegateChangesTool)
+	if !ok {
+		t.Fatal("reviewed apply tool is missing")
+	}
+	observer, ok := item.(tools.AuthorizationObserver)
+	if !ok {
+		t.Fatal("reviewed apply tool does not observe outer authorization")
+	}
+	observer.ObserveAuthorization(json.RawMessage(`{"id":"d1","review_token":"review-stale","all":true}`), fmt.Errorf("%w: declined", permission.ErrDenied))
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.IntegrationStatus != "rejected" || !strings.Contains(status.IntegrationError, "declined") {
+		t.Fatalf("status=%+v", status)
 	}
 }
 

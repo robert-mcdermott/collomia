@@ -412,6 +412,27 @@ multi-file rollback, and the ordinary change tracker then publish the selected
 content. The child worktree and branch are retained. Collomia never commits,
 pushes, silently reconciles conflicts, or deletes those recovery artifacts.
 
+`options.agent_integration: "reviewed"` permits the primary model—but never a
+delegated child—to perform the same selective copy operation. It does not add a
+new mutation primitive. `inspect_delegate_changes` first returns bounded
+evidence and numbered hunks plus an opaque SHA-256 review token derived from
+the exact registered worktree/base, parent bytes, child bytes, and relevant
+modes. `apply_delegate_changes` is unavailable without that token and refuses
+it if any reviewed state changed before authorization. The agent loop then
+applies the ordinary write policy under the established `integrate_delegate`
+permission identity, so existing deny/prompt rules continue to govern both
+paths. It fires normal audit/events/hooks and calls
+the shared post-authorization publication path. Rooted writes, rollback,
+change tracking, retained worktrees, and the prohibition on commit/merge/push
+are identical to `/agents apply`.
+
+Reviewed mode is opt-in and defaults to `manual`. It lets the primary model
+make a quality decision; it does not prove that decision correct. Child
+evidence and repository text remain data rather than instructions, and the
+primary should verify the combined workspace after applying. Parent drift,
+sibling overlap, unsupported entries, stale reviews, and moved branches fail
+closed for explicit reconciliation.
+
 Closing Collomia requests cancellation for every child and stops background
 processes owned by write agents. Durable sessions keep bounded status, summary,
 evidence, usage, and change manifests—not raw child transcripts. On resume,

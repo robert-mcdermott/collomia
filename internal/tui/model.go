@@ -1025,7 +1025,11 @@ func (m *Model) sessionContent() string {
 				continue
 			}
 			if len(a.Changed) > 0 {
-				b.WriteString(m.styles.muted.Render(fmt.Sprintf("       changed %d file(s) — /agents apply %s", len(a.Changed), a.ID)) + "\n")
+				integration := ""
+				if a.IntegrationStatus != "" {
+					integration = " · " + delegateStatusLabel(a.IntegrationStatus)
+				}
+				b.WriteString(m.styles.muted.Render(fmt.Sprintf("       changed %d file(s)%s — /agents apply %s", len(a.Changed), integration, a.ID)) + "\n")
 			} else if a.Error != "" {
 				b.WriteString(m.styles.muted.Render("      "+m.runtime.Redactor.Redact(a.Error)) + "\n")
 			}

@@ -56,9 +56,13 @@ type DelegateStatus struct {
 	Branch          string
 	BaseCommit      string
 	Integrated      []string
-	Usage           provider.Usage
-	TokenBudget     int
-	TimeoutSeconds  int
+	// IntegrationStatus records the parent-side disposition of retained write
+	// work without changing the child's terminal execution status.
+	IntegrationStatus string
+	IntegrationError  string
+	Usage             provider.Usage
+	TokenBudget       int
+	TimeoutSeconds    int
 	// Revision makes concurrent durable observer writes order-independent.
 	// It is monotonic for one task and has no model-visible meaning.
 	Revision uint64
@@ -322,12 +326,30 @@ func (t *Team) findActiveLocked(idOrName string) (*DelegateStatus, error) {
 	return selected, nil
 }
 
-// MarkIntegrated records files explicitly copied into the parent workspace.
-// The child worktree remains available and is never removed automatically.
-func (t *Team) MarkIntegrated(id string, paths []string) {
+// MarkIntegrationReview records that the primary agent or user inspected the
+// current bounded diff. It is observational and grants no write permission.
+func (t *Team) MarkIntegrationReview(id, status, message string) {
+	t.update(id, func(s *DelegateStatus) {
+		s.IntegrationStatus = status
+		s.IntegrationError = message
+	})
+}
+
+// MarkIntegrationOutcome records files explicitly copied into the parent
+// workspace and the guarded integration disposition. The child worktree
+// remains available and is never removed automatically.
+func (t *Team) MarkIntegrationOutcome(id, status string, paths []string, message string) {
 	t.update(id, func(s *DelegateStatus) {
 		s.Integrated = additiveValues(s.Integrated, paths)
+		s.IntegrationStatus = status
+		s.IntegrationError = message
 	})
+}
+
+// MarkIntegrated retains the original helper API for callers that only need
+// to report a successful integration.
+func (t *Team) MarkIntegrated(id string, paths []string) {
+	t.MarkIntegrationOutcome(id, "integrated", paths, "")
 }
 
 // StopAll requests cancellation for every queued or running task. It is used
@@ -453,6 +475,8 @@ func boundDelegateStatus(status *DelegateStatus) {
 	status.RecentOutput = tailDelegateText(status.RecentOutput, maxDelegateRecentOutput)
 	status.Summary = boundedDelegateText(status.Summary, 16<<10)
 	status.Error = boundedDelegateText(status.Error, 4<<10)
+	status.IntegrationStatus = boundedDelegateText(status.IntegrationStatus, 64)
+	status.IntegrationError = boundedDelegateText(status.IntegrationError, 4<<10)
 	status.Worktree = boundedDelegateText(status.Worktree, 4<<10)
 	status.Branch = boundedDelegateText(status.Branch, 1024)
 	status.BaseCommit = boundedDelegateText(status.BaseCommit, 128)
@@ -514,6 +538,7 @@ func (status DelegateStatus) Event() event.DelegateStatus {
 		FailureID: status.FailureID,
 		Evidence:  append([]string(nil), status.Evidence...), ChangedFiles: append([]string(nil), status.Changed...),
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, IntegratedFiles: append([]string(nil), status.Integrated...),
+		IntegrationStatus: status.IntegrationStatus, IntegrationError: status.IntegrationError,
 		Usage:       event.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,
@@ -532,6 +557,7 @@ func DelegateStatusFromEvent(status event.DelegateStatus) DelegateStatus {
 		Summary: status.Summary, Error: status.Error, FailureID: status.FailureID,
 		Evidence: append([]string(nil), status.Evidence...), Changed: append([]string(nil), status.ChangedFiles...),
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, Integrated: append([]string(nil), status.IntegratedFiles...),
+		IntegrationStatus: status.IntegrationStatus, IntegrationError: status.IntegrationError,
 		Usage:       provider.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,

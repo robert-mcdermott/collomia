@@ -50,6 +50,19 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// AuthorizationObserver is an optional tool hook for durable tool-specific
+// state that must reflect a denied outer agent permission. It cannot change
+// the decision and runs after Authorize has completed.
+type AuthorizationObserver interface {
+	ObserveAuthorization(args json.RawMessage, err error)
+}
+
+// PermissionIdentity lets a model-facing wrapper preserve an established
+// permission-policy name. It does not alter tool lookup or execution.
+type PermissionIdentity interface {
+	PermissionToolName() string
+}
+
 // Result preserves optional typed content returned by a tool. Ordinary tools
 // return only Content; MCP tools can additionally return bounded image parts.
 type Result struct {

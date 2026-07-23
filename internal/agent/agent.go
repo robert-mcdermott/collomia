@@ -475,7 +475,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	a.mu.RLock()
 	disabled := a.disabled[call.Name]
 	a.mu.RUnlock()
-	if disabled || (a.subagent && call.Name == "delegate") {
+	if disabled || (a.subagent && parentOnlyTool(call.Name)) {
 		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, nil
 	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
@@ -485,15 +485,25 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if plan && action.Risk != tools.RiskRead {
 		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, nil
 	}
-	grant, err := a.permissions.Authorize(ctx, call.Name, action)
+	permissionTool := call.Name
+	item, hasItem := a.registry.Get(call.Name)
+	if identity, ok := item.(tools.PermissionIdentity); hasItem && ok {
+		permissionTool = identity.PermissionToolName()
+	}
+	grant, err := a.permissions.Authorize(ctx, permissionTool, action)
+	if hasItem {
+		if observer, ok := item.(tools.AuthorizationObserver); ok {
+			observer.ObserveAuthorization(call.Arguments, err)
+		}
+	}
 	decided := event.New(event.KindPermissionDecision)
-	decided.Permission = &event.Permission{Tool: call.Name, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
+	decided.Permission = &event.Permission{Tool: permissionTool, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
 	send(decided)
 	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
 		return tools.Result{}, persistenceErr
 	}
 	allowed := err == nil
-	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: permissionTool, Tool: permissionTool, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
 	if err != nil {
 		return tools.Result{Content: "Tool denied: " + err.Error()}, nil
 	}
@@ -520,7 +530,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		send(e)
 	}
 	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
-	a.permissions.RecordOutcome(call.Name, action, err)
+	a.permissions.RecordOutcome(permissionTool, action, err)
 	if len(result.Content) > a.maxToolOutput {
 		original := result.Content
 		result.Content = clipUTF8(original, a.maxToolOutput)
@@ -603,7 +613,7 @@ func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, s
 func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 	return a.registry.Definitions(func(tool tools.Tool) bool {
 		name := tool.Definition().Name
-		if a.disabled[name] || (a.subagent && name == "delegate") {
+		if a.disabled[name] || (a.subagent && parentOnlyTool(name)) {
 			return false
 		}
 		if !plan {
@@ -614,11 +624,20 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate",
+	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes",
 		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
 		return true
 	}
 	return false
+}
+
+func parentOnlyTool(name string) bool {
+	switch name {
+	case "delegate", "inspect_delegate_changes", "apply_delegate_changes":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Agent) systemPrompt(plan bool) string {
@@ -696,6 +715,9 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 	}
 	scheduler := NewScheduler(cfg.Options.DelegateMaxConcurrency, cfg.Options.DelegateProviderConcurrency)
 	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
+	if cfg.Options.AgentIntegration == "reviewed" {
+		desc += " Reviewed integration is enabled: after a successful write task, inspect its exact evidence and hunks with inspect_delegate_changes before deciding whether to publish selected changes with apply_delegate_changes."
+	}
 	if len(cfg.Agents) > 0 {
 		names := make([]string, 0, len(cfg.Agents))
 		for name := range cfg.Agents {
@@ -1158,6 +1180,8 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	childWorkspace := workspace
 	childRegistry := parentRegistry.Clone()
 	childRegistry.Remove("delegate")
+	childRegistry.Remove("inspect_delegate_changes")
+	childRegistry.Remove("apply_delegate_changes")
 	// A child may report suggestions in its result but must not mutate the
 	// parent's shared structured plan artifact.
 	childRegistry.Remove("update_plan")

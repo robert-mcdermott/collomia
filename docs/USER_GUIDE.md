@@ -588,6 +588,7 @@ inspect.
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
+| `agent_integration` | `manual` (default) keeps publication behind `/agents apply`; `reviewed` additionally lets the primary agent inspect exact retained child hunks and selectively publish accepted changes through normal permission and drift checks. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -3184,7 +3185,8 @@ Configure scheduler limits independently of profiles:
     "delegate_provider_concurrency": {
       "openrouter": 2,
       "bedrock": 1
-    }
+    },
+    "agent_integration": "manual"
   }
 }
 ```
@@ -3234,6 +3236,57 @@ ordinary session change tracker, so `/diff` and `/undo` can review or revert
 them. Collomia does not commit, Git-merge, push, delete the branch, or remove
 the worktree. Parent drift and other conflicts remain for explicit manual
 reconciliation.
+
+### Letting the primary agent review and integrate child work
+
+Manual integration is deliberately the default. If you prefer the primary
+agent to review write-agent results and copy the work it accepts into your
+currently checked-out branch, enable reviewed integration in the global or
+trusted project configuration:
+
+```json
+{
+  "options": {
+    "agent_integration": "reviewed"
+  }
+}
+```
+
+This does not turn delegation into Git merging and is independent of the
+`ask`/`workspace`/`autopilot` permission mode. It exposes two parent-only
+tools:
+
+| Tool | Behavior |
+| --- | --- |
+| `inspect_delegate_changes` | Read-only inspection of the child's bounded evidence, base commit, conflicts, and exact numbered text hunks. It returns a review token bound to the current base, parent, and child bytes. |
+| `apply_delegate_changes` | Selects all safe hunks or specific numbered hunks using that token. The ordinary write policy decides whether an approval is required. |
+
+The primary agent must inspect before applying. Any child edit, parent edit,
+branch movement, worktree replacement, or relevant mode/content change makes
+the review token stale before permission is requested. After permission,
+Collomia rechecks the source and destination again, then uses the same rooted
+atomic writes, multi-file rollback, change tracking, hooks, `/diff`, and
+`/undo` behavior as `/agents apply`.
+
+The primary agent is expected to judge the child's evidence and diff, apply
+only work that satisfies your request, and verify the combined parent
+workspace afterward. Collomia does not treat a child's claim that tests passed
+as proof beyond the bounded evidence it reports. Conflicts remain fail-closed:
+reviewed integration does not rebase, synthesize conflict resolutions, or
+overwrite a parent/sibling change. `/agents` and the Session tab retain
+`reviewed`, `reviewed with conflicts`, `integrated`, `partial`, `blocked`, or
+`rejected` disposition details.
+
+Permission configuration continues to match the canonical
+`integrate_delegate` tool name for both `/agents apply` and primary-reviewed
+application. Use `options.disabled_tools: ["apply_delegate_changes"]` when you
+want to hide only the model-facing apply tool while leaving manual integration
+available.
+
+The child worktree and `collomia/*` branch remain available after integration.
+No mode commits, merges, pushes, deletes recovery artifacts, or restarts an
+interrupted child. You can still use `/agents apply <id>` at any time; changing
+the option back to `manual` removes the two tools on the next Collomia start.
 
 Delegation lifecycle snapshots and completed outcomes are persisted in the
 parent session. On resume, terminal outcomes remain inspectable; any recorded

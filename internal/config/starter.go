@@ -33,6 +33,7 @@ func WriteStarter(path string, global bool) error {
 		MaxToolOutputBytes          int               `json:"max_tool_output_bytes"`
 		DelegateMaxConcurrency      int               `json:"delegate_max_concurrency"`
 		DelegateProviderConcurrency map[string]int    `json:"delegate_provider_concurrency"`
+		AgentIntegration            string            `json:"agent_integration"`
 		AlternateScreen             bool              `json:"alternate_screen"`
 		ReducedMotion               bool              `json:"reduced_motion"`
 		Keybindings                 map[string]string `json:"keybindings"`
@@ -80,6 +81,7 @@ func WriteStarter(path string, global bool) error {
 			MaxToolOutputBytes:          64 * 1024,
 			DelegateMaxConcurrency:      4,
 			DelegateProviderConcurrency: map[string]int{},
+			AgentIntegration:            "manual",
 			AlternateScreen:             true,
 			ReducedMotion:               false,
 			Keybindings:                 DefaultKeybindings(),
@@ -330,6 +332,11 @@ const configReferenceJSONC = `
     "delegate_provider_concurrency": {
       "openrouter": 2
     },
+    // manual keeps delegated writes behind /agents apply. reviewed lets the
+    // primary agent inspect exact child diffs and selectively publish accepted
+    // hunks through the same permission, drift, and atomic-write safeguards.
+    // It never commits, merges, pushes, or bypasses an approval.
+    "agent_integration": "manual",
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",
     "theme": "collomia",

@@ -195,10 +195,19 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 			lines = append(lines, "- "+path)
 		}
 	}
+	if status.IntegrationStatus != "" {
+		lines = append(lines, "", "Integration: "+delegateStatusLabel(status.IntegrationStatus))
+		if status.IntegrationError != "" {
+			lines = append(lines, "Reason: "+m.runtime.Redactor.Redact(status.IntegrationError))
+		}
+	}
 	if status.Status == agent.DelegateQueued || status.Status == agent.DelegateRunning || status.Status == agent.DelegateWaitingApproval || status.Status == agent.DelegateCancelling {
 		lines = append(lines, "", "Control:", "/agents steer "+status.ID+" <guidance…>", "/agents stop "+status.ID)
 	} else if status.Write && len(status.Changed) > 0 && status.Worktree != "" {
 		lines = append(lines, "", "Review and selectively integrate:", "/agents apply "+status.ID)
+		if m.runtime.Config.Options.AgentIntegration == "reviewed" {
+			lines = append(lines, "Primary-agent reviewed integration is enabled.")
+		}
 	}
 	return strings.Join(lines, "\n")
 }

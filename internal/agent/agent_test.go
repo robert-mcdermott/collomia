@@ -688,6 +688,17 @@ func TestReadOnlyDelegateCannotMutateParentPlanArtifact(t *testing.T) {
 	}
 }
 
+func TestReviewedIntegrationToolsArePrimaryOnly(t *testing.T) {
+	for _, name := range []string{"delegate", "inspect_delegate_changes", "apply_delegate_changes"} {
+		if !parentOnlyTool(name) {
+			t.Fatalf("%s should be primary-only", name)
+		}
+	}
+	if parentOnlyTool("read_file") {
+		t.Fatal("ordinary workspace tools must remain available to delegated agents")
+	}
+}
+
 func TestDelegateProfileFiltersSkillsAndEnforcesToolAllowlist(t *testing.T) {
 	dangerRan := false
 	registry := tools.NewRegistry(tools.Function{

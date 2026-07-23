@@ -148,6 +148,10 @@ Important failure-oriented tests include:
   selective text hunks, records the result in the change tracker, retains the
   worktree, refuses parent drift, and rechecks changes made while approval is
   pending.
+- Reviewed primary-agent integration is absent in the default `manual` mode.
+  In opt-in `reviewed` mode, tests require a fresh inspect token, prove stale
+  child bytes fail before authorization, assert exactly one normal permission
+  decision, and exercise the same atomic publication/change-tracking path.
 - Cross-platform Git fixtures explicitly override inherited configuration and
   reproduce `core.autocrlf=true`; nested mixed-case paths, LF/CRLF conversion,
   Git-significant executable bits, and Windows-irrelevant permission bits are
