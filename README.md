@@ -43,7 +43,9 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 
 ## Build and run
 
-Collomia requires Go 1.26 or later to build. The resulting executable has no Go runtime dependency.
+Collomia requires Go 1.26.5 or later to build. The patch-level minimum keeps
+release binaries on a standard-library security-fixed Go toolchain. The
+resulting executable has no Go runtime dependency.
 
 ```sh
 go build -o collo ./cmd/collo

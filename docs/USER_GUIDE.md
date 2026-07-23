@@ -173,7 +173,8 @@ rollback guidance in [Installing Collomia](INSTALLING.md).
 
 ### Build from source
 
-Building requires Go 1.26 or later:
+Building requires Go 1.26.5 or later. Collomia pins the patch-level minimum
+because Go standard-library security fixes are shipped in patch releases:
 
 ```sh
 git clone https://github.com/robert-mcdermott/collomia.git

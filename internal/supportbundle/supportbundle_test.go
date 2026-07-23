@@ -41,8 +41,17 @@ func TestCreateDefaultBundleExcludesSensitiveMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 	const failureID = "err-0123456789abcdef"
-	logData := `{"time":"2026-07-21T12:00:00Z","msg":"event","failure_id":"` + failureID + `","error":"secret=` + secret + ` workspace=` + workspace + `"}` + "\n"
-	if err := os.WriteFile(filepath.Join(logs, "debug.log"), []byte(logData), 0o600); err != nil {
+	logData, err := json.Marshal(map[string]string{
+		"time":       "2026-07-21T12:00:00Z",
+		"msg":        "event",
+		"failure_id": failureID,
+		"error":      "secret=" + secret + " workspace=" + workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logData = append(logData, '\n')
+	if err := os.WriteFile(filepath.Join(logs, "debug.log"), logData, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
