@@ -30,6 +30,7 @@ type Process struct {
 	mu       sync.Mutex
 	output   *limitedBuffer
 	cancel   context.CancelFunc
+	doneCh   chan struct{}
 	done     bool
 	exitErr  error
 	finished time.Time
@@ -118,16 +119,40 @@ func (m *ProcessManager) get(id int) (*Process, error) {
 // StopAll terminates every still-running background process. Safe to call
 // more than once.
 func (m *ProcessManager) StopAll() {
-	for _, info := range m.Snapshot() {
-		if info.Running {
-			if p, err := m.get(info.ID); err == nil {
-				p.mu.Lock()
-				cancel := p.cancel
-				p.mu.Unlock()
-				if cancel != nil {
-					cancel()
-				}
-			}
+	m.mu.Lock()
+	processes := make([]*Process, 0, len(m.procs))
+	for _, process := range m.procs {
+		processes = append(processes, process)
+	}
+	m.mu.Unlock()
+	for _, process := range processes {
+		process.mu.Lock()
+		cancel := process.cancel
+		running := !process.done
+		process.mu.Unlock()
+		if running && cancel != nil {
+			cancel()
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for _, process := range processes {
+		process.mu.Lock()
+		done := process.done
+		doneCh := process.doneCh
+		process.mu.Unlock()
+		if done || doneCh == nil {
+			continue
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-doneCh:
+			timer.Stop()
+		case <-timer.C:
+			return
 		}
 	}
 }
@@ -156,7 +181,7 @@ func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process
 		cmd.Env = minimalEnv()
 	}
 	setProcessGroup(cmd)
-	p := &Process{Command: command, Started: time.Now(), output: &limitedBuffer{limit: procOutputCap}, cancel: cancel, sandboxWarning: sandboxWarning}
+	p := &Process{Command: command, Started: time.Now(), output: &limitedBuffer{limit: procOutputCap}, cancel: cancel, doneCh: make(chan struct{}), sandboxWarning: sandboxWarning}
 	cmd.Stdout = syncWriter{p}
 	cmd.Stderr = syncWriter{p}
 	if err := cmd.Start(); err != nil {
@@ -176,6 +201,7 @@ func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process
 		p.exitErr = err
 		p.finished = time.Now()
 		p.mu.Unlock()
+		close(p.doneCh)
 	}()
 	return p, nil
 }
@@ -334,10 +360,19 @@ func (t StopProcessTool) Execute(_ context.Context, raw json.RawMessage) (string
 	if cancel != nil {
 		cancel()
 	}
-	// Give the kill a moment so the reported status is accurate.
-	deadline := time.Now().Add(3 * time.Second)
-	for p.running() && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
+	// Wait on the command's completion signal rather than polling. The bound
+	// keeps a broken platform kill primitive from hanging the TUI.
+	p.mu.Lock()
+	doneCh := p.doneCh
+	p.mu.Unlock()
+	if doneCh != nil {
+		timer := time.NewTimer(3 * time.Second)
+		select {
+		case <-doneCh:
+			timer.Stop()
+		case <-timer.C:
+			return "", fmt.Errorf("timed out waiting for process %d to stop", a.ID)
+		}
 	}
 	return fmt.Sprintf("stopped process %d (%s)", a.ID, p.Command), nil
 }

@@ -331,6 +331,37 @@ by `stop_process`, `/ps stop`, or automatically when the session ends
 (including background processes started by a delegated write-agent inside
 its own worktree, which are stopped when that sub-agent's task finishes).
 Nothing started this way is expected to outlive the `collo` process.
+Runtime shutdown waits for tracked background-command completion after
+requesting group/tree termination, with a finite safety bound so a broken
+platform primitive cannot hang terminal restoration indefinitely.
+
+## Durable fail-stop boundary
+
+The durable session log is append-only. A short write or operating-system
+storage error latches the first failure; Collomia never appends a later record
+behind a torn tail. The agent checks this latch before each subsequent provider
+request and again before a tool crosses its permission/start boundary. The
+same check is inherited by delegated agents. This prevents a failed session
+record from being followed silently by another external or mutating action.
+
+A tool already executing when storage fails cannot be undone. If its result
+was not accepted, resume labels that call `interrupted`, says that it may or
+may not have taken effect, and never replays it automatically. The user must
+inspect the workspace or external system before retrying.
+
+Immutable session attachments and retained oversized results are accepted only
+after write, sync, and close complete; catchable failures remove the partial
+file. Rooted source mutations write a private same-directory temporary and
+publish with atomic rename. A forced process death therefore leaves the
+destination entirely old or entirely new, never partially replaced. A kill
+before rename can leave an owner-only `.collomia-*.tmp` file. That orphan is
+not model-visible or executable and may be removed after confirming no active
+Collomia operation owns it.
+
+This fail-stop guard covers the durable conversation/session store. The debug
+log and permission audit ledger remain best-effort diagnostics; their
+availability is checked by `collo doctor`, but a later I/O failure in those
+diagnostic streams does not currently stop a tool.
 
 ## Delegated-agent boundary
 

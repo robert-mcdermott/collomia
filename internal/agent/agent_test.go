@@ -1012,9 +1012,111 @@ func TestExecuteToolAppliesContentOverride(t *testing.T) {
 	}
 	a := New(Options{Client: &fakeClient{}, ProviderName: "fake", Model: "m", Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, approver)})
 	call := provider.ToolCall{ID: "1", Name: "write_file", Arguments: json.RawMessage(`{"path":"x.txt","content":"original content"}`)}
-	result := a.executeTool(t.Context(), call, false, func(event.Event) {})
+	result, err := a.executeTool(t.Context(), call, false, func(event.Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if received != override {
 		t.Fatalf("tool received content=%q, want override %q (full result: %s)", received, override, result.Content)
+	}
+}
+
+func TestPersistenceFailureAfterAssistantMessageBlocksToolExecution(t *testing.T) {
+	persistenceErr := error(nil)
+	executions := 0
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "mutate"},
+		Action: tools.Action{Risk: tools.RiskWrite, Summary: "mutate fixture"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return "mutated", nil
+		},
+	})
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{ToolCalls: []provider.ToolCall{{ID: "write-1", Name: "mutate", Arguments: json.RawMessage(`{}`)}}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		OnMessage: func(message provider.Message) {
+			if message.Role == "assistant" {
+				persistenceErr = errors.New("injected session disk failure")
+			}
+		},
+		PersistenceError: func() error { return persistenceErr },
+	})
+	if _, err := a.Run(t.Context(), "make the change", nil); !errors.Is(err, ErrPersistenceUnavailable) {
+		t.Fatalf("run error=%v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("tool executed %d times after persistence failed", executions)
+	}
+}
+
+func TestPersistenceFailureAtToolStartBlocksExecution(t *testing.T) {
+	persistenceErr := error(nil)
+	executions := 0
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect"},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect fixture"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return "inspected", nil
+		},
+	})
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{ToolCalls: []provider.ToolCall{{ID: "read-1", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		PersistenceError: func() error { return persistenceErr },
+	})
+	emit := func(e event.Event) {
+		if e.Kind == event.KindToolStart {
+			persistenceErr = errors.New("injected tool-start event failure")
+		}
+	}
+	if _, err := a.Run(t.Context(), "inspect", emit); !errors.Is(err, ErrPersistenceUnavailable) {
+		t.Fatalf("run error=%v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("tool executed %d times after its start event was not durable", executions)
+	}
+}
+
+func TestPersistenceFailureAfterToolResultStopsRemainingCalls(t *testing.T) {
+	persistenceErr := error(nil)
+	executions := 0
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect"},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect fixture"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return "inspected", nil
+		},
+	})
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{ToolCalls: []provider.ToolCall{
+			{ID: "read-1", Name: "inspect", Arguments: json.RawMessage(`{}`)},
+			{ID: "read-2", Name: "inspect", Arguments: json.RawMessage(`{}`)},
+		}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		OnMessage: func(message provider.Message) {
+			if message.Role == "tool" {
+				persistenceErr = errors.New("injected tool-result record failure")
+			}
+		},
+		PersistenceError: func() error { return persistenceErr },
+	})
+	if _, err := a.Run(t.Context(), "inspect twice", nil); !errors.Is(err, ErrPersistenceUnavailable) {
+		t.Fatalf("run error=%v", err)
+	}
+	if executions != 1 {
+		t.Fatalf("executions=%d, want exactly the first already-started tool", executions)
 	}
 }
 

@@ -54,9 +54,10 @@ type ArtifactStats struct {
 // Use before exposing the restored conversation to the agent, so references
 // can never cross session boundaries accidentally.
 type ArtifactManager struct {
-	mu   sync.RWMutex
-	opMu sync.Mutex
-	dir  string
+	mu       sync.RWMutex
+	opMu     sync.Mutex
+	dir      string
+	openFile durableFileOpener
 }
 
 func NewArtifactManager() *ArtifactManager { return &ArtifactManager{} }
@@ -139,23 +140,8 @@ func (m *ArtifactManager) SaveArtifact(toolName, content string) (ArtifactRef, e
 		ref.Complete = false
 	}
 	path := filepath.Join(dir, id+".json")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return ArtifactRef{}, fmt.Errorf("create session artifact: %w", err)
-	}
-	written, writeErr := file.Write(data)
-	if writeErr == nil && written != len(data) {
-		writeErr = errors.New("short artifact write")
-	}
-	if syncErr := file.Sync(); writeErr == nil {
-		writeErr = syncErr
-	}
-	if closeErr := file.Close(); writeErr == nil {
-		writeErr = closeErr
-	}
-	if writeErr != nil {
-		_ = os.Remove(path)
-		return ArtifactRef{}, fmt.Errorf("write session artifact: %w", writeErr)
+	if err := writeExclusiveDurable(path, data, 0o600, m.openFile); err != nil {
+		return ArtifactRef{}, fmt.Errorf("write session artifact: %w", err)
 	}
 	return ref, nil
 }

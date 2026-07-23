@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -92,6 +93,98 @@ func TestReplacePublishFailurePreservesOriginalAndCleansTemporary(t *testing.T) 
 		t.Fatalf("replace error=%v", err)
 	}
 	assertOriginalAndNoTemps(t, root, path, "accepted")
+}
+
+func TestAtomicReplacementSurvivesAbruptProcessDeath(t *testing.T) {
+	for _, tc := range []struct {
+		stage, want string
+	}{
+		{stage: "before-publish", want: "accepted"},
+		{stage: "after-publish", want: "complete replacement"},
+	} {
+		t.Run(tc.stage, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "important.txt")
+			if err := os.WriteFile(path, []byte("accepted"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(os.Args[0], "-test.run=^TestAtomicReplacementCrashHelper$")
+			cmd.Env = append(os.Environ(),
+				"COLLOMIA_SAFEFILE_CRASH_HELPER=1",
+				"COLLOMIA_SAFEFILE_CRASH_ROOT="+root,
+				"COLLOMIA_SAFEFILE_CRASH_STAGE="+tc.stage,
+			)
+			output, err := cmd.CombinedOutput()
+			exitErr := new(exec.ExitError)
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 87 {
+				t.Fatalf("crash helper error=%v output=%s", err, output)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != tc.want {
+				t.Fatalf("published bytes=%q err=%v, want complete state %q", data, err, tc.want)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if !strings.Contains(entry.Name(), ".collomia-") || !strings.HasSuffix(entry.Name(), ".tmp") {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.Mode().IsRegular() {
+					t.Fatalf("crash temporary is not a regular file: %s", entry.Name())
+				}
+				if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+					t.Fatalf("crash temporary mode=%v", info.Mode().Perm())
+				}
+				if err := os.Remove(filepath.Join(root, entry.Name())); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestAtomicReplacementCrashHelper(t *testing.T) {
+	if os.Getenv("COLLOMIA_SAFEFILE_CRASH_HELPER") != "1" {
+		return
+	}
+	root := os.Getenv("COLLOMIA_SAFEFILE_CRASH_ROOT")
+	target, err := Open(root, filepath.Join(root, "important.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch os.Getenv("COLLOMIA_SAFEFILE_CRASH_STAGE") {
+	case "before-publish":
+		target.writeTemp = func(file *os.File, data []byte) error {
+			if _, err := file.Write(data); err != nil {
+				return err
+			}
+			if err := file.Sync(); err != nil {
+				return err
+			}
+			os.Exit(87)
+			return nil
+		}
+	case "after-publish":
+		target.publishTemp = func(root *os.Root, oldName, newName string) error {
+			if err := root.Rename(oldName, newName); err != nil {
+				return err
+			}
+			os.Exit(87)
+			return nil
+		}
+	default:
+		t.Fatal("unknown crash stage")
+	}
+	if err := target.Replace([]byte("complete replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal("crash helper returned without exiting")
 }
 
 func assertOriginalAndNoTemps(t *testing.T, root, path, want string) {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -73,6 +74,34 @@ func TestRuntimeCloseCancelsActiveDelegates(t *testing.T) {
 	case <-ctx.Done():
 	default:
 		t.Fatal("runtime close did not cancel active delegated work")
+	}
+}
+
+func TestRuntimeCloseWaitsForBackgroundProcesses(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := "sleep 60"
+	if goruntime.GOOS == "windows" {
+		command = "ping -n 60 127.0.0.1"
+	}
+	args, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Registry.Execute(t.Context(), "start_process", args); err != nil {
+		runtime.Close()
+		t.Fatal(err)
+	}
+	if runtime.Processes.Running() != 1 {
+		runtime.Close()
+		t.Fatalf("running=%d", runtime.Processes.Running())
+	}
+	runtime.Close()
+	if running := runtime.Processes.Running(); running != 0 {
+		t.Fatalf("runtime close returned with %d background processes still running", running)
 	}
 }
 

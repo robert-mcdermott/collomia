@@ -2378,7 +2378,9 @@ sandbox, workspace, and minimal/full environment as `run_command`. They are
 listed in the Session tab and `/ps`. Their output retains the most recent 64
 KiB. `stop_process`, `/ps stop`, sub-agent completion, or Collomia shutdown
 kills the process group so session-owned processes do not intentionally
-outlive Collomia.
+outlive Collomia. Shutdown waits for each tracked command to report completion
+after termination is requested, with a finite safety bound so a broken
+platform kill primitive cannot hang terminal restoration indefinitely.
 
 ### Git inspection
 
@@ -3306,10 +3308,25 @@ Session loading tolerates a torn final JSONL line after a crash. A tool call
 without a recorded result is marked interrupted and is not replayed
 automatically, preventing duplicate writes or commands. If the operating
 system returns a disk error or short write, Collomia latches the first
-persistence failure and stops appending records behind the torn tail. The
-current turn fails visibly in the TUI or headless result, and the Session tab
-shows persistence as failed. Resolve the storage problem before continuing;
-accepted history up to the final torn line remains recoverable.
+persistence failure and stops appending records behind the torn tail. A
+fail-stop guard checks that state before every following provider request and
+tool execution, including delegated agents. A tool that had already started
+cannot be rolled back, but Collomia will not begin the next one; resume marks
+the missing result as interrupted and requires verification rather than
+replaying it. The current turn fails visibly in the TUI or headless result,
+and the Session tab shows persistence as failed. Resolve the storage problem
+before continuing; accepted history up to the final torn line remains
+recoverable.
+
+Session attachment and retained-result files are accepted only after the full
+write, filesystem sync, and close succeed. Catchable write/sync/close failures
+remove the partial file. Direct source changes use private same-directory
+temporary files and atomic rename, so abrupt termination leaves either the
+complete old destination or the complete replacement—never a partially
+truncated accepted file. An uncatchable process termination before rename can
+leave an owner-only `.collomia-*.tmp` orphan beside the destination. It is not
+referenced or executed; inspect that no Collomia process is actively changing
+the file before deleting such a stale temporary.
 
 Every newly written session record carries `schema_version: 1`; older records
 without that field are treated as legacy version 1. Additive optional fields

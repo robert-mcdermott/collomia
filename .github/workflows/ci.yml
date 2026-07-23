@@ -68,6 +68,11 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Deterministic offline agent evaluations
         run: go test -count=1 ./internal/eval
+      - name: Interruption and cancellation stress
+        run: >-
+          go test -count=5
+          -run '^(TestSessionAbruptProcessDeathLeavesRecoverableInterruptedTool|TestAtomicReplacementSurvivesAbruptProcessDeath|TestPersistenceFailure.*|TestTeamCancellationRaceCannotReviveTask|TestRuntimeCloseWaitsForBackgroundProcesses|TestExclusiveDurableBlobFailuresRemovePartialFile|TestStopAllKillsEverything)$'
+          ./internal/session ./internal/safefile ./internal/agent ./internal/app ./internal/tools
       - name: Performance baseline smoke
         run: >-
           go test -run '^$'

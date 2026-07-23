@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,19 @@ func (f *shortRecordFile) Write(data []byte) (int, error) {
 }
 
 func (f *shortRecordFile) Close() error { return f.file.Close() }
+
+type failedRecordFile struct {
+	file  recordFile
+	err   error
+	calls int
+}
+
+func (f *failedRecordFile) Write([]byte) (int, error) {
+	f.calls++
+	return 0, f.err
+}
+
+func (f *failedRecordFile) Close() error { return f.file.Close() }
 
 func TestSessionLatchesShortWriteAndLeavesRecoverableTornTail(t *testing.T) {
 	store, err := OpenAt(t.TempDir(), t.TempDir())
@@ -62,6 +76,115 @@ func TestSessionLatchesShortWriteAndLeavesRecoverableTornTail(t *testing.T) {
 	if len(recovered.TranscriptMessages()) != 0 {
 		t.Fatalf("partial record became accepted history: %+v", recovered.TranscriptMessages())
 	}
+}
+
+func TestSessionLatchesDiskWriteFailureAndStopsFollowingRecords(t *testing.T) {
+	store, err := OpenAt(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	diskErr := errors.New("injected ENOSPC")
+	failed := &failedRecordFile{file: sess.file, err: diskErr}
+	sess.file = failed
+	sess.AppendMessage(provider.Message{Role: "user", Content: "must not become accepted history"})
+	if err := sess.Err(); !errors.Is(err, diskErr) {
+		t.Fatalf("latched error=%v", err)
+	}
+	sess.AppendMessage(provider.Message{Role: "assistant", Content: "must not follow failed record"})
+	if failed.calls != 1 {
+		t.Fatalf("writer called %d times after disk failure", failed.calls)
+	}
+	sess.Close()
+
+	recovered, err := store.Load(id)
+	if err != nil {
+		t.Fatalf("accepted prefix should remain readable: %v", err)
+	}
+	defer recovered.Close()
+	if messages := recovered.TranscriptMessages(); len(messages) != 0 {
+		t.Fatalf("failed records became accepted history: %+v", messages)
+	}
+}
+
+func TestSessionAbruptProcessDeathLeavesRecoverableInterruptedTool(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionCrashHelper$")
+	cmd.Env = append(os.Environ(),
+		"COLLOMIA_SESSION_CRASH_HELPER=1",
+		"COLLOMIA_SESSION_CRASH_DIR="+dir,
+	)
+	output, err := cmd.CombinedOutput()
+	exitErr := new(exec.ExitError)
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 86 {
+		t.Fatalf("crash helper error=%v output=%s", err, output)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ""
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			id = strings.TrimSuffix(entry.Name(), ".jsonl")
+		}
+	}
+	if id == "" {
+		t.Fatal("crash helper did not create a session log")
+	}
+	store, err := OpenAt(dir, "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.Load(id)
+	if err != nil {
+		t.Fatalf("load after abrupt process death: %v", err)
+	}
+	messages := recovered.TranscriptMessages()
+	if len(messages) != 3 || messages[0].Content != "prepare mutation" || len(messages[1].ToolCalls) != 1 || messages[2].Role != "tool" || !strings.Contains(messages[2].Content, "may or may not have taken effect") {
+		t.Fatalf("recovered transcript=%+v", messages)
+	}
+	recovered.FlushInterrupted()
+	if err := recovered.Err(); err != nil {
+		t.Fatalf("persist interruption note: %v", err)
+	}
+	recovered.Close()
+
+	reloaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if messages := reloaded.TranscriptMessages(); len(messages) != 3 {
+		t.Fatalf("interruption note was lost or duplicated: %+v", messages)
+	}
+}
+
+func TestSessionCrashHelper(t *testing.T) {
+	if os.Getenv("COLLOMIA_SESSION_CRASH_HELPER") != "1" {
+		return
+	}
+	store, err := OpenAt(os.Getenv("COLLOMIA_SESSION_CRASH_DIR"), "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AppendMessage(provider.Message{Role: "user", Content: "prepare mutation"})
+	sess.AppendMessage(provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
+		ID: "write-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"important.txt","content":"new"}`),
+	}}})
+	if err := sess.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = sess.file.Write([]byte(`{"schema_version":1,"type":"message","message":{"role":"tool"`))
+	os.Exit(86)
 }
 
 func testStore(t *testing.T) *Store {

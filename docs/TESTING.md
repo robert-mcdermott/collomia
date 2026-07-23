@@ -88,12 +88,22 @@ Important failure-oriented tests include:
   Responses-style inputs, and Bedrock Converse; MCP image bytes survive the
   typed tool boundary and are session-retained before the following request.
 - Process timeout/cancellation and descendant cleanup.
-- Session torn-tail recovery, dangling tool-call interruption, and injected
-  short writes. A short write is latched so a later record cannot turn the
+- Session torn-tail recovery, dangling tool-call interruption, injected
+  short/disk writes, and an actual subprocess exit with an incomplete final
+  record. A failed write is latched so a later record cannot turn the
   recoverable final fragment into corruption in the middle of the log.
+- Fail-stop persistence guards after the user/assistant record, permission
+  event, tool-start event, and tool result. Once durability fails, no later
+  provider request or tool starts; a tool already completed is the only
+  possible uncertain side effect.
+- Immutable session-blob write, sync, and close failures. Partial attachments
+  and retained results are removed and their storage error is propagated.
 - Rooted atomic replacement with injected temporary-write and publication
   failures. The accepted destination remains byte-for-byte unchanged and
   private temporary files are removed on both paths.
+- Abrupt subprocess death immediately before and after atomic publication.
+  The destination is always the complete old or complete new content; a
+  pre-publication kill may leave only a private unreferenced temporary.
 - Explicit session-record compatibility: current writes carry version 1,
   legacy version-1 records without the field and additive fields still load,
   and newer schemas fail before append.
@@ -133,7 +143,7 @@ Important failure-oriented tests include:
   while ordinary prompts and unsafe commands remain unsent drafts.
 - Provider-call and TUI cancellation remain responsive without starting a tool
   or losing the current composer draft; runtime teardown cancels active
-  delegated work.
+  delegated work and waits for tracked background processes to exit.
 - Delegated-worktree integration checks registered Git identity/base, supports
   selective text hunks, records the result in the change tracker, retains the
   worktree, refuses parent drift, and rechecks changes made while approval is
@@ -141,7 +151,10 @@ Important failure-oriented tests include:
 - Cross-platform Git fixtures explicitly override inherited configuration and
   reproduce `core.autocrlf=true`; nested mixed-case paths, LF/CRLF conversion,
   Git-significant executable bits, and Windows-irrelevant permission bits are
-  tested according to each platform's semantics.
+  tested according to each platform's semantics. Repeated/race runs also cover
+  concurrent write-delegate setup: Git's shared `.git/worktrees`
+  administration is serialized while the isolated child tasks remain
+  concurrent.
 - One opaque failure ID remains stable across the returned error, JSONL error
   and final-result records, TUI diagnostic, durable delegate status, debug log,
   and support-bundle correlation metadata. Tests validate the ID shape without
@@ -158,6 +171,16 @@ When adding a fault seam, keep production defaults on the real operating
 system implementation. Tests may inject writers, clocks, transports, or
 providers, but normal runtime behavior should not depend on test-only global
 state.
+
+The Linux quality and tagged-release workflows also repeat the deterministic
+interruption/cancellation subset five times. Run the same bounded stress pass
+locally with:
+
+```sh
+go test -count=5 \
+  -run '^(TestSessionAbruptProcessDeathLeavesRecoverableInterruptedTool|TestAtomicReplacementSurvivesAbruptProcessDeath|TestPersistenceFailure.*|TestTeamCancellationRaceCannotReviveTask|TestRuntimeCloseWaitsForBackgroundProcesses|TestExclusiveDurableBlobFailuresRemovePartialFile|TestStopAllKillsEverything)$' \
+  ./internal/session ./internal/safefile ./internal/agent ./internal/app ./internal/tools
+```
 
 ## Performance benchmarks
 

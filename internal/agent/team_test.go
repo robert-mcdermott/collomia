@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,6 +69,41 @@ func TestTeamStopAllCancelsOnlyActiveTasks(t *testing.T) {
 	}
 	if status, _ := team.Get("done"); status.Status != DelegateDone {
 		t.Fatalf("completed status changed: %+v", status)
+	}
+}
+
+func TestTeamCancellationRaceCannotReviveTask(t *testing.T) {
+	for attempt := 0; attempt < 64; attempt++ {
+		team := NewTeam()
+		ctx, cancel := context.WithCancel(t.Context())
+		team.Enqueue(DelegateStart{ID: "race", Name: "worker", Cancel: cancel})
+		team.MarkRunning("race")
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = team.Stop("race")
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			team.SetAction("race", "late provider boundary")
+			team.SetWaitingApproval("race", "late approval")
+			team.MarkRunning("race")
+		}()
+		close(start)
+		wg.Wait()
+		select {
+		case <-ctx.Done():
+		default:
+			t.Fatalf("attempt %d did not cancel task context", attempt)
+		}
+		status, _ := team.Get("race")
+		if status.Status != DelegateCancelling {
+			t.Fatalf("attempt %d revived task: %+v", attempt, status)
+		}
 	}
 }
 

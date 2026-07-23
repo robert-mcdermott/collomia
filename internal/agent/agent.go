@@ -36,6 +36,11 @@ const maxDelegateTasks = 6
 // execution when a delegated agent's configured token budget is exhausted.
 var ErrTokenBudgetExceeded = errors.New("delegated-agent token budget exhausted")
 
+// ErrPersistenceUnavailable marks a fail-stop run: the durable session could
+// no longer accept records, so starting another provider call or tool would
+// make recovery ambiguous.
+var ErrPersistenceUnavailable = errors.New("durable session persistence unavailable")
+
 var delegateIDCounter atomic.Uint64
 
 // Emit receives the typed runtime events defined in internal/event.
@@ -43,6 +48,7 @@ type Emit = event.Emit
 
 type Agent struct {
 	mu                  sync.RWMutex
+	worktreeMu          sync.Mutex
 	client              provider.Client
 	providerName        string
 	model               string
@@ -72,6 +78,7 @@ type Agent struct {
 	onUsage             func(provider.Usage)
 	onAction            func(string)
 	takeSteering        func() []string
+	persistenceError    func() error
 }
 
 type Options struct {
@@ -112,6 +119,10 @@ type Options struct {
 	// TakeSteering returns parent guidance queued for the next provider
 	// boundary. It is used only by delegated agents.
 	TakeSteering func() []string
+	// PersistenceError reports a latched durable-session failure. The agent
+	// checks it before provider and tool boundaries so a failed session log
+	// cannot be followed by another external or mutating action.
+	PersistenceError func() error
 }
 
 func New(opts Options) *Agent {
@@ -125,7 +136,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError}
 }
 
 // appendMessage adds to the conversation and notifies the persistence hook.
@@ -146,6 +157,27 @@ func (a *Agent) SetHooks(onMessage func(provider.Message), onCompaction func(pro
 	a.onMessage = onMessage
 	a.onCompaction = onCompaction
 	a.mu.Unlock()
+}
+
+// SetPersistenceGuard rebinds fail-stop persistence checking when the active
+// durable session changes.
+func (a *Agent) SetPersistenceGuard(check func() error) {
+	a.mu.Lock()
+	a.persistenceError = check
+	a.mu.Unlock()
+}
+
+func (a *Agent) checkPersistence() error {
+	a.mu.RLock()
+	check := a.persistenceError
+	a.mu.RUnlock()
+	if check == nil {
+		return nil
+	}
+	if err := check(); err != nil {
+		return fmt.Errorf("%w; refusing further provider or tool actions: %w", ErrPersistenceUnavailable, err)
+	}
+	return nil
 }
 
 // SetMessages replaces the active conversation, used when resuming a
@@ -183,6 +215,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 	}
 	send(event.New(event.KindTurnStart))
+	if err := a.checkPersistence(); err != nil {
+		return "", reportError(send, err)
+	}
 	if err := a.lifecycle.Gate(ctx, hooks.Payload{Event: "user_prompt", Workspace: a.workspace, Subject: "user_prompt", Prompt: prompt}); err != nil {
 		blocked := fmt.Errorf("prompt blocked by hook: %w", err)
 		blocked = reportError(send, blocked)
@@ -195,10 +230,19 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		return "", wrapped
 	}
 	a.appendMessage(provider.Message{Role: "user", Content: prompt, Parts: retainedParts})
+	if err := a.checkPersistence(); err != nil {
+		return "", reportError(send, err)
+	}
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
+		if err := a.checkPersistence(); err != nil {
+			return "", reportError(send, err)
+		}
 		if a.shouldCompact() {
 			if _, err := a.compact(ctx, "", send); err != nil {
 				reportError(send, fmt.Errorf("automatic compaction failed: %w", err))
+			}
+			if err := a.checkPersistence(); err != nil {
+				return "", reportError(send, err)
 			}
 		}
 		select {
@@ -298,6 +342,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			onUsage(usage)
 		}
 		a.appendMessage(provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls})
+		if err := a.checkPersistence(); err != nil {
+			return response.Content, reportError(send, err)
+		}
 		if !streamedUsage.Load() && (response.Usage.InputTokens > 0 || response.Usage.OutputTokens > 0) {
 			e := event.New(event.KindUsage)
 			e.Usage = &event.Usage{InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, CachedTokens: response.Usage.CachedTokens, ReasoningTokens: response.Usage.ReasoningTokens}
@@ -314,7 +361,13 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			return response.Content, nil
 		}
 		for _, call := range response.ToolCalls {
-			result := a.executeTool(ctx, call, plan, send)
+			if err := a.checkPersistence(); err != nil {
+				return response.Content, reportError(send, err)
+			}
+			result, fatalErr := a.executeTool(ctx, call, plan, send)
+			if fatalErr != nil {
+				return response.Content, reportError(send, fatalErr)
+			}
 			a.appendMessage(provider.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content, Parts: result.Parts})
 		}
 	}
@@ -418,43 +471,49 @@ func reportError(send Emit, err error) error {
 	return err
 }
 
-func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) tools.Result {
+func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, error) {
 	a.mu.RLock()
 	disabled := a.disabled[call.Name]
 	a.mu.RUnlock()
 	if disabled || (a.subagent && call.Name == "delegate") {
-		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}
+		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, nil
 	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
-		return tools.Result{Content: "Tool error: " + err.Error()}
+		return tools.Result{Content: "Tool error: " + err.Error()}, nil
 	}
 	if plan && action.Risk != tools.RiskRead {
-		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}
+		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, nil
 	}
 	grant, err := a.permissions.Authorize(ctx, call.Name, action)
 	decided := event.New(event.KindPermissionDecision)
 	decided.Permission = &event.Permission{Tool: call.Name, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
 	send(decided)
+	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
+		return tools.Result{}, persistenceErr
+	}
 	allowed := err == nil
 	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
 	if err != nil {
-		return tools.Result{Content: "Tool denied: " + err.Error()}
+		return tools.Result{Content: "Tool denied: " + err.Error()}, nil
 	}
 	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
-		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}
+		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, nil
 	}
 	args := call.Arguments
 	if grant.ContentOverride != nil {
 		var overridden error
 		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
 		if overridden != nil {
-			return tools.Result{Content: "Tool error: " + overridden.Error()}
+			return tools.Result{Content: "Tool error: " + overridden.Error()}, nil
 		}
 	}
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
 	send(start)
+	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
+		return tools.Result{}, persistenceErr
+	}
 	onOutput := func(chunk string) {
 		e := event.New(event.KindToolOutput)
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
@@ -501,7 +560,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if err == nil && action.Risk == tools.RiskWrite && len(action.Paths) > 0 {
 		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
 	}
-	return result
+	return result, nil
 }
 
 func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, send Emit) []provider.ContentPart {
@@ -1056,6 +1115,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	catalog, instructions, maxOut, maxIter := a.catalog, a.projectInstructions, a.maxToolOutput, a.maxIterations
 	auditRedact := a.auditRedact
 	disabled := keys(a.disabled)
+	persistenceError := a.persistenceError
 	a.mu.RUnlock()
 
 	if profile.Model != "" {
@@ -1111,7 +1171,12 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			return "", nil, nil, nil, "", "", "", provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
 		}
 		var err error
+		// Git mutates shared administrative state under .git/worktrees while
+		// adding a worktree. Serialize only this short setup operation per
+		// parent agent; child execution remains fully concurrent afterward.
+		a.worktreeMu.Lock()
 		wt, err = newWorktree(ctx, workspace, task.Name)
+		a.worktreeMu.Unlock()
 		if err != nil {
 			return "", nil, nil, nil, "", "", "", provider.Usage{}, err
 		}
@@ -1153,6 +1218,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		Catalog: childCatalog, ProjectInstructions: instructions,
 		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: profile.TokenBudget,
 		DisabledTools: disabled, PlanMode: childPlan, Subagent: true,
+		PersistenceError: persistenceError,
 		OnUsage: func(current provider.Usage) {
 			if team != nil {
 				team.SetUsage(id, current)

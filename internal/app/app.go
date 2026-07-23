@@ -252,6 +252,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if sess != nil {
 		agentOptions.OnMessage = sess.AppendMessage
 		agentOptions.OnCompaction = sess.AppendCompaction
+		agentOptions.PersistenceError = sess.Err
 	}
 	agentRuntime := agent.New(agentOptions)
 	team := agent.NewTeam()
@@ -536,6 +537,7 @@ func (r *Runtime) SwitchSession(id string) error {
 	r.Agent.SetMessages(sess.Active())
 	sess.FlushInterrupted()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
 	return nil
@@ -563,6 +565,7 @@ func (r *Runtime) NewSession() error {
 	}
 	r.Agent.Clear()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
 	return nil
@@ -589,6 +592,7 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	}
 	r.Agent.SetMessages(sess.Active())
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
+	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
 	return sourceID, sess.Meta.ID, nil
