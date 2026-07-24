@@ -80,10 +80,10 @@ jobs:
           -benchtime=1x -benchmem
           ./internal/app ./internal/activity ./internal/index ./internal/session ./internal/tui
       - name: Replay parser fuzz smoke test
-        run: go test ./internal/replay -run '^$' -fuzz '^FuzzRead$' -fuzztime 3s
+        run: go test ./internal/replay -run '^$' -fuzz '^FuzzRead$' -fuzztime=10000x
       - name: Configuration validation fuzz smoke test
-        run: go test ./internal/config -run '^$' -fuzz '^FuzzConfigValidation$' -fuzztime 3s
+        run: go test ./internal/config -run '^$' -fuzz '^FuzzConfigValidation$' -fuzztime=10000x
       - name: Shell analysis fuzz smoke test
-        run: go test ./internal/shell -run '^$' -fuzz '^FuzzAnalyze$' -fuzztime 3s
+        run: go test ./internal/shell -run '^$' -fuzz '^FuzzAnalyze$' -fuzztime=10000x
       - name: Diff parser fuzz smoke test
-        run: go test ./internal/diffmodel -run '^$' -fuzz '^FuzzDiffAndHunkParsing$' -fuzztime 3s
+        run: go test ./internal/diffmodel -run '^$' -fuzz '^FuzzDiffAndHunkParsing$' -fuzztime=10000x

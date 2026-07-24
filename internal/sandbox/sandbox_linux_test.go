@@ -20,6 +20,13 @@ import (
 // calling process, so the test re-executes itself, applies the policy in the
 // child, and verifies enforcement there.
 func TestMain(m *testing.M) {
+	if handled, err := DispatchReexec(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("LANDLOCK_HELPER") == "1" {
 		runHelper()
 		return

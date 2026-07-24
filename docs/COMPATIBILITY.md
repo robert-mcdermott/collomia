@@ -71,6 +71,27 @@ change, the release notes and migration documentation must specify:
 4. any setting whose default or security behavior changes;
 5. how to validate and, where possible, roll back.
 
+### Sandbox default transition
+
+The current runtime default for an omitted `permissions.sandbox` field is
+`auto`, replacing the earlier `off` default. This is an intentional security
+behavior change within schema version 1:
+
+- an existing file that explicitly says `"sandbox": "off"` remains off;
+- an existing file that omitted the field begins using `auto` after upgrade;
+- new global starter files write `"sandbox": "auto"`;
+- project starter files continue to omit the field and inherit the user or
+  built-in setting;
+- Collomia does not edit an existing file during the transition.
+
+The compatibility-first companion defaults remain
+`sandbox_allow_network: true` and
+`sandbox_allow_read_outside_workspace: true`. Sandboxed commands use the
+minimal environment when `command_env` is omitted. Before or after upgrading,
+run `collo config show` and `collo doctor`; add narrow readable/writable roots
+for SDKs and caches where needed. Add an explicit `"sandbox": "off"` only when
+the prior unsandboxed behavior is deliberately required.
+
 A newer configuration is rejected with an instruction to upgrade the binary.
 Normal loading's unknown-field tolerance supports forward-compatible optional
 settings; use strict validation in CI and after manual edits to catch typos.

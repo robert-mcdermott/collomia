@@ -323,8 +323,18 @@ func TestConversationRewindEvaluation(t *testing.T) {
 
 func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, mode string) (*agent.Agent, interface{ Changed() []string }) {
 	t.Helper()
+	// Evaluation commands run with the production minimal environment and
+	// default-on sandbox. Keep Go's build cache inside the writable fixture
+	// workspace so nested `go test` commands remain isolated and deterministic.
+	t.Setenv("GOCACHE", filepath.Join(workspace, ".collomia-eval-cache"))
 	cfg := appconfig.Defaults()
 	cfg.Permissions.Mode = mode
+	cfg.Permissions.Sandbox = evaluationSandboxMode()
+	// The Windows race build deliberately bypasses only the OS sandbox re-exec
+	// described by evaluationSandboxMode. Keep the production sandbox's
+	// minimal command environment in every evaluation mode.
+	cfg.Permissions.CommandEnv = "minimal"
+	cfg.Permissions.SandboxReadableRoots = append(cfg.Permissions.SandboxReadableRoots, evaluationSandboxReadableRoots()...)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		t.Fatal(err)

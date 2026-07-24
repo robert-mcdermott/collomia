@@ -270,6 +270,45 @@ func TestMinimalEnvStripsSecrets(t *testing.T) {
 	}
 }
 
+func TestMinimalEnvKeepsGoBuildCacheWithoutLeakingSecrets(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "go-build")
+	t.Setenv("GOCACHE", cache)
+	t.Setenv("SUPER_SECRET_TOKEN", "leakme")
+
+	env := minimalEnv()
+	if !containsEnv(env, "GOCACHE", cache) {
+		t.Fatalf("minimal env did not preserve GOCACHE: %v", env)
+	}
+	if containsEnv(env, "SUPER_SECRET_TOKEN", "leakme") {
+		t.Fatalf("minimal env leaked a parent secret: %v", env)
+	}
+}
+
+func TestMinimalEnvKeepsWindowsAppContainerPaths(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "profile")
+	localAppData := filepath.Join(profile, "AppData", "Local")
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("LOCALAPPDATA", localAppData)
+
+	env := minimalEnv()
+	if !containsEnv(env, "USERPROFILE", profile) {
+		t.Fatalf("minimal env did not preserve USERPROFILE: %v", env)
+	}
+	if !containsEnv(env, "LOCALAPPDATA", localAppData) {
+		t.Fatalf("minimal env did not preserve LOCALAPPDATA: %v", env)
+	}
+}
+
+func containsEnv(env []string, key, value string) bool {
+	want := key + "=" + value
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestResolvedWritableRootsAreWorkspaceRelativeAndExpanded(t *testing.T) {
 	workspace := t.TempDir()
 	external := t.TempDir()

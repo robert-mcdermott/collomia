@@ -12,7 +12,8 @@ every roadmap feature is complete.
 - Reviewable workspace edits backed by Git and Collomia's diff/undo tools.
 - Provider, MCP, skills, hooks, LSP, and headless evaluation in non-production
   environments.
-- Opt-in sandboxing after reviewing the platform-specific behavior.
+- Default `auto` sandboxing after reviewing the platform-specific behavior and
+  granting only the dependency/cache roots a toolchain actually needs.
 
 Keep valuable repositories backed up, review permission dialogs and diffs, and
 use ordinary Git branches for recoverability. Start with non-sensitive projects
@@ -20,9 +21,13 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
 
 ## Important limitations
 
-- Sandboxing is opt-in. The compatibility-first defaults keep command network
-  access and broad command reads available so package managers and developer
-  tools continue to work. Domain-scoped egress grants are not implemented.
+- Sandboxing defaults to capability-aware `auto`, while command network access
+  and broad command reads remain available for compatibility. External caches
+  may need narrow writable grants, sandboxed commands receive the minimal
+  environment by default, and Windows AppContainer always confines user-data
+  reads and blocks ordinary unpackaged localhost services. `auto` warns and
+  continues when a backend is unavailable; use `require` for fail-closed
+  operation. Domain-scoped egress grants are not implemented.
 - `autopilot` is not a promise that arbitrary commands are safe. Built-in
   catastrophic denials, policy, and OS sandboxing reduce risk but do not replace
   review, backups, source control, or host isolation.

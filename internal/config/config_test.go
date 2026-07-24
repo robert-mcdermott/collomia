@@ -160,6 +160,20 @@ func TestDefaultsKeepSandboxCommandNetworkAvailable(t *testing.T) {
 	}
 }
 
+func TestDefaultsEnableSandboxAuto(t *testing.T) {
+	if got := Defaults().Permissions.Sandbox; got != "auto" {
+		t.Fatalf("default sandbox=%q, want auto", got)
+	}
+}
+
+func TestNormalizeMissingSandboxToAuto(t *testing.T) {
+	var cfg Config
+	cfg.normalize()
+	if cfg.Permissions.Sandbox != "auto" {
+		t.Fatalf("normalized sandbox=%q, want auto", cfg.Permissions.Sandbox)
+	}
+}
+
 func TestDefaultsKeepSandboxCommandReadsBroad(t *testing.T) {
 	if !Defaults().Permissions.SandboxAllowReadOutsideWorkspace {
 		t.Fatal("compatibility default must keep sandboxed command reads broad until explicitly confined")
@@ -197,6 +211,9 @@ func TestProjectLayerMergesOverDefaults(t *testing.T) {
 	if cfg.Permissions.Mode != "workspace" {
 		t.Fatalf("mode=%q", cfg.Permissions.Mode)
 	}
+	if cfg.Permissions.Sandbox != "auto" {
+		t.Fatalf("omitted project sandbox=%q, want inherited auto", cfg.Permissions.Sandbox)
+	}
 	if !cfg.Permissions.SandboxAllowReadOutsideWorkspace {
 		t.Fatal("omitted project read policy must inherit the broad-read compatibility default")
 	}
@@ -227,6 +244,49 @@ func TestProjectCanOptIntoSandboxReadConfinement(t *testing.T) {
 	}
 	if len(cfg.Permissions.SandboxReadableRoots) != 1 || cfg.Permissions.SandboxReadableRoots[0] != "vendor-sdk" {
 		t.Fatalf("readable roots=%v", cfg.Permissions.SandboxReadableRoots)
+	}
+}
+
+func TestProjectCanExplicitlyDisableDefaultSandbox(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, `{"permissions":{"sandbox":"off"}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Permissions.Sandbox != "off" {
+		t.Fatalf("explicit sandbox setting=%q, want off", cfg.Permissions.Sandbox)
+	}
+	if cfg.Origins["permissions.sandbox"] != "project" {
+		t.Fatalf("sandbox origin=%q, want project", cfg.Origins["permissions.sandbox"])
+	}
+}
+
+func TestProjectOmissionPreservesExplicitGlobalSandboxOff(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	global, err := GlobalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(global), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(global, []byte(`{"permissions":{"sandbox":"off"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeProject(t, dir, `{"permissions":{"mode":"ask"}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Permissions.Sandbox != "off" {
+		t.Fatalf("inherited sandbox=%q, want explicit global off", cfg.Permissions.Sandbox)
+	}
+	if cfg.Origins["permissions.sandbox"] != "user" {
+		t.Fatalf("sandbox origin=%q, want user", cfg.Origins["permissions.sandbox"])
 	}
 }
 

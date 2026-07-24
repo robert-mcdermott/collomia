@@ -23,6 +23,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
+	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -117,11 +118,8 @@ type options struct {
 }
 
 func run(args []string) error {
-	if len(args) > 0 && args[0] == "__landlock" {
-		return runLandlockShim(args[1:])
-	}
-	if len(args) > 0 && args[0] == "__appcontainer" {
-		return runAppContainerShim(args[1:])
+	if handled, err := sandbox.DispatchReexec(args); handled {
+		return err
 	}
 	opts, err := parse(args)
 	if err != nil {
@@ -183,8 +181,10 @@ func run(args []string) error {
 		fmt.Println("Validate changes with `collo config validate --strict`.")
 		if opts.global {
 			fmt.Println("Set provider API keys through the environment; the starter includes Ollama and OpenRouter examples.")
+			fmt.Println("Agent commands default to sandbox=auto with command networking and broad reads enabled; run `collo doctor` and add only the cache/dependency roots your tools need.")
 		} else {
 			fmt.Println("After reviewing project settings, run `collo trust` to enable them.")
+			fmt.Println("This project inherits the user/built-in sandbox policy; run `collo doctor` to inspect the effective boundary.")
 		}
 		return nil
 	}

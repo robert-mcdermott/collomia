@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unsafe"
 
@@ -37,7 +38,14 @@ func (windowsBackend) Capabilities() Capabilities {
 }
 
 func (windowsBackend) Available() error {
-	for _, proc := range []*windows.LazyProc{procCreateAppContainerProfile, procDeriveAppContainerSID} {
+	for _, proc := range []*windows.LazyProc{
+		procCreateAppContainerProfile,
+		procDeriveAppContainerSID,
+		procNtCreateDirectoryObject,
+		procNtCreateSymbolicLink,
+		procWaitForDebugEvent,
+		procContinueDebugEvent,
+	} {
 		if err := proc.Find(); err != nil {
 			return fmt.Errorf("required AppContainer API %s is unavailable: %w", proc.Name, err)
 		}
@@ -70,11 +78,16 @@ var (
 	userenvDLL                    = windows.NewLazySystemDLL("userenv.dll")
 	procCreateAppContainerProfile = userenvDLL.NewProc("CreateAppContainerProfile")
 	procDeriveAppContainerSID     = userenvDLL.NewProc("DeriveAppContainerSidFromAppContainerName")
+	ntdllDLL                      = windows.NewLazySystemDLL("ntdll.dll")
+	procNtCreateDirectoryObject   = ntdllDLL.NewProc("NtCreateDirectoryObject")
+	procNtCreateSymbolicLink      = ntdllDLL.NewProc("NtCreateSymbolicLinkObject")
 )
 
 const (
 	hresultAlreadyExists                    = 0x800700b7
 	procThreadAttributeSecurityCapabilities = 0x00020009
+	directoryAllAccess                      = 0x000f000f
+	symbolicLinkAllAccess                   = 0x000f0001
 )
 
 type securityCapabilities struct {
@@ -173,7 +186,12 @@ func RunAppContainer(policy Policy, argv []string) error {
 			return fmt.Errorf("grant AppContainer read access to executable directory %s: %w", root, err)
 		}
 	}
-	return createAppContainerProcess(appSID, target, argv, workspace, policy.AllowNetwork)
+	nullDevice, err := newAppContainerNullDevice(appSID)
+	if err != nil {
+		return err
+	}
+	defer nullDevice.Close()
+	return createAppContainerProcess(appSID, target, argv, workspace, policy.AllowNetwork, nullDevice)
 }
 
 func pathWithin(path, root string) bool {
@@ -259,7 +277,14 @@ func grantAppContainerAccess(path string, sid *windows.SID, permissions windows.
 	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil)
 }
 
-func createAppContainerProcess(appSID *windows.SID, target string, argv []string, workspace string, allowNetwork bool) error {
+func createAppContainerProcess(appSID *windows.SID, target string, argv []string, workspace string, allowNetwork bool, nullDevice *appContainerNullDevice) error {
+	// WaitForDebugEvent must run on the same OS thread that created the
+	// debugged process. The debugger relationship is used only as a launch
+	// broker so every AppContainer descendant receives the private NUL device
+	// map before it executes any user-mode code.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	var capabilitySIDs []*windows.SID
 	if allowNetwork {
 		internet, err := windows.CreateWellKnownSid(windows.WinCapabilityInternetClientSid)
@@ -326,12 +351,31 @@ func createAppContainerProcess(appSID *windows.SID, target string, argv []string
 		ProcThreadAttributeList: attributeList.List(),
 	}
 	var process windows.ProcessInformation
-	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP)
+	// DEBUG_PROCESS reports each descendant before it begins executing in user
+	// mode. Process device maps are not inherited on Windows, so the broker
+	// installs the same private map on cmd.exe, go.exe, compiler processes, and
+	// any other descendants without changing the global NUL device ACL.
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP | windows.DEBUG_PROCESS)
+	debugHeap, hadDebugHeap := os.LookupEnv("_NO_DEBUG_HEAP")
+	if err := os.Setenv("_NO_DEBUG_HEAP", "1"); err != nil {
+		return fmt.Errorf("configure AppContainer process environment: %w", err)
+	}
+	defer func() {
+		if hadDebugHeap {
+			_ = os.Setenv("_NO_DEBUG_HEAP", debugHeap)
+		} else {
+			_ = os.Unsetenv("_NO_DEBUG_HEAP")
+		}
+	}()
 	if err := windows.CreateProcess(target16, commandLine16, nil, nil, true, flags, nil, workspace16, &startup.StartupInfo, &process); err != nil {
 		return fmt.Errorf("launch AppContainer process: %w", err)
 	}
 	defer windows.CloseHandle(process.Process)
 	defer windows.CloseHandle(process.Thread)
+	if err := nullDevice.Install(process.Process); err != nil {
+		_ = windows.TerminateProcess(process.Process, 1)
+		return err
+	}
 	if err := windows.AssignProcessToJobObject(job, process.Process); err != nil {
 		_ = windows.TerminateProcess(process.Process, 1)
 		return fmt.Errorf("assign AppContainer process to Job Object: %w", err)
@@ -340,15 +384,151 @@ func createAppContainerProcess(appSID *windows.SID, target string, argv []string
 		_ = windows.TerminateProcess(process.Process, 1)
 		return fmt.Errorf("resume AppContainer process: %w", err)
 	}
-	if _, err := windows.WaitForSingleObject(process.Process, windows.INFINITE); err != nil {
-		return fmt.Errorf("wait for AppContainer process: %w", err)
-	}
-	var exitCode uint32
-	if err := windows.GetExitCodeProcess(process.Process, &exitCode); err != nil {
-		return fmt.Errorf("read AppContainer exit status: %w", err)
+	exitCode, err := brokerAppContainerDescendants(process.ProcessId, process.Process, nullDevice)
+	if err != nil {
+		_ = windows.TerminateProcess(process.Process, 1)
+		return err
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("sandboxed command exited with status %d", exitCode)
 	}
 	return nil
+}
+
+// AppContainers cannot open Windows' kernel NUL device. That breaks common
+// unmodified developer tools: Go's os/exec, for example, opens NUL whenever a
+// child command has no stdin. A process-local DOS device map lets this one
+// sandboxed process tree resolve NUL to an empty AppContainer-accessible file
+// while all other DOS devices continue to fall back to Windows' global map.
+// No machine-wide device ACL is changed and no preexisting host path is exposed.
+type appContainerNullDevice struct {
+	directory windows.Handle
+	link      windows.Handle
+	path      string
+}
+
+// processDeviceMapSetInformation is the set form of
+// PROCESS_DEVICEMAP_INFORMATION. Windows requires the input length to be
+// exactly one native handle; the larger query form is rejected with
+// STATUS_INFO_LENGTH_MISMATCH.
+type processDeviceMapSetInformation struct {
+	Directory windows.Handle
+}
+
+func newAppContainerNullDevice(appSID *windows.SID) (*appContainerNullDevice, error) {
+	file, err := os.CreateTemp("", "collomia-appcontainer-null-*")
+	if err != nil {
+		return nil, fmt.Errorf("create AppContainer null target: %w", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("close AppContainer null target: %w", err)
+	}
+	cleanup := func() {
+		_ = os.Remove(path)
+	}
+	if err := grantAppContainerAccess(path, appSID, windows.GENERIC_READ|windows.GENERIC_WRITE); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("grant AppContainer access to null target: %w", err)
+	}
+
+	sum := sha256.Sum256([]byte(strings.ToLower(path)))
+	directoryName, err := windows.NewNTUnicodeString(fmt.Sprintf(`\??\Collomia.Sandbox.DeviceMap.%d.%x`, os.Getpid(), sum[:8]))
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("encode AppContainer device-map name: %w", err)
+	}
+	directoryAttributes := windows.OBJECT_ATTRIBUTES{
+		Length:     uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+		ObjectName: directoryName,
+		Attributes: windows.OBJ_CASE_INSENSITIVE,
+	}
+	var directory windows.Handle
+	status, _, _ := procNtCreateDirectoryObject.Call(
+		uintptr(unsafe.Pointer(&directory)),
+		directoryAllAccess,
+		uintptr(unsafe.Pointer(&directoryAttributes)),
+	)
+	if status != 0 {
+		cleanup()
+		return nil, fmt.Errorf("create AppContainer process device map: %w", windows.NTStatus(status))
+	}
+
+	linkName, err := windows.NewNTUnicodeString("NUL")
+	if err != nil {
+		_ = windows.CloseHandle(directory)
+		cleanup()
+		return nil, fmt.Errorf("encode AppContainer null-device name: %w", err)
+	}
+	targetName, err := windows.NewNTUnicodeString(globalDOSPath(path))
+	if err != nil {
+		_ = windows.CloseHandle(directory)
+		cleanup()
+		return nil, fmt.Errorf("encode AppContainer null-device target: %w", err)
+	}
+	linkAttributes := windows.OBJECT_ATTRIBUTES{
+		Length:        uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+		RootDirectory: directory,
+		ObjectName:    linkName,
+		Attributes:    windows.OBJ_CASE_INSENSITIVE,
+	}
+	var link windows.Handle
+	status, _, _ = procNtCreateSymbolicLink.Call(
+		uintptr(unsafe.Pointer(&link)),
+		symbolicLinkAllAccess,
+		uintptr(unsafe.Pointer(&linkAttributes)),
+		uintptr(unsafe.Pointer(targetName)),
+	)
+	if status != 0 {
+		_ = windows.CloseHandle(directory)
+		cleanup()
+		return nil, fmt.Errorf("create AppContainer null-device link: %w", windows.NTStatus(status))
+	}
+	return &appContainerNullDevice{directory: directory, link: link, path: path}, nil
+}
+
+func (d *appContainerNullDevice) Install(process windows.Handle) error {
+	if d == nil || d.directory == 0 {
+		return errors.New("AppContainer null-device map is unavailable")
+	}
+	information := processDeviceMapSetInformation{Directory: d.directory}
+	if err := windows.NtSetInformationProcess(
+		process,
+		int32(windows.ProcessDeviceMap),
+		unsafe.Pointer(&information),
+		uint32(unsafe.Sizeof(information)),
+	); err != nil {
+		return fmt.Errorf("install AppContainer process device map: %w", err)
+	}
+	return nil
+}
+
+func (d *appContainerNullDevice) Close() {
+	if d == nil {
+		return
+	}
+	if d.link != 0 {
+		_ = windows.CloseHandle(d.link)
+		d.link = 0
+	}
+	if d.directory != 0 {
+		_ = windows.CloseHandle(d.directory)
+		d.directory = 0
+	}
+	if d.path != "" {
+		_ = os.Remove(d.path)
+		d.path = ""
+	}
+}
+
+func globalDOSPath(path string) string {
+	clean := filepath.Clean(path)
+	if strings.HasPrefix(clean, `\\?\`) {
+		clean = strings.TrimPrefix(clean, `\\?\`)
+	}
+	if strings.HasPrefix(clean, `\\`) {
+		return `\GLOBAL??\UNC\` + strings.TrimPrefix(clean, `\\`)
+	}
+	return `\GLOBAL??\` + clean
 }

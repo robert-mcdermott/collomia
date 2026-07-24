@@ -35,6 +35,32 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-23 — Phase 1 default-on command-sandbox wave
+
+- **Containment is now ordinary:** the built-in runtime default and new global
+  starter select capability-aware `sandbox: "auto"` instead of `off`.
+  Supported macOS, Linux, and Windows 11 hosts therefore apply their existing
+  write/process boundary to foreground, PTY, delegated-verification, and
+  background commands without requiring an opt-in edit.
+- **Compatibility remains deliberate:** command networking and broad
+  macOS/Linux dependency reads still default to enabled. Sandboxed commands
+  retain the existing implicit minimal environment, and documentation calls
+  out narrow readable/writable grants for SDKs and external caches. Windows
+  AppContainer's always-confined user-data reads and unpackaged-loopback
+  limitation remain explicit.
+- **No silent migration:** an existing global or trusted project setting of
+  `sandbox: "off"` stays authoritative, existing files are never rewritten,
+  and minimal project starters continue to inherit the earlier layer. `auto`
+  visibly degrades when the backend or a requested protection is unavailable;
+  `require` remains the fail-closed choice.
+- **Operator-visible rollout:** command failures now point to environment as
+  well as read/write/network remedies and to `collo doctor`. Starter/reference
+  configuration, generated capabilities, README, beta/compatibility/security/
+  Linux/exhaustive user guidance, and the active roadmap describe the new
+  default and upgrade path. Regression tests lock implicit `auto`, inherited
+  compatibility switches, the new global starter, and explicit `off`; the
+  native cross-platform enforcement suite remains the boundary evidence.
+
 ### 2026-07-23 — Phase 6 governed primary profiles and cost controls wave
 
 - **Named primary agents:** `agents.<name>.availability` now explicitly selects

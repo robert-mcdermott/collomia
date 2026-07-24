@@ -581,14 +581,28 @@ func TestWaitForCancellation(t *testing.T) {
 		done <- outcome{result: result, err: runErr}
 	}()
 	marker := filepath.Join(fixture.worktree, ".verify-started")
-	deadline := time.Now().Add(10 * time.Second)
+	// Windows race builds can spend more than ten seconds compiling the tiny
+	// fixture while every package in ./... is instrumented concurrently. This
+	// test measures cancellation after the child starts, not compiler latency.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, statErr := os.Stat(marker); statErr == nil {
 			break
 		}
+		select {
+		case early := <-done:
+			cancel()
+			t.Fatalf("verification command exited before starting: result=%+v err=%v", early.result, early.err)
+		default:
+		}
 		if time.Now().After(deadline) {
 			cancel()
-			t.Fatal("verification command did not start")
+			select {
+			case late := <-done:
+				t.Fatalf("verification command did not start: result=%+v err=%v", late.result, late.err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("verification command did not start or stop after cancellation")
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

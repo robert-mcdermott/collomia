@@ -12,21 +12,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-// TestMain also handles the backend's hidden re-exec shim. The real collo
-// binary dispatches this in cmd/collo; the test binary mirrors that small
-// piece so CI can exercise AppContainer enforcement on windows-latest.
+// TestMain also handles the backend's hidden re-exec shim so CI exercises the
+// same dispatcher as the real collo binary.
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == "__appcontainer" {
-		if len(os.Args) < 5 || os.Args[3] != "--" {
-			fmt.Fprintln(os.Stderr, "invalid AppContainer test shim arguments")
-			os.Exit(2)
-		}
-		policy, err := DecodePolicy(os.Args[2])
-		if err == nil {
-			err = RunAppContainer(policy, os.Args[4:])
-		}
+	if handled, err := DispatchReexec(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -38,6 +32,15 @@ func TestMain(m *testing.M) {
 
 func TestWindowsAppContainerWorker(t *testing.T) {
 	if os.Getenv("COLLO_APPCONTAINER_WORKER") != "1" {
+		return
+	}
+	if os.Getenv("COLLO_APPCONTAINER_NULL_CHILD") == "1" {
+		nullDevice := "denied"
+		if file, err := os.Open(os.DevNull); err == nil {
+			nullDevice = "ok"
+			_ = file.Close()
+		}
+		fmt.Printf("child_null_device=%s\n", nullDevice)
 		return
 	}
 	inside := "denied"
@@ -72,6 +75,20 @@ func TestWindowsAppContainerWorker(t *testing.T) {
 		}
 		fmt.Printf("network=%s\n", network)
 	}
+	nullDevice := "denied"
+	if file, err := os.Open(os.DevNull); err == nil {
+		nullDevice = "ok"
+		_ = file.Close()
+	}
+	fmt.Printf("null_device=%s\n", nullDevice)
+
+	childNullDevice := "denied"
+	child := exec.Command(os.Args[0], "-test.run=TestWindowsAppContainerWorker")
+	child.Env = append(os.Environ(), "COLLO_APPCONTAINER_NULL_CHILD=1")
+	if output, err := child.CombinedOutput(); err == nil && strings.Contains(strings.ReplaceAll(string(output), "\r\n", "\n"), "child_null_device=ok\n") {
+		childNullDevice = "ok"
+	}
+	fmt.Printf("descendant_null_device=%s\n", childNullDevice)
 }
 
 func TestWindowsAppContainerConfinesWrites(t *testing.T) {
@@ -139,7 +156,12 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
-	cmd.Env = append(os.Environ(),
+	// Exercise the hidden shim with the same non-secret Windows essentials
+	// available in production's minimal command environment. In particular,
+	// CreateProcess needs LOCALAPPDATA to construct the AppContainer profile
+	// environment, and RunAppContainer uses USERPROFILE when granting
+	// read/execute access to user-local PATH entries.
+	cmd.Env = append(windowsAppContainerTestEnv(t),
 		"COLLO_APPCONTAINER_WORKER=1",
 		"COLLO_APPCONTAINER_WORKSPACE="+workspace,
 		"COLLO_APPCONTAINER_OUTSIDE="+outside,
@@ -155,6 +177,8 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	markerFound := false
 	readMarkerFound := false
 	networkMarkerFound := false
+	nullDeviceMarkerFound := false
+	descendantNullDeviceMarkerFound := false
 	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(line) == "inside=ok outside=denied" {
 			markerFound = true
@@ -164,6 +188,12 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		}
 		if strings.TrimSpace(line) == "network=denied" {
 			networkMarkerFound = true
+		}
+		if strings.TrimSpace(line) == "null_device=ok" {
+			nullDeviceMarkerFound = true
+		}
+		if strings.TrimSpace(line) == "descendant_null_device=ok" {
+			descendantNullDeviceMarkerFound = true
 		}
 	}
 	if !markerFound {
@@ -175,14 +205,64 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	if !networkMarkerFound {
 		t.Fatalf("network enforcement mismatch: %q", strings.TrimSpace(string(out)))
 	}
+	if !nullDeviceMarkerFound {
+		t.Fatalf("null-device compatibility mismatch: %q", strings.TrimSpace(string(out)))
+	}
+	if !descendantNullDeviceMarkerFound {
+		t.Fatalf("descendant null-device compatibility mismatch: %q", strings.TrimSpace(string(out)))
+	}
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("outside file exists despite AppContainer confinement")
 	}
+}
+
+func windowsAppContainerTestEnv(t *testing.T) []string {
+	t.Helper()
+	keys := []string{"PATH", "TEMP", "TMP", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA"}
+	required := map[string]bool{"USERPROFILE": true, "LOCALAPPDATA": true}
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+			delete(required, key)
+		}
+	}
+	if len(required) > 0 {
+		t.Fatalf("Windows AppContainer test requires environment variables: %v", required)
+	}
+	return env
 }
 
 func TestWindowsBackendReportsCompleteIsolation(t *testing.T) {
 	caps := ForPlatform().Capabilities()
 	if !caps.WriteIsolation || !caps.ReadIsolation || !caps.ReadIsolationAlways || caps.NetworkIsolation != NetworkFull || !caps.ProcessIsolation {
 		t.Fatalf("capabilities=%+v", caps)
+	}
+}
+
+func TestProcessDeviceMapSetInformationUsesHandleSizedABI(t *testing.T) {
+	got := unsafe.Sizeof(processDeviceMapSetInformation{})
+	want := unsafe.Sizeof(windows.Handle(0))
+	if got != want {
+		t.Fatalf("ProcessDeviceMap set information size=%d, want native handle size %d", got, want)
+	}
+}
+
+func TestDebugEventLayoutMatchesWindowsABI(t *testing.T) {
+	wantInfoOffset := uintptr(12)
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		wantInfoOffset = 16
+	}
+	if got := unsafe.Offsetof(debugEvent{}.Info); got != wantInfoOffset {
+		t.Fatalf("DEBUG_EVENT union offset=%d, want %d", got, wantInfoOffset)
+	}
+	if got := unsafe.Offsetof(createProcessDebugInfo{}.Process); got != unsafe.Sizeof(windows.Handle(0)) {
+		t.Fatalf("CREATE_PROCESS_DEBUG_INFO process offset=%d, want one native handle", got)
+	}
+	// EXCEPTION_DEBUG_INFO is the largest union member (160 bytes on the
+	// supported 64-bit Windows targets), so DEBUG_EVENT must provide at least
+	// 176 bytes including its aligned header.
+	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(debugEvent{}) < 176 {
+		t.Fatalf("DEBUG_EVENT size=%d, want at least 176", unsafe.Sizeof(debugEvent{}))
 	}
 }

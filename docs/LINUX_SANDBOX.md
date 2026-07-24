@@ -137,10 +137,10 @@ collo config show
 collo doctor
 ```
 
-### Compatibility-first development
+### Default compatibility-first development
 
-This is the least disruptive way to add filesystem write containment. It
-preserves dependency reads and package downloads:
+This is Collomia's default and the least disruptive filesystem write
+containment policy. It preserves dependency reads and package downloads:
 
 ```json
 {
@@ -153,8 +153,10 @@ preserves dependency reads and package downloads:
 }
 ```
 
-This is also Collomia's behavior when only `sandbox: "auto"` is selected:
-the two `sandbox_allow_*` compatibility switches default to `true`.
+The two `sandbox_allow_*` compatibility switches default to `true`.
+Sandboxed commands use the minimal environment unless `command_env` is
+explicitly `full`; external build or package caches may still need narrow
+`sandbox_writable_roots` grants.
 
 ### Fail-closed filesystem and user-data read confinement
 
@@ -228,7 +230,7 @@ the user's behalf.
 
 | Field | Values/default | Linux effect |
 | --- | --- | --- |
-| `sandbox` | `off` (default), `auto`, `require` | `off` skips Landlock. `auto` applies available protection and warns on degradation. `require` refuses when the backend or a requested capability is unavailable. |
+| `sandbox` | `off`, `auto` (default), `require` | `off` explicitly skips Landlock. `auto` applies available protection and warns on degradation. `require` refuses when the backend or a requested capability is unavailable. |
 | `sandbox_allow_network` | `true` by default | `false` requests network denial: TCP on ABI v4+, and TCP plus UDP on ABI v10+. |
 | `sandbox_allow_read_outside_workspace` | `true` by default | `false` adds Landlock read/execute rights to the handled policy and limits user-data reads to allowed roots. |
 | `sandbox_readable_roots` | empty list | Additional read/execute-only files or directories. Used when read confinement is enabled. |

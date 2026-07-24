@@ -69,11 +69,11 @@ func WriteStarter(path string, global bool) error {
 		cfg.Permissions = &starterPermissions{
 			Mode:                             "ask",
 			AllowOutsideWorkspace:            &inactive,
-			Sandbox:                          "off",
+			Sandbox:                          "auto",
 			SandboxAllowReadOutsideWorkspace: &broadReads,
-			// Network stays available if the user later enables the sandbox by
-			// changing only sandbox=auto. Users who prefer fail-closed command
-			// networking can set this to false explicitly.
+			// Network stays available inside the default sandbox. Users who
+			// prefer fail-closed command networking can set this to false
+			// explicitly.
 			SandboxAllowNetwork: &commandNetwork,
 		}
 		cfg.Options = &starterOptions{
@@ -288,8 +288,9 @@ const configReferenceJSONC = `
         "server": "docs"
       }
     ],
-    // off | auto | require. auto uses the platform backend when available.
-    "sandbox": "off",
+    // off | auto | require. auto is the default and uses the platform backend
+    // when available; off is an explicit compatibility escape hatch.
+    "sandbox": "auto",
     // The compatibility default is true. This reference shows the explicit
     // offline override: false denies sandboxed command network access. It does
     // not affect providers or remote MCP, which run in the Collomia process.
@@ -303,8 +304,10 @@ const configReferenceJSONC = `
     // Optional extra write locations for build/package caches. Relative paths
     // resolve from the workspace. Keep this list narrow.
     "sandbox_writable_roots": [],
-    // full | minimal. minimal keeps secrets out of child command environments.
-    "command_env": "full",
+    // full | minimal. Sandboxed commands default to minimal when omitted;
+    // choose full deliberately when a command needs inherited credentials,
+    // proxy settings, or other toolchain variables.
+    "command_env": "minimal",
     // Optional executable receiving approval requests as JSON on stdin.
     "reviewer_command": ""
   },

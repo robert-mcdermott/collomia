@@ -8,11 +8,14 @@ required before advertising any unattended use.
 
 Collomia's permission prompts and rules are **in-process policy checks**, not
 an operating-system security boundary, unless the OS sandbox is enabled. A
-command approved by you — or auto-approved by autopilot mode — runs with
-your normal user privileges. macOS, Linux, and Windows 11 can additionally
-enable OS-level enforcement (`permissions.sandbox`). The Windows backend uses
-only inbox AppContainer and Job Object APIs; it does not require Windows
-Sandbox, Hyper-V, an administrator-installed driver, or another runtime.
+command approved by you — or auto-approved by autopilot mode — still has your
+normal account's authority unless the OS sandbox removes it. Collomia now
+requests that enforcement by default with `permissions.sandbox: auto` on
+macOS, Linux, and Windows 11, but `auto` visibly degrades when a backend is
+unavailable; use `require` when degraded execution is unacceptable. The
+Windows backend uses only inbox AppContainer and Job Object APIs; it does not
+require Windows Sandbox, Hyper-V, an administrator-installed driver, or
+another runtime.
 
 Do not point autopilot mode at untrusted code or untrusted instructions and
 walk away, on any platform, without the sandbox in `require` mode — and even
@@ -178,12 +181,18 @@ including background processes started with `start_process`, and commands
 run under a pseudo-terminal (`run_command` with `pty: true`) — in the
 platform's containment mechanism.
 
-Sandboxing is currently opt-in (`off` is the runtime default).
+Sandboxing defaults to `auto`: Collomia uses the platform backend when it is
+available and emits a visible warning before continuing with normal user
+privileges when it is not. `require` fails closed instead, while `off` is an
+explicit compatibility escape hatch. Existing configuration files that
+explicitly contain `off` remain off and are never rewritten.
 `sandbox_allow_network` and `sandbox_allow_read_outside_workspace` both
-default to `true`. Changing only `sandbox` from `off` to `auto` therefore
-preserves the network and dependency reads used by package installation and
-developer toolchains. Users opt into network denial or user-data read
-confinement by setting the corresponding value to `false` explicitly.
+default to `true`, preserving the network and dependency reads used by package
+installation and developer toolchains. Write confinement can still require a
+narrow external cache grant, and the sandbox's implicit minimal command
+environment can require a deliberate environment override. Users opt into
+network denial or user-data read confinement by setting the corresponding
+value to `false` explicitly.
 These switches control only `run_command`, PTY commands, and `start_process`.
 Provider HTTP, remote MCP, hooks, and language servers run in the Collomia
 process and are not blocked by command-sandbox read/network policy.
@@ -265,7 +274,15 @@ troubleshooting.
 - The initial process is created suspended, assigned to a Job Object with
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and then resumed. Descendants inherit
   the job so cancellation, timeout, or shim termination closes the job and
-  kills the tree.
+  kills the tree. A lifecycle-only launch broker pauses each new descendant
+  before user-mode execution and gives it the same private `NUL` device map.
+  This keeps unmodified Go, Python, Rust, and other developer tools compatible
+  without opening the host `NUL` device to AppContainers or changing a global
+  device ACL; the broker does not inspect memory, set breakpoints, or suppress
+  application exceptions. Windows exposes this pre-execution lifecycle through
+  its debug-event API, so a sandboxed process can observe that a debugger is
+  attached. A workflow that must own the Windows debugging relationship itself
+  may need an explicit `sandbox: off` compatibility exception.
 - Windows stores a small per-workspace AppContainer profile and an inheritable
   ACE naming that container SID on granted roots. The ACE gives no access to
   ordinary users or unrelated AppContainers and is reused on later commands.
