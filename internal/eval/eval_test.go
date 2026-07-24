@@ -329,6 +329,11 @@ func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, 
 	t.Setenv("GOCACHE", filepath.Join(workspace, ".collomia-eval-cache"))
 	cfg := appconfig.Defaults()
 	cfg.Permissions.Mode = mode
+	cfg.Permissions.Sandbox = evaluationSandboxMode()
+	// The Windows race build deliberately bypasses only the OS sandbox re-exec
+	// described by evaluationSandboxMode. Keep the production sandbox's
+	// minimal command environment in every evaluation mode.
+	cfg.Permissions.CommandEnv = "minimal"
 	cfg.Permissions.SandboxReadableRoots = append(cfg.Permissions.SandboxReadableRoots, evaluationSandboxReadableRoots()...)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
