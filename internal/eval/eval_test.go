@@ -323,6 +323,10 @@ func TestConversationRewindEvaluation(t *testing.T) {
 
 func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, mode string) (*agent.Agent, interface{ Changed() []string }) {
 	t.Helper()
+	// Evaluation commands run with the production minimal environment and
+	// default-on sandbox. Keep Go's build cache inside the writable fixture
+	// workspace so nested `go test` commands remain isolated and deterministic.
+	t.Setenv("GOCACHE", filepath.Join(workspace, ".collomia-eval-cache"))
 	cfg := appconfig.Defaults()
 	cfg.Permissions.Mode = mode
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)

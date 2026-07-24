@@ -14,19 +14,10 @@ import (
 	"time"
 )
 
-// TestMain also handles the backend's hidden re-exec shim. The real collo
-// binary dispatches this in cmd/collo; the test binary mirrors that small
-// piece so CI can exercise AppContainer enforcement on windows-latest.
+// TestMain also handles the backend's hidden re-exec shim so CI exercises the
+// same dispatcher as the real collo binary.
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == "__appcontainer" {
-		if len(os.Args) < 5 || os.Args[3] != "--" {
-			fmt.Fprintln(os.Stderr, "invalid AppContainer test shim arguments")
-			os.Exit(2)
-		}
-		policy, err := DecodePolicy(os.Args[2])
-		if err == nil {
-			err = RunAppContainer(policy, os.Args[4:])
-		}
+	if handled, err := DispatchReexec(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

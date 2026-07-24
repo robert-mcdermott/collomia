@@ -23,6 +23,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
+	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -117,11 +118,8 @@ type options struct {
 }
 
 func run(args []string) error {
-	if len(args) > 0 && args[0] == "__landlock" {
-		return runLandlockShim(args[1:])
-	}
-	if len(args) > 0 && args[0] == "__appcontainer" {
-		return runAppContainerShim(args[1:])
+	if handled, err := sandbox.DispatchReexec(args); handled {
+		return err
 	}
 	opts, err := parse(args)
 	if err != nil {
