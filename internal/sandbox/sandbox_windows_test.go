@@ -63,6 +63,12 @@ func TestWindowsAppContainerWorker(t *testing.T) {
 		}
 		fmt.Printf("network=%s\n", network)
 	}
+	nullDevice := "denied"
+	if file, err := os.Open(os.DevNull); err == nil {
+		nullDevice = "ok"
+		_ = file.Close()
+	}
+	fmt.Printf("null_device=%s\n", nullDevice)
 }
 
 func TestWindowsAppContainerConfinesWrites(t *testing.T) {
@@ -151,6 +157,7 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	markerFound := false
 	readMarkerFound := false
 	networkMarkerFound := false
+	nullDeviceMarkerFound := false
 	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(line) == "inside=ok outside=denied" {
 			markerFound = true
@@ -161,6 +168,9 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		if strings.TrimSpace(line) == "network=denied" {
 			networkMarkerFound = true
 		}
+		if strings.TrimSpace(line) == "null_device=ok" {
+			nullDeviceMarkerFound = true
+		}
 	}
 	if !markerFound {
 		t.Fatalf("enforcement mismatch: %q", strings.TrimSpace(string(out)))
@@ -170,6 +180,9 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	}
 	if !networkMarkerFound {
 		t.Fatalf("network enforcement mismatch: %q", strings.TrimSpace(string(out)))
+	}
+	if !nullDeviceMarkerFound {
+		t.Fatalf("null-device compatibility mismatch: %q", strings.TrimSpace(string(out)))
 	}
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("outside file exists despite AppContainer confinement")
