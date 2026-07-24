@@ -1,4 +1,7 @@
-# Collomia
+# Collomia - Agentic Coding System
+
+![screenshot](docs/collo-screenshot.png)
+
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with built-in OS sandbox backends on all three platforms — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
