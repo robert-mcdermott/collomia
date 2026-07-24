@@ -284,6 +284,21 @@ func TestMinimalEnvKeepsGoBuildCacheWithoutLeakingSecrets(t *testing.T) {
 	}
 }
 
+func TestMinimalEnvKeepsWindowsAppContainerPaths(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "profile")
+	localAppData := filepath.Join(profile, "AppData", "Local")
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("LOCALAPPDATA", localAppData)
+
+	env := minimalEnv()
+	if !containsEnv(env, "USERPROFILE", profile) {
+		t.Fatalf("minimal env did not preserve USERPROFILE: %v", env)
+	}
+	if !containsEnv(env, "LOCALAPPDATA", localAppData) {
+		t.Fatalf("minimal env did not preserve LOCALAPPDATA: %v", env)
+	}
+}
+
 func containsEnv(env []string, key, value string) bool {
 	want := key + "=" + value
 	for _, entry := range env {

@@ -235,7 +235,7 @@ func (t RunCommandTool) sandboxPolicy() sandbox.Policy {
 // minimalEnv keeps only the variables a build needs, so credentials in the
 // parent environment never reach agent commands.
 func minimalEnv() []string {
-	keep := []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "COLUMNS", "LINES", "SYSTEMROOT", "COMSPEC", "PATHEXT", "GOCACHE"}
+	keep := []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "COLUMNS", "LINES", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "GOCACHE"}
 	var env []string
 	for _, key := range keep {
 		if value, ok := os.LookupEnv(key); ok {

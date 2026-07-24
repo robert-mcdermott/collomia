@@ -130,7 +130,12 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
-	cmd.Env = append(os.Environ(),
+	// Exercise the hidden shim with the same non-secret Windows essentials
+	// available in production's minimal command environment. In particular,
+	// CreateProcess needs LOCALAPPDATA to construct the AppContainer profile
+	// environment, and RunAppContainer uses USERPROFILE when granting
+	// read/execute access to user-local PATH entries.
+	cmd.Env = append(windowsAppContainerTestEnv(t),
 		"COLLO_APPCONTAINER_WORKER=1",
 		"COLLO_APPCONTAINER_WORKSPACE="+workspace,
 		"COLLO_APPCONTAINER_OUTSIDE="+outside,
@@ -169,6 +174,23 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("outside file exists despite AppContainer confinement")
 	}
+}
+
+func windowsAppContainerTestEnv(t *testing.T) []string {
+	t.Helper()
+	keys := []string{"PATH", "TEMP", "TMP", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA"}
+	required := map[string]bool{"USERPROFILE": true, "LOCALAPPDATA": true}
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+			delete(required, key)
+		}
+	}
+	if len(required) > 0 {
+		t.Fatalf("Windows AppContainer test requires environment variables: %v", required)
+	}
+	return env
 }
 
 func TestWindowsBackendReportsCompleteIsolation(t *testing.T) {
