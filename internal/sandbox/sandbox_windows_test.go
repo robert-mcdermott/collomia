@@ -34,6 +34,15 @@ func TestWindowsAppContainerWorker(t *testing.T) {
 	if os.Getenv("COLLO_APPCONTAINER_WORKER") != "1" {
 		return
 	}
+	if os.Getenv("COLLO_APPCONTAINER_NULL_CHILD") == "1" {
+		nullDevice := "denied"
+		if file, err := os.Open(os.DevNull); err == nil {
+			nullDevice = "ok"
+			_ = file.Close()
+		}
+		fmt.Printf("child_null_device=%s\n", nullDevice)
+		return
+	}
 	inside := "denied"
 	if os.WriteFile(filepath.Join(os.Getenv("COLLO_APPCONTAINER_WORKSPACE"), "inside.txt"), []byte("ok"), 0o600) == nil {
 		inside = "ok"
@@ -72,6 +81,14 @@ func TestWindowsAppContainerWorker(t *testing.T) {
 		_ = file.Close()
 	}
 	fmt.Printf("null_device=%s\n", nullDevice)
+
+	childNullDevice := "denied"
+	child := exec.Command(os.Args[0], "-test.run=TestWindowsAppContainerWorker")
+	child.Env = append(os.Environ(), "COLLO_APPCONTAINER_NULL_CHILD=1")
+	if output, err := child.CombinedOutput(); err == nil && strings.Contains(strings.ReplaceAll(string(output), "\r\n", "\n"), "child_null_device=ok\n") {
+		childNullDevice = "ok"
+	}
+	fmt.Printf("descendant_null_device=%s\n", childNullDevice)
 }
 
 func TestWindowsAppContainerConfinesWrites(t *testing.T) {
@@ -161,6 +178,7 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	readMarkerFound := false
 	networkMarkerFound := false
 	nullDeviceMarkerFound := false
+	descendantNullDeviceMarkerFound := false
 	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(line) == "inside=ok outside=denied" {
 			markerFound = true
@@ -174,6 +192,9 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 		if strings.TrimSpace(line) == "null_device=ok" {
 			nullDeviceMarkerFound = true
 		}
+		if strings.TrimSpace(line) == "descendant_null_device=ok" {
+			descendantNullDeviceMarkerFound = true
+		}
 	}
 	if !markerFound {
 		t.Fatalf("enforcement mismatch: %q", strings.TrimSpace(string(out)))
@@ -186,6 +207,9 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 	}
 	if !nullDeviceMarkerFound {
 		t.Fatalf("null-device compatibility mismatch: %q", strings.TrimSpace(string(out)))
+	}
+	if !descendantNullDeviceMarkerFound {
+		t.Fatalf("descendant null-device compatibility mismatch: %q", strings.TrimSpace(string(out)))
 	}
 	if _, err := os.Stat(outside); err == nil {
 		t.Fatal("outside file exists despite AppContainer confinement")
@@ -221,5 +245,24 @@ func TestProcessDeviceMapSetInformationUsesHandleSizedABI(t *testing.T) {
 	want := unsafe.Sizeof(windows.Handle(0))
 	if got != want {
 		t.Fatalf("ProcessDeviceMap set information size=%d, want native handle size %d", got, want)
+	}
+}
+
+func TestDebugEventLayoutMatchesWindowsABI(t *testing.T) {
+	wantInfoOffset := uintptr(12)
+	if unsafe.Sizeof(uintptr(0)) == 8 {
+		wantInfoOffset = 16
+	}
+	if got := unsafe.Offsetof(debugEvent{}.Info); got != wantInfoOffset {
+		t.Fatalf("DEBUG_EVENT union offset=%d, want %d", got, wantInfoOffset)
+	}
+	if got := unsafe.Offsetof(createProcessDebugInfo{}.Process); got != unsafe.Sizeof(windows.Handle(0)) {
+		t.Fatalf("CREATE_PROCESS_DEBUG_INFO process offset=%d, want one native handle", got)
+	}
+	// EXCEPTION_DEBUG_INFO is the largest union member (160 bytes on the
+	// supported 64-bit Windows targets), so DEBUG_EVENT must provide at least
+	// 176 bytes including its aligned header.
+	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(debugEvent{}) < 176 {
+		t.Fatalf("DEBUG_EVENT size=%d, want at least 176", unsafe.Sizeof(debugEvent{}))
 	}
 }

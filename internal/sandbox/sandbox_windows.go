@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unsafe"
 
@@ -42,6 +43,8 @@ func (windowsBackend) Available() error {
 		procDeriveAppContainerSID,
 		procNtCreateDirectoryObject,
 		procNtCreateSymbolicLink,
+		procWaitForDebugEvent,
+		procContinueDebugEvent,
 	} {
 		if err := proc.Find(); err != nil {
 			return fmt.Errorf("required AppContainer API %s is unavailable: %w", proc.Name, err)
@@ -275,6 +278,13 @@ func grantAppContainerAccess(path string, sid *windows.SID, permissions windows.
 }
 
 func createAppContainerProcess(appSID *windows.SID, target string, argv []string, workspace string, allowNetwork bool, nullDevice *appContainerNullDevice) error {
+	// WaitForDebugEvent must run on the same OS thread that created the
+	// debugged process. The debugger relationship is used only as a launch
+	// broker so every AppContainer descendant receives the private NUL device
+	// map before it executes any user-mode code.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	var capabilitySIDs []*windows.SID
 	if allowNetwork {
 		internet, err := windows.CreateWellKnownSid(windows.WinCapabilityInternetClientSid)
@@ -341,7 +351,22 @@ func createAppContainerProcess(appSID *windows.SID, target string, argv []string
 		ProcThreadAttributeList: attributeList.List(),
 	}
 	var process windows.ProcessInformation
-	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP)
+	// DEBUG_PROCESS reports each descendant before it begins executing in user
+	// mode. Process device maps are not inherited on Windows, so the broker
+	// installs the same private map on cmd.exe, go.exe, compiler processes, and
+	// any other descendants without changing the global NUL device ACL.
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP | windows.DEBUG_PROCESS)
+	debugHeap, hadDebugHeap := os.LookupEnv("_NO_DEBUG_HEAP")
+	if err := os.Setenv("_NO_DEBUG_HEAP", "1"); err != nil {
+		return fmt.Errorf("configure AppContainer process environment: %w", err)
+	}
+	defer func() {
+		if hadDebugHeap {
+			_ = os.Setenv("_NO_DEBUG_HEAP", debugHeap)
+		} else {
+			_ = os.Unsetenv("_NO_DEBUG_HEAP")
+		}
+	}()
 	if err := windows.CreateProcess(target16, commandLine16, nil, nil, true, flags, nil, workspace16, &startup.StartupInfo, &process); err != nil {
 		return fmt.Errorf("launch AppContainer process: %w", err)
 	}
@@ -359,12 +384,10 @@ func createAppContainerProcess(appSID *windows.SID, target string, argv []string
 		_ = windows.TerminateProcess(process.Process, 1)
 		return fmt.Errorf("resume AppContainer process: %w", err)
 	}
-	if _, err := windows.WaitForSingleObject(process.Process, windows.INFINITE); err != nil {
-		return fmt.Errorf("wait for AppContainer process: %w", err)
-	}
-	var exitCode uint32
-	if err := windows.GetExitCodeProcess(process.Process, &exitCode); err != nil {
-		return fmt.Errorf("read AppContainer exit status: %w", err)
+	exitCode, err := brokerAppContainerDescendants(process.ProcessId, process.Process, nullDevice)
+	if err != nil {
+		_ = windows.TerminateProcess(process.Process, 1)
+		return err
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("sandboxed command exited with status %d", exitCode)

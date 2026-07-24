@@ -1469,7 +1469,14 @@ Platform behavior:
   read/execute only. AppContainer always confines user-data reads even though
   the compatibility switch defaults to broad reads on macOS/Linux. This uses
   inbox Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
-  service, administrator setup, or additional installation.
+  service, administrator setup, or additional installation. Collomia also
+  applies a private `NUL` compatibility device to every sandboxed descendant
+  before it executes, so nested compilers and test runners can use their
+  ordinary process-launch code without granting the AppContainer access to
+  the host device. Windows provides that pre-execution notification through
+  its debug-event lifecycle, so tools can observe an attached debugger; use an
+  explicit `sandbox: "off"` exception for a workflow that must own the Windows
+  debugging relationship itself.
 
 The network setting is deliberately command-specific. It does not block model
 providers, remote MCP servers, hooks, or LSP processes. On Windows, allowing
