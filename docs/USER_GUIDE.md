@@ -3019,8 +3019,8 @@ audit/metrics system, notify another process, or block selected prompts/tools.
 | `tool_end` | After execution | tool, summary, error, output byte count |
 | `file_change` | After a successful write-risk action | tool and affected paths |
 | `compaction` | After active context is summarized | replaced-message count |
-| `subagent_start` | Before a delegated task | name as subject; task/write/profile in detail |
-| `subagent_end` | After a delegated task | name and changed paths |
+| `subagent_start` | Before a delegated task | name as subject; task/write/profile, normalized write scopes, and budgets in detail |
+| `subagent_end` | After a delegated task | name, changed paths, normalized write scopes, any scope violations, usage, and terminal state |
 | `stop` | A turn completes normally | iteration count |
 | `session_end` | Runtime closes | session ID |
 
@@ -3086,6 +3086,7 @@ Conceptual tool request:
       "name": "retry-change",
       "task": "Implement bounded retry in the HTTP client and test it.",
       "write": true,
+      "write_paths": ["internal/provider/", "internal/provider/http_test.go"],
       "plan_step": 2
     },
     {
@@ -3103,13 +3104,35 @@ worktree under the OS temporary directory. Each has its own built-in tool
 registry, permission manager, audit ledger, background processes, and normal
 sandbox policy.
 
+Use `write_paths` to declare the files or directories a writer is expected to
+change. Values use repository-relative forward-slash paths. A plain value such
+as `README.md` names exactly one file; a trailing slash such as
+`internal/provider/` covers that directory and its descendants. Absolute
+paths, traversal, backslashes, colon-bearing drive paths, and glob syntax are
+rejected. `"*"` means the entire workspace. Omitting `write_paths` on a writer
+also means `"*"` so older calls remain safe.
+
+The scheduler admits known-disjoint writers concurrently and serializes
+exact, nested, case-folded, workspace-wide, or otherwise overlapping scopes.
+Read-only children do not hold write-scope locks. FIFO and provider/global
+limits continue to apply, and queue time still counts against the child's
+timeout.
+
+`write_paths` is a scheduling and result contract, not a new permission or
+sandbox primitive. A scoped child still has only its inherited tool and
+permission surface. Collomia instructs it to remain in scope and compares its
+actual Git change manifest with the declaration when it finishes. An
+out-of-scope change makes the child result an error, records
+`scope_violations`, retains the isolated worktree for inspection, and blocks
+both `/agents apply` and primary-reviewed integration. It never publishes the
+violation into the parent workspace.
+
 No sub-agent result is committed, merged, or pushed automatically. A clean
 write worktree is removed. A worktree with changes is left in place and its
-path/branch is reported for human review. When siblings modify the same path,
-the parent reports a conflict rather than attempting reconciliation. Because
-all siblings start at the same `HEAD`, Collomia also compares zero-context
-hunks against that common base and labels known overlap or disjoint ranges.
-This analysis is advisory; disjoint worktrees are still never auto-merged.
+path/branch is reported for review. When siblings modify the same path, the
+parent compares zero-context hunks against their common base and labels known
+overlap or disjoint ranges. This batch result is advisory. Actual publication
+uses the freshness-bound three-way process described below.
 
 An optional `plan_step` associates a child and its returned evidence with an
 existing structured-plan step. Collomia refuses an unknown step or one whose
@@ -3195,11 +3218,12 @@ Configure scheduler limits independently of profiles:
 
 Each parent result is bounded structured JSON containing the child's terminal
 status, summary/error, up to eight bounded tool-evidence entries, provider
-usage, token budget, changed file/hunk manifest, and retained worktree/branch.
-The raw child transcript is not injected wholesale into parent context. If the
-complete batch would exceed `max_tool_output_bytes`, Collomia compacts details
-while preserving valid JSON and every task's identity/status, and sets
-`truncated: true`; `/agents` retains the bounded per-task outcome for review.
+usage, token budget, declared `write_scopes`, any `scope_violations`, changed
+file/hunk manifest, and retained worktree/branch. The raw child transcript is
+not injected wholesale into parent context. If the complete batch would
+exceed `max_tool_output_bytes`, Collomia compacts details while preserving
+valid JSON and every task's identity/status, and sets `truncated: true`;
+`/agents` retains the bounded per-task outcome for review.
 
 The Session tab shows the Collomia parent and its children as a tree, including
 queued, running, waiting-for-approval, cancelling, completed, failed,
@@ -3224,20 +3248,36 @@ following:
 
 - the saved path is still a worktree registered to the current repository;
 - its `collomia/*` branch still points at the recorded delegation base;
-- the parent copy of every selectable file still matches that base;
+- the child did not change a path outside its declared write scope;
 - source and destination are regular UTF-8 text files, at most 1 MiB each and
   4 MiB total for one review; and
 - no symlink, binary, oversized, mode-only, or otherwise unsupported entry is
   selected.
 
-Integration uses the normal `integrate_delegate` permission decision, then
-rechecks parent and child bytes after the approval dialog. Selected text is
-published through the same rooted atomic file primitive as built-in writes;
-multi-file failure rolls back earlier entries. Integrated changes enter the
-ordinary session change tracker, so `/diff` and `/undo` can review or revert
-them. Collomia does not commit, Git-merge, push, delete the branch, or remove
-the worktree. Parent drift and other conflicts remain for explicit manual
-reconciliation.
+For each changed path, Collomia reads the recorded Git base, current parent,
+and retained child:
+
+- If the parent still matches the base, the review shows the ordinary
+  parent-to-child hunks.
+- If parent and child changed different regions of an existing text file with
+  compatible modes, Collomia computes a clean three-way result. The dialog
+  labels it as a three-way preview, displays selectable parent-to-composed
+  hunks, and preserves the parent's unrelated edits.
+- If the edits overlap, or involve incompatible modes/additions/deletions,
+  the file is non-selectable. A bounded diff3 preview names the parent,
+  delegated base, and delegated result so the user can resolve it manually or
+  ask for fresh delegated work.
+
+This is not a branch merge. A clean composition is still only a review
+proposal. Its opaque review token covers the worktree identity, branch/base,
+exact parent and child bytes and modes, composed result, and conflict
+disposition. Integration uses the normal `integrate_delegate` permission
+decision, then recomputes and rechecks that complete state after the approval
+dialog. Selected text is published through the same rooted atomic file
+primitive as built-in writes; multi-file failure rolls back earlier entries.
+Integrated changes enter the ordinary session change tracker, so `/diff` and
+`/undo` can review or revert them. Collomia does not create a merge commit,
+commit, push, delete the branch, or remove the worktree.
 
 ### Letting the primary agent review and integrate child work
 
@@ -3260,17 +3300,18 @@ tools:
 
 | Tool | Behavior |
 | --- | --- |
-| `inspect_delegate_changes` | Read-only inspection of bounded child evidence, conflicts, exact numbered hunks, current verification state, and repository-detected verification commands. It returns a publication review token bound to parent and child state plus a separate verification token bound only to child state. |
+| `inspect_delegate_changes` | Read-only inspection of bounded child evidence, scope/conflict state, exact numbered ordinary or clean three-way hunks, current verification state, and repository-detected verification commands. It returns a publication review token bound to base, parent, child, and composed state plus a separate verification token bound only to child state. |
 | `verify_delegate_changes` | Runs exactly one command from `suggested_verification` in the retained child worktree. It uses the canonical `run_command` permission and hook identity plus the configured sandbox, network, environment, timeout, cancellation, denied-command, and output policies. |
 | `compare_delegate_changes` | Read-only comparison of two to six completed write candidates: selectable files/hunks, conflicts, machine-observed verification, bounded evidence, and token usage. It reports facts but never chooses or applies a candidate. |
 | `apply_delegate_changes` | Selects all safe hunks or specific numbered hunks using the review token. The ordinary write policy decides whether an approval is required. |
 
 The primary agent must inspect before applying. Any child edit, parent edit,
-branch movement, worktree replacement, or relevant mode/content change makes
-the publication review token stale before permission is requested. After
-permission, Collomia rechecks the source and destination again, then uses the
-same rooted atomic writes, multi-file rollback, change tracking, hooks,
-`/diff`, and `/undo` behavior as `/agents apply`.
+branch movement, worktree replacement, relevant mode/content change, or
+different three-way outcome makes the publication review token stale before
+permission is requested. After permission, Collomia rechecks the base, source,
+destination, and composed result again, then uses the same rooted atomic
+writes, multi-file rollback, change tracking, hooks, `/diff`, and `/undo`
+behavior as `/agents apply`.
 
 Verification is intentionally one command per tool call so several shell
 actions cannot hide behind one approval. Commands come from the same
@@ -3296,8 +3337,10 @@ workspace afterward. A child-authored claim is not machine verification, and
 even a machine-observed child pass does not cover parent-only changes or
 interactions introduced by integrating multiple candidates. Passing
 verification grants no permission, does not bypass hooks, and never publishes
-files. Conflicts remain fail-closed: reviewed integration does not rebase,
-synthesize conflict resolutions, or overwrite a parent/sibling change.
+files. Clean non-overlapping three-way composition preserves both sides but
+does not decide quality. Overlapping conflicts remain fail-closed: reviewed
+integration does not rebase, synthesize a winner, or overwrite a
+parent/sibling change.
 `/agents` and the Session tab retain integration and child-verification states
 independently.
 

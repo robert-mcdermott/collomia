@@ -112,11 +112,12 @@ func TestAgentDetailsAndComparisonExplainVerificationScope(t *testing.T) {
 	m := newTestModel(t)
 	status := agent.DelegateStatus{
 		ID: "delegate-1", Name: "writer", Task: "change parser", Write: true, Status: agent.DelegateDone,
-		Changed: []string{"parser.go"}, Worktree: "/tmp/delegate-1", VerificationStatus: "passed",
+		WriteScopes: []string{"internal/parser/"},
+		Changed:     []string{"parser.go"}, Worktree: "/tmp/delegate-1", VerificationStatus: "passed",
 		VerificationResults: []agent.DelegateVerification{{Purpose: "test", Command: "go test ./...", Status: "passed"}},
 	}
 	detail := m.renderAgentDetails(status)
-	if !strings.Contains(detail, "Child verification: passed") || !strings.Contains(detail, "retained child worktree only") || !strings.Contains(detail, "/agents verify delegate-1") {
+	if !strings.Contains(detail, "Write scope: internal/parser/") || !strings.Contains(detail, "Child verification: passed") || !strings.Contains(detail, "retained child worktree only") || !strings.Contains(detail, "/agents verify delegate-1") {
 		t.Fatalf("verification detail=%q", detail)
 	}
 	comparison := m.renderDelegateComparison([]app.DelegateCandidateSummary{{
@@ -124,6 +125,19 @@ func TestAgentDetailsAndComparisonExplainVerificationScope(t *testing.T) {
 	}})
 	if !strings.Contains(comparison, "verification passed") || !strings.Contains(comparison, "grants no permission") {
 		t.Fatalf("comparison=%q", comparison)
+	}
+}
+
+func TestAgentDetailsExplainScopeViolations(t *testing.T) {
+	m := newTestModel(t)
+	status := agent.DelegateStatus{
+		ID: "delegate-1", Name: "writer", Task: "change parser", Write: true, Status: agent.DelegateError,
+		WriteScopes: []string{"internal/parser/"}, ScopeViolations: []string{"README.md"},
+		Changed: []string{"README.md"}, Worktree: "/tmp/delegate-1",
+	}
+	detail := m.renderAgentDetails(status)
+	if !strings.Contains(detail, "Write-scope violations") || !strings.Contains(detail, "README.md") || !strings.Contains(detail, "Guarded integration is blocked") {
+		t.Fatalf("scope detail=%q", detail)
 	}
 }
 

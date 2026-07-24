@@ -47,8 +47,9 @@ also shipped:
 - MCP lifecycle/resources/prompts/progress/elicitation, safe live catalogs,
   external-data framing, skills, and hooks;
 - concurrent governed delegated agents with isolated Git worktrees, durable
-  status, steering/cancellation, manual selective integration, and opt-in
-  primary-reviewed integration;
+  status, steering/cancellation, overlap-aware write-scope scheduling,
+  freshness-bound three-way integration, and opt-in primary-reviewed
+  publication;
 - a responsive themed TUI, transcript/activity/diff views, a loopback browser
   terminal, shell completion, notifications, and stable headless JSONL;
 - deterministic replay/evaluations, cross-platform golden screens, bounded
@@ -59,28 +60,36 @@ Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
 and reliability gates are complete.
 
-## Active wave — verified delegated results
+## Active wave — conservative multi-agent conflict handling
 
-**Goal:** Make primary-agent integration decisions rely on machine-observed,
-freshness-bound evidence rather than child-authored claims.
+**Goal:** Preserve useful parallelism while ensuring delegated writers cannot
+silently overwrite parent or sibling work.
 
-- [x] Run one repository-detected verification command at a time in the
-  retained child worktree through the ordinary `run_command` permission,
-  hook, sandbox, network, timeout, cancellation, and output policies.
-- [x] Bind every result to the exact child branch/base/file state; retain
-  passed, failed, cancelled, blocked, and stale outcomes durably without
-  executing anything during restore.
-- [x] Expose primary-only `verify_delegate_changes` and
-  `compare_delegate_changes` tools when reviewed integration is enabled.
-- [x] Add `/agents verify <id>` and `/agents compare <id> <id> [id…]`, with
-  child-verification state in agent detail and Session views.
-- [x] Keep verification independent from publication: a pass grants no
-  permission, never auto-applies changes, and does not claim the combined
-  parent workspace passed.
-- [x] Cover success, failure, cancellation, permission identity, child drift,
-  candidate comparison, durable restoration, and cross-platform Git behavior.
-- [x] Update configuration, user, security, automation, testing, capability,
-  and roadmap documentation.
+- [x] Add validated repository-relative `write_paths` contracts. Omitted
+  writer scopes conservatively mean the entire workspace; read-only tasks hold
+  no write lock.
+- [x] Keep known-disjoint writers concurrent while FIFO-serializing exact,
+  nested, case-folded, workspace-wide, or otherwise overlapping scopes under
+  the existing global/provider limits and queue-inclusive cancellation.
+- [x] Compare actual child changes with the declaration, retain violations as
+  errors, and block them from guarded integration without deleting the child
+  worktree.
+- [x] Replace the parent-unchanged-only integration rule with a
+  freshness-bound base/parent/child comparison: clean non-overlapping edits
+  become an explicitly selectable composed preview; overlapping edits show a
+  bounded diff3 conflict and stay non-selectable.
+- [x] Keep publication behind the existing `integrate_delegate` permission,
+  rooted atomic writes, rollback, post-approval revalidation, `/diff`, and
+  `/undo`; never choose a conflict winner, commit, push, or create a merge
+  commit.
+- [x] Persist and display write scopes, queue state, violations, three-way
+  previews, and conflict disposition across agent details, Session state, and
+  schema-v1 additive events.
+- [x] Cover scope normalization/overlap, cancellation, durable restoration,
+  clean and conflicting three-way cases, stale approval, and Windows-style Git
+  line-ending behavior.
+- [x] Update user, security, automation, testing, capability, roadmap, and
+  history documentation.
 
 ## Remaining work by phase
 
@@ -147,7 +156,7 @@ freshness-bound evidence rather than child-authored claims.
 
 - [ ] **P0 — Finish agent definitions:** reasoning controls, monetary budgets,
   visibility, and named primary profiles.
-- [ ] **P0 — Conservative conflict handling:** serialize known overlapping
+- [x] **P0 — Conservative conflict handling:** serialize known overlapping
   assignments and offer explicit three-way reconciliation without silently
   overwriting parent or sibling work.
 - [ ] **P1 — Plan graph execution:** assign dependency-ready nodes, propagate
@@ -195,14 +204,17 @@ freshness-bound evidence rather than child-authored claims.
 
 ## Recommended next sequence
 
-1. Gather real beta feedback on the completed verified delegated-result wave.
-2. Add conservative overlap-aware scheduling and explicit conflict
-   reconciliation.
-3. Add opt-in plan-graph execution using verified results and stale-state
-   invalidation.
-4. Return to the P0 endpoint-scoped network-policy design before broadening
-   unattended autonomy.
-5. Continue Phase 8 security/reliability campaigns in parallel with every
+1. Gather real beta feedback on verified delegated results, scoped scheduling,
+   and three-way review.
+2. Finish P0 agent-definition controls, especially reasoning selection,
+   monetary budgets, visibility, and named primary profiles.
+3. Add opt-in plan-graph execution using verified results, write scopes,
+   dependency readiness, and stale-state invalidation.
+4. Add explicit combined-parent verification and conservative result-ranking
+   criteria without turning a score into permission.
+5. Return to the P0 endpoint-scoped network-policy design before advertising
+   broader unattended autonomy.
+6. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 
 ## Exit gates

@@ -188,9 +188,15 @@ func (m Model) renderAgentIntegration() string {
 	body.WriteString("\n" + m.styles.heading.Render(ansi.Truncate(file.Path, inner, "…")))
 	if file.Conflict != "" {
 		body.WriteString("\n\n" + m.styles.errText.Render(wrapAndLimit("Not selectable: "+file.Conflict+". Resolve the parent copy manually or ask the child to re-run from a fresh base.", inner, 4)))
+		if file.ConflictPreview != "" {
+			body.WriteString("\n\n" + m.styles.muted.Render(wrapAndLimit(file.ConflictPreview, inner, min(12, max(3, m.height-18)))))
+		}
 	} else if file.AlreadyApplied {
 		body.WriteString("\n\n" + m.styles.success.Render("Already present in the parent workspace."))
 	} else if len(state.hunks[state.file]) > 0 {
+		if file.Reconciled {
+			body.WriteString("\n" + m.styles.warning.Render("Three-way preview: non-overlapping parent and delegated edits are preserved."))
+		}
 		hunks := state.hunks[state.file]
 		cursor := min(state.cursor, len(hunks)-1)
 		hunk := hunks[cursor]
@@ -237,6 +243,6 @@ func (m Model) renderAgentIntegration() string {
 	body.WriteString("\n\n" + ansi.Wordwrap(
 		badge("[ ]  File", m.theme.Border)+"  "+badge("↑↓  Hunk", m.theme.Border)+"  "+badge("Space  Toggle", m.theme.Warning)+"  "+badge("X  Toggle file", m.theme.Warning)+"  "+badge("Enter  Review/apply", m.theme.Success)+"  "+badge("Esc  Cancel", m.theme.Error),
 		inner, ""))
-	body.WriteString("\n" + m.styles.muted.Render(wrapAndLimit("Applying selected hunks uses the normal permission policy, rechecks parent and child bytes after approval, and never commits, merges, or removes the worktree.", inner, 3)))
+	body.WriteString("\n" + m.styles.muted.Render(wrapAndLimit("Applying selected hunks uses the normal permission policy and rechecks base, parent, child, and any three-way preview after approval. Overlapping conflicts are never selected automatically. No commit, branch merge, push, or worktree removal occurs.", inner, 3)))
 	return m.modalFrame(body.String(), m.theme.Accent, agentIntegrationModalMaxWidth)
 }

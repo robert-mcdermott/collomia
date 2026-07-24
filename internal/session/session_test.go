@@ -695,6 +695,7 @@ func TestDelegatedAgentSnapshotsPersistLatestStateWithoutExecution(t *testing.T)
 	done := event.New(event.KindDelegateUpdate)
 	done.Delegate = &event.DelegateStatus{
 		ID: "d1", Name: "review", Status: "done", Summary: "checked", ChangedFiles: []string{"auth.go"},
+		WriteScopes: []string{"internal/"}, ScopeViolations: []string{"README.md"},
 		VerificationStatus: "passed", VerificationToken: "verify-abc", VerificationRequired: []string{"go test ./..."},
 		VerificationResults: []event.DelegateVerification{{Purpose: "test", Command: "go test ./...", Status: "passed", Output: "ok", StateToken: "verify-abc"}},
 		Usage:               event.Usage{InputTokens: 12, OutputTokens: 3},
@@ -708,7 +709,7 @@ func TestDelegatedAgentSnapshotsPersistLatestStateWithoutExecution(t *testing.T)
 	}
 	defer loaded.Close()
 	statuses := loaded.Delegates()
-	if len(statuses) != 1 || statuses[0].Status != "done" || statuses[0].Summary != "checked" || statuses[0].Usage.InputTokens != 12 || statuses[0].VerificationStatus != "passed" || len(statuses[0].VerificationResults) != 1 {
+	if len(statuses) != 1 || statuses[0].Status != "done" || statuses[0].Summary != "checked" || statuses[0].Usage.InputTokens != 12 || len(statuses[0].WriteScopes) != 1 || len(statuses[0].ScopeViolations) != 1 || statuses[0].VerificationStatus != "passed" || len(statuses[0].VerificationResults) != 1 {
 		t.Fatalf("delegates=%+v", statuses)
 	}
 }

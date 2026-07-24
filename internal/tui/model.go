@@ -1042,6 +1042,10 @@ func (m *Model) sessionContent() string {
 				continue
 			}
 			if len(a.Changed) > 0 {
+				if len(a.ScopeViolations) > 0 {
+					b.WriteString(m.styles.errText.Render(fmt.Sprintf("       scope violation in %d file(s) — retained worktree requires manual inspection", len(a.ScopeViolations))) + "\n")
+					continue
+				}
 				integration := ""
 				if a.IntegrationStatus != "" {
 					integration = " · " + delegateStatusLabel(a.IntegrationStatus)

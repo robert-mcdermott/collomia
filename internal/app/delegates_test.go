@@ -165,8 +165,82 @@ func TestDelegateIntegrationRefusesParentDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Files) != 1 || !strings.Contains(preview.Files[0].Conflict, "parent workspace changed") {
+	if len(preview.Files) != 1 || !strings.Contains(preview.Files[0].Conflict, "overlap") || preview.Files[0].ConflictPreview == "" {
 		t.Fatalf("expected stale conflict, got %+v", preview.Files)
+	}
+}
+
+func TestDelegateIntegrationThreeWayReconcilesDisjointParentAndChildEdits(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	parentData, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childData, err := os.ReadFile(fixture.delegatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := strings.Replace(string(parentData), "line L", "line L from parent", 1)
+	child := strings.Replace(string(childData), "line B", "line B from child", 1)
+	if err := os.WriteFile(fixture.parentFile, []byte(parent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(fixture.parentFile, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(fixture.delegatedFile, []byte(child), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := fixture.runtime.PrepareDelegateIntegration(t.Context(), "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Files) != 1 || preview.Files[0].Conflict != "" || !preview.Files[0].Reconciled || preview.Files[0].ReconciledContent == nil {
+		t.Fatalf("three-way preview=%+v", preview.Files)
+	}
+	if !strings.Contains(*preview.Files[0].ReconciledContent, "line B from child") || !strings.Contains(*preview.Files[0].ReconciledContent, "line L from parent") {
+		t.Fatalf("reconciled content:\n%s", *preview.Files[0].ReconciledContent)
+	}
+	hunks, err := diffmodel.ParseHunks(preview.Files[0].Unified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := make([]bool, len(hunks))
+	for i := range keep {
+		keep[i] = true
+	}
+	if _, err := fixture.runtime.ApplyDelegateIntegration(t.Context(), "d1", []DelegateIntegrationSelection{{Path: "sample.txt", Keep: keep}}); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(merged), "line B from child") || !strings.Contains(string(merged), "line L from parent") {
+		t.Fatalf("published reconciliation:\n%s", merged)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(fixture.parentFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("three-way integration changed parent permissions to %o", info.Mode().Perm())
+		}
+	}
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.IntegrationStatus != "integrated" {
+		t.Fatalf("integration status=%+v", status)
+	}
+}
+
+func TestDelegateIntegrationBlocksScopeViolations(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	fixture.runtime.Team.MarkScopeViolations("d1", []string{"outside.txt"})
+	if _, err := fixture.runtime.PrepareDelegateIntegration(t.Context(), "d1"); err == nil || !strings.Contains(err.Error(), "outside its declared") {
+		t.Fatalf("scope violation should block automatic integration: %v", err)
 	}
 }
 

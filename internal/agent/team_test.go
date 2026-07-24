@@ -177,6 +177,7 @@ func TestTeamRecentOutputKeepsOnlyBoundedTail(t *testing.T) {
 func TestDelegateStatusEventRoundTripPreservesOperatorMetadata(t *testing.T) {
 	original := DelegateStatus{
 		ID: "d1", Name: "writer", Task: "implement", Write: true, PlanStep: 3,
+		WriteScopes: []string{"internal/app/"}, ScopeViolations: []string{"README.md"},
 		Status: DelegateDone, RecentOutput: "tests passed", Guidance: []string{"run the focused test"},
 		Summary: "done", FailureID: "err-0123456789abcdef", Changed: []string{"a.go"}, Integrated: []string{"a.go"},
 		Worktree: "/tmp/worktree", Branch: "collomia/writer", BaseCommit: "abcdef",
@@ -185,8 +186,26 @@ func TestDelegateStatusEventRoundTripPreservesOperatorMetadata(t *testing.T) {
 		VerificationResults: []DelegateVerification{{Purpose: "test", Command: "go test ./...", Status: "passed", Output: "ok", StateToken: "verify-abc"}},
 	}
 	restored := DelegateStatusFromEvent(original.Event())
-	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 || restored.IntegrationStatus != "partial" || restored.IntegrationError != "one hunk remains" || restored.VerificationStatus != "passed" || len(restored.VerificationResults) != 1 || restored.VerificationResults[0].Command != "go test ./..." {
+	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.WriteScopes) != 1 || len(restored.ScopeViolations) != 1 || len(restored.Integrated) != 1 || restored.IntegrationStatus != "partial" || restored.IntegrationError != "one hunk remains" || restored.VerificationStatus != "passed" || len(restored.VerificationResults) != 1 || restored.VerificationResults[0].Command != "go test ./..." {
 		t.Fatalf("restored=%+v", restored)
+	}
+}
+
+func TestTeamPersistsWriteScopeQueueAndViolations(t *testing.T) {
+	team := NewTeam()
+	team.Enqueue(DelegateStart{ID: "d1", Name: "writer", Task: "write", Write: true, WriteScopes: []string{"docs/"}})
+	queued, _ := team.Get("d1")
+	if len(queued.WriteScopes) != 1 || !strings.Contains(queued.CurrentAction, "write scope") {
+		t.Fatalf("queued=%+v", queued)
+	}
+	team.MarkScopeViolations("d1", []string{"internal/app/app.go"})
+	restored := DelegateStatusFromEvent(queued.Event())
+	if len(restored.WriteScopes) != 1 {
+		t.Fatalf("restored scopes=%+v", restored)
+	}
+	current, _ := team.Get("d1")
+	if len(current.ScopeViolations) != 1 || current.ScopeViolations[0] != "internal/app/app.go" {
+		t.Fatalf("violations=%+v", current)
 	}
 }
 

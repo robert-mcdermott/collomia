@@ -75,10 +75,11 @@ type delegateReviewDocument struct {
 }
 
 type delegateReviewFile struct {
-	Path   string               `json:"path"`
-	Status string               `json:"status"`
-	Reason string               `json:"reason,omitempty"`
-	Hunks  []delegateReviewHunk `json:"hunks,omitempty"`
+	Path            string               `json:"path"`
+	Status          string               `json:"status"`
+	Reason          string               `json:"reason,omitempty"`
+	ConflictPreview string               `json:"conflict_preview,omitempty"`
+	Hunks           []delegateReviewHunk `json:"hunks,omitempty"`
 }
 
 type delegateReviewHunk struct {
@@ -148,13 +149,20 @@ func (t inspectDelegateChangesTool) Execute(ctx context.Context, raw json.RawMes
 		case file.Conflict != "":
 			item.Status = "conflict"
 			item.Reason = file.Conflict
+			item.ConflictPreview = file.ConflictPreview
 			conflicts++
 		case file.AlreadyApplied:
 			item.Status = "already_applied"
-		case file.Unified == "":
-			item.Status = "not_selectable"
-			item.Reason = "no safe text hunks are available"
 		default:
+			if file.Unified == "" {
+				item.Status = "not_selectable"
+				item.Reason = "no safe text hunks are available"
+				break
+			}
+			if file.Reconciled {
+				item.Status = "reconciled"
+				item.Reason = "non-overlapping parent and delegated edits were combined in this review preview; publication still requires explicit selection and permission"
+			}
 			hunks, parseErr := diffmodel.ParseHunks(file.Unified)
 			if parseErr != nil {
 				item.Status = "conflict"
@@ -296,7 +304,7 @@ func (t compareDelegateChangesTool) Execute(ctx context.Context, raw json.RawMes
 func (t applyDelegateChangesTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{
 		Name:        ApplyDelegateChangesTool,
-		Description: "Selectively publish reviewed text hunks from a completed delegated agent into the current parent workspace. Requires the fresh review_token returned by inspect_delegate_changes. The normal write permission policy, exact base/parent/child drift checks, rooted atomic writes, rollback, /diff tracking, and /undo remain enforced. Never commits, merges, pushes, deletes the child worktree, or resolves conflicts automatically.",
+		Description: "Selectively publish reviewed ordinary or clean three-way text hunks from a completed delegated agent into the current parent workspace. Requires the fresh review_token returned by inspect_delegate_changes. The normal write permission policy, exact base/parent/child/composed-state checks, rooted atomic writes, rollback, /diff tracking, and /undo remain enforced. Never commits, creates a branch merge, pushes, deletes the child worktree, or selects an overlapping conflict resolution.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"completed delegated-agent id"},"review_token":{"type":"string","description":"exact token returned by the latest inspect_delegate_changes result"},"all":{"type":"boolean","description":"select every currently safe hunk; cannot be combined with files"},"files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"hunks":{"type":"array","minItems":1,"items":{"type":"integer","minimum":1}}},"required":["path","hunks"],"additionalProperties":false}}},"required":["id","review_token"],"additionalProperties":false}`),
 	}
 }
@@ -331,7 +339,7 @@ func (t applyDelegateChangesTool) Execute(ctx context.Context, raw json.RawMessa
 	}{
 		ID: input.ID, IntegrationStatus: status.IntegrationStatus,
 		IntegratedFiles: paths,
-		Recovery:        "Changes are present in the current workspace and tracked by /diff and /undo. The delegated worktree and branch were retained. No commit, merge, or push occurred.",
+		Recovery:        "Changes are present in the current workspace and tracked by /diff and /undo. The delegated worktree and branch were retained. No commit, branch merge, or push occurred.",
 	}
 	encoded, marshalErr := json.MarshalIndent(result, "", "  ")
 	return string(encoded), marshalErr

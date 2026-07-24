@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
@@ -43,13 +44,17 @@ type DelegateIntegration struct {
 }
 
 type DelegateIntegrationFile struct {
-	Path           string
-	Before, After  *string
-	BeforeMode     os.FileMode
-	AfterMode      os.FileMode
-	Unified        string
-	Conflict       string
-	AlreadyApplied bool
+	Path              string
+	Before, After     *string
+	BeforeMode        os.FileMode
+	AfterMode         os.FileMode
+	Unified           string
+	Conflict          string
+	ConflictPreview   string
+	Reconciled        bool
+	ReconciledContent *string
+	ReconciledMode    os.FileMode
+	AlreadyApplied    bool
 }
 
 type DelegateIntegrationSelection struct {
@@ -76,6 +81,9 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 	}
 	if !status.Write || status.Worktree == "" || status.Branch == "" || status.BaseCommit == "" {
 		return nil, fmt.Errorf("delegated agent %q has no retained write worktree", id)
+	}
+	if len(status.ScopeViolations) > 0 {
+		return nil, fmt.Errorf("delegated agent %q changed files outside its declared write_paths (%s); inspect the retained worktree manually", id, strings.Join(status.ScopeViolations, ", "))
 	}
 	if !strings.HasPrefix(status.Branch, "collomia/") {
 		return nil, fmt.Errorf("refusing unexpected delegated branch %q", status.Branch)
@@ -117,7 +125,22 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 		case sameOSFileState(parent, parentMode, child, childMode):
 			file.AlreadyApplied = true
 		case !sameGitBaseState(parent, parentMode, base, baseMode):
-			file.Conflict = "parent workspace changed from the delegated base"
+			merged, conflictPreview, reconcileErr := reconcileDelegateText(ctx, base, parent, child, baseMode, parentMode, childMode)
+			switch {
+			case reconcileErr != nil:
+				file.Conflict = reconcileErr.Error()
+				file.ConflictPreview = conflictPreview
+			case sameOSFileState(parent, parentMode, merged, parentMode):
+				file.AlreadyApplied = true
+				file.Reconciled = true
+				file.ReconciledContent = merged
+				file.ReconciledMode = parentMode
+			default:
+				file.Reconciled = true
+				file.ReconciledContent = merged
+				file.ReconciledMode = parentMode
+				file.Unified = diffmodel.Unified(path, contentString(parent), contentString(merged))
+			}
 		default:
 			file.Unified = diffmodel.Unified(path, contentString(parent), contentString(child))
 			if file.Unified == "" && parentMode != childMode {
@@ -130,10 +153,11 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 	return preview, nil
 }
 
-// ApplyDelegateIntegration authorizes and atomically publishes the selected
-// text hunks. It never commits, merges, deletes the worktree, or resolves a
-// stale parent file. Multi-file publication rolls back earlier entries if a
-// later rooted mutation fails.
+// ApplyDelegateIntegration authorizes and atomically publishes selected clean
+// text hunks. Parent drift is first reconciled against the recorded base;
+// overlapping conflicts remain non-selectable. It never commits, creates a
+// branch merge, or deletes the worktree. Multi-file publication rolls back
+// earlier entries if a later rooted mutation fails.
 func (r *Runtime) ApplyDelegateIntegration(ctx context.Context, id string, selections []DelegateIntegrationSelection) ([]string, error) {
 	_, mutations, action, err := r.prepareDelegateIntegrationMutations(ctx, id, selections)
 	if err != nil {
@@ -222,9 +246,13 @@ func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id st
 		if !selected {
 			continue
 		}
+		integrationTarget := file.After
+		if file.Reconciled {
+			integrationTarget = file.ReconciledContent
+		}
 		var after *string
 		afterMode := file.BeforeMode
-		if all && file.After == nil {
+		if all && integrationTarget == nil {
 			after = nil
 		} else {
 			value, applyErr := diffmodel.ApplyHunks(contentString(file.Before), hunks, selection.Keep)
@@ -234,6 +262,9 @@ func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id st
 			after = &value
 			if all {
 				afterMode = file.AfterMode
+				if file.Reconciled {
+					afterMode = file.ReconciledMode
+				}
 			}
 		}
 		mutations = append(mutations, delegateIntegrationMutation{path: file.Path, before: cloneText(file.Before), after: after, expectedChild: cloneText(file.After), beforeMode: file.BeforeMode, afterMode: afterMode, childMode: file.AfterMode, preview: diffmodel.Unified(file.Path, contentString(file.Before), contentString(after))})
@@ -337,8 +368,8 @@ func delegateIntegrationReviewToken(preview *DelegateIntegration) string {
 	var canonical bytes.Buffer
 	fmt.Fprintf(&canonical, "%q|%q|%q|%q|", preview.ID, preview.Branch, preview.BaseCommit, preview.Worktree)
 	for _, file := range preview.Files {
-		fmt.Fprintf(&canonical, "%q|%o|%o|%t|%q|%q|", file.Path, file.BeforeMode, file.AfterMode, file.AlreadyApplied, file.Conflict, file.Unified)
-		for _, content := range []*string{file.Before, file.After} {
+		fmt.Fprintf(&canonical, "%q|%o|%o|%o|%t|%t|%q|%q|%q|", file.Path, file.BeforeMode, file.AfterMode, file.ReconciledMode, file.AlreadyApplied, file.Reconciled, file.Conflict, file.ConflictPreview, file.Unified)
+		for _, content := range []*string{file.Before, file.After, file.ReconciledContent} {
 			if content == nil {
 				canonical.WriteString("-1|")
 				continue
@@ -350,6 +381,72 @@ func delegateIntegrationReviewToken(preview *DelegateIntegration) string {
 	}
 	sum := sha256.Sum256(canonical.Bytes())
 	return "review-" + hex.EncodeToString(sum[:])
+}
+
+// reconcileDelegateText performs a three-way text merge of parent and child
+// against their recorded Git base. A clean result is still review-only:
+// publication requires explicit hunk selection, normal permission, and fresh
+// state checks. Conflicting output is returned only as a bounded preview and
+// is never written automatically.
+func reconcileDelegateText(ctx context.Context, base, parent, child *string, baseMode, parentMode, childMode os.FileMode) (*string, string, error) {
+	if base == nil || parent == nil || child == nil {
+		return nil, "", errors.New("parent and delegated changes add or delete the same path; explicit manual reconciliation is required")
+	}
+	if !reconcilableDelegateModes(baseMode, parentMode, childMode) {
+		return nil, "", errors.New("parent and delegated changes include incompatible file-mode changes")
+	}
+	tempDir, err := os.MkdirTemp("", "collomia-reconcile-*")
+	if err != nil {
+		return nil, "", fmt.Errorf("prepare three-way reconciliation: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	paths := []string{
+		filepath.Join(tempDir, "parent"),
+		filepath.Join(tempDir, "base"),
+		filepath.Join(tempDir, "delegate"),
+	}
+	for i, content := range []*string{parent, base, child} {
+		if err := os.WriteFile(paths[i], []byte(*content), 0o600); err != nil {
+			return nil, "", fmt.Errorf("prepare three-way reconciliation: %w", err)
+		}
+	}
+	timeout, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(timeout, "git", "merge-file", "-p", "--diff3",
+		"-L", "parent workspace", "-L", "delegated base", "-L", "delegated result",
+		paths[0], paths[1], paths[2])
+	output, commandErr := command.Output()
+	if commandErr == nil {
+		merged := string(output)
+		return &merged, "", nil
+	}
+	if timeout.Err() != nil {
+		return nil, "", fmt.Errorf("three-way reconciliation timed out")
+	}
+	var exitErr *exec.ExitError
+	if errors.As(commandErr, &exitErr) && exitErr.ExitCode() == 1 {
+		preview := strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+				return r
+			}
+			return -1
+		}, string(output))
+		const conflictPreviewLimit = 64 << 10
+		if len(preview) > conflictPreviewLimit {
+			preview = preview[:conflictPreviewLimit] + "\n… conflict preview truncated …\n"
+		}
+		return nil, preview, errors.New("parent and delegated changes overlap; explicit conflict resolution is required")
+	}
+	return nil, "", fmt.Errorf("three-way reconciliation failed: %w", commandErr)
+}
+
+func reconcilableDelegateModes(baseMode, parentMode, childMode os.FileMode) bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	baseExecutable := baseMode.Perm()&0o111 != 0
+	return (parentMode.Perm()&0o111 != 0) == baseExecutable &&
+		(childMode.Perm()&0o111 != 0) == baseExecutable
 }
 
 func validateDelegateWorktree(ctx context.Context, workspace, worktree, branch, base string) error {

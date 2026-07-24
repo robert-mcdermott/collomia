@@ -136,6 +136,16 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	if status.PlanStep > 0 {
 		lines = append(lines, fmt.Sprintf("Plan step: %d", status.PlanStep))
 	}
+	if len(status.WriteScopes) > 0 {
+		lines = append(lines, "Write scope: "+strings.Join(status.WriteScopes, ", "))
+	}
+	if len(status.ScopeViolations) > 0 {
+		lines = append(lines, "", "Write-scope violations:")
+		for _, path := range status.ScopeViolations {
+			lines = append(lines, "- "+path)
+		}
+		lines = append(lines, "Guarded integration is blocked; inspect the retained worktree manually.")
+	}
 	if status.Provider != "" || status.Model != "" {
 		lines = append(lines, "Provider: "+m.runtime.Redactor.Redact(status.Provider+"/"+status.Model))
 	}
@@ -225,7 +235,7 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	}
 	if status.Status == agent.DelegateQueued || status.Status == agent.DelegateRunning || status.Status == agent.DelegateWaitingApproval || status.Status == agent.DelegateCancelling {
 		lines = append(lines, "", "Control:", "/agents steer "+status.ID+" <guidance…>", "/agents stop "+status.ID)
-	} else if status.Write && len(status.Changed) > 0 && status.Worktree != "" {
+	} else if status.Write && len(status.Changed) > 0 && status.Worktree != "" && len(status.ScopeViolations) == 0 {
 		lines = append(lines, "", "Review, verify, and selectively integrate:", "/agents verify "+status.ID, "/agents apply "+status.ID)
 		if m.runtime.Config.Options.AgentIntegration == "reviewed" {
 			lines = append(lines, "Primary-agent reviewed integration is enabled.")

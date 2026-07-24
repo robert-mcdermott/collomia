@@ -14,14 +14,19 @@ type Scheduler struct {
 	perProvider      map[string]int
 	active           int
 	activeByProvider map[string]int
+	activeWaiters    []*scheduleWaiter
 	queue            []*scheduleWaiter
 }
 
 type scheduleWaiter struct {
 	provider string
-	ready    chan struct{}
-	started  bool
-	released bool
+	// writeScopes is empty for read-only tasks. A writer always supplies at
+	// least one normalized scope, including "*" for an unknown/full-workspace
+	// assignment.
+	writeScopes []string
+	ready       chan struct{}
+	started     bool
+	released    bool
 }
 
 func NewScheduler(maxConcurrent int, perProvider map[string]int) *Scheduler {
@@ -40,7 +45,15 @@ func NewScheduler(maxConcurrent int, perProvider map[string]int) *Scheduler {
 // Acquire waits for a global/provider slot. The returned release function is
 // idempotent and must be called when the task finishes.
 func (s *Scheduler) Acquire(ctx context.Context, provider string) (func(), error) {
-	waiter := &scheduleWaiter{provider: provider, ready: make(chan struct{})}
+	return s.AcquireScoped(ctx, provider, nil)
+}
+
+// AcquireScoped additionally serializes write-capable tasks whose declared
+// repository-relative scopes overlap. Read-only callers pass nil. The scope
+// contract is scheduling metadata rather than a filesystem permission grant;
+// child results are checked against it again after execution.
+func (s *Scheduler) AcquireScoped(ctx context.Context, provider string, writeScopes []string) (func(), error) {
+	waiter := &scheduleWaiter{provider: provider, writeScopes: append([]string(nil), writeScopes...), ready: make(chan struct{})}
 	s.mu.Lock()
 	s.queue = append(s.queue, waiter)
 	s.dispatchLocked()
@@ -55,6 +68,7 @@ func (s *Scheduler) Acquire(ctx context.Context, provider string) (func(), error
 			waiter.released = true
 			s.active--
 			s.activeByProvider[provider]--
+			s.removeActiveLocked(waiter)
 		} else if !waiter.started {
 			for i, queued := range s.queue {
 				if queued == waiter {
@@ -78,6 +92,7 @@ func (s *Scheduler) release(waiter *scheduleWaiter) {
 	waiter.released = true
 	s.active--
 	s.activeByProvider[waiter.provider]--
+	s.removeActiveLocked(waiter)
 	s.dispatchLocked()
 }
 
@@ -93,10 +108,25 @@ func (s *Scheduler) dispatchLocked() {
 		if s.activeByProvider[waiter.provider] >= limit {
 			return
 		}
+		for _, active := range s.activeWaiters {
+			if writeScopesOverlap(waiter.writeScopes, active.writeScopes) {
+				return
+			}
+		}
 		s.queue = s.queue[1:]
 		waiter.started = true
 		s.active++
 		s.activeByProvider[waiter.provider]++
+		s.activeWaiters = append(s.activeWaiters, waiter)
 		close(waiter.ready)
+	}
+}
+
+func (s *Scheduler) removeActiveLocked(waiter *scheduleWaiter) {
+	for i, active := range s.activeWaiters {
+		if active == waiter {
+			s.activeWaiters = append(s.activeWaiters[:i], s.activeWaiters[i+1:]...)
+			return
+		}
 	}
 }

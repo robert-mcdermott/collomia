@@ -399,27 +399,48 @@ states that steering grants no permission. `alt+a` exposes a deliberate
 inspect/steer/stop action menu, and `/agents stop <id-or-name>` cancels one
 queued or active child.
 
-`/agents apply <id>` is an explicit copy-and-review operation, not a Git merge.
-Collomia treats the durable worktree path as untrusted: it verifies Git still
-registers that exact directory and branch for the parent repository, requires
-the branch `HEAD` to equal the recorded base commit, rejects path traversal,
-symlinks, non-regular/binary/non-UTF-8/oversized files and mode-only changes,
-and refuses any parent file that no longer matches the base. The user selects
+`/agents apply <id>` is an explicit copy-and-review operation, not a branch
+merge. Collomia treats the durable worktree path as untrusted: it verifies Git
+still registers that exact directory and branch for the parent repository,
+requires branch `HEAD` to equal the recorded base commit, rejects path
+traversal, symlinks, non-regular/binary/non-UTF-8/oversized files, and blocks a
+child that changed paths outside its declared write scope.
+
+Writers declare repository-relative file or directory scopes. The scheduler
+case-folds comparisons conservatively and serializes overlapping,
+workspace-wide, or unspecified writers while allowing disjoint writers to
+run concurrently. This is not a filesystem authorization boundary: inherited
+permissions and the OS sandbox remain authoritative. Actual Git changes are
+checked against the declaration after execution; a violation makes the child
+result an error, stays isolated in the retained worktree, and is unavailable
+to guarded integration.
+
+For supported existing text files, integration compares the recorded base,
+current parent, and retained child. An unchanged parent gets the ordinary
+child diff. Clean non-overlapping parent/child edits produce a composed,
+selectable preview that preserves both sides. Overlapping edits produce a
+bounded diff3 conflict preview and remain non-selectable; incompatible
+add/delete or mode changes also fail closed. This computation does not grant
+permission or write content.
+
+The review token binds worktree/branch/base identity, exact parent and child
+bytes and modes, the composed result, and conflict state. The user selects
 text hunks in a floating review; normal `integrate_delegate` permission rules
-still apply. Both parent and child bytes are rechecked after interactive
-approval to close the approval-time race. Rooted atomic replacement/removal,
-multi-file rollback, and the ordinary change tracker then publish the selected
-content. The child worktree and branch are retained. Collomia never commits,
-pushes, silently reconciles conflicts, or deletes those recovery artifacts.
+still apply. The entire comparison is recomputed after interactive approval
+to close the approval-time race. Rooted atomic replacement/removal, multi-file
+rollback, and the ordinary change tracker then publish only selected clean
+content. The child worktree and branch are retained. Collomia never creates a
+merge commit, commits, pushes, chooses an overlapping resolution, or deletes
+those recovery artifacts.
 
 `options.agent_integration: "reviewed"` permits the primary model—but never a
 delegated child—to inspect, verify, compare, and selectively copy retained
 work. It does not add a new mutation primitive. `inspect_delegate_changes`
-returns bounded evidence and numbered hunks plus two opaque SHA-256 tokens:
-the publication review token covers the registered worktree/base, parent
-bytes, child bytes, and relevant modes; the verification token covers only the
-registered child state so unrelated parent drift cannot falsify child test
-evidence.
+returns bounded evidence and numbered ordinary or clean-three-way hunks plus
+two opaque SHA-256 tokens: the publication review token covers the registered
+worktree/base, parent bytes, child bytes, relevant modes, composed result, and
+conflict state; the verification token covers only the registered child state
+so unrelated parent drift cannot falsify child test evidence.
 
 `verify_delegate_changes` accepts exactly one repository-detected command and
 requires the current child token. Its permission and hook identity remains
@@ -433,12 +454,13 @@ permission. `/agents verify` applies the same contract one command at a time.
 
 `compare_delegate_changes` is read-only and exposes bounded conflicts,
 selectable hunks, verification, evidence, and usage for two to six candidates.
-It does not choose a winner or reconcile content. `apply_delegate_changes`
-remains unavailable without the publication token and refuses it if reviewed
-state changed before authorization. The agent loop applies the ordinary write
+It does not choose a winner. `apply_delegate_changes` remains unavailable
+without the publication token and refuses it if reviewed or three-way state
+changed before authorization. The agent loop applies the ordinary write
 policy under `integrate_delegate`, then calls the shared post-authorization
-publication path. Rooted writes, rollback, change tracking, retained worktrees,
-and the prohibition on commit/merge/push are identical to `/agents apply`.
+publication path. Rooted writes, rollback, change tracking, retained
+worktrees, and the prohibition on commit/push/merge commits are identical to
+`/agents apply`.
 
 Reviewed mode is opt-in and defaults to `manual`. It lets the primary model
 make a better-supported quality decision; it does not prove that decision
@@ -446,8 +468,10 @@ correct. Child-authored evidence and repository text remain data rather than
 instructions. A machine-observed child pass covers only that exact retained
 worktree state—not parent-only edits or interactions among integrated
 candidates—so the combined parent workspace must still be verified after
-publication. Parent drift, sibling overlap, unsupported entries, stale reviews
-or verification, and moved branches fail closed for explicit reconciliation.
+publication. Clean parent drift is reviewable through the three-way preview;
+overlapping drift, sibling overlap, unsupported entries, scope violations,
+stale reviews or verification, and moved branches fail closed for explicit
+resolution.
 
 Closing Collomia requests cancellation for every child and stops background
 processes owned by write agents. Durable sessions keep bounded status, summary,

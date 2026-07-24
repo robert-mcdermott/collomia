@@ -56,6 +56,8 @@ type DelegateStatus struct {
 	Provider        string
 	Model           string
 	Write           bool
+	WriteScopes     []string
+	ScopeViolations []string
 	PlanStep        int
 	Status          string
 	CurrentAction   string
@@ -101,6 +103,7 @@ type DelegateStatus struct {
 type DelegateStart struct {
 	ID, Name, Task, Profile, Provider, Model string
 	Write                                    bool
+	WriteScopes                              []string
 	PlanStep                                 int
 	TokenBudget, TimeoutSeconds              int
 	Cancel                                   context.CancelFunc
@@ -129,7 +132,8 @@ func (t *Team) Enqueue(start DelegateStart) {
 	status := DelegateStatus{
 		ID: start.ID, Name: start.Name, Task: start.Task, Profile: start.Profile,
 		Provider: start.Provider, Model: start.Model, Write: start.Write, PlanStep: start.PlanStep,
-		Status: DelegateQueued, CurrentAction: "waiting for scheduler",
+		WriteScopes: append([]string(nil), start.WriteScopes...),
+		Status:      DelegateQueued, CurrentAction: delegateQueueAction(start.Write, start.WriteScopes),
 		TokenBudget: start.TokenBudget, TimeoutSeconds: start.TimeoutSeconds,
 		Revision: 1, Started: time.Now(), cancel: start.Cancel,
 	}
@@ -139,6 +143,16 @@ func (t *Team) Enqueue(start DelegateStart) {
 	t.order = append(t.order, status.ID)
 	t.mu.Unlock()
 	t.notify(status)
+}
+
+func delegateQueueAction(write bool, scopes []string) string {
+	if !write {
+		return "waiting for scheduler"
+	}
+	if len(scopes) == 1 && scopes[0] == workspaceWriteScope {
+		return "waiting for scheduler (workspace-wide write scope)"
+	}
+	return fmt.Sprintf("waiting for scheduler (%d declared write scope(s))", len(scopes))
 }
 
 // Start retains the original test/helper API and immediately marks a simple
@@ -359,6 +373,15 @@ func (t *Team) MarkIntegrationReview(id, status, message string) {
 	})
 }
 
+// MarkScopeViolations records changed paths outside a delegated task's
+// scheduling contract. The child worktree is retained for inspection, but the
+// terminal task result is not represented as successful scoped work.
+func (t *Team) MarkScopeViolations(id string, paths []string) {
+	t.update(id, func(s *DelegateStatus) {
+		s.ScopeViolations = additiveValues(s.ScopeViolations, paths)
+	})
+}
+
 // MarkIntegrationOutcome records files explicitly copied into the parent
 // workspace and the guarded integration disposition. The child worktree
 // remains available and is never removed automatically.
@@ -547,6 +570,8 @@ func (t *Team) notify(status DelegateStatus) {
 func copyDelegateStatus(status DelegateStatus) DelegateStatus {
 	status.Evidence = append([]string(nil), status.Evidence...)
 	status.Changed = append([]string(nil), status.Changed...)
+	status.WriteScopes = append([]string(nil), status.WriteScopes...)
+	status.ScopeViolations = append([]string(nil), status.ScopeViolations...)
 	status.Guidance = append([]string(nil), status.Guidance...)
 	status.Integrated = append([]string(nil), status.Integrated...)
 	status.VerificationRequired = append([]string(nil), status.VerificationRequired...)
@@ -563,6 +588,18 @@ func boundDelegateStatus(status *DelegateStatus) {
 	status.Profile = boundedDelegateText(status.Profile, 512)
 	status.Provider = boundedDelegateText(status.Provider, 512)
 	status.Model = boundedDelegateText(status.Model, 1024)
+	if len(status.WriteScopes) > maxWriteScopes {
+		status.WriteScopes = status.WriteScopes[:maxWriteScopes]
+	}
+	for i := range status.WriteScopes {
+		status.WriteScopes[i] = boundedDelegateText(status.WriteScopes[i], 1024)
+	}
+	if len(status.ScopeViolations) > maxDelegateChangedFiles {
+		status.ScopeViolations = status.ScopeViolations[:maxDelegateChangedFiles]
+	}
+	for i := range status.ScopeViolations {
+		status.ScopeViolations[i] = boundedDelegateText(status.ScopeViolations[i], 1024)
+	}
 	status.CurrentAction = boundedDelegateText(status.CurrentAction, 2<<10)
 	status.RecentOutput = tailDelegateText(status.RecentOutput, maxDelegateRecentOutput)
 	status.Summary = boundedDelegateText(status.Summary, 16<<10)
@@ -670,6 +707,7 @@ func (status DelegateStatus) Event() event.DelegateStatus {
 	return event.DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
 		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
+		WriteScopes: append([]string(nil), status.WriteScopes...), ScopeViolations: append([]string(nil), status.ScopeViolations...),
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
 		Summary: status.Summary, Error: status.Error,
@@ -692,6 +730,7 @@ func DelegateStatusFromEvent(status event.DelegateStatus) DelegateStatus {
 	return DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
 		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
+		WriteScopes: append([]string(nil), status.WriteScopes...), ScopeViolations: append([]string(nil), status.ScopeViolations...),
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
 		Summary: status.Summary, Error: status.Error, FailureID: status.FailureID,

@@ -79,11 +79,16 @@ Do not assume every reserved kind appears in every current CLI stream.
 
 When present, its `delegate` object includes stable identity/profile/provider,
 `plan_step`, lifecycle state/current action, bounded `recent_output`, steering
-history plus `pending_guidance`, evidence and changed/integrated file lists,
-optional `integration_status`/`integration_error`, usage/budgets, and retained
-worktree/branch/base metadata. Integration status describes a user/primary
+history plus `pending_guidance`, declared `write_scopes`, any
+`scope_violations`, evidence and changed/integrated file lists, optional
+`integration_status`/`integration_error`, usage/budgets, and retained
+worktree/branch/base metadata. A writer without explicit paths records `["*"]`.
+Scope violations make the task an error and block guarded integration; the
+worktree remains available. Integration status describes a user/primary
 reviewed-copy disposition (`reviewed`, `reviewed_with_conflicts`, `integrated`,
-`partial`, `blocked`, or `rejected`), not a Git merge.
+`partial`, `blocked`, or `rejected`), not a Git branch merge. A reviewed file
+may be a freshness-bound clean three-way composition; overlapping diff3
+content is observational and never published automatically.
 
 Delegated write records may also include `verification_status`,
 `verification_error`, `verification_token`, `verification_required`, and

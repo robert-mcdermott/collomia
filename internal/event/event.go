@@ -199,6 +199,8 @@ type DelegateStatus struct {
 	Provider             string                 `json:"provider,omitempty"`
 	Model                string                 `json:"model,omitempty"`
 	Write                bool                   `json:"write,omitempty"`
+	WriteScopes          []string               `json:"write_scopes,omitempty"`
+	ScopeViolations      []string               `json:"scope_violations,omitempty"`
 	PlanStep             int                    `json:"plan_step,omitempty"`
 	Status               string                 `json:"status"`
 	CurrentAction        string                 `json:"current_action,omitempty"`

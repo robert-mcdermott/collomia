@@ -522,6 +522,20 @@ func TestDelegateRunsTasksConcurrently(t *testing.T) {
 	}
 }
 
+func TestDelegateRejectsInvalidWriteScopesBeforeAuthorization(t *testing.T) {
+	registry := tools.NewRegistry()
+	a := New(Options{
+		Client: &fakeClient{}, ProviderName: "fake", Model: "m",
+		ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(),
+		Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+	})
+	a.AddDelegationTool(appconfig.Config{}, nil, NewTeam())
+	raw := json.RawMessage(`{"tasks":[{"task":"write outside","write":true,"write_paths":["../outside"]}]}`)
+	if _, err := registry.Assess("delegate", raw); err == nil || !strings.Contains(err.Error(), "escapes the workspace") {
+		t.Fatalf("invalid write scope assessment=%v", err)
+	}
+}
+
 func TestDelegateWriteTaskUsesIsolatedWorktree(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")

@@ -708,6 +708,11 @@ type DelegateTask struct {
 	// When false (the default) the sub-agent is read-only and shares the
 	// parent workspace, which is cheaper for pure investigation.
 	Write bool `json:"write,omitempty"`
+	// WritePaths declares the repository-relative files or directories this
+	// task is expected to change. Directory scopes end in "/". Overlapping
+	// writers are serialized; omitted scopes are workspace-wide. The retained
+	// result is checked against this contract after execution.
+	WritePaths []string `json:"write_paths,omitempty"`
 	// Agent selects a named profile from configuration (model, fixed role
 	// instructions, tool allowlist, iteration budget). Empty uses the
 	// parent's own model and full tool set.
@@ -728,7 +733,7 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		board = boards[0]
 	}
 	scheduler := NewScheduler(cfg.Options.DelegateMaxConcurrency, cfg.Options.DelegateProviderConcurrency)
-	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
+	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Write tasks should declare write_paths as repository-relative files or directory prefixes ending in /; overlapping scopes are serialized, omitted scopes are workspace-wide, and out-of-scope results are reported as violations. Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
 	if cfg.Options.AgentIntegration == "reviewed" {
 		desc += " Reviewed integration is enabled: after a successful write task, inspect its exact evidence and hunks with inspect_delegate_changes, run proportionate detected child-worktree verification with verify_delegate_changes, compare candidates when useful, and only then decide whether to publish selected changes with apply_delegate_changes."
 	}
@@ -740,7 +745,7 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		sort.Strings(names)
 		desc += " Named agent profiles available via \"agent\": " + strings.Join(names, ", ") + "."
 	}
-	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"agent":{"type":"string","description":"optional named agent profile from configuration"},"plan_step":{"type":"integer","minimum":1,"description":"optional existing structured plan step ID associated with this task"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
+	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"write_paths":{"type":"array","maxItems":64,"items":{"type":"string"},"description":"expected repository-relative files or directory prefixes ending in /; requires write=true; omitted means workspace-wide"},"agent":{"type":"string","description":"optional named agent profile from configuration"},"plan_step":{"type":"integer","minimum":1,"description":"optional existing structured plan step ID associated with this task"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
 	assess := func(raw json.RawMessage) (tools.Action, error) {
 		var input struct {
 			Tasks []DelegateTask `json:"tasks"`
@@ -748,7 +753,10 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		risk := tools.RiskRead
 		summary := "delegate one or more read-only investigations"
 		if json.Unmarshal(raw, &input) == nil {
-			for _, t := range input.Tasks {
+			for index, t := range input.Tasks {
+				if _, err := NormalizeWriteScopes(t.WritePaths, t.Write); err != nil {
+					return tools.Action{}, fmt.Errorf("tasks[%d]: %w", index, err)
+				}
 				if t.Write {
 					risk = tools.RiskWrite
 					summary = "delegate one or more sub-agent tasks, including write-capable agents in isolated worktrees"
@@ -809,25 +817,27 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 // It carries evidence and artifact locations without injecting raw child
 // transcripts into the parent's model context.
 type DelegateResult struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Profile        string         `json:"profile,omitempty"`
-	PlanStep       int            `json:"plan_step,omitempty"`
-	Status         string         `json:"status"`
-	Summary        string         `json:"summary,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	FailureID      string         `json:"failure_id,omitempty"`
-	Evidence       []string       `json:"evidence,omitempty"`
-	ChangedFiles   []string       `json:"changed_files,omitempty"`
-	ChangedHunks   []DelegateHunk `json:"changed_hunks,omitempty"`
-	Worktree       string         `json:"worktree,omitempty"`
-	Branch         string         `json:"branch,omitempty"`
-	BaseCommit     string         `json:"base_commit,omitempty"`
-	InputTokens    int            `json:"input_tokens,omitempty"`
-	OutputTokens   int            `json:"output_tokens,omitempty"`
-	TokenBudget    int            `json:"token_budget,omitempty"`
-	TimeoutSeconds int            `json:"timeout_seconds"`
-	Truncated      bool           `json:"truncated,omitempty"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Profile         string         `json:"profile,omitempty"`
+	PlanStep        int            `json:"plan_step,omitempty"`
+	Status          string         `json:"status"`
+	Summary         string         `json:"summary,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	FailureID       string         `json:"failure_id,omitempty"`
+	Evidence        []string       `json:"evidence,omitempty"`
+	ChangedFiles    []string       `json:"changed_files,omitempty"`
+	WriteScopes     []string       `json:"write_scopes,omitempty"`
+	ScopeViolations []string       `json:"scope_violations,omitempty"`
+	ChangedHunks    []DelegateHunk `json:"changed_hunks,omitempty"`
+	Worktree        string         `json:"worktree,omitempty"`
+	Branch          string         `json:"branch,omitempty"`
+	BaseCommit      string         `json:"base_commit,omitempty"`
+	InputTokens     int            `json:"input_tokens,omitempty"`
+	OutputTokens    int            `json:"output_tokens,omitempty"`
+	TokenBudget     int            `json:"token_budget,omitempty"`
+	TimeoutSeconds  int            `json:"timeout_seconds"`
+	Truncated       bool           `json:"truncated,omitempty"`
 }
 
 func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int) ([]byte, error) {
@@ -857,6 +867,9 @@ func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int)
 		}
 		if len(results[i].ChangedFiles) > 32 {
 			results[i].ChangedFiles = results[i].ChangedFiles[:32]
+		}
+		if len(results[i].ScopeViolations) > 32 {
+			results[i].ScopeViolations = results[i].ScopeViolations[:32]
 		}
 		for j := range results[i].ChangedFiles {
 			results[i].ChangedFiles[j] = boundedDelegateText(results[i].ChangedFiles[j], 256)
@@ -898,12 +911,24 @@ func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int)
 			ID: boundedDelegateText(result.ID, 128), Name: boundedDelegateText(result.Name, 64),
 			Profile: boundedDelegateText(result.Profile, 64), PlanStep: result.PlanStep, Status: result.Status,
 			Error: boundedDelegateText(result.Error, 128), FailureID: result.FailureID, TokenBudget: result.TokenBudget,
+			WriteScopes: boundedDelegateValues(result.WriteScopes, 8, 128), ScopeViolations: boundedDelegateValues(result.ScopeViolations, 8, 128),
 			TimeoutSeconds: result.TimeoutSeconds, Truncated: true,
 		}
 	}
 	results = minimal
 	warnings = []string{"delegate details omitted by max_tool_output_bytes; inspect /agents"}
 	return encode()
+}
+
+func boundedDelegateValues(values []string, count, bytes int) []string {
+	if len(values) > count {
+		values = values[:count]
+	}
+	out := append([]string(nil), values...)
+	for i := range out {
+		out[i] = boundedDelegateText(out[i], bytes)
+	}
+	return out
 }
 
 // conflictWarning reports files touched by more than one sibling task in
@@ -1052,10 +1077,12 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	}
 	taskCtx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
+	writeScopes, scopeErr := NormalizeWriteScopes(task.WritePaths, task.Write)
 	if team != nil {
 		team.Enqueue(DelegateStart{
 			ID: id, Name: name, Task: task.Task, Profile: task.Agent,
 			Provider: providerName, Model: model, Write: task.Write, PlanStep: task.PlanStep,
+			WriteScopes: writeScopes,
 			TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
 		})
 	}
@@ -1067,7 +1094,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 				return delegateResult(status)
 			}
 		}
-		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), WriteScopes: writeScopes, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
 	}
 	if strings.TrimSpace(task.Task) == "" {
 		return finishError(errors.New("empty task"))
@@ -1075,10 +1102,13 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if profileErr != nil {
 		return finishError(profileErr)
 	}
+	if scopeErr != nil {
+		return finishError(scopeErr)
+	}
 	if err := validatePlanAssignment(board, task.PlanStep); err != nil {
 		return finishError(err)
 	}
-	release, err := scheduler.Acquire(taskCtx, providerName)
+	release, err := scheduler.AcquireScoped(taskCtx, providerName, writeScopes)
 	if err != nil {
 		return finishError(err)
 	}
@@ -1087,9 +1117,20 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		team.MarkRunning(id)
 	}
 
-	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "agent": task.Agent, "token_budget": profile.TokenBudget, "timeout_seconds": timeoutSeconds}})
+	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "write_scopes": writeScopes, "agent": task.Agent, "token_budget": profile.TokenBudget, "timeout_seconds": timeoutSeconds}})
 	output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
-	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_end", Workspace: a.workspace, Subject: name, Paths: changed, Error: errorString(runErr), Detail: map[string]any{"id": id, "status": delegateTerminalStatus(runErr), "input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens}})
+	violations := writeScopeViolations(writeScopes, changed)
+	if len(violations) > 0 {
+		scopeViolationErr := fmt.Errorf("delegated agent changed files outside its declared write_paths: %s", strings.Join(violations, ", "))
+		if runErr != nil {
+			scopeViolationErr = fmt.Errorf("%v; prior task error: %v", scopeViolationErr, runErr)
+		}
+		runErr = scopeViolationErr
+		if team != nil {
+			team.MarkScopeViolations(id, violations)
+		}
+	}
+	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_end", Workspace: a.workspace, Subject: name, Paths: changed, Error: errorString(runErr), Detail: map[string]any{"id": id, "status": delegateTerminalStatus(runErr), "write_scopes": writeScopes, "scope_violations": violations, "input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens}})
 	if team != nil {
 		team.FinishDetailed(id, boundedDelegateText(output, 16<<10), evidence, changed, worktreePath, branch, baseCommit, usage, runErr)
 		if status, ok := team.Get(id); ok {
@@ -1102,7 +1143,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
 }
 
 func validatePlanAssignment(board *plan.Board, stepID int) error {
@@ -1159,6 +1200,10 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	}
 	if profile.Instructions != "" {
 		instructions = "Agent role: " + profile.Instructions + "\n\n" + instructions
+	}
+	if task.Write {
+		scopes, _ := NormalizeWriteScopes(task.WritePaths, true)
+		instructions = "Delegated write contract: change only these repository-relative scopes: " + strings.Join(scopes, ", ") + ". If the task requires another file, stop and report the mismatch instead of editing outside this scope.\n\n" + instructions
 	}
 	if profile.MaxIterations > 0 {
 		maxIter = profile.MaxIterations
@@ -1372,7 +1417,8 @@ func delegateResult(status DelegateStatus) DelegateResult {
 	return DelegateResult{
 		ID: status.ID, Name: status.Name, Profile: status.Profile, PlanStep: status.PlanStep, Status: status.Status,
 		Summary: status.Summary, Error: status.Error, FailureID: status.FailureID, Evidence: status.Evidence,
-		ChangedFiles: status.Changed, Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
+		ChangedFiles: status.Changed, WriteScopes: status.WriteScopes, ScopeViolations: status.ScopeViolations,
+		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
 		InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens,
 		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds,
 	}

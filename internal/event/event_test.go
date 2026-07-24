@@ -144,6 +144,7 @@ func TestDelegateVerificationRoundTrips(t *testing.T) {
 	e := New(KindDelegateUpdate)
 	e.Delegate = &DelegateStatus{
 		ID: "d1", Name: "writer", Status: "done",
+		WriteScopes: []string{"internal/app/"}, ScopeViolations: []string{"README.md"},
 		VerificationStatus: "passed", VerificationToken: "verify-abc",
 		VerificationRequired: []string{"go test ./..."},
 		VerificationResults: []DelegateVerification{{
@@ -160,6 +161,7 @@ func TestDelegateVerificationRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded.Delegate == nil || decoded.Delegate.VerificationStatus != "passed" ||
+		len(decoded.Delegate.WriteScopes) != 1 || len(decoded.Delegate.ScopeViolations) != 1 ||
 		len(decoded.Delegate.VerificationResults) != 1 ||
 		decoded.Delegate.VerificationResults[0].Command != "go test ./..." {
 		t.Fatalf("delegate verification round trip=%+v", decoded.Delegate)
