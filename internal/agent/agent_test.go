@@ -1374,3 +1374,28 @@ func TestValidatePlanAssignmentRequiresKnownStepAndCompletedDependencies(t *test
 		t.Fatal(err)
 	}
 }
+
+func TestCostBudgetUsesConfiguredPricingAndStopsAfterReportedOvershoot(t *testing.T) {
+	calls := 0
+	client := &fakeClient{chat: func(_ int, _ provider.Request) (provider.Response, error) {
+		calls++
+		return provider.Response{Content: "done", Usage: provider.Usage{InputTokens: 1000, OutputTokens: 1000}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fake", Model: "m",
+		ProviderConfig: appconfig.Provider{MaxTokens: 100, Pricing: &appconfig.Pricing{InputPerMillion: 1, OutputPerMillion: 2}},
+		Workspace:      t.TempDir(), Registry: tools.NewRegistry(),
+		Permissions:   permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 2, CostBudgetUSD: 0.0025,
+	})
+	if _, err := a.Run(t.Context(), "test", nil); !errors.Is(err, ErrCostBudgetExceeded) {
+		t.Fatalf("cost budget error=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls=%d", calls)
+	}
+	usage := a.Usage()
+	if !usage.CostAvailable || usage.CostUSD != 0.003 {
+		t.Fatalf("usage=%+v", usage)
+	}
+}

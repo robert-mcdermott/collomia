@@ -321,6 +321,7 @@ func TestTUIChildArgsPreserveTUIOptionsWithoutRecursing(t *testing.T) {
 		cwd:      "/tmp/work",
 		provider: "openrouter",
 		model:    "example/model",
+		agent:    "builder",
 		autonomy: "workspace",
 		plan:     true,
 		resume:   "session-1",
@@ -330,7 +331,7 @@ func TestTUIChildArgsPreserveTUIOptionsWithoutRecursing(t *testing.T) {
 		noOpen:   true,
 		args:     []string{"initial", "prompt"},
 	}
-	want := []string{"tui", "--cwd", "/tmp/work", "--provider", "openrouter", "--model", "example/model", "--autonomy", "workspace", "--plan", "--resume", "session-1", "--debug", "--", "initial", "prompt"}
+	want := []string{"tui", "--cwd", "/tmp/work", "--provider", "openrouter", "--model", "example/model", "--agent", "builder", "--autonomy", "workspace", "--plan", "--resume", "session-1", "--debug", "--", "initial", "prompt"}
 	if got := tuiChildArgs(opts); !slices.Equal(got, want) {
 		t.Fatalf("child args=%v\nwant=%v", got, want)
 	}

@@ -386,11 +386,24 @@ capability.
 
 The session-wide FIFO scheduler bounds total and per-provider concurrency.
 Each task also has a queue-inclusive timeout, maximum iteration count, and
-optional token budget. Token enforcement uses provider-reported usage when the
-adapter supplies it and estimates the next request before sending; providers
-may report usage only after a response, so a final response can exceed the
-configured token target. Timeouts and iteration limits remain the hard fallback.
-These controls limit agent work, not operating-system CPU or memory consumption.
+optional token and estimated-cost budgets. Primary profiles can apply the same
+budgets to the durable session. Cost enforcement requires positive
+user-configured provider pricing; Collomia deliberately has no built-in price
+catalog. Token/cost enforcement estimates the next input and caps requested
+output before sending, then uses provider-reported usage. Because providers may
+report usage only after a response, a final response can exceed the target; no
+tool or later provider call proceeds after exhaustion. Missing usage fails
+closed for an enabled cost budget. Accounting survives resume and cannot be
+reset with profile switching or `/clear`; `/new` creates a fresh session.
+Timeouts and iteration limits remain the hard fallback. These controls limit
+agent work, not operating-system CPU or memory consumption, and cost estimates
+are not invoices.
+
+Reasoning effort is opt-in. Omitting it leaves provider request shapes
+unchanged. Adapters translate it only to documented protocol fields and retry
+without it after an explicit unsupported-field response where safe; native
+Bedrock refuses to apply Claude-specific reasoning fields to an unrecognized
+model family. Reasoning settings never grant tools or alter permissions.
 
 `/agents steer <id> <guidance...>` queues bounded guidance only for the child's
 next provider boundary. It cannot change an executing tool/provider call,

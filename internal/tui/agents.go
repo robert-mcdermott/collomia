@@ -158,6 +158,13 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	} else if usage > 0 {
 		lines = append(lines, fmt.Sprintf("Tokens:   %d (%d input / %d output)", usage, status.Usage.InputTokens, status.Usage.OutputTokens))
 	}
+	if status.Usage.CostAvailable {
+		if status.CostBudgetUSD > 0 {
+			lines = append(lines, fmt.Sprintf("Cost:     $%.6f / $%.6f estimated", status.Usage.CostUSD, status.CostBudgetUSD))
+		} else {
+			lines = append(lines, fmt.Sprintf("Cost:     $%.6f estimated", status.Usage.CostUSD))
+		}
+	}
 	if status.TimeoutSeconds > 0 {
 		lines = append(lines, fmt.Sprintf("Timeout:  %ds (includes queue time)", status.TimeoutSeconds))
 	}

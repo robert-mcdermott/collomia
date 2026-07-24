@@ -1,6 +1,9 @@
 package provider
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -20,6 +23,38 @@ func TestParseAnthropicNonStream(t *testing.T) {
 	}
 	if response.Usage.InputTokens != 9 || response.Usage.OutputTokens != 3 {
 		t.Fatalf("usage=%+v", response.Usage)
+	}
+}
+
+func TestAnthropicReasoningFallsBackOnlyAfterExplicitRejection(t *testing.T) {
+	var bodies []map[string]any
+	client := &AnthropicClient{
+		Label: "anthropic", BaseURL: "https://example.invalid", APIKey: "secret",
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			bodies = append(bodies, body)
+			if len(bodies) == 1 {
+				return openAIHTTPResponse(req, http.StatusBadRequest, "application/json", `{"error":{"message":"output_config.effort must be one of low, medium, or high"}}`), nil
+			}
+			payload := `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(payload)), Request: req}, nil
+		})},
+	}
+	var warning string
+	response, err := client.Chat(t.Context(), Request{Model: "model", Messages: []Message{{Role: "user", Content: "hello"}}, MaxTokens: 10, ReasoningEffort: "high"}, func(delta Delta) {
+		warning += delta.Warning
+	})
+	if err != nil || response.Content != "ok" || len(bodies) != 2 {
+		t.Fatalf("response=%+v bodies=%+v err=%v", response, bodies, err)
+	}
+	if _, ok := bodies[0]["output_config"]; !ok {
+		t.Fatalf("first request omitted reasoning: %+v", bodies[0])
+	}
+	if _, ok := bodies[1]["output_config"]; ok || !strings.Contains(warning, "reasoning") {
+		t.Fatalf("fallback body=%+v warning=%q", bodies[1], warning)
 	}
 }
 

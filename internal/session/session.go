@@ -601,6 +601,10 @@ type Session struct {
 	// recentEvents is a bounded in-memory projection source for operator UIs.
 	// The append-only JSONL remains the complete durable event history.
 	recentEvents []event.Event
+	// usage is reconstructed from durable per-response usage events. It is
+	// intentionally independent of recentEvents so a long session cannot
+	// evade a budget when the in-memory projection rolls over.
+	usage provider.Usage
 
 	store              *Store
 	mu                 sync.Mutex
@@ -645,11 +649,25 @@ func (sess *Session) replay(record Record) {
 	case "event":
 		if record.Event != nil {
 			sess.retainEvent(*record.Event)
+			sess.accumulateUsage(*record.Event)
 			if record.Event.Kind == event.KindDelegateUpdate && record.Event.Delegate != nil {
 				sess.applyDelegate(*record.Event.Delegate)
 			}
 		}
 	}
+}
+
+func (sess *Session) accumulateUsage(e event.Event) {
+	if e.Kind != event.KindUsage || e.Usage == nil {
+		return
+	}
+	sess.usage.InputTokens += e.Usage.InputTokens
+	sess.usage.OutputTokens += e.Usage.OutputTokens
+	sess.usage.CachedTokens += e.Usage.CachedTokens
+	sess.usage.ReasoningTokens += e.Usage.ReasoningTokens
+	sess.usage.CostUSD += e.Usage.CostUSD
+	sess.usage.CostAvailable = sess.usage.CostAvailable || e.Usage.CostAvailable
+	sess.usage.CostEstimated = sess.usage.CostEstimated || e.Usage.CostEstimated
 }
 
 func (sess *Session) retainEvent(e event.Event) {
@@ -792,6 +810,7 @@ func (sess *Session) AppendEvent(e event.Event) {
 	}
 	sess.mu.Lock()
 	sess.retainEvent(e)
+	sess.accumulateUsage(e)
 	if e.Kind == event.KindTurnEnd {
 		sess.Meta.Turns++
 		sess.Meta.UpdatedAt = time.Now().UTC()
@@ -805,6 +824,13 @@ func (sess *Session) AppendEvent(e event.Event) {
 		_ = sess.append(Record{Type: "meta", Meta: &meta})
 	}
 	_ = sess.append(Record{Type: "event", Event: &e})
+}
+
+// Usage returns cumulative provider usage reconstructed from durable events.
+func (sess *Session) Usage() provider.Usage {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.usage
 }
 
 // RecentEvents returns the newest durable runtime events retained in memory.

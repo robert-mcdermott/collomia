@@ -152,7 +152,10 @@
         "input_tokens": { "type": "integer", "minimum": 0 },
         "output_tokens": { "type": "integer", "minimum": 0 },
         "cached_tokens": { "type": "integer", "minimum": 0 },
-        "reasoning_tokens": { "type": "integer", "minimum": 0 }
+        "reasoning_tokens": { "type": "integer", "minimum": 0 },
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "cost_available": { "type": "boolean" },
+        "cost_estimated": { "type": "boolean" }
       }
     },
     "delegateStatus": {
@@ -210,6 +213,7 @@
         },
         "usage": { "$ref": "#/$defs/usage" },
         "token_budget": { "type": "integer", "minimum": 0 },
+        "cost_budget_usd": { "type": "number", "minimum": 0 },
         "timeout_seconds": { "type": "integer", "minimum": 0 },
         "revision": { "type": "integer", "minimum": 0 },
         "started": { "type": "string", "format": "date-time" },

@@ -81,6 +81,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		providerName, currentModel = m.runtime.Agent.Selection()
 		m.addSystem(fmt.Sprintf("Switched to %s/%s", providerName, currentModel))
+	case "/agent":
+		if len(args) == 0 {
+			m.openPrimaryAgentPicker()
+			break
+		}
+		if len(args) != 1 {
+			m.addError(fmt.Errorf("usage: /agent <name|default>"))
+			break
+		}
+		if err := m.runtime.SelectAgent(args[0]); err != nil {
+			m.addError(err)
+			break
+		}
+		active := m.runtime.ActiveAgent
+		if active == "" {
+			active = "default"
+		}
+		providerName, model := m.runtime.Agent.Selection()
+		m.addSystem(fmt.Sprintf("Primary agent switched to %s (%s/%s). Conversation and cumulative usage were preserved.", active, providerName, model))
 	case "/context":
 		usage := m.runtime.Agent.Usage()
 		estimate, window := m.runtime.Agent.ContextEstimate()
@@ -95,6 +114,10 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		reasoning := ""
 		if usage.ReasoningTokens > 0 {
 			reasoning = fmt.Sprintf(" (%d reasoning)", usage.ReasoningTokens)
+		}
+		cost := "\nEstimated cost: unavailable (configure provider pricing to enable it)"
+		if usage.CostAvailable {
+			cost = fmt.Sprintf("\nEstimated cost: $%.6f (from user-configured pricing)", usage.CostUSD)
 		}
 		sessionID := ""
 		if m.runtime.Session != nil {
@@ -114,7 +137,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
 		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
-		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
+		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens%s\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, cost, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
 		if len(args) > 0 {
@@ -368,7 +391,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		m.rebuildTranscript()
 		m.addSystem("Started a fresh session (" + m.runtime.Session.Meta.ID + "). The previous conversation is saved — /sessions to return to it.")
 	case "/compact":
-		count, err := m.runtime.Agent.Compact(context.Background(), strings.Join(args, " "))
+		count, err := m.runtime.Agent.CompactWithEmit(context.Background(), strings.Join(args, " "), m.runtime.LogEvent)
 		if err != nil {
 			m.addError(err)
 			break

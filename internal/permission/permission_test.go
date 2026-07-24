@@ -289,3 +289,28 @@ func TestDecisionsAreAudited(t *testing.T) {
 		}
 	}
 }
+
+func TestPrimaryProfileRestrictionsAreAdditiveAndReversible(t *testing.T) {
+	manager := New(appconfig.Permissions{Mode: "autopilot"}, nil)
+	err := manager.SetProfile(appconfig.AgentPermissions{
+		Mode: "ask", DeniedTools: []string{"write_file"}, DeniedCommands: []string{`(?i)^deploy\b`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Mode() != "ask" {
+		t.Fatalf("effective mode=%q", manager.Mode())
+	}
+	if _, outcome := manager.Evaluate("write_file", tools.Action{Risk: tools.RiskWrite}); outcome != "deny" {
+		t.Fatalf("profile denied tool outcome=%q", outcome)
+	}
+	if _, outcome := manager.Evaluate("run_command", tools.Action{Risk: tools.RiskExecute, Command: "deploy production"}); outcome != "deny" {
+		t.Fatalf("profile denied command outcome=%q", outcome)
+	}
+	if err := manager.SetProfile(appconfig.AgentPermissions{}); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Mode() != "autopilot" {
+		t.Fatalf("restored mode=%q", manager.Mode())
+	}
+}

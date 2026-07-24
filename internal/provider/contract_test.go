@@ -264,3 +264,121 @@ func TestBedrockConverseGroupsParallelToolResults(t *testing.T) {
 		}
 	}
 }
+
+func TestBedrockReasoningIsClaudeOnlyAndOptIn(t *testing.T) {
+	request := contractRequest()
+	body, err := bedrockRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["additionalModelRequestFields"]; exists {
+		t.Fatalf("unset reasoning changed Bedrock body: %+v", body)
+	}
+	request.Model = "us.anthropic.claude-sonnet-5"
+	request.ReasoningEffort = "high"
+	body, err = bedrockRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["additionalModelRequestFields"]; !exists {
+		t.Fatalf("Claude reasoning field missing: %+v", body)
+	}
+	request.Model = "amazon.nova-pro"
+	body, err = bedrockRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["additionalModelRequestFields"]; exists {
+		t.Fatalf("non-Claude reasoning changed Bedrock body: %+v", body)
+	}
+}
+
+func TestResponsesReasoningFallsBackAfterExplicitRejection(t *testing.T) {
+	var bodies []map[string]any
+	client := &ResponsesClient{
+		Label: "responses", BaseURL: "https://example.invalid", APIKey: "secret",
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			bodies = append(bodies, body)
+			if len(bodies) == 1 {
+				return openAIHTTPResponse(req, http.StatusBadRequest, "application/json", `{"error":{"message":"reasoning.effort must be low, medium, or high"}}`), nil
+			}
+			payload := `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`
+			return openAIHTTPResponse(req, http.StatusOK, "application/json", payload), nil
+		})},
+	}
+	var warning string
+	response, err := client.Chat(t.Context(), Request{Model: "model", Messages: []Message{{Role: "user", Content: "hello"}}, ReasoningEffort: "high"}, func(delta Delta) {
+		warning += delta.Warning
+	})
+	if err != nil || response.Content != "ok" || len(bodies) != 2 {
+		t.Fatalf("response=%+v bodies=%+v err=%v", response, bodies, err)
+	}
+	if _, ok := bodies[0]["reasoning"]; !ok {
+		t.Fatalf("first request omitted reasoning: %+v", bodies[0])
+	}
+	if _, ok := bodies[1]["reasoning"]; ok || !strings.Contains(warning, "reasoning") {
+		t.Fatalf("fallback body=%+v warning=%q", bodies[1], warning)
+	}
+}
+
+func TestBedrockClaudeReasoningFallsBackAfterExplicitRejection(t *testing.T) {
+	var bodies []map[string]any
+	client := &BedrockClient{
+		Label: "bedrock", Region: "us-east-1", Auth: "bearer", APIKey: "secret",
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			bodies = append(bodies, body)
+			if len(bodies) == 1 {
+				return openAIHTTPResponse(req, http.StatusBadRequest, "application/json", `{"message":"output_config effort is not supported"}`), nil
+			}
+			payload := `{"output":{"message":{"content":[{"text":"ok"}]}},"usage":{"inputTokens":1,"outputTokens":1},"stopReason":"end_turn"}`
+			return openAIHTTPResponse(req, http.StatusOK, "application/json", payload), nil
+		})},
+	}
+	var warning string
+	request := contractRequest()
+	request.Model = "us.anthropic.claude-sonnet-5"
+	request.ReasoningEffort = "max"
+	response, err := client.Chat(t.Context(), request, func(delta Delta) { warning += delta.Warning })
+	if err != nil || response.Content != "ok" || len(bodies) != 2 {
+		t.Fatalf("response=%+v bodies=%+v err=%v", response, bodies, err)
+	}
+	if _, ok := bodies[0]["additionalModelRequestFields"]; !ok {
+		t.Fatalf("first request omitted reasoning: %+v", bodies[0])
+	}
+	if _, ok := bodies[1]["additionalModelRequestFields"]; ok || !strings.Contains(warning, "reasoning") {
+		t.Fatalf("fallback body=%+v warning=%q", bodies[1], warning)
+	}
+}
+
+func TestBedrockNonClaudeReasoningUsesModelDefault(t *testing.T) {
+	var body map[string]any
+	client := &BedrockClient{
+		Label: "bedrock", Region: "us-east-1", Auth: "bearer", APIKey: "secret",
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			payload := `{"output":{"message":{"content":[{"text":"ok"}]}},"usage":{"inputTokens":1,"outputTokens":1},"stopReason":"end_turn"}`
+			return openAIHTTPResponse(req, http.StatusOK, "application/json", payload), nil
+		})},
+	}
+	var warning string
+	request := contractRequest()
+	request.Model = "amazon.nova-pro"
+	request.ReasoningEffort = "high"
+	response, err := client.Chat(t.Context(), request, func(delta Delta) { warning += delta.Warning })
+	if err != nil || response.Content != "ok" {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	if _, exists := body["additionalModelRequestFields"]; exists || !strings.Contains(warning, "model's default") {
+		t.Fatalf("body=%+v warning=%q", body, warning)
+	}
+}

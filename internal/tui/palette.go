@@ -15,6 +15,7 @@ var slashCommands = []commandInfo{
 	{name: "/help", args: "", desc: "show slash commands and keybindings"},
 	{name: "/status", args: "", desc: "workspace, provider, model, and autonomy"},
 	{name: "/model", args: "[provider[/model]]", desc: "show or switch the active provider/model"},
+	{name: "/agent", args: "[name]", desc: "show or switch the named primary agent profile"},
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
@@ -94,6 +95,21 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 			desc := p.Type
 			if p.Model != "" {
 				desc += " · " + p.Model
+			}
+			candidates = append(candidates, candidate{name, desc})
+		}
+	case "/agent":
+		for _, name := range m.runtime.PrimaryAgentNames() {
+			desc := "ordinary primary agent"
+			if name != "default" {
+				profile := m.runtime.Config.Agents[name]
+				desc = profile.Availability
+				if profile.Model != "" {
+					desc += " · " + profile.Model
+				}
+			}
+			if name == m.runtime.ActiveAgent || (name == "default" && m.runtime.ActiveAgent == "") {
+				desc += " · current"
 			}
 			candidates = append(candidates, candidate{name, desc})
 		}

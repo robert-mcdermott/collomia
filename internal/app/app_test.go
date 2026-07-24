@@ -143,6 +143,96 @@ func TestDurableRuntimeEnablesBoundedResultArtifacts(t *testing.T) {
 	}
 }
 
+func TestSelectAgentTightensPermissionsAndPreservesUsage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configDir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configJSON := `{
+	  "schema_version": 1,
+	  "default_provider": "ollama",
+	  "default_model": "base-model",
+	  "providers": {
+	    "ollama": {
+	      "type": "openai-compatible",
+	      "base_url": "http://127.0.0.1:11434/v1",
+	      "model": "base-model",
+	      "max_tokens": 1024,
+	      "pricing": {
+	        "input_per_million": 1,
+	        "output_per_million": 2
+	      }
+	    }
+	  },
+	  "permissions": {
+	    "mode": "autopilot"
+	  },
+	  "agents": {
+	    "builder": {
+	      "availability": "primary",
+	      "model": "builder-model",
+	      "reasoning": {"effort": "high"},
+	      "tools": ["read_file"],
+	      "max_iterations": 4,
+	      "token_budget": 2000,
+	      "cost_budget_usd": 0.25,
+	      "permissions": {
+	        "mode": "ask",
+	        "denied_tools": ["run_command"]
+	      }
+	    }
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(configJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.Agent.SetUsage(provider.Usage{InputTokens: 30, OutputTokens: 10, CostUSD: 0.00005, CostAvailable: true, CostEstimated: true})
+
+	if err := runtime.SelectAgent("builder"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ActiveAgent != "builder" {
+		t.Fatalf("active agent=%q", runtime.ActiveAgent)
+	}
+	if providerName, model := runtime.Agent.Selection(); providerName != "ollama" || model != "builder-model" {
+		t.Fatalf("selection=%s/%s", providerName, model)
+	}
+	if profile, reasoning, tokens, cost := runtime.Agent.Profile(); profile != "builder" || reasoning != "high" || tokens != 2000 || cost != 0.25 {
+		t.Fatalf("profile=%q reasoning=%q tokens=%d cost=%v", profile, reasoning, tokens, cost)
+	}
+	if runtime.Permissions.Mode() != "ask" {
+		t.Fatalf("profile widened or ignored permission mode: %s", runtime.Permissions.Mode())
+	}
+	if grant, decision := runtime.Permissions.Evaluate("run_command", tools.Action{Risk: tools.RiskRead}); decision != "deny" || grant.Source != "denied-tool" {
+		t.Fatalf("profile denied tool decision=%q grant=%+v", decision, grant)
+	}
+	if usage := runtime.Agent.Usage(); usage.InputTokens != 30 || usage.OutputTokens != 10 || !usage.CostAvailable {
+		t.Fatalf("profile switch reset usage: %+v", usage)
+	}
+
+	if err := runtime.SelectAgent("default"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ActiveAgent != "" || runtime.Permissions.Mode() != "autopilot" {
+		t.Fatalf("default profile was not restored: active=%q mode=%s", runtime.ActiveAgent, runtime.Permissions.Mode())
+	}
+	if _, model := runtime.Agent.Selection(); model != "base-model" {
+		t.Fatalf("default model=%q", model)
+	}
+	if usage := runtime.Agent.Usage(); usage.InputTokens != 30 || usage.OutputTokens != 10 || !usage.CostAvailable {
+		t.Fatalf("restoring default reset usage: %+v", usage)
+	}
+}
+
 func TestResumeRestoresDelegatedOutcomesAndMarksActiveWorkInterrupted(t *testing.T) {
 	isolateGlobalFiles(t)
 	workspace := t.TempDir()

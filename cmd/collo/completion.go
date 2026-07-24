@@ -11,7 +11,7 @@ var completionCommands = []string{
 }
 
 var completionFlags = []string{
-	"--help", "--version", "--cwd", "--provider", "--model", "--autonomy",
+	"--help", "--version", "--cwd", "--provider", "--model", "--agent", "--autonomy",
 	"--autopilot", "--workspace", "--plan", "--resume", "--continue", "--web",
 	"--web-port", "--no-open", "--alt-screen", "--no-alt-screen", "--jsonl", "--ephemeral",
 	"--debug", "--global", "--strict", "--yes", "--with-reference",

@@ -30,9 +30,10 @@ type openAIChatParameterProfile struct {
 	mu                     sync.RWMutex
 	useMaxCompletionTokens bool
 	omitTemperature        bool
+	omitReasoningEffort    bool
 }
 
-const maxOpenAIParameterAdjustments = 2
+const maxOpenAIParameterAdjustments = 3
 
 func (c *OpenAIClient) Name() string { return c.Label }
 
@@ -135,7 +136,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 }
 
 func (c *OpenAIClient) chatBody(in Request) (map[string]any, error) {
-	useMaxCompletionTokens, omitTemperature := c.parameters.snapshot()
+	useMaxCompletionTokens, omitTemperature, omitReasoningEffort := c.parameters.snapshot()
 	messages, err := openAIMessages(in)
 	if err != nil {
 		return nil, err
@@ -153,6 +154,9 @@ func (c *OpenAIClient) chatBody(in Request) (map[string]any, error) {
 	}
 	if in.Temperature != nil && !omitTemperature {
 		body["temperature"] = *in.Temperature
+	}
+	if in.ReasoningEffort != "" && !omitReasoningEffort {
+		body["reasoning_effort"] = in.ReasoningEffort
 	}
 	if len(in.Tools) > 0 {
 		tools := make([]any, 0, len(in.Tools))
@@ -192,10 +196,10 @@ func (c *OpenAIClient) sendChatRequest(ctx context.Context, url string, body map
 	return doWithRetry(client, req, c.Label, "chat")
 }
 
-func (p *openAIChatParameterProfile) snapshot() (useMaxCompletionTokens, omitTemperature bool) {
+func (p *openAIChatParameterProfile) snapshot() (useMaxCompletionTokens, omitTemperature, omitReasoningEffort bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.useMaxCompletionTokens, p.omitTemperature
+	return p.useMaxCompletionTokens, p.omitTemperature, p.omitReasoningEffort
 }
 
 func (p *openAIChatParameterProfile) learn(rejected string, sent map[string]any) (retry bool, warning string) {
@@ -216,6 +220,14 @@ func (p *openAIChatParameterProfile) learn(rejected string, sent map[string]any)
 		p.omitTemperature = true
 		p.mu.Unlock()
 		return true, "provider rejected the configured temperature; retrying with its default and remembering that choice for this active model"
+	case "reasoning_effort":
+		if _, ok := sent["reasoning_effort"]; !ok {
+			return false, ""
+		}
+		p.mu.Lock()
+		p.omitReasoningEffort = true
+		p.mu.Unlock()
+		return true, "provider or model rejected the configured reasoning effort; retrying with its default and remembering that choice for this active model"
 	default:
 		return false, ""
 	}
@@ -265,6 +277,15 @@ func openAIRejectedChatParameter(status int, body []byte) string {
 			return "temperature"
 		}
 		return ""
+	case "reasoning_effort":
+		invalidValue := strings.Contains(message, "invalid") ||
+			strings.Contains(message, "must be") ||
+			strings.Contains(message, "expected") ||
+			strings.Contains(message, "allowed")
+		if code == "unsupported_parameter" || unsupportedMessage || invalidValue {
+			return "reasoning_effort"
+		}
+		return ""
 	case "":
 		// A few compatible services omit error.param. Their message must still
 		// name both the rejected field and its replacement (or explicitly name
@@ -274,6 +295,13 @@ func openAIRejectedChatParameter(status int, body []byte) string {
 		}
 		if unsupportedMessage && mentionsQuotedParameter(message, "temperature") {
 			return "temperature"
+		}
+		invalidValue := strings.Contains(message, "invalid") ||
+			strings.Contains(message, "must be") ||
+			strings.Contains(message, "expected") ||
+			strings.Contains(message, "allowed")
+		if (unsupportedMessage || invalidValue) && mentionsQuotedParameter(message, "reasoning_effort") {
+			return "reasoning_effort"
 		}
 	}
 	return ""

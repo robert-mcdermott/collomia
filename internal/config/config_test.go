@@ -555,6 +555,50 @@ func TestValidateExternalEditor(t *testing.T) {
 	}
 }
 
+func TestValidatePrimaryAgentReasoningPricingAndBudget(t *testing.T) {
+	cfg := Defaults()
+	cached := 0.25
+	provider := cfg.Providers["ollama"]
+	provider.Reasoning = &Reasoning{Effort: "high"}
+	provider.Pricing = &Pricing{InputPerMillion: 1, OutputPerMillion: 4, CachedInputPerMillion: &cached}
+	cfg.Providers["ollama"] = provider
+	cfg.Agents["builder"] = AgentDefinition{
+		Availability: "both", Reasoning: &Reasoning{Effort: "medium"}, CostBudgetUSD: 2.5,
+	}
+	cfg.DefaultAgent = "builder"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid primary profile: %v", err)
+	}
+	if _, err := cfg.PrimaryAgent("builder"); err != nil {
+		t.Fatal(err)
+	}
+	if profile, err := cfg.PrimaryAgent("default"); err != nil || profile.Model != "" {
+		t.Fatalf("default alias should restore the unprofiled primary: profile=%+v err=%v", profile, err)
+	}
+	if profile, err := cfg.PrimaryAgent("none"); err != nil || profile.Model != "" {
+		t.Fatalf("none alias should restore the unprofiled primary: profile=%+v err=%v", profile, err)
+	}
+
+	bad := cfg
+	bad.DefaultAgent = "missing"
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "default_agent") {
+		t.Fatalf("missing default agent error=%v", err)
+	}
+	provider = cfg.Providers["ollama"]
+	provider.Reasoning = &Reasoning{Effort: "turbo"}
+	cfg.Providers["ollama"] = provider
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reasoning.effort") {
+		t.Fatalf("invalid reasoning error=%v", err)
+	}
+}
+
+func TestExistingAgentProfilesRemainDelegateOnly(t *testing.T) {
+	profile := AgentDefinition{}
+	if !AgentAvailableFor(profile, "delegate") || AgentAvailableFor(profile, "primary") {
+		t.Fatal("empty availability should retain delegate-only behavior")
+	}
+}
+
 func TestValidateKeybindings(t *testing.T) {
 	cfg := Defaults()
 	cfg.Options.Keybindings["next_tab"] = "alt+t"

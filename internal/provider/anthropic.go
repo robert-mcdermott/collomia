@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -97,6 +98,9 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if in.Temperature != nil {
 		body["temperature"] = *in.Temperature
 	}
+	if in.ReasoningEffort != "" {
+		body["output_config"] = map[string]any{"effort": in.ReasoningEffort}
+	}
 	if len(in.Tools) > 0 {
 		defs := make([]any, 0, len(in.Tools))
 		for _, tool := range in.Tools {
@@ -112,38 +116,64 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
-	req, err := newJSONRequest(ctx, http.MethodPost, base+"/messages", body)
-	if err != nil {
-		return Response{}, err
+	for adjustment := 0; ; adjustment++ {
+		req, err := newJSONRequest(ctx, http.MethodPost, base+"/messages", body)
+		if err != nil {
+			return Response{}, err
+		}
+		if c.APIKey != "" && c.BearerAuth {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		} else if c.APIKey != "" {
+			req.Header.Set("x-api-key", c.APIKey)
+		}
+		req.Header.Set("anthropic-version", "2023-06-01")
+		applyHeaders(req, c.Headers)
+		if err := authorizeWithBearerSource(ctx, req.Header, c.BearerSource, c.Label); err != nil {
+			return Response{}, err
+		}
+		client := c.HTTP
+		if client == nil {
+			client = httpClient()
+		}
+		resp, err := doWithRetry(client, req, c.Label, "chat")
+		if err != nil {
+			return Response{}, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+			resp.Body.Close()
+			if readErr != nil {
+				return Response{}, protocolError(c.Label, "read chat error response", readErr)
+			}
+			if adjustment == 0 && in.ReasoningEffort != "" && anthropicRejectedReasoning(resp.StatusCode, errorBody) {
+				delete(body, "output_config")
+				if onDelta != nil {
+					onDelta(Delta{Warning: "provider or model rejected the configured reasoning effort; retrying with its default for this request"})
+				}
+				continue
+			}
+			return Response{}, withAzureRBACHint(responseError(resp, c.Label, "chat", errorBody), c.AuthHint)
+		}
+		defer resp.Body.Close()
+		if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			response, err := parseAnthropicNonStream(resp.Body, onDelta)
+			return response, protocolError(c.Label, "decode chat response", err)
+		}
+		response, err := parseAnthropicStream(resp.Body, onDelta)
+		return response, protocolError(c.Label, "read chat stream", err)
 	}
-	if c.APIKey != "" && c.BearerAuth {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	} else if c.APIKey != "" {
-		req.Header.Set("x-api-key", c.APIKey)
+}
+
+func anthropicRejectedReasoning(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
 	}
-	req.Header.Set("anthropic-version", "2023-06-01")
-	applyHeaders(req, c.Headers)
-	if err := authorizeWithBearerSource(ctx, req.Header, c.BearerSource, c.Label); err != nil {
-		return Response{}, err
-	}
-	client := c.HTTP
-	if client == nil {
-		client = httpClient()
-	}
-	resp, err := doWithRetry(client, req, c.Label, "chat")
-	if err != nil {
-		return Response{}, err
-	}
-	defer resp.Body.Close()
-	if err := checkResponse(resp, c.Label, "chat"); err != nil {
-		return Response{}, withAzureRBACHint(err, c.AuthHint)
-	}
-	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		response, err := parseAnthropicNonStream(resp.Body, onDelta)
-		return response, protocolError(c.Label, "decode chat response", err)
-	}
-	response, err := parseAnthropicStream(resp.Body, onDelta)
-	return response, protocolError(c.Label, "read chat stream", err)
+	message := strings.ToLower(string(body))
+	rejected := strings.Contains(message, "unsupported") || strings.Contains(message, "not supported") ||
+		strings.Contains(message, "unrecognized") || strings.Contains(message, "extra inputs") ||
+		strings.Contains(message, "invalid") || strings.Contains(message, "must be") ||
+		strings.Contains(message, "expected")
+	return rejected && (strings.Contains(message, "output_config") || strings.Contains(message, "effort"))
 }
 
 func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta func(Delta)) (Response, error) {

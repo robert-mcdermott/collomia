@@ -27,6 +27,7 @@ the [release guide](RELEASING.md).
 - [Instructions and skills](#instructions-and-skills)
 - [MCP servers](#mcp-servers)
 - [Lifecycle hooks](#lifecycle-hooks)
+- [Agent profiles](#agent-profiles)
 - [Sub-agents](#sub-agents)
 - [Sessions and context](#sessions-and-context)
 - [Browser terminal](#browser-terminal)
@@ -322,11 +323,12 @@ The effective configuration is assembled from lowest to highest precedence:
 2. Global user configuration.
 3. Trusted project `.collomia.json`.
 4. `COLLO_PROVIDER` and `COLLO_MODEL` environment selections.
-5. `--provider` and `--model` for the current invocation.
+5. `--provider`, `--model`, and `--agent` for the current invocation.
 
-`--autonomy` overrides `permissions.mode` for the current invocation. `/model`,
-`/autonomy`, `/plan`, and `/theme` can make session/runtime changes, but they do
-not rewrite configuration files.
+`default_agent` selects a primary profile after the provider/model defaults;
+`--agent` overrides it for one invocation. `--autonomy` overrides
+`permissions.mode`. `/model`, `/agent`, `/autonomy`, `/plan`, and `/theme` can
+make runtime changes, but they do not rewrite configuration files.
 
 Later layers override only values they supply. Scalar fields nested in an
 object inherit independently. Named maps such as `providers`, `mcp`, and
@@ -488,11 +490,12 @@ rules are defined in the
 | `schema_version` | integer | Configuration schema; currently `1`. |
 | `default_provider` | string | Local name of the selected provider when no environment or CLI override exists. |
 | `default_model` | string | Fallback model when the selected provider has no `model`. |
+| `default_agent` | string | Optional named profile for the primary conversation; it must have `availability` `primary` or `both`. |
 | `providers` | object/map | Named provider definitions. At least one is required after merging. |
 | `permissions` | object | Autonomy, rules, sandbox, and command-environment controls. |
 | `mcp` | object/map | Named MCP server definitions. |
 | `options` | object | Agent/TUI/runtime options. |
-| `agents` | object/map | Named sub-agent profiles used by `delegate`. |
+| `agents` | object/map | Named primary and/or delegated agent profiles. |
 | `lsp` | object/map | Language ID to language-server argv. |
 | `hooks` | object/map | Lifecycle event to a list of hook commands. |
 
@@ -520,6 +523,8 @@ applies to every provider type.
 | `max_tokens` | integer | Provider-neutral output budget; defaults to `8192`. |
 | `context_window` | integer | Configured model context size, used for status, preflight, and compaction. |
 | `temperature` | number | Optional sampling temperature. Omit for the provider/model default. |
+| `reasoning` | object | Optional provider-neutral reasoning control: `{"effort":"low|medium|high|xhigh|max"}`. Omit it to send no reasoning-specific field. |
+| `pricing` | object | Optional user-maintained USD rates per million tokens: required `input_per_million` and `output_per_million`, optional non-negative `cached_input_per_million`. |
 | `connect_timeout_seconds` | integer | Connection setup timeout; defaults to `10`. |
 | `request_timeout_seconds` | integer | Whole request timeout; defaults to `1800`. |
 | `stream_idle_timeout_seconds` | integer | Maximum silence between stream chunks; defaults to `300`. |
@@ -529,6 +534,24 @@ adapter sends `max_tokens` first and changes to `max_completion_tokens` only
 after an explicit provider rejection requiring it. The Responses adapter uses
 `max_output_tokens`; Anthropic and Bedrock translate the budget to their native
 request shapes.
+
+Reasoning is deliberately opt-in because support and accepted effort values
+vary by provider, model, deployment, and API version. When it is absent,
+Collomia does not add a reasoning field. OpenAI-compatible adapters translate
+it to `reasoning_effort`, Anthropic-compatible adapters use
+`output_config.effort`, Responses-style adapters use `reasoning.effort`, and
+native Bedrock uses Claude's `additionalModelRequestFields.output_config`.
+Native Bedrock omits that field and warns for a non-Claude model rather than
+guessing an incompatible Claude request shape.
+When a compatible service or a recognized Claude model explicitly rejects the
+optional field, Collomia warns and retries once with that model's default.
+Unrelated HTTP 400 responses are not rewritten or retried.
+
+Pricing is never bundled or downloaded. Rates can differ by date, region,
+contract, gateway, and caching tier, so you must configure values you have
+verified for the selected deployment. If `cached_input_per_million` is omitted,
+cached input is conservatively estimated at the ordinary input rate. Reasoning
+tokens are informational and are not added again to output tokens.
 
 ### Permission fields
 
@@ -603,16 +626,20 @@ inspect.
 
 | Field | Meaning |
 | --- | --- |
+| `availability` | `delegate` (default for backward compatibility), `primary`, or `both`. |
 | `model` | Model override on the same provider as the parent. |
-| `instructions` | Role instructions prepended to the sub-agent prompt. |
+| `reasoning` | Optional profile override of the provider's reasoning effort. |
+| `instructions` | Role instructions prepended to this agent's prompt. |
 | `tools` | Tool-name allowlist; empty inherits the parent tool surface. |
 | `skills` | Skill-name allowlist; empty inherits the parent catalog. |
 | `max_iterations` | Per-agent iteration override; zero inherits the normal budget. |
-| `token_budget` | Maximum provider-reported input plus output tokens for the task; zero disables this additional limit. |
-| `timeout_seconds` | Queue plus execution deadline; zero means `600`, maximum `3600`. |
-| `permissions` | Child-only restrictions: optional stricter `mode`, additive `denied_tools`/`denied_commands`, and `prompt`/`deny` rules. `allow` rules are rejected. |
+| `token_budget` | Maximum provider-reported input plus output tokens for the primary session or delegated task; zero disables this additional limit. |
+| `cost_budget_usd` | Maximum estimated provider spend for the session/task; requires explicit pricing on the selected provider. |
+| `timeout_seconds` | Delegated-task queue plus execution deadline; ignored for a primary profile. Zero means `600`, maximum `3600`. |
+| `permissions` | Additive restrictions for primary or delegated use: optional stricter `mode`, additive `denied_tools`/`denied_commands`, and `prompt`/`deny` rules. `allow` rules are rejected. |
 
-Profile permissions cannot weaken their parent. The effective autonomy is the
+Profile permissions cannot weaken their parent, including for a primary
+profile selected after startup. The effective autonomy is the
 stricter mode; profile denials are added to inherited denials; profile rules
 are evaluated as an independent restriction layer and may only prompt or deny,
 so neither layer can mask the other's denial. Sandbox, networking,
@@ -669,7 +696,7 @@ The provider/model selection order is command-line override, environment
 override, selected provider's `model`, then `default_model`:
 
 ```sh
-collo --provider openrouter --model vendor/model-id
+collo --provider openrouter --model vendor/model-id --agent builder
 COLLO_PROVIDER=openrouter COLLO_MODEL=vendor/model-id collo
 ```
 
@@ -1164,6 +1191,12 @@ rebuilds/retries after an explicit HTTP 400 names the unsupported parameter and
 required replacement. The accepted shape is remembered for that active
 provider/model client. Unrelated 400 responses are returned unchanged.
 
+If `reasoning.effort` is configured, Chat Completions adds
+`reasoning_effort`. Models and compatible gateways support different subsets;
+an explicit unsupported-parameter response makes Collomia warn, retry without
+the field, and remember that choice for the active client. With no `reasoning`
+object, the request is unchanged from earlier Collomia versions.
+
 ### Provider resilience and errors
 
 All built-in HTTP adapters share these behaviors:
@@ -1605,7 +1638,7 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+c` | Cancel the active turn; press again to quit. |
 
 Typing `/` filters commands by prefix and substring. Known first arguments for
-`/theme`, `/autonomy`, `/plan`, and `/model` are completed fuzzily. These menus
+`/theme`, `/autonomy`, `/plan`, `/model`, and `/agent` are completed fuzzily. These menus
 remain beside the composer; approvals and questions open as centered,
 theme-aware transient dialogs.
 
@@ -1628,8 +1661,9 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/help` | Show slash commands and keybindings. |
 | `/status` | Show workspace, provider/model, capabilities, health, context, plan, autonomy, and configuration/trust state. |
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
+| `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
-| `/context` | Show token usage, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
+| `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
@@ -1662,7 +1696,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
 | `/config` | Show the active configuration source. |
-| `/clear` | Clear active conversation context. It does not delete the durable session file. |
+| `/clear` | Clear active conversation context. It does not delete the durable session file or reset cumulative token/cost accounting and budgets. |
 | `/quit` or `/exit` | Exit. |
 
 ### Workspace paths and prompt files
@@ -2266,6 +2300,7 @@ Common flags:
 --cwd <path>                         workspace
 --provider <name>                    configured provider alias
 --model <id>                         model/deployment override
+--agent <name>                       named primary-agent profile
 --autonomy ask|workspace|autopilot   permission policy override
 --autopilot                          shorthand for autopilot
 --workspace                          shorthand for workspace mode
@@ -3066,6 +3101,97 @@ Hook programs are not run through `run_command`, `command_env`, or the OS
 sandbox. They are trusted code. Keep them in global config or a reviewed,
 trusted project configuration.
 
+## Agent profiles
+
+An entry under `agents` can specialize the primary conversation, delegated
+tasks, or both. Existing profiles with no `availability` remain
+delegate-only, so upgrading cannot unexpectedly replace the primary agent.
+Set `default_agent` for a persistent primary choice, pass `--agent` for one
+invocation, or use `/agent` for the fuzzy runtime picker. `--agent default`,
+`--agent none`, and `/agent default` explicitly select the ordinary unprofiled
+primary even when `default_agent` is configured:
+
+```json
+{
+  "default_provider": "openrouter",
+  "default_agent": "builder",
+  "providers": {
+    "openrouter": {
+      "type": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OR_API_KEY",
+      "model": "vendor/default-model",
+      "max_tokens": 32000,
+      "context_window": 200000,
+      "pricing": {
+        "input_per_million": 1.25,
+        "output_per_million": 10.0,
+        "cached_input_per_million": 0.125
+      }
+    }
+  },
+  "agents": {
+    "builder": {
+      "availability": "primary",
+      "instructions": "Implement focused changes and verify them.",
+      "reasoning": {"effort": "high"},
+      "max_iterations": 24,
+      "token_budget": 200000,
+      "cost_budget_usd": 2.50
+    },
+    "reviewer": {
+      "availability": "both",
+      "instructions": "Review only. Prioritize correctness and security.",
+      "tools": ["read_file", "list_files", "search_files", "git_diff"],
+      "reasoning": {"effort": "medium"},
+      "cost_budget_usd": 0.75,
+      "permissions": {
+        "mode": "ask",
+        "denied_tools": ["run_command", "write_file", "edit_file", "apply_patch"]
+      }
+    }
+  }
+}
+```
+
+The profile's model override stays on the currently selected provider. An
+explicit CLI `--model` wins at startup; choosing a profile in the TUI selects
+that profile's model, or the configured provider/default model when it has no
+override. `/model` can then make another runtime-only selection.
+
+Primary profile restrictions are enforced, not merely described to the model:
+tool and skill allowlists are checked at execution, denied tools and command
+regexes are additive, prompt/deny rules remain independent, and the profile
+mode can only tighten the user/project mode. Selecting `default` removes only
+the profile layer; it never removes built-in, global, or project policy.
+Profile switching is unavailable during an active provider turn.
+
+`reasoning` is optional. Omit it when portability is more important than a
+specific effort level. Configured effort is translated by the adapter; a
+provider/model that explicitly rejects this optional field is retried once
+without it where a safe generic fallback exists. Native Bedrock only emits
+the Claude-specific shape for recognizable Claude model IDs, preventing a
+Claude field from being guessed for Nova or another model family; other
+families receive no reasoning field and retain their model default.
+
+Cost is estimated only when the selected provider has explicit `pricing`.
+Input, cached input, and output usage are multiplied by those rates; the
+result is shown in `/context`, `/status`, the Session tab, and delegated-agent
+details. A `cost_budget_usd` without usable pricing fails before a provider
+call. Before each call Collomia reserves estimated input and caps requested
+output to the remaining dollar allowance. Provider token accounting is
+authoritative only after a response, so the final response can overshoot; in
+that case Collomia records the spend and stops before any tool or subsequent
+provider call.
+
+Token and cost totals are session-scoped for the primary profile and
+task-scoped for a delegated profile. They survive session resume. Switching
+profiles or running `/clear` does not reset them, preventing a budget bypass;
+`/new` starts fresh accounting. Fork/rewind rebuild accounting from the usage
+events retained in the new conversation branch. Collomia does not claim that
+its estimate equals an invoice: tiered pricing, batch discounts, provider-side
+tools, taxes, and unreported charges remain outside this local calculation.
+
 ## Sub-agents
 
 The `delegate` tool can submit up to six bounded tasks per call. One FIFO
@@ -3150,6 +3276,7 @@ Named profiles specialize a sub-agent without defining another provider:
 {
   "agents": {
     "security-reviewer": {
+      "availability": "delegate",
       "model": "a-compatible-model-on-the-current-provider",
       "instructions": "Focus on authentication, authorization, injection, and secret handling.",
       "tools": [
@@ -3162,6 +3289,7 @@ Named profiles specialize a sub-agent without defining another provider:
       "skills": ["security-review"],
       "max_iterations": 12,
       "token_budget": 50000,
+      "cost_budget_usd": 1.00,
       "timeout_seconds": 600,
       "permissions": {
         "mode": "ask",
@@ -3196,10 +3324,13 @@ more environment, or bypass parent/global/built-in denials.
 `token_budget` counts provider-reported input plus output tokens. Before each
 request Collomia reserves the estimated next input and reduces the requested
 output maximum to the remaining allowance, then checks the provider's reported
-usage afterward. Tokenizers and images are provider-specific, and a provider
-that omits usage cannot provide an exact token guarantee; iteration and timeout
-bounds still apply. `timeout_seconds` includes scheduler queue time and accepts
-up to 3600 seconds.
+usage afterward. `cost_budget_usd` uses the same reported usage and the
+selected provider's configured pricing; if usage is unavailable it fails
+closed before the child proceeds to another tool or request. Tokenizers,
+images, and billing details are provider-specific, and a final response can
+overshoot a target before usage arrives; iteration and timeout bounds still
+apply. `timeout_seconds` includes scheduler queue time and accepts up to 3600
+seconds.
 
 Configure scheduler limits independently of profiles:
 
@@ -3218,7 +3349,7 @@ Configure scheduler limits independently of profiles:
 
 Each parent result is bounded structured JSON containing the child's terminal
 status, summary/error, up to eight bounded tool-evidence entries, provider
-usage, token budget, declared `write_scopes`, any `scope_violations`, changed
+usage, estimated cost and budgets, declared `write_scopes`, any `scope_violations`, changed
 file/hunk manifest, and retained worktree/branch. The raw child transcript is
 not injected wholesale into parent context. If the complete batch would
 exceed `max_tool_output_bytes`, Collomia compacts details while preserving

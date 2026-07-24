@@ -168,10 +168,13 @@ type Failure struct {
 
 // Usage carries provider-reported token accounting.
 type Usage struct {
-	InputTokens     int `json:"input_tokens"`
-	OutputTokens    int `json:"output_tokens"`
-	CachedTokens    int `json:"cached_tokens,omitempty"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	InputTokens     int     `json:"input_tokens"`
+	OutputTokens    int     `json:"output_tokens"`
+	CachedTokens    int     `json:"cached_tokens,omitempty"`
+	ReasoningTokens int     `json:"reasoning_tokens,omitempty"`
+	CostUSD         float64 `json:"cost_usd,omitempty"`
+	CostAvailable   bool    `json:"cost_available,omitempty"`
+	CostEstimated   bool    `json:"cost_estimated,omitempty"`
 }
 
 // DelegateVerification is one bounded, machine-observed command result from a
@@ -225,6 +228,7 @@ type DelegateStatus struct {
 	VerificationResults  []DelegateVerification `json:"verification_results,omitempty"`
 	Usage                Usage                  `json:"usage,omitempty"`
 	TokenBudget          int                    `json:"token_budget,omitempty"`
+	CostBudgetUSD        float64                `json:"cost_budget_usd,omitempty"`
 	TimeoutSeconds       int                    `json:"timeout_seconds,omitempty"`
 	Revision             uint64                 `json:"revision,omitempty"`
 	Started              time.Time              `json:"started,omitempty"`

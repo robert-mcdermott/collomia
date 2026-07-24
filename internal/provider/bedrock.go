@@ -55,6 +55,12 @@ func (c *BedrockClient) Capabilities() Capabilities {
 }
 
 func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
+	if in.ReasoningEffort != "" && !bedrockClaudeModel(in.Model) {
+		if onDelta != nil {
+			onDelta(Delta{Warning: fmt.Sprintf("reasoning effort is not mapped for Bedrock model %q; using the model's default", in.Model)})
+		}
+		in.ReasoningEffort = ""
+	}
 	region := c.Region
 	if region == "" {
 		region = "us-east-1"
@@ -63,41 +69,65 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 	if err != nil {
 		return Response{}, err
 	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return Response{}, err
-	}
 	endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse-stream", region, url.PathEscape(in.Model))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return Response{}, err
+	for adjustment := 0; ; adjustment++ {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return Response{}, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+		if err != nil {
+			return Response{}, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
+		if err := c.authenticate(ctx, req, data, region); err != nil {
+			return Response{}, &Error{Provider: c.Label, Operation: "authenticate", Kind: ErrorAuthentication, Message: sanitizeProviderText(err.Error(), 2048), Err: err}
+		}
+		client := c.HTTP
+		if client == nil {
+			client = httpClient()
+		}
+		resp, err := doWithRetry(client, req, c.Label, "converse-stream")
+		if err != nil {
+			return Response{}, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+			resp.Body.Close()
+			if readErr != nil {
+				return Response{}, protocolError(c.Label, "read converse-stream error response", readErr)
+			}
+			if adjustment == 0 && in.ReasoningEffort != "" && bedrockRejectedReasoning(resp.StatusCode, errorBody) {
+				delete(body, "additionalModelRequestFields")
+				if onDelta != nil {
+					onDelta(Delta{Warning: "Bedrock model rejected the configured reasoning effort; retrying with its default for this request"})
+				}
+				continue
+			}
+			return Response{}, responseError(resp, c.Label, "converse-stream", errorBody)
+		}
+		defer resp.Body.Close()
+		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/vnd.amazon.eventstream") {
+			response, err := parseBedrockStream(resp.Body, c.Label, requestID(resp.Header), onDelta)
+			return response, protocolError(c.Label, "read converse stream", err)
+		}
+		// Some compatible test/proxy endpoints return the ordinary Converse JSON
+		// envelope even on the streaming route. Accept it without weakening the
+		// advertised AWS path, which always uses event-stream framing.
+		response, err := parseBedrockResponse(resp.Body, onDelta)
+		return response, protocolError(c.Label, "decode converse response", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
-	if err := c.authenticate(ctx, req, data, region); err != nil {
-		return Response{}, &Error{Provider: c.Label, Operation: "authenticate", Kind: ErrorAuthentication, Message: sanitizeProviderText(err.Error(), 2048), Err: err}
+}
+
+func bedrockRejectedReasoning(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
 	}
-	client := c.HTTP
-	if client == nil {
-		client = httpClient()
-	}
-	resp, err := doWithRetry(client, req, c.Label, "converse-stream")
-	if err != nil {
-		return Response{}, err
-	}
-	defer resp.Body.Close()
-	if err := checkResponse(resp, c.Label, "converse-stream"); err != nil {
-		return Response{}, err
-	}
-	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/vnd.amazon.eventstream") {
-		response, err := parseBedrockStream(resp.Body, c.Label, requestID(resp.Header), onDelta)
-		return response, protocolError(c.Label, "read converse stream", err)
-	}
-	// Some compatible test/proxy endpoints return the ordinary Converse JSON
-	// envelope even on the streaming route. Accept it without weakening the
-	// advertised AWS path, which always uses event-stream framing.
-	response, err := parseBedrockResponse(resp.Body, onDelta)
-	return response, protocolError(c.Label, "decode converse response", err)
+	message := strings.ToLower(string(body))
+	rejected := strings.Contains(message, "unsupported") || strings.Contains(message, "not supported") ||
+		strings.Contains(message, "invalid") || strings.Contains(message, "extraneous")
+	return rejected && (strings.Contains(message, "output_config") || strings.Contains(message, "effort") || strings.Contains(message, "additionalmodelrequestfields"))
 }
 
 func (c *BedrockClient) authenticate(ctx context.Context, req *http.Request, body []byte, region string) error {
@@ -211,6 +241,11 @@ func bedrockRequest(in Request) (map[string]any, error) {
 		messages = append(messages, map[string]any{"role": role, "content": content})
 	}
 	body := map[string]any{"messages": messages, "inferenceConfig": map[string]any{"maxTokens": in.MaxTokens}}
+	if in.ReasoningEffort != "" && bedrockClaudeModel(in.Model) {
+		body["additionalModelRequestFields"] = map[string]any{
+			"output_config": map[string]any{"effort": in.ReasoningEffort},
+		}
+	}
 	if in.System != "" {
 		body["system"] = []any{map[string]any{"text": in.System}}
 	}
@@ -229,6 +264,11 @@ func bedrockRequest(in Request) (map[string]any, error) {
 		body["toolConfig"] = map[string]any{"tools": tools}
 	}
 	return body, nil
+}
+
+func bedrockClaudeModel(model string) bool {
+	model = strings.ToLower(model)
+	return strings.Contains(model, "anthropic") || strings.Contains(model, "claude")
 }
 
 func bedrockToolResult(msg Message) (map[string]any, error) {

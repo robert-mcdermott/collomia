@@ -43,7 +43,8 @@ also shipped:
   verification, LSP diagnostics, repository indexing, PTY commands, and
   background processes;
 - normalized provider capabilities, streaming, retries, health, contracts,
-  Azure Entra refresh, Bedrock SigV4/bearer authentication, and image input;
+  Azure Entra refresh, Bedrock SigV4/bearer authentication, opt-in
+  provider-safe reasoning controls, user-priced cost estimates, and image input;
 - MCP lifecycle/resources/prompts/progress/elicitation, safe live catalogs,
   external-data framing, skills, and hooks;
 - concurrent governed delegated agents with isolated Git worktrees, durable
@@ -60,36 +61,35 @@ Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
 and reliability gates are complete.
 
-## Active wave — conservative multi-agent conflict handling
+## Active wave — complete governed agent profiles
 
-**Goal:** Preserve useful parallelism while ensuring delegated writers cannot
-silently overwrite parent or sibling work.
+**Goal:** Make named agents useful for both the primary conversation and
+delegation while keeping model-specific controls optional, visible, bounded,
+and permission-safe.
 
-- [x] Add validated repository-relative `write_paths` contracts. Omitted
-  writer scopes conservatively mean the entire workspace; read-only tasks hold
-  no write lock.
-- [x] Keep known-disjoint writers concurrent while FIFO-serializing exact,
-  nested, case-folded, workspace-wide, or otherwise overlapping scopes under
-  the existing global/provider limits and queue-inclusive cancellation.
-- [x] Compare actual child changes with the declaration, retain violations as
-  errors, and block them from guarded integration without deleting the child
-  worktree.
-- [x] Replace the parent-unchanged-only integration rule with a
-  freshness-bound base/parent/child comparison: clean non-overlapping edits
-  become an explicitly selectable composed preview; overlapping edits show a
-  bounded diff3 conflict and stay non-selectable.
-- [x] Keep publication behind the existing `integrate_delegate` permission,
-  rooted atomic writes, rollback, post-approval revalidation, `/diff`, and
-  `/undo`; never choose a conflict winner, commit, push, or create a merge
-  commit.
-- [x] Persist and display write scopes, queue state, violations, three-way
-  previews, and conflict disposition across agent details, Session state, and
-  schema-v1 additive events.
-- [x] Cover scope normalization/overlap, cancellation, durable restoration,
-  clean and conflicting three-way cases, stale approval, and Windows-style Git
-  line-ending behavior.
-- [x] Update user, security, automation, testing, capability, roadmap, and
-  history documentation.
+- [x] Add `delegate`/`primary`/`both` availability with backward-compatible
+  delegate-only defaults, plus `default_agent`, `--agent`, and a fuzzy `/agent`
+  picker.
+- [x] Apply primary role instructions, model selection, skill/tool allowlists,
+  iteration limits, and additive permission restrictions at execution time;
+  selecting a profile can never widen user/project policy.
+- [x] Add opt-in provider-neutral reasoning effort. Unset configurations retain
+  previous request shapes; adapters translate known fields, safely fall back
+  after explicit rejection, and never guess Claude-specific Bedrock fields for
+  another model family (those models keep their default).
+- [x] Add user-maintained per-million-token pricing without a hard-coded or
+  remotely fetched catalog, including conservative cached-input handling and
+  visible estimate caveats.
+- [x] Add enforceable primary-session and delegated-task token/USD budgets,
+  pre-request output caps, fail-closed missing accounting, post-response
+  overshoot stops, and durable resume/rewind/fork accounting that `/clear` or
+  profile switching cannot reset.
+- [x] Show active profile, reasoning, estimated cost, and budgets in status,
+  context, Session, delegated-agent, JSONL, and schema-v1 additive surfaces.
+- [x] Cover configuration validation, default request compatibility, adapter
+  translation/fallback, additive permissions, cost exhaustion, and durable
+  accounting; update user, security, automation, testing, capability, roadmap,
+  and history documentation.
 
 ## Remaining work by phase
 
@@ -134,8 +134,9 @@ silently overwrite parent or sibling work.
   additional media types.
 - [ ] **P1 — Explicit routing/fallback:** ordered capability/health/cost/local
   choices that never silently cross privacy or residency boundaries.
-- [ ] **P1 — Usage and budgets:** normalized cost estimates and enforceable
-  turn/session/agent monetary budgets with provider caveats.
+- [ ] **P1 — Usage and budgets:** normalized user-priced cost estimates and
+  enforceable session/agent monetary budgets ship; an independently
+  configurable per-turn dollar cap and richer provider billing caveats remain.
 - [ ] **P2 — Setup wizard:** discover local runtimes, validate endpoints and
   credentials, test deployments, and write a minimal user provider profile.
 
@@ -154,7 +155,7 @@ silently overwrite parent or sibling work.
 
 ### Phase 6 — Multi-agent orchestration
 
-- [ ] **P0 — Finish agent definitions:** reasoning controls, monetary budgets,
+- [x] **P0 — Finish agent definitions:** reasoning controls, monetary budgets,
   visibility, and named primary profiles.
 - [x] **P0 — Conservative conflict handling:** serialize known overlapping
   assignments and offer explicit three-way reconciliation without silently
@@ -204,17 +205,15 @@ silently overwrite parent or sibling work.
 
 ## Recommended next sequence
 
-1. Gather real beta feedback on verified delegated results, scoped scheduling,
-   and three-way review.
-2. Finish P0 agent-definition controls, especially reasoning selection,
-   monetary budgets, visibility, and named primary profiles.
-3. Add opt-in plan-graph execution using verified results, write scopes,
+1. Gather real beta feedback on named primary profiles, cost estimates,
+   verified delegated results, scoped scheduling, and three-way review.
+2. Add opt-in plan-graph execution using verified results, write scopes,
    dependency readiness, and stale-state invalidation.
-4. Add explicit combined-parent verification and conservative result-ranking
+3. Add explicit combined-parent verification and conservative result-ranking
    criteria without turning a score into permission.
-5. Return to the P0 endpoint-scoped network-policy design before advertising
+4. Return to the P0 endpoint-scoped network-policy design before advertising
    broader unattended autonomy.
-6. Continue Phase 8 security/reliability campaigns in parallel with every
+5. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 
 ## Exit gates

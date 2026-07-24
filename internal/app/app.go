@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,9 @@ type Runtime struct {
 	Processes   *tools.ProcessManager
 	Warnings    []error
 	Hooks       *hooks.Runner
+	// ActiveAgent is the visible named primary profile. Empty means the
+	// ordinary unprofiled primary agent.
+	ActiveAgent string
 }
 
 // LogEvent records a runtime event in the debug log and the durable
@@ -100,8 +104,8 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 }
 
 type Options struct {
-	Workspace, Provider, Model, Autonomy string
-	Plan, Debug, Ephemeral               bool
+	Workspace, Provider, Model, Agent, Autonomy string
+	Plan, Debug, Ephemeral                      bool
 	// Resume loads an existing session ID; Continue resumes the most
 	// recently updated session. Otherwise a new session is created.
 	Resume   string
@@ -124,9 +128,27 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if opts.Autonomy != "" {
 		cfg.Permissions.Mode = opts.Autonomy
 	}
+	activeAgent := strings.TrimSpace(opts.Agent)
+	switch activeAgent {
+	case "default", "none":
+		activeAgent = ""
+	case "":
+		activeAgent = cfg.DefaultAgent
+	}
+	profile, err := cfg.PrimaryAgent(activeAgent)
+	if err != nil {
+		return nil, err
+	}
 	providerName, p, model, err := cfg.Selected(opts.Provider, opts.Model)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Model == "" && profile.Model != "" {
+		model = profile.Model
+	}
+	if profile.Reasoning != nil {
+		reasoning := *profile.Reasoning
+		p.Reasoning = &reasoning
 	}
 	client, err := provider.New(providerName, p, model)
 	if err != nil {
@@ -159,6 +181,9 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	}
 	instructions := strings.Join(sections, "\n\n")
 	permissions := permission.New(cfg.Permissions, opts.Approver)
+	if err := permissions.SetProfile(profile.Permissions); err != nil {
+		return nil, err
+	}
 	redactor := NewRedactor(cfg)
 	logger := logging.Discard()
 	logPath := ""
@@ -242,7 +267,15 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	lifecycle := hooks.NewRunner(workspace, cfg.Hooks, func(note hooks.Note) {
 		logger.Warn("hook", "event", note.Event, "command", note.Command, "note", note.Text)
 	})
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: catalog, ProjectInstructions: instructions, MaxIterations: cfg.Options.MaxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, PinnedContext: func() string {
+	activeCatalog := catalog
+	if len(profile.Skills) > 0 {
+		activeCatalog = catalog.Restrict(profile.Skills)
+	}
+	maxIterations := cfg.Options.MaxIterations
+	if profile.MaxIterations > 0 {
+		maxIterations = profile.MaxIterations
+	}
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
 			return ""
@@ -258,8 +291,14 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	team := agent.NewTeam()
 	attachTeam(team, sess)
 	agentRuntime.AddDelegationTool(cfg, opts.Approver, team, board)
+	agentRuntime.ApplyProfile(agent.ProfileSettings{
+		Name: activeAgent, Instructions: profile.Instructions, Catalog: activeCatalog,
+		Tools: profile.Tools, DisabledTools: cfg.Options.DisabledTools, Skills: profile.Skills,
+		MaxIterations: maxIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
+	})
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
+		agentRuntime.SetUsage(sess.Usage())
 		sess.FlushInterrupted()
 	}
 	for _, warning := range warnings {
@@ -270,7 +309,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		sessionID = sess.Meta.ID
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime := &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle}
+	runtime := &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent}
 	runtime.addReviewedIntegrationTools()
 	return runtime, nil
 }
@@ -537,6 +576,7 @@ func (r *Runtime) SwitchSession(id string) error {
 		r.Attachments.Use(sess)
 	}
 	r.Agent.SetMessages(sess.Active())
+	r.Agent.SetUsage(sess.Usage())
 	sess.FlushInterrupted()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	r.Agent.SetPersistenceGuard(sess.Err)
@@ -565,7 +605,7 @@ func (r *Runtime) NewSession() error {
 	if r.Attachments != nil {
 		r.Attachments.Use(sess)
 	}
-	r.Agent.Clear()
+	r.Agent.Reset()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
@@ -593,6 +633,7 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 		r.Attachments.Use(sess)
 	}
 	r.Agent.SetMessages(sess.Active())
+	r.Agent.SetUsage(sess.Usage())
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
@@ -654,21 +695,96 @@ func (r *Runtime) Close() {
 	logging.Close(r.Logger)
 }
 func (r *Runtime) Select(providerName, model string) error {
-	_, p, resolved, err := r.Config.Selected(providerName, model)
+	name, p, resolved, err := r.Config.Selected(providerName, model)
 	if err != nil {
 		return err
 	}
-	client, err := provider.New(providerName, p, resolved)
+	if profile, ok := r.Config.Agents[r.ActiveAgent]; ok && profile.Reasoning != nil {
+		reasoning := *profile.Reasoning
+		p.Reasoning = &reasoning
+	}
+	client, err := provider.New(name, p, resolved)
 	if err != nil {
 		return err
 	}
 	client = provider.WithResilience(client)
-	r.Agent.SetProvider(providerName, resolved, p, client)
+	r.Agent.SetProvider(name, resolved, p, client)
 	return nil
+}
+
+// SelectAgent applies a named primary profile without resetting conversation
+// context or cumulative usage. "default", "none", and an empty name restore
+// the ordinary unprofiled primary agent.
+func (r *Runtime) SelectAgent(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "default" || name == "none" {
+		name = ""
+	}
+	profile, err := r.Config.PrimaryAgent(name)
+	if err != nil {
+		return err
+	}
+	providerName, _ := r.Agent.Selection()
+	_, p, model, err := r.Config.Selected(providerName, "")
+	if err != nil {
+		return err
+	}
+	if profile.Model != "" {
+		model = profile.Model
+	}
+	if profile.Reasoning != nil {
+		reasoning := *profile.Reasoning
+		p.Reasoning = &reasoning
+	}
+	client, err := provider.New(providerName, p, model)
+	if err != nil {
+		return err
+	}
+	if err := r.Permissions.SetProfile(profile.Permissions); err != nil {
+		return err
+	}
+	catalog := r.Skills
+	if len(profile.Skills) > 0 {
+		catalog = catalog.Restrict(profile.Skills)
+	}
+	maxIterations := r.Config.Options.MaxIterations
+	if profile.MaxIterations > 0 {
+		maxIterations = profile.MaxIterations
+	}
+	r.Agent.SetProvider(providerName, model, p, provider.WithResilience(client))
+	r.Agent.ApplyProfile(agent.ProfileSettings{
+		Name: name, Instructions: profile.Instructions, Catalog: catalog,
+		Tools: profile.Tools, DisabledTools: r.Config.Options.DisabledTools, Skills: profile.Skills,
+		MaxIterations: maxIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
+	})
+	r.ActiveAgent = name
+	return nil
+}
+
+func (r *Runtime) PrimaryAgentNames() []string {
+	names := []string{"default"}
+	for name, profile := range r.Config.Agents {
+		if name != "default" && name != "none" && appconfig.AgentAvailableFor(profile, "primary") {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names[1:])
+	return names
 }
 func (r *Runtime) Summary() string {
 	p, m := r.Agent.Selection()
-	return fmt.Sprintf("workspace: %s\nprovider: %s\nmodel: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nsandbox: %s\nplanning: %t\nconfig: %s", r.Workspace, p, m, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.SandboxSummary(), r.Agent.Plan(), r.Config.Source)
+	profile, reasoning, tokenBudget, costBudget := r.Agent.Profile()
+	if profile == "" {
+		profile = "default"
+	}
+	if reasoning == "" {
+		reasoning = "provider default"
+	}
+	budgets := "none"
+	if tokenBudget > 0 || costBudget > 0 {
+		budgets = fmt.Sprintf("%d tokens / $%.6f", tokenBudget, costBudget)
+	}
+	return fmt.Sprintf("workspace: %s\nagent: %s\nprovider: %s\nmodel: %s\nreasoning: %s\nbudgets: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nsandbox: %s\nplanning: %t\nconfig: %s", r.Workspace, profile, p, m, reasoning, budgets, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.SandboxSummary(), r.Agent.Plan(), r.Config.Source)
 }
 
 // SandboxSummary reports the effective command containment stance without

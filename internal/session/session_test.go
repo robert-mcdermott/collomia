@@ -766,3 +766,30 @@ func TestRecentEventsRestoreAndRemainBounded(t *testing.T) {
 		t.Fatalf("restored recent events: len=%d first=%q last=%q", len(got), got[0].Text, got[len(got)-1].Text)
 	}
 }
+
+func TestUsageAccountingSurvivesReloadBeyondRecentProjection(t *testing.T) {
+	store, err := OpenAt(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	for range recentEventLimit + 5 {
+		e := event.New(event.KindUsage)
+		e.Usage = &event.Usage{InputTokens: 1, OutputTokens: 2, CostUSD: 0.000003, CostAvailable: true, CostEstimated: true}
+		sess.AppendEvent(e)
+	}
+	sess.Close()
+	loaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	usage := loaded.Usage()
+	if usage.InputTokens != recentEventLimit+5 || usage.OutputTokens != 2*(recentEventLimit+5) || !usage.CostAvailable {
+		t.Fatalf("usage=%+v", usage)
+	}
+}

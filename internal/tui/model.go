@@ -867,6 +867,13 @@ func (m *Model) sessionContent() string {
 	if window > 0 {
 		windowText = formatTokens(window)
 	}
+	activeProfile, reasoningEffort, tokenBudget, costBudget := m.runtime.Agent.Profile()
+	if activeProfile == "" {
+		activeProfile = "default"
+	}
+	if reasoningEffort == "" {
+		reasoningEffort = "provider default"
+	}
 	var b strings.Builder
 	b.WriteString(h("Session") + "\n")
 	b.WriteString(kv("workspace", m.runtime.Workspace) + "\n")
@@ -878,6 +885,8 @@ func (m *Model) sessionContent() string {
 		b.WriteString(kv("session", id) + "\n")
 	}
 	b.WriteString(kv("provider", providerName+"/"+model) + "\n")
+	b.WriteString(kv("agent", activeProfile) + "\n")
+	b.WriteString(kv("reasoning", reasoningEffort) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
@@ -932,6 +941,12 @@ func (m *Model) sessionContent() string {
 		usageText += fmt.Sprintf(" (%d cached)", usage.CachedTokens)
 	}
 	b.WriteString(kv("usage", usageText) + "\n")
+	if usage.CostAvailable {
+		b.WriteString(kv("cost", fmt.Sprintf("$%.6f estimated", usage.CostUSD)) + "\n")
+	}
+	if tokenBudget > 0 || costBudget > 0 {
+		b.WriteString(kv("budgets", fmt.Sprintf("%d tokens / $%.6f", tokenBudget, costBudget)) + "\n")
+	}
 	b.WriteString(kv("prompt", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
 	b.WriteString(kv("messages", fmt.Sprintf("%d", m.runtime.Agent.MessageCount())) + "\n")
 	b.WriteString("  " + contextGauge(m.theme, estimate, window, 30) + "\n\n")
@@ -1234,6 +1249,9 @@ func (m Model) renderStatusBar() string {
 	estimate, window := m.runtime.Agent.ContextEstimate()
 
 	left := badge("✿", m.theme.Primary)
+	if m.runtime.ActiveAgent != "" {
+		left += m.styles.statusBase.Render(" ") + badge(m.runtime.ActiveAgent, m.theme.Accent)
+	}
 	left += m.styles.statusBase.Render(" ") + badge(provider+"/"+model, m.theme.Border)
 	left += m.styles.statusBase.Render(" ") + badge(strings.ToUpper(mode), modeColor)
 	if m.runtime.Agent.Plan() {

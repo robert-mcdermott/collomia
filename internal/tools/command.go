@@ -79,6 +79,7 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	analysis := shell.AnalyzeInWorkspace(a.Command, t.Workspace)
 	return Action{
 		Risk: RiskExecute, Summary: "run: " + a.Command,
+		Command:         a.Command,
 		Executables:     analysis.Executables,
 		Uninspectable:   !analysis.Inspectable,
 		AnalysisReasons: analysis.Reasons,

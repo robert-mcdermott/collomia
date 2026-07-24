@@ -290,6 +290,7 @@ func TestOpenAIRejectedChatParameterIsStrict(t *testing.T) {
 	}{
 		{"max tokens", http.StatusBadRequest, `{"error":{"message":"Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead.","param":"max_tokens","code":"unsupported_parameter"}}`, "max_tokens"},
 		{"temperature without param", http.StatusBadRequest, `{"error":{"message":"` + "`temperature`" + ` is deprecated for this model."}}`, "temperature"},
+		{"invalid reasoning effort", http.StatusBadRequest, `{"error":{"message":"reasoning_effort must be one of low, medium, or high","param":"reasoning_effort","code":"invalid_value"}}`, "reasoning_effort"},
 		{"wrong status", http.StatusInternalServerError, `{"error":{"message":"Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."}}`, ""},
 		{"unrelated parameter", http.StatusBadRequest, `{"error":{"message":"max_tokens and max_completion_tokens appear in docs","param":"messages","code":"unsupported_parameter"}}`, ""},
 		{"invalid temperature range", http.StatusBadRequest, `{"error":{"message":"temperature must be between 0 and 2","param":"temperature","code":"unsupported_value"}}`, ""},
@@ -377,4 +378,34 @@ func openAIHTTPResponse(req *http.Request, status int, contentType, body string)
 func openAISuccessStream(req *http.Request, content string) *http.Response {
 	body := fmt.Sprintf("data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\ndata: [DONE]\n\n", content)
 	return openAIHTTPResponse(req, http.StatusOK, "text/event-stream", body)
+}
+
+func TestOpenAIReasoningEffortIsOptInAndCanBeLearnedAway(t *testing.T) {
+	client := &OpenAIClient{}
+	request := Request{Model: "model", Messages: []Message{{Role: "user", Content: "hello"}}}
+	body, err := client.chatBody(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["reasoning_effort"]; exists {
+		t.Fatalf("unset reasoning changed request: %+v", body)
+	}
+	request.ReasoningEffort = "high"
+	body, err = client.chatBody(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning body=%+v", body)
+	}
+	if retry, warning := client.parameters.learn("reasoning_effort", body); !retry || !strings.Contains(warning, "reasoning") {
+		t.Fatalf("retry=%t warning=%q", retry, warning)
+	}
+	body, err = client.chatBody(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["reasoning_effort"]; exists {
+		t.Fatalf("learned profile retained reasoning: %+v", body)
+	}
 }

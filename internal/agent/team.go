@@ -88,6 +88,7 @@ type DelegateStatus struct {
 	VerificationResults  []DelegateVerification
 	Usage                provider.Usage
 	TokenBudget          int
+	CostBudgetUSD        float64
 	TimeoutSeconds       int
 	// Revision makes concurrent durable observer writes order-independent.
 	// It is monotonic for one task and has no model-visible meaning.
@@ -106,6 +107,7 @@ type DelegateStart struct {
 	WriteScopes                              []string
 	PlanStep                                 int
 	TokenBudget, TimeoutSeconds              int
+	CostBudgetUSD                            float64
 	Cancel                                   context.CancelFunc
 }
 
@@ -134,7 +136,7 @@ func (t *Team) Enqueue(start DelegateStart) {
 		Provider: start.Provider, Model: start.Model, Write: start.Write, PlanStep: start.PlanStep,
 		WriteScopes: append([]string(nil), start.WriteScopes...),
 		Status:      DelegateQueued, CurrentAction: delegateQueueAction(start.Write, start.WriteScopes),
-		TokenBudget: start.TokenBudget, TimeoutSeconds: start.TimeoutSeconds,
+		TokenBudget: start.TokenBudget, CostBudgetUSD: start.CostBudgetUSD, TimeoutSeconds: start.TimeoutSeconds,
 		Revision: 1, Started: time.Now(), cancel: start.Cancel,
 	}
 	boundDelegateStatus(&status)
@@ -298,7 +300,7 @@ func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, wo
 		s.Error = err.Error()
 		s.FailureID = failureid.ID(err)
 		switch {
-		case errors.Is(err, ErrTokenBudgetExceeded):
+		case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded):
 			s.Status = DelegateBudgetExhausted
 		case errors.Is(err, context.Canceled):
 			s.Status = DelegateCancelled
@@ -717,8 +719,8 @@ func (status DelegateStatus) Event() event.DelegateStatus {
 		IntegrationStatus: status.IntegrationStatus, IntegrationError: status.IntegrationError,
 		VerificationStatus: status.VerificationStatus, VerificationError: status.VerificationError, VerificationToken: status.VerificationToken,
 		VerificationRequired: append([]string(nil), status.VerificationRequired...), VerificationResults: verificationEvents(status.VerificationResults),
-		Usage:       event.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
-		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
+		Usage:       event.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens, CostUSD: status.Usage.CostUSD, CostAvailable: status.Usage.CostAvailable, CostEstimated: status.Usage.CostEstimated},
+		TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,
 	}
 }
@@ -739,8 +741,8 @@ func DelegateStatusFromEvent(status event.DelegateStatus) DelegateStatus {
 		IntegrationStatus: status.IntegrationStatus, IntegrationError: status.IntegrationError,
 		VerificationStatus: status.VerificationStatus, VerificationError: status.VerificationError, VerificationToken: status.VerificationToken,
 		VerificationRequired: append([]string(nil), status.VerificationRequired...), VerificationResults: verificationStatuses(status.VerificationResults),
-		Usage:       provider.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
-		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
+		Usage:       provider.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens, CostUSD: status.Usage.CostUSD, CostAvailable: status.Usage.CostAvailable, CostEstimated: status.Usage.CostEstimated},
+		TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,
 	}
 }

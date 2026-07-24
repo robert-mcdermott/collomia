@@ -20,13 +20,58 @@ For current priorities, remaining deliverables, and sequencing, see
 1. **Domain-scoped network policy and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; endpoint-scoped egress remains open).
 2. **Provider platform hardening**: keychain credential storage plus Azure deployment/project discovery (Phase 4 — capability declarations/discovery/preflight, normalized cross-adapter streaming including Bedrock `ConverseStream`, resilience, recorded/live protocol contracts, and refreshable Azure Entra authentication shipped 2026-07-19).
 3. **MCP ecosystem remainder**: OAuth authentication, experimental tasks, resource subscriptions, audio/annotation passthrough, and argument-level permission scoping (Phase 5 — skills, hooks, lifecycle/resources/prompts/elicitation/progress/pinning, bounded image passthrough, external-data provenance framing, safe list-change refresh, and conformance fixtures have shipped).
-4. **Multi-agent orchestration polish**: reasoning/cost controls, automatic plan-graph execution, combined-parent verification/ranking, safe pending-work recovery, and fuller transcript audit (Phase 6 — restrictive profiles, scheduling/isolation, declared-scope serialization, token/time budgets, structured results, plan-step association, durable outcomes, a live parent/child tree, boundary-safe steering, machine-observed child verification, and freshness-bound three-way text integration have shipped).
+4. **Multi-agent orchestration polish**: automatic plan-graph execution,
+   combined-parent verification/ranking, safe pending-work recovery, and fuller
+   transcript audit (Phase 6 — named primary/delegated profiles, portable
+   reasoning, durable token/cost budgets, restrictive permissions,
+   scheduling/isolation, declared-scope serialization, structured results,
+   plan-step association, durable outcomes, a live parent/child tree,
+   boundary-safe steering, machine-observed child verification, and
+   freshness-bound three-way text integration have shipped).
 5. **Deep coding-loop tooling**: Phase 3 is now functionally complete (diagnostics, indexing, PTY, background jobs, hunk approval); remaining refinements are LSP definitions/references/formatting, line-level approval, and Windows ConPTY.
 6. **Release and QA engineering**: native platform signing/notarization, package-manager distribution, deeper native-terminal/accessibility coverage, independent review, and sustained security/reliability campaigns (Phase 8 now includes deterministic replay, cross-platform TUI goldens, a complete representative offline evaluation matrix, diagnostic startup/index/session/TUI performance baselines, explicit persisted-format compatibility rules, bounded fuzz CI, session short-write handling, support bundles, checksum-verifying atomic installers, reachable-dependency scanning, CycloneDX SBOMs, GitHub/Sigstore attestations, and gated draft releases).
 
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-07-23 — Phase 6 governed primary profiles and cost controls wave
+
+- **Named primary agents:** `agents.<name>.availability` now explicitly selects
+  `delegate`, `primary`, or `both`, with omitted values retaining the historical
+  delegate-only behavior. `default_agent`, `--agent`, and fuzzy `/agent`
+  selection activate a visible primary profile without hiding execution or
+  discarding the current conversation.
+- **Enforced specialization:** primary profiles apply role instructions,
+  same-provider model overrides, skill/tool allowlists, iteration/token/cost
+  bounds, and permission restrictions at execution. Profile autonomy can only
+  tighten; tool/command denials and prompt/deny rules remain additive to
+  built-in, user, and project policy. Returning to `default` removes only the
+  profile layer.
+- **Portable reasoning:** providers and profiles accept optional
+  `reasoning.effort`. Omission keeps prior request bodies unchanged. OpenAI,
+  Anthropic, Responses, and recognized Bedrock Claude routes translate their
+  native fields; explicit unsupported-field responses warn and retry without
+  the optional setting where safe, while non-Claude native Bedrock models never
+  receive a guessed Claude request shape and retain their model default.
+- **No stale price catalog:** optional provider `pricing` contains
+  user-verified input/output/cached-input USD rates per million tokens.
+  Collomia estimates only from reported usage, treats an omitted cache rate
+  conservatively, shows that estimates are not invoices, and ships no model
+  prices or silent network lookup.
+- **Durable bounded spend:** `cost_budget_usd` joins token/iteration/time limits
+  for primary sessions and delegated tasks. Estimated input reserves output
+  headroom before a call; missing accounting fails closed and post-response
+  overshoot stops before tools or another provider request. Usage/cost rebuild
+  from append-only events across resume/fork/rewind and cannot be reset with
+  `/clear` or profile switching; `/new` creates fresh accounting.
+- **Visible and tested:** status, `/context`, the Session tab, delegated-agent
+  details, JSONL, and schema-v1 additive events expose profile/reasoning/cost
+  state without crowding the transcript. Tests cover validation,
+  backward-compatible request omission, adapter translation/fallback, additive
+  primary restrictions, budget exhaustion, and accounting beyond the bounded
+  recent-event projection; user/security/automation/testing/capability
+  documentation was updated.
 
 ### 2026-07-23 — Phase 6 scoped scheduling and three-way reconciliation wave
 

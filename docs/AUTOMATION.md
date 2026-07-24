@@ -65,7 +65,7 @@ Current one-shot runs emit these events when applicable:
 | `tool.output` | `tool` | Live bounded tool output. |
 | `tool.result` | `tool` | Completed tool result and error flag. |
 | `permission.decision` | `permission` | Allow/deny decision, source, matched rule, and resources. |
-| `usage` | `usage` | Provider-reported input/output/cached/reasoning tokens. |
+| `usage` | `usage` | Provider-reported input/output/cached/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. |
 | `context.compaction` | `text` | Context was compacted. |
 | `warning` | `text` | Non-fatal runtime/provider warning. |
 | `error` | `error`, optional `provider`, optional `failure_id` | A failure observed during the run. |
@@ -81,7 +81,7 @@ When present, its `delegate` object includes stable identity/profile/provider,
 `plan_step`, lifecycle state/current action, bounded `recent_output`, steering
 history plus `pending_guidance`, declared `write_scopes`, any
 `scope_violations`, evidence and changed/integrated file lists, optional
-`integration_status`/`integration_error`, usage/budgets, and retained
+`integration_status`/`integration_error`, usage plus token/cost budgets, and retained
 worktree/branch/base metadata. A writer without explicit paths records `["*"]`.
 Scope violations make the task an error and block guarded integration; the
 worktree remains available. Integration status describes a user/primary
@@ -106,6 +106,12 @@ changes. Consumers must tolerate additive fields.
 Failed, cancelled, timed-out, budget-exhausted, or recovery-interrupted child
 records may also carry `delegate.failure_id`. It is the same opaque ID shown in
 that child's interactive diagnostic; it is not a task ID and grants no access.
+
+Costs are local estimates, not provider invoices. They appear only when the
+selected provider has explicit `pricing`; Collomia ships no price catalog.
+Headless runs using a named primary profile can enforce its durable
+`cost_budget_usd` with `--agent <name>`. A missing/invalid price configuration
+is a configuration failure; exhaustion is reported as failure kind `usage`.
 
 `tool.call.delta.arguments_delta` can be incomplete JSON until `done` is true.
 It is an observation stream, not an execution request. Collomia itself waits

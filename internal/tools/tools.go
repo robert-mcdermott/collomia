@@ -26,8 +26,11 @@ type Action struct {
 	// Normalized resources for scoped policy rules and the audit ledger.
 	Paths       []string
 	Executables []string
-	Hosts       []string
-	Server      string
+	// Command is the original immutable command text for additive agent-profile
+	// denial regexes. It is populated only by command-bearing built-ins.
+	Command string
+	Hosts   []string
+	Server  string
 	// Uninspectable marks actions (typically shell commands) whose full
 	// effect could not be statically determined; they always require
 	// interactive approval.
