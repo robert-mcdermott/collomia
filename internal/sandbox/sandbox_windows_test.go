@@ -17,19 +17,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// TestMain also handles the backend's hidden re-exec shim so CI exercises the
-// same dispatcher as the real collo binary.
-func TestMain(m *testing.M) {
-	if handled, err := DispatchReexec(os.Args[1:]); handled {
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
-}
-
 func TestWindowsAppContainerWorker(t *testing.T) {
 	if os.Getenv("COLLO_APPCONTAINER_WORKER") != "1" {
 		return

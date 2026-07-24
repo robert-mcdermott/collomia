@@ -23,7 +23,6 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
-	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -117,10 +116,11 @@ type options struct {
 	args                                           []string
 }
 
+// run implements the CLI. The hidden sandbox re-exec entry points never reach
+// it: the sandbox package claims them from init, so every binary that links it
+// — collo and each package's test binary alike — launches the shim instead of
+// parsing them as ordinary arguments.
 func run(args []string) error {
-	if handled, err := sandbox.DispatchReexec(args); handled {
-		return err
-	}
 	opts, err := parse(args)
 	if err != nil {
 		return withCommandError(err, exitUsage, event.FailureUsage)

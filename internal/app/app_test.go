@@ -28,11 +28,26 @@ type scriptedClient struct {
 	requests []provider.Request
 }
 
-func isolateGlobalFiles(t *testing.T) {
+// isolateGlobalFiles points per-user state at a scratch home so tests never
+// read or write the real ~/.collomia. It returns that home.
+func isolateGlobalFiles(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	return home
+}
+
+// writeGlobalConfig installs a user-layer configuration in the isolated home.
+func writeGlobalConfig(t *testing.T, home, configJSON string) {
+	t.Helper()
+	dir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(configJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testing.T) {
@@ -78,10 +93,19 @@ func TestRuntimeCloseCancelsActiveDelegates(t *testing.T) {
 }
 
 func TestRuntimeCloseWaitsForBackgroundProcesses(t *testing.T) {
-	isolateGlobalFiles(t)
+	home := isolateGlobalFiles(t)
+	// The subject here is Close's process bookkeeping, not OS containment: a
+	// sandboxed background process would pull the platform backend (AppContainer
+	// profiles and temp-directory ACL grants on Windows) into a lifecycle test.
+	// Containment and its teardown are covered by internal/sandbox.
+	writeGlobalConfig(t, home, `{"permissions":{"sandbox":"off"}}`)
 	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if runtime.Config.Permissions.Sandbox != "off" {
+		runtime.Close()
+		t.Fatalf("sandbox=%q; the test's own configuration was not applied", runtime.Config.Permissions.Sandbox)
 	}
 	command := "sleep 60"
 	if goruntime.GOOS == "windows" {
