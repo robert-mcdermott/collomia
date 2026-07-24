@@ -70,7 +70,7 @@ func (b linuxBackend) Wrap(argv []string, policy Policy) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]string{self, "__landlock", encoded, "--"}, argv...), nil
+	return append([]string{self, reexecLandlock, encoded, "--"}, argv...), nil
 }
 
 func landlockABI() int {
