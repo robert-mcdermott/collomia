@@ -329,6 +329,7 @@ func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, 
 	t.Setenv("GOCACHE", filepath.Join(workspace, ".collomia-eval-cache"))
 	cfg := appconfig.Defaults()
 	cfg.Permissions.Mode = mode
+	cfg.Permissions.SandboxReadableRoots = append(cfg.Permissions.SandboxReadableRoots, evaluationSandboxReadableRoots()...)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		t.Fatal(err)
