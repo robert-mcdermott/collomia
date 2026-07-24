@@ -15,13 +15,14 @@ var slashCommands = []commandInfo{
 	{name: "/help", args: "", desc: "show slash commands and keybindings"},
 	{name: "/status", args: "", desc: "workspace, provider, model, and autonomy"},
 	{name: "/model", args: "[provider[/model]]", desc: "show or switch the active provider/model"},
+	{name: "/agent", args: "[name]", desc: "show or switch the named primary agent profile"},
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
-	{name: "/agents", args: "[stop|steer|apply …]", desc: "inspect, guide, stop, or integrate delegated agents"},
+	{name: "/agents", args: "[stop|steer|verify|compare|apply …]", desc: "inspect, guide, verify, compare, stop, or integrate delegated agents"},
 	{name: "/prompt", args: "[workspace-file]", desc: "load a UTF-8 text file into the composer"},
 	{name: "/attach", args: "[workspace-image]", desc: "attach a PNG, JPEG, GIF, or WebP image"},
 	{name: "/attachments", args: "", desc: "list images attached to the pending prompt"},
@@ -94,6 +95,21 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 			desc := p.Type
 			if p.Model != "" {
 				desc += " · " + p.Model
+			}
+			candidates = append(candidates, candidate{name, desc})
+		}
+	case "/agent":
+		for _, name := range m.runtime.PrimaryAgentNames() {
+			desc := "ordinary primary agent"
+			if name != "default" {
+				profile := m.runtime.Config.Agents[name]
+				desc = profile.Availability
+				if profile.Model != "" {
+					desc += " · " + profile.Model
+				}
+			}
+			if name == m.runtime.ActiveAgent || (name == "default" && m.runtime.ActiveAgent == "") {
+				desc += " · current"
 			}
 			candidates = append(candidates, candidate{name, desc})
 		}

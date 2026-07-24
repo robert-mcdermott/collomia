@@ -34,6 +34,27 @@ func TestJSONLWriterEmitsOneLinePerEvent(t *testing.T) {
 	}
 }
 
+func TestSchemaV1TypedConsumerToleratesAdditiveFields(t *testing.T) {
+	input := `{
+	  "schema": 1,
+	  "time": "2026-07-23T00:00:00Z",
+	  "kind": "tool.result",
+	  "tool": {
+	    "name": "read_file",
+	    "output": "ok",
+	    "future_tool_detail": {"value": 1}
+	  },
+	  "future_top_level": true
+	}`
+	var decoded Event
+	if err := json.Unmarshal([]byte(input), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Schema != SchemaVersion || decoded.Kind != KindToolResult || decoded.Tool == nil || decoded.Tool.Name != "read_file" || decoded.Tool.Output != "ok" {
+		t.Fatalf("additive schema-v1 event=%+v", decoded)
+	}
+}
+
 func TestRunResultRoundTrips(t *testing.T) {
 	e := New(KindRunResult)
 	e.FailureID = "err-0123456789abcdef"
@@ -116,6 +137,34 @@ func TestProviderFailureRoundTrips(t *testing.T) {
 	}
 	if decoded.Provider == nil || decoded.Provider.Kind != "rate_limit" || decoded.Provider.StatusCode != 429 || !decoded.Provider.Retryable || decoded.Provider.RetryAfterMS != 3000 || decoded.Provider.RequestID != "req-123" {
 		t.Fatalf("provider failure round trip mismatch: %+v", decoded.Provider)
+	}
+}
+
+func TestDelegateVerificationRoundTrips(t *testing.T) {
+	e := New(KindDelegateUpdate)
+	e.Delegate = &DelegateStatus{
+		ID: "d1", Name: "writer", Status: "done",
+		WriteScopes: []string{"internal/app/"}, ScopeViolations: []string{"README.md"},
+		VerificationStatus: "passed", VerificationToken: "verify-abc",
+		VerificationRequired: []string{"go test ./..."},
+		VerificationResults: []DelegateVerification{{
+			Purpose: "test", Command: "go test ./...", Status: "passed",
+			Output: "ok", StateToken: "verify-abc", Started: e.Time, Finished: e.Time,
+		}},
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Delegate == nil || decoded.Delegate.VerificationStatus != "passed" ||
+		len(decoded.Delegate.WriteScopes) != 1 || len(decoded.Delegate.ScopeViolations) != 1 ||
+		len(decoded.Delegate.VerificationResults) != 1 ||
+		decoded.Delegate.VerificationResults[0].Command != "go test ./..." {
+		t.Fatalf("delegate verification round trip=%+v", decoded.Delegate)
 	}
 }
 

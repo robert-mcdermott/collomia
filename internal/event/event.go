@@ -168,44 +168,71 @@ type Failure struct {
 
 // Usage carries provider-reported token accounting.
 type Usage struct {
-	InputTokens     int `json:"input_tokens"`
-	OutputTokens    int `json:"output_tokens"`
-	CachedTokens    int `json:"cached_tokens,omitempty"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	InputTokens     int     `json:"input_tokens"`
+	OutputTokens    int     `json:"output_tokens"`
+	CachedTokens    int     `json:"cached_tokens,omitempty"`
+	ReasoningTokens int     `json:"reasoning_tokens,omitempty"`
+	CostUSD         float64 `json:"cost_usd,omitempty"`
+	CostAvailable   bool    `json:"cost_available,omitempty"`
+	CostEstimated   bool    `json:"cost_estimated,omitempty"`
+}
+
+// DelegateVerification is one bounded, machine-observed command result from a
+// retained delegated worktree. StateToken ties it to exact child bytes; replay
+// restores the observation but never executes it.
+type DelegateVerification struct {
+	Purpose    string    `json:"purpose,omitempty"`
+	Command    string    `json:"command"`
+	Status     string    `json:"status"`
+	Output     string    `json:"output,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	StateToken string    `json:"state_token,omitempty"`
+	Started    time.Time `json:"started,omitempty"`
+	Finished   time.Time `json:"finished,omitempty"`
 }
 
 // DelegateStatus is the durable, provider-neutral parent-inbox state for one
 // delegated task. Lifecycle updates replace earlier snapshots with the same
 // ID when a session is restored; no stored task is ever executed by replay.
 type DelegateStatus struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Task            string    `json:"task,omitempty"`
-	Profile         string    `json:"profile,omitempty"`
-	Provider        string    `json:"provider,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	Write           bool      `json:"write,omitempty"`
-	PlanStep        int       `json:"plan_step,omitempty"`
-	Status          string    `json:"status"`
-	CurrentAction   string    `json:"current_action,omitempty"`
-	RecentOutput    string    `json:"recent_output,omitempty"`
-	Guidance        []string  `json:"guidance,omitempty"`
-	PendingGuidance int       `json:"pending_guidance,omitempty"`
-	Summary         string    `json:"summary,omitempty"`
-	Error           string    `json:"error,omitempty"`
-	FailureID       string    `json:"failure_id,omitempty"`
-	Evidence        []string  `json:"evidence,omitempty"`
-	ChangedFiles    []string  `json:"changed_files,omitempty"`
-	Worktree        string    `json:"worktree,omitempty"`
-	Branch          string    `json:"branch,omitempty"`
-	BaseCommit      string    `json:"base_commit,omitempty"`
-	IntegratedFiles []string  `json:"integrated_files,omitempty"`
-	Usage           Usage     `json:"usage,omitempty"`
-	TokenBudget     int       `json:"token_budget,omitempty"`
-	TimeoutSeconds  int       `json:"timeout_seconds,omitempty"`
-	Revision        uint64    `json:"revision,omitempty"`
-	Started         time.Time `json:"started,omitempty"`
-	Finished        time.Time `json:"finished,omitempty"`
+	ID                   string                 `json:"id"`
+	Name                 string                 `json:"name"`
+	Task                 string                 `json:"task,omitempty"`
+	Profile              string                 `json:"profile,omitempty"`
+	Provider             string                 `json:"provider,omitempty"`
+	Model                string                 `json:"model,omitempty"`
+	Write                bool                   `json:"write,omitempty"`
+	WriteScopes          []string               `json:"write_scopes,omitempty"`
+	ScopeViolations      []string               `json:"scope_violations,omitempty"`
+	PlanStep             int                    `json:"plan_step,omitempty"`
+	Status               string                 `json:"status"`
+	CurrentAction        string                 `json:"current_action,omitempty"`
+	RecentOutput         string                 `json:"recent_output,omitempty"`
+	Guidance             []string               `json:"guidance,omitempty"`
+	PendingGuidance      int                    `json:"pending_guidance,omitempty"`
+	Summary              string                 `json:"summary,omitempty"`
+	Error                string                 `json:"error,omitempty"`
+	FailureID            string                 `json:"failure_id,omitempty"`
+	Evidence             []string               `json:"evidence,omitempty"`
+	ChangedFiles         []string               `json:"changed_files,omitempty"`
+	Worktree             string                 `json:"worktree,omitempty"`
+	Branch               string                 `json:"branch,omitempty"`
+	BaseCommit           string                 `json:"base_commit,omitempty"`
+	IntegratedFiles      []string               `json:"integrated_files,omitempty"`
+	IntegrationStatus    string                 `json:"integration_status,omitempty"`
+	IntegrationError     string                 `json:"integration_error,omitempty"`
+	VerificationStatus   string                 `json:"verification_status,omitempty"`
+	VerificationError    string                 `json:"verification_error,omitempty"`
+	VerificationToken    string                 `json:"verification_token,omitempty"`
+	VerificationRequired []string               `json:"verification_required,omitempty"`
+	VerificationResults  []DelegateVerification `json:"verification_results,omitempty"`
+	Usage                Usage                  `json:"usage,omitempty"`
+	TokenBudget          int                    `json:"token_budget,omitempty"`
+	CostBudgetUSD        float64                `json:"cost_budget_usd,omitempty"`
+	TimeoutSeconds       int                    `json:"timeout_seconds,omitempty"`
+	Revision             uint64                 `json:"revision,omitempty"`
+	Started              time.Time              `json:"started,omitempty"`
+	Finished             time.Time              `json:"finished,omitempty"`
 }
 
 // New returns an Event stamped with the schema version and current time.

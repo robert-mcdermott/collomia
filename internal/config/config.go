@@ -29,6 +29,7 @@ type Config struct {
 	SchemaVersion   int                  `json:"schema_version,omitempty"`
 	DefaultProvider string               `json:"default_provider"`
 	DefaultModel    string               `json:"default_model"`
+	DefaultAgent    string               `json:"default_agent,omitempty"`
 	Providers       map[string]Provider  `json:"providers"`
 	Permissions     Permissions          `json:"permissions"`
 	MCP             map[string]MCPServer `json:"mcp,omitempty"`
@@ -92,14 +93,35 @@ type Provider struct {
 	EntraTenantID string `json:"entra_tenant_id,omitempty"`
 	// EntraAuthorityHost selects a sovereign/private Microsoft Entra authority.
 	// The empty value uses Azure Public Cloud.
-	EntraAuthorityHost       string            `json:"entra_authority_host,omitempty"`
-	Headers                  map[string]string `json:"headers,omitempty"`
-	MaxTokens                int               `json:"max_tokens,omitempty"`
-	Context                  int               `json:"context_window,omitempty"`
-	Temperature              *float64          `json:"temperature,omitempty"`
-	ConnectTimeoutSeconds    int               `json:"connect_timeout_seconds,omitempty"`
-	RequestTimeoutSeconds    int               `json:"request_timeout_seconds,omitempty"`
-	StreamIdleTimeoutSeconds int               `json:"stream_idle_timeout_seconds,omitempty"`
+	EntraAuthorityHost string            `json:"entra_authority_host,omitempty"`
+	Headers            map[string]string `json:"headers,omitempty"`
+	MaxTokens          int               `json:"max_tokens,omitempty"`
+	Context            int               `json:"context_window,omitempty"`
+	Temperature        *float64          `json:"temperature,omitempty"`
+	// Reasoning is opt-in. When omitted, Collomia sends no reasoning-specific
+	// request field and preserves each provider/model's own default.
+	Reasoning *Reasoning `json:"reasoning,omitempty"`
+	// Pricing is user-supplied because model prices change and may differ by
+	// account, region, gateway, or deployment. Collomia never hardcodes it.
+	Pricing                  *Pricing `json:"pricing,omitempty"`
+	ConnectTimeoutSeconds    int      `json:"connect_timeout_seconds,omitempty"`
+	RequestTimeoutSeconds    int      `json:"request_timeout_seconds,omitempty"`
+	StreamIdleTimeoutSeconds int      `json:"stream_idle_timeout_seconds,omitempty"`
+}
+
+// Reasoning is the provider-neutral subset of model reasoning controls.
+// Adapters translate Effort only when it is explicitly configured.
+type Reasoning struct {
+	Effort string `json:"effort"`
+}
+
+// Pricing estimates provider spend from reported token usage. Rates are USD
+// per one million tokens. Cached input defaults to the ordinary input rate
+// when CachedInputPerMillion is omitted, which is conservative.
+type Pricing struct {
+	InputPerMillion       float64  `json:"input_per_million"`
+	OutputPerMillion      float64  `json:"output_per_million"`
+	CachedInputPerMillion *float64 `json:"cached_input_per_million,omitempty"`
 }
 
 type Permissions struct {
@@ -165,12 +187,17 @@ type MCPServer struct {
 	Timeout   int               `json:"timeout_seconds,omitempty"`
 }
 
-// AgentDefinition names a reusable sub-agent profile. Any field left empty
-// falls back to the parent agent's own setting.
+// AgentDefinition names a reusable primary and/or delegated agent profile.
+// Any field left empty falls back to the ordinary runtime setting.
 type AgentDefinition struct {
+	// Availability controls where the profile is selectable: delegate
+	// (default, preserving existing configurations), primary, or both.
+	Availability string `json:"availability,omitempty"`
 	// Model overrides the model used for this agent, on the same provider
 	// as the parent (a different reasoning tier or a cheaper/faster model).
 	Model string `json:"model,omitempty"`
+	// Reasoning overrides the provider's opt-in reasoning setting.
+	Reasoning *Reasoning `json:"reasoning,omitempty"`
 	// Instructions is prepended to the sub-agent's system prompt to give it
 	// a fixed role (e.g. "You are a security reviewer. Focus only on...").
 	Instructions string `json:"instructions,omitempty"`
@@ -185,6 +212,9 @@ type AgentDefinition struct {
 	// TokenBudget bounds provider-reported input plus output tokens across the
 	// delegated task. Zero leaves the task bounded by iterations and timeout.
 	TokenBudget int `json:"token_budget,omitempty"`
+	// CostBudgetUSD bounds estimated provider spend using the selected
+	// provider's explicitly configured pricing. Zero disables this bound.
+	CostBudgetUSD float64 `json:"cost_budget_usd,omitempty"`
 	// TimeoutSeconds bounds queueing plus execution. Zero uses ten minutes.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 	// Permissions can only tighten the parent's effective policy. It cannot
@@ -231,9 +261,14 @@ type Options struct {
 	// DelegateProviderConcurrency optionally applies a tighter limit to tasks
 	// using a named provider. Omitted providers inherit the session-wide limit.
 	DelegateProviderConcurrency map[string]int `json:"delegate_provider_concurrency,omitempty"`
-	DisabledTools               []string       `json:"disabled_tools,omitempty"`
-	TranscriptDirectory         string         `json:"transcript_directory,omitempty"`
-	Theme                       string         `json:"theme,omitempty"`
+	// AgentIntegration controls who may publish retained delegated-worktree
+	// changes into the parent workspace. "manual" (the default) exposes only
+	// /agents apply; "reviewed" additionally gives the primary agent bounded
+	// inspect/apply tools backed by the same guarded integration path.
+	AgentIntegration    string   `json:"agent_integration,omitempty"`
+	DisabledTools       []string `json:"disabled_tools,omitempty"`
+	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
+	Theme               string   `json:"theme,omitempty"`
 	// AlternateScreen controls whether the interactive TUI uses the terminal's
 	// alternate screen buffer. It defaults to true; disabling it keeps the
 	// final screen in native terminal scrollback.
@@ -286,6 +321,7 @@ func Defaults() Config {
 		Options: Options{
 			MaxIterations:      24,
 			MaxToolOutputBytes: 64 * 1024,
+			AgentIntegration:   "manual",
 			AlternateScreen:    true,
 			Keybindings:        DefaultKeybindings(),
 		},
@@ -471,6 +507,10 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	if c.Options.DelegateProviderConcurrency == nil {
 		c.Options.DelegateProviderConcurrency = map[string]int{}
 	}
+	if c.Options.AgentIntegration == "" {
+		c.Options.AgentIntegration = "manual"
+	}
+	c.Options.AgentIntegration = strings.ToLower(strings.TrimSpace(c.Options.AgentIntegration))
 	if c.Options.Keybindings == nil {
 		c.Options.Keybindings = DefaultKeybindings()
 	}
@@ -481,6 +521,9 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	for name, p := range c.Providers {
 		p.Type = strings.ToLower(strings.TrimSpace(p.Type))
 		p.Auth = strings.ToLower(strings.TrimSpace(p.Auth))
+		if p.Reasoning != nil {
+			p.Reasoning.Effort = strings.ToLower(strings.TrimSpace(p.Reasoning.Effort))
+		}
 		if skipEnvironmentExpansion {
 			p.BaseURL = strings.TrimRight(p.BaseURL, "/")
 			p.EntraScope = strings.TrimSpace(p.EntraScope)
@@ -512,6 +555,14 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 			p.StreamIdleTimeoutSeconds = 5 * 60
 		}
 		c.Providers[name] = p
+	}
+	c.DefaultAgent = strings.TrimSpace(c.DefaultAgent)
+	for name, profile := range c.Agents {
+		profile.Availability = strings.ToLower(strings.TrimSpace(profile.Availability))
+		if profile.Reasoning != nil {
+			profile.Reasoning.Effort = strings.ToLower(strings.TrimSpace(profile.Reasoning.Effort))
+		}
+		c.Agents[name] = profile
 	}
 	for name, server := range c.MCP {
 		c.MCP[name] = normalizeMCPServer(server, !skipEnvironmentExpansion)
@@ -668,6 +719,22 @@ func (c Config) ValidateFields() []FieldError {
 				errs = append(errs, FieldError{field + "." + timeout.key, "must not be negative"})
 			}
 		}
+		if provider.Reasoning != nil {
+			if err := validateReasoningEffort(provider.Reasoning.Effort); err != nil {
+				errs = append(errs, FieldError{field + ".reasoning.effort", err.Error()})
+			}
+		}
+		if provider.Pricing != nil {
+			if provider.Pricing.InputPerMillion <= 0 {
+				errs = append(errs, FieldError{field + ".pricing.input_per_million", "must be greater than zero"})
+			}
+			if provider.Pricing.OutputPerMillion <= 0 {
+				errs = append(errs, FieldError{field + ".pricing.output_per_million", "must be greater than zero"})
+			}
+			if provider.Pricing.CachedInputPerMillion != nil && *provider.Pricing.CachedInputPerMillion < 0 {
+				errs = append(errs, FieldError{field + ".pricing.cached_input_per_million", "must not be negative"})
+			}
+		}
 	}
 	for i, pattern := range c.Permissions.DeniedCommands {
 		if _, err := regexp.Compile(pattern); err != nil {
@@ -698,11 +765,27 @@ func (c Config) ValidateFields() []FieldError {
 	}
 	for name, a := range c.Agents {
 		field := "agents." + name
+		if (name == "default" || name == "none") && AgentAvailableFor(a, "primary") {
+			errs = append(errs, FieldError{field + ".availability", "primary profiles cannot use the reserved names default or none"})
+		}
+		switch a.Availability {
+		case "", "delegate", "primary", "both":
+		default:
+			errs = append(errs, FieldError{field + ".availability", fmt.Sprintf("must be delegate, primary, or both (got %q)", a.Availability)})
+		}
+		if a.Reasoning != nil {
+			if err := validateReasoningEffort(a.Reasoning.Effort); err != nil {
+				errs = append(errs, FieldError{field + ".reasoning.effort", err.Error()})
+			}
+		}
 		if a.MaxIterations < 0 {
 			errs = append(errs, FieldError{field + ".max_iterations", "must not be negative"})
 		}
 		if a.TokenBudget < 0 {
 			errs = append(errs, FieldError{field + ".token_budget", "must not be negative"})
+		}
+		if a.CostBudgetUSD < 0 {
+			errs = append(errs, FieldError{field + ".cost_budget_usd", "must not be negative"})
 		}
 		if a.TimeoutSeconds < 0 || a.TimeoutSeconds > 3600 {
 			errs = append(errs, FieldError{field + ".timeout_seconds", "must be between 0 and 3600"})
@@ -735,6 +818,14 @@ func (c Config) ValidateFields() []FieldError {
 			}
 		}
 	}
+	if c.DefaultAgent != "" {
+		profile, ok := c.Agents[c.DefaultAgent]
+		if !ok {
+			errs = append(errs, FieldError{"default_agent", fmt.Sprintf("agent %q is not configured", c.DefaultAgent)})
+		} else if !AgentAvailableFor(profile, "primary") {
+			errs = append(errs, FieldError{"default_agent", fmt.Sprintf("agent %q is not available to the primary agent", c.DefaultAgent)})
+		}
+	}
 	if c.Options.DelegateMaxConcurrency < 0 || c.Options.DelegateMaxConcurrency > 6 {
 		errs = append(errs, FieldError{"options.delegate_max_concurrency", "must be zero (default) or between 1 and 6"})
 	}
@@ -745,6 +836,11 @@ func (c Config) ValidateFields() []FieldError {
 		if limit < 1 || limit > 6 {
 			errs = append(errs, FieldError{"options.delegate_provider_concurrency." + name, "must be between 1 and 6"})
 		}
+	}
+	switch c.Options.AgentIntegration {
+	case "", "manual", "reviewed":
+	default:
+		errs = append(errs, FieldError{"options.agent_integration", fmt.Sprintf("must be manual or reviewed (got %q)", c.Options.AgentIntegration)})
 	}
 	switch strings.ToLower(c.Options.Notifications) {
 	case "", "on", "bell", "off":
@@ -783,6 +879,43 @@ func (c Config) ValidateFields() []FieldError {
 	}
 	errs = append(errs, ValidateKeybindings(c.Options.Keybindings)...)
 	return errs
+}
+
+func validateReasoningEffort(effort string) error {
+	if slices.Contains([]string{"low", "medium", "high", "xhigh", "max"}, effort) {
+		return nil
+	}
+	return fmt.Errorf("must be low, medium, high, xhigh, or max (got %q)", effort)
+}
+
+// AgentAvailableFor reports whether a named profile may be used in the
+// requested role. Empty availability retains the historical delegate-only
+// meaning so existing agent configurations do not unexpectedly affect the
+// primary conversation.
+func AgentAvailableFor(profile AgentDefinition, role string) bool {
+	availability := strings.ToLower(strings.TrimSpace(profile.Availability))
+	if availability == "" {
+		availability = "delegate"
+	}
+	return availability == "both" || availability == role
+}
+
+// PrimaryAgent resolves a primary profile by name.
+func (c Config) PrimaryAgent(name string) (AgentDefinition, error) {
+	if name == "default" || name == "none" {
+		name = ""
+	}
+	if name == "" {
+		return AgentDefinition{}, nil
+	}
+	profile, ok := c.Agents[name]
+	if !ok {
+		return AgentDefinition{}, fmt.Errorf("unknown agent profile %q", name)
+	}
+	if !AgentAvailableFor(profile, "primary") {
+		return AgentDefinition{}, fmt.Errorf("agent profile %q is not available to the primary agent", name)
+	}
+	return profile, nil
 }
 
 // Validate keeps the aggregate error form used by callers.

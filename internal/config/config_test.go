@@ -324,6 +324,24 @@ func TestSchemaVersionTooNewIsRejected(t *testing.T) {
 	}
 }
 
+func TestLegacyV1ConfigWithoutSchemaKeepsLenientCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, `{
+	  "default_model": "legacy-model",
+	  "future_optional_field": {"ignored": true}
+	}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SchemaVersion != CurrentSchemaVersion || cfg.DefaultModel != "legacy-model" {
+		t.Fatalf("legacy config=%+v", cfg)
+	}
+	if _, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll, Strict: true}); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("strict compatibility check error=%v", err)
+	}
+}
+
 func TestStrictModeRejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	writeProject(t, dir, `{"defualt_model":"typo"}`)
@@ -511,6 +529,20 @@ func TestValidateNotifications(t *testing.T) {
 	}
 }
 
+func TestValidateAgentIntegration(t *testing.T) {
+	cfg := Defaults()
+	for _, mode := range []string{"manual", "reviewed"} {
+		cfg.Options.AgentIntegration = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("agent integration %q should validate: %v", mode, err)
+		}
+	}
+	cfg.Options.AgentIntegration = "automatic"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "options.agent_integration") {
+		t.Fatal("expected options.agent_integration error")
+	}
+}
+
 func TestValidateExternalEditor(t *testing.T) {
 	cfg := Defaults()
 	cfg.Options.Editor = EditorOptions{Command: "code", Args: []string{"--goto", "{file}:{line}:{column}"}}
@@ -520,6 +552,50 @@ func TestValidateExternalEditor(t *testing.T) {
 	cfg.Options.Editor = EditorOptions{Args: []string{"{file}"}}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "options.editor.command") {
 		t.Fatalf("missing command error=%v", err)
+	}
+}
+
+func TestValidatePrimaryAgentReasoningPricingAndBudget(t *testing.T) {
+	cfg := Defaults()
+	cached := 0.25
+	provider := cfg.Providers["ollama"]
+	provider.Reasoning = &Reasoning{Effort: "high"}
+	provider.Pricing = &Pricing{InputPerMillion: 1, OutputPerMillion: 4, CachedInputPerMillion: &cached}
+	cfg.Providers["ollama"] = provider
+	cfg.Agents["builder"] = AgentDefinition{
+		Availability: "both", Reasoning: &Reasoning{Effort: "medium"}, CostBudgetUSD: 2.5,
+	}
+	cfg.DefaultAgent = "builder"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid primary profile: %v", err)
+	}
+	if _, err := cfg.PrimaryAgent("builder"); err != nil {
+		t.Fatal(err)
+	}
+	if profile, err := cfg.PrimaryAgent("default"); err != nil || profile.Model != "" {
+		t.Fatalf("default alias should restore the unprofiled primary: profile=%+v err=%v", profile, err)
+	}
+	if profile, err := cfg.PrimaryAgent("none"); err != nil || profile.Model != "" {
+		t.Fatalf("none alias should restore the unprofiled primary: profile=%+v err=%v", profile, err)
+	}
+
+	bad := cfg
+	bad.DefaultAgent = "missing"
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "default_agent") {
+		t.Fatalf("missing default agent error=%v", err)
+	}
+	provider = cfg.Providers["ollama"]
+	provider.Reasoning = &Reasoning{Effort: "turbo"}
+	cfg.Providers["ollama"] = provider
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reasoning.effort") {
+		t.Fatalf("invalid reasoning error=%v", err)
+	}
+}
+
+func TestExistingAgentProfilesRemainDelegateOnly(t *testing.T) {
+	profile := AgentDefinition{}
+	if !AgentAvailableFor(profile, "delegate") || AgentAvailableFor(profile, "primary") {
+		t.Fatal("empty availability should retain delegate-only behavior")
 	}
 }
 

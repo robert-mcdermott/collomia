@@ -331,6 +331,37 @@ by `stop_process`, `/ps stop`, or automatically when the session ends
 (including background processes started by a delegated write-agent inside
 its own worktree, which are stopped when that sub-agent's task finishes).
 Nothing started this way is expected to outlive the `collo` process.
+Runtime shutdown waits for tracked background-command completion after
+requesting group/tree termination, with a finite safety bound so a broken
+platform primitive cannot hang terminal restoration indefinitely.
+
+## Durable fail-stop boundary
+
+The durable session log is append-only. A short write or operating-system
+storage error latches the first failure; Collomia never appends a later record
+behind a torn tail. The agent checks this latch before each subsequent provider
+request and again before a tool crosses its permission/start boundary. The
+same check is inherited by delegated agents. This prevents a failed session
+record from being followed silently by another external or mutating action.
+
+A tool already executing when storage fails cannot be undone. If its result
+was not accepted, resume labels that call `interrupted`, says that it may or
+may not have taken effect, and never replays it automatically. The user must
+inspect the workspace or external system before retrying.
+
+Immutable session attachments and retained oversized results are accepted only
+after write, sync, and close complete; catchable failures remove the partial
+file. Rooted source mutations write a private same-directory temporary and
+publish with atomic rename. A forced process death therefore leaves the
+destination entirely old or entirely new, never partially replaced. A kill
+before rename can leave an owner-only `.collomia-*.tmp` file. That orphan is
+not model-visible or executable and may be removed after confirming no active
+Collomia operation owns it.
+
+This fail-stop guard covers the durable conversation/session store. The debug
+log and permission audit ledger remain best-effort diagnostics; their
+availability is checked by `collo doctor`, but a later I/O failure in those
+diagnostic streams does not currently stop a tool.
 
 ## Delegated-agent boundary
 
@@ -355,11 +386,24 @@ capability.
 
 The session-wide FIFO scheduler bounds total and per-provider concurrency.
 Each task also has a queue-inclusive timeout, maximum iteration count, and
-optional token budget. Token enforcement uses provider-reported usage when the
-adapter supplies it and estimates the next request before sending; providers
-may report usage only after a response, so a final response can exceed the
-configured token target. Timeouts and iteration limits remain the hard fallback.
-These controls limit agent work, not operating-system CPU or memory consumption.
+optional token and estimated-cost budgets. Primary profiles can apply the same
+budgets to the durable session. Cost enforcement requires positive
+user-configured provider pricing; Collomia deliberately has no built-in price
+catalog. Token/cost enforcement estimates the next input and caps requested
+output before sending, then uses provider-reported usage. Because providers may
+report usage only after a response, a final response can exceed the target; no
+tool or later provider call proceeds after exhaustion. Missing usage fails
+closed for an enabled cost budget. Accounting survives resume and cannot be
+reset with profile switching or `/clear`; `/new` creates a fresh session.
+Timeouts and iteration limits remain the hard fallback. These controls limit
+agent work, not operating-system CPU or memory consumption, and cost estimates
+are not invoices.
+
+Reasoning effort is opt-in. Omitting it leaves provider request shapes
+unchanged. Adapters translate it only to documented protocol fields and retry
+without it after an explicit unsupported-field response where safe; native
+Bedrock refuses to apply Claude-specific reasoning fields to an unrecognized
+model family. Reasoning settings never grant tools or alter permissions.
 
 `/agents steer <id> <guidance...>` queues bounded guidance only for the child's
 next provider boundary. It cannot change an executing tool/provider call,
@@ -368,18 +412,79 @@ states that steering grants no permission. `alt+a` exposes a deliberate
 inspect/steer/stop action menu, and `/agents stop <id-or-name>` cancels one
 queued or active child.
 
-`/agents apply <id>` is an explicit copy-and-review operation, not a Git merge.
-Collomia treats the durable worktree path as untrusted: it verifies Git still
-registers that exact directory and branch for the parent repository, requires
-the branch `HEAD` to equal the recorded base commit, rejects path traversal,
-symlinks, non-regular/binary/non-UTF-8/oversized files and mode-only changes,
-and refuses any parent file that no longer matches the base. The user selects
+`/agents apply <id>` is an explicit copy-and-review operation, not a branch
+merge. Collomia treats the durable worktree path as untrusted: it verifies Git
+still registers that exact directory and branch for the parent repository,
+requires branch `HEAD` to equal the recorded base commit, rejects path
+traversal, symlinks, non-regular/binary/non-UTF-8/oversized files, and blocks a
+child that changed paths outside its declared write scope.
+
+Writers declare repository-relative file or directory scopes. The scheduler
+case-folds comparisons conservatively and serializes overlapping,
+workspace-wide, or unspecified writers while allowing disjoint writers to
+run concurrently. This is not a filesystem authorization boundary: inherited
+permissions and the OS sandbox remain authoritative. Actual Git changes are
+checked against the declaration after execution; a violation makes the child
+result an error, stays isolated in the retained worktree, and is unavailable
+to guarded integration.
+
+For supported existing text files, integration compares the recorded base,
+current parent, and retained child. An unchanged parent gets the ordinary
+child diff. Clean non-overlapping parent/child edits produce a composed,
+selectable preview that preserves both sides. Overlapping edits produce a
+bounded diff3 conflict preview and remain non-selectable; incompatible
+add/delete or mode changes also fail closed. This computation does not grant
+permission or write content.
+
+The review token binds worktree/branch/base identity, exact parent and child
+bytes and modes, the composed result, and conflict state. The user selects
 text hunks in a floating review; normal `integrate_delegate` permission rules
-still apply. Both parent and child bytes are rechecked after interactive
-approval to close the approval-time race. Rooted atomic replacement/removal,
-multi-file rollback, and the ordinary change tracker then publish the selected
-content. The child worktree and branch are retained. Collomia never commits,
-pushes, silently reconciles conflicts, or deletes those recovery artifacts.
+still apply. The entire comparison is recomputed after interactive approval
+to close the approval-time race. Rooted atomic replacement/removal, multi-file
+rollback, and the ordinary change tracker then publish only selected clean
+content. The child worktree and branch are retained. Collomia never creates a
+merge commit, commits, pushes, chooses an overlapping resolution, or deletes
+those recovery artifacts.
+
+`options.agent_integration: "reviewed"` permits the primary model—but never a
+delegated child—to inspect, verify, compare, and selectively copy retained
+work. It does not add a new mutation primitive. `inspect_delegate_changes`
+returns bounded evidence and numbered ordinary or clean-three-way hunks plus
+two opaque SHA-256 tokens: the publication review token covers the registered
+worktree/base, parent bytes, child bytes, relevant modes, composed result, and
+conflict state; the verification token covers only the registered child state
+so unrelated parent drift cannot falsify child test evidence.
+
+`verify_delegate_changes` accepts exactly one repository-detected command and
+requires the current child token. Its permission and hook identity remains
+`run_command`; command analysis, catastrophic and configured denials,
+executable rules, minimal environment, sandbox/network policy, output caps,
+timeouts, descendant cancellation, audit recording, and lifecycle hooks all
+remain effective. Results are bounded/redacted machine observations. All
+detected commands must pass against one token for aggregate `passed` state,
+and a changed child becomes `stale`. Verification never copies files or grants
+permission. `/agents verify` applies the same contract one command at a time.
+
+`compare_delegate_changes` is read-only and exposes bounded conflicts,
+selectable hunks, verification, evidence, and usage for two to six candidates.
+It does not choose a winner. `apply_delegate_changes` remains unavailable
+without the publication token and refuses it if reviewed or three-way state
+changed before authorization. The agent loop applies the ordinary write
+policy under `integrate_delegate`, then calls the shared post-authorization
+publication path. Rooted writes, rollback, change tracking, retained
+worktrees, and the prohibition on commit/push/merge commits are identical to
+`/agents apply`.
+
+Reviewed mode is opt-in and defaults to `manual`. It lets the primary model
+make a better-supported quality decision; it does not prove that decision
+correct. Child-authored evidence and repository text remain data rather than
+instructions. A machine-observed child pass covers only that exact retained
+worktree state—not parent-only edits or interactions among integrated
+candidates—so the combined parent workspace must still be verified after
+publication. Clean parent drift is reviewable through the three-way preview;
+overlapping drift, sibling overlap, unsupported entries, scope violations,
+stale reviews or verification, and moved branches fail closed for explicit
+resolution.
 
 Closing Collomia requests cancellation for every child and stops background
 processes owned by write agents. Durable sessions keep bounded status, summary,

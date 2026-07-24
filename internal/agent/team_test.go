@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,6 +69,41 @@ func TestTeamStopAllCancelsOnlyActiveTasks(t *testing.T) {
 	}
 	if status, _ := team.Get("done"); status.Status != DelegateDone {
 		t.Fatalf("completed status changed: %+v", status)
+	}
+}
+
+func TestTeamCancellationRaceCannotReviveTask(t *testing.T) {
+	for attempt := 0; attempt < 64; attempt++ {
+		team := NewTeam()
+		ctx, cancel := context.WithCancel(t.Context())
+		team.Enqueue(DelegateStart{ID: "race", Name: "worker", Cancel: cancel})
+		team.MarkRunning("race")
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = team.Stop("race")
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			team.SetAction("race", "late provider boundary")
+			team.SetWaitingApproval("race", "late approval")
+			team.MarkRunning("race")
+		}()
+		close(start)
+		wg.Wait()
+		select {
+		case <-ctx.Done():
+		default:
+			t.Fatalf("attempt %d did not cancel task context", attempt)
+		}
+		status, _ := team.Get("race")
+		if status.Status != DelegateCancelling {
+			t.Fatalf("attempt %d revived task: %+v", attempt, status)
+		}
 	}
 }
 
@@ -141,13 +177,75 @@ func TestTeamRecentOutputKeepsOnlyBoundedTail(t *testing.T) {
 func TestDelegateStatusEventRoundTripPreservesOperatorMetadata(t *testing.T) {
 	original := DelegateStatus{
 		ID: "d1", Name: "writer", Task: "implement", Write: true, PlanStep: 3,
+		WriteScopes: []string{"internal/app/"}, ScopeViolations: []string{"README.md"},
 		Status: DelegateDone, RecentOutput: "tests passed", Guidance: []string{"run the focused test"},
 		Summary: "done", FailureID: "err-0123456789abcdef", Changed: []string{"a.go"}, Integrated: []string{"a.go"},
 		Worktree: "/tmp/worktree", Branch: "collomia/writer", BaseCommit: "abcdef",
+		IntegrationStatus: "partial", IntegrationError: "one hunk remains",
+		VerificationStatus: "passed", VerificationToken: "verify-abc", VerificationRequired: []string{"go test ./..."},
+		VerificationResults: []DelegateVerification{{Purpose: "test", Command: "go test ./...", Status: "passed", Output: "ok", StateToken: "verify-abc"}},
 	}
 	restored := DelegateStatusFromEvent(original.Event())
-	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 {
+	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.WriteScopes) != 1 || len(restored.ScopeViolations) != 1 || len(restored.Integrated) != 1 || restored.IntegrationStatus != "partial" || restored.IntegrationError != "one hunk remains" || restored.VerificationStatus != "passed" || len(restored.VerificationResults) != 1 || restored.VerificationResults[0].Command != "go test ./..." {
 		t.Fatalf("restored=%+v", restored)
+	}
+}
+
+func TestTeamPersistsWriteScopeQueueAndViolations(t *testing.T) {
+	team := NewTeam()
+	team.Enqueue(DelegateStart{ID: "d1", Name: "writer", Task: "write", Write: true, WriteScopes: []string{"docs/"}})
+	queued, _ := team.Get("d1")
+	if len(queued.WriteScopes) != 1 || !strings.Contains(queued.CurrentAction, "write scope") {
+		t.Fatalf("queued=%+v", queued)
+	}
+	team.MarkScopeViolations("d1", []string{"internal/app/app.go"})
+	restored := DelegateStatusFromEvent(queued.Event())
+	if len(restored.WriteScopes) != 1 {
+		t.Fatalf("restored scopes=%+v", restored)
+	}
+	current, _ := team.Get("d1")
+	if len(current.ScopeViolations) != 1 || current.ScopeViolations[0] != "internal/app/app.go" {
+		t.Fatalf("violations=%+v", current)
+	}
+}
+
+func TestTeamVerificationRequiresCompleteFreshSuite(t *testing.T) {
+	team := NewTeam()
+	team.Start("d1", "writer", "write", true)
+	team.Finish("d1", "done", []string{"a.go"}, "/tmp/worktree", "collomia/writer", nil)
+	required := []string{"go vet ./...", "go test ./..."}
+	team.MarkVerificationRunning("d1", "verify-one", required, required[0])
+	team.MarkVerificationResult("d1", "verify-one", required, DelegateVerification{Command: required[0], Status: "passed", StateToken: "verify-one"})
+	status, _ := team.Get("d1")
+	if status.VerificationStatus != "partial" {
+		t.Fatalf("one command must not verify the suite: %+v", status)
+	}
+	team.MarkVerificationResult("d1", "verify-one", required, DelegateVerification{Command: required[1], Status: "passed", StateToken: "verify-one"})
+	status, _ = team.Get("d1")
+	if status.VerificationStatus != "passed" {
+		t.Fatalf("complete suite=%+v", status)
+	}
+	team.MarkVerificationStale("d1", "child changed")
+	status, _ = team.Get("d1")
+	if status.VerificationStatus != "stale" || len(status.VerificationResults) != 2 {
+		t.Fatalf("stale evidence was not retained: %+v", status)
+	}
+	team.MarkVerificationRunning("d1", "verify-two", required, required[0])
+	status, _ = team.Get("d1")
+	if status.VerificationStatus != "running" || len(status.VerificationResults) != 0 {
+		t.Fatalf("new child state retained old results: %+v", status)
+	}
+}
+
+func TestTeamTracksDelegateIntegrationDisposition(t *testing.T) {
+	team := NewTeam()
+	team.Start("d1", "writer", "write", true)
+	team.Finish("d1", "done", []string{"a.go"}, "/tmp/worktree", "collomia/writer", nil)
+	team.MarkIntegrationReview("d1", "reviewed", "")
+	team.MarkIntegrationOutcome("d1", "partial", []string{"a.go"}, "one hunk remains")
+	status, _ := team.Get("d1")
+	if status.IntegrationStatus != "partial" || status.IntegrationError != "one hunk remains" || len(status.Integrated) != 1 {
+		t.Fatalf("status=%+v", status)
 	}
 }
 

@@ -33,6 +33,7 @@ func WriteStarter(path string, global bool) error {
 		MaxToolOutputBytes          int               `json:"max_tool_output_bytes"`
 		DelegateMaxConcurrency      int               `json:"delegate_max_concurrency"`
 		DelegateProviderConcurrency map[string]int    `json:"delegate_provider_concurrency"`
+		AgentIntegration            string            `json:"agent_integration"`
 		AlternateScreen             bool              `json:"alternate_screen"`
 		ReducedMotion               bool              `json:"reduced_motion"`
 		Keybindings                 map[string]string `json:"keybindings"`
@@ -80,6 +81,7 @@ func WriteStarter(path string, global bool) error {
 			MaxToolOutputBytes:          64 * 1024,
 			DelegateMaxConcurrency:      4,
 			DelegateProviderConcurrency: map[string]int{},
+			AgentIntegration:            "manual",
 			AlternateScreen:             true,
 			ReducedMotion:               false,
 			Keybindings:                 DefaultKeybindings(),
@@ -124,6 +126,9 @@ const configReferenceJSONC = `
   // Provider selected when no CLI or environment override is present.
   "default_provider": "ollama",
   "default_model": "qwen3-coder",
+  // Optional named profile used for the primary conversation. CLI --agent
+  // and interactive /agent selection override it.
+  "default_agent": "builder",
 
   // Keep only providers you use. Secrets should normally use api_key_env.
   "providers": {
@@ -154,7 +159,17 @@ const configReferenceJSONC = `
       "model": "gpt-5.1-codex-mini",
       "max_tokens": 8192,
       "context_window": 200000,
-      "temperature": 0.2
+      "temperature": 0.2,
+      // Entirely opt-in. Omit reasoning to preserve the provider/model
+      // default. Unsupported explicit controls are never silently invented.
+      "reasoning": {"effort": "medium"},
+      // Optional user-maintained USD rates per one million tokens. Collomia
+      // never ships model prices because providers and contracts change.
+      "pricing": {
+        "input_per_million": 1.25,
+        "output_per_million": 10.0,
+        "cached_input_per_million": 0.125
+      }
     },
     "anthropic": {
       "type": "anthropic",
@@ -330,6 +345,13 @@ const configReferenceJSONC = `
     "delegate_provider_concurrency": {
       "openrouter": 2
     },
+    // manual keeps delegated publication behind /agents apply; operators can
+    // still /agents verify and compare retained candidates. reviewed also lets
+    // the primary inspect exact child diffs, run repository-detected commands
+    // under run_command policy, compare candidates, and selectively publish
+    // accepted hunks. A child pass never grants permission or proves the
+    // combined parent workspace. Nothing commits, merges, or pushes.
+    "agent_integration": "manual",
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",
     "theme": "collomia",
@@ -364,17 +386,30 @@ const configReferenceJSONC = `
     "debug": false
   },
 
-  // Named profiles for the delegate tool. Empty fields inherit the parent.
+  // Named profiles for the primary agent and/or delegate tool. Empty fields
+  // inherit the ordinary runtime setting. availability defaults to delegate
+  // for backward compatibility; use primary or both to expose /agent.
   // Profile permissions only tighten: allow rules are rejected, denials are
   // additive, and the effective mode is the stricter of parent and child.
   "agents": {
+    "builder": {
+      "availability": "primary",
+      "instructions": "Implement focused changes and verify them.",
+      "reasoning": {"effort": "high"},
+      "max_iterations": 24,
+      // Cost budgets require pricing on the selected provider. They use
+      // provider-reported tokens and survive /clear and session resume.
+      "cost_budget_usd": 2.50
+    },
     "reviewer": {
+      "availability": "delegate",
       "model": "",
       "instructions": "Review for correctness, security, and missing tests.",
       "tools": ["read_file", "search_files"],
       "skills": ["security-review"],
       "max_iterations": 12,
       "token_budget": 50000,
+      "cost_budget_usd": 1.00,
       "timeout_seconds": 600,
       "permissions": {
         "mode": "ask",

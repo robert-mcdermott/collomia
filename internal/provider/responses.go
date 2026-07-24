@@ -45,6 +45,9 @@ func (c *ResponsesClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if in.Temperature != nil {
 		body["temperature"] = *in.Temperature
 	}
+	if in.ReasoningEffort != "" {
+		body["reasoning"] = map[string]any{"effort": in.ReasoningEffort}
+	}
 	if len(in.Tools) > 0 {
 		defs := make([]any, 0, len(in.Tools))
 		for _, tool := range in.Tools {
@@ -56,32 +59,58 @@ func (c *ResponsesClient) Chat(ctx context.Context, in Request, onDelta func(Del
 		}
 		body["tools"] = defs
 	}
-	req, err := newJSONRequest(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/responses", body)
-	if err != nil {
-		return Response{}, err
+	for adjustment := 0; ; adjustment++ {
+		req, err := newJSONRequest(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/responses", body)
+		if err != nil {
+			return Response{}, err
+		}
+		if c.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		}
+		applyHeaders(req, c.Headers)
+		client := c.HTTP
+		if client == nil {
+			client = httpClient()
+		}
+		resp, err := doWithRetry(client, req, c.Label, "responses")
+		if err != nil {
+			return Response{}, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+			resp.Body.Close()
+			if readErr != nil {
+				return Response{}, protocolError(c.Label, "read responses error response", readErr)
+			}
+			if adjustment == 0 && in.ReasoningEffort != "" && responsesRejectedReasoning(resp.StatusCode, errorBody) {
+				delete(body, "reasoning")
+				if onDelta != nil {
+					onDelta(Delta{Warning: "provider or model rejected the configured reasoning effort; retrying with its default for this request"})
+				}
+				continue
+			}
+			return Response{}, responseError(resp, c.Label, "responses", errorBody)
+		}
+		defer resp.Body.Close()
+		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+			out, err := parseResponsesStream(resp.Body, c.Label, onDelta)
+			return out, protocolError(c.Label, "read responses stream", err)
+		}
+		out, err := parseResponsesResponse(resp.Body, c.Label, onDelta)
+		return out, protocolError(c.Label, "decode responses response", err)
 	}
-	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+}
+
+func responsesRejectedReasoning(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
 	}
-	applyHeaders(req, c.Headers)
-	client := c.HTTP
-	if client == nil {
-		client = httpClient()
-	}
-	resp, err := doWithRetry(client, req, c.Label, "responses")
-	if err != nil {
-		return Response{}, err
-	}
-	defer resp.Body.Close()
-	if err := checkResponse(resp, c.Label, "responses"); err != nil {
-		return Response{}, err
-	}
-	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
-		out, err := parseResponsesStream(resp.Body, c.Label, onDelta)
-		return out, protocolError(c.Label, "read responses stream", err)
-	}
-	out, err := parseResponsesResponse(resp.Body, c.Label, onDelta)
-	return out, protocolError(c.Label, "decode responses response", err)
+	message := strings.ToLower(string(body))
+	rejected := strings.Contains(message, "unsupported") || strings.Contains(message, "not supported") ||
+		strings.Contains(message, "unrecognized") || strings.Contains(message, "unknown parameter") ||
+		strings.Contains(message, "invalid") || strings.Contains(message, "must be") ||
+		strings.Contains(message, "expected")
+	return rejected && (strings.Contains(message, "reasoning") || strings.Contains(message, "effort"))
 }
 
 func responsesInput(in Request) ([]any, error) {

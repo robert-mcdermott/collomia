@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/agent"
+	"github.com/robert-mcdermott/collomia/internal/app"
 )
 
 func agentDuration(status agent.DelegateStatus, now time.Time) time.Duration {
@@ -46,6 +48,9 @@ func (m *Model) openAgentPicker() {
 		items = append(items, pickerItem{id: status.ID, title: status.Name, desc: desc})
 	}
 	m.picker = newPicker("Delegated agents", items, func(m *Model, item pickerItem) tea.Cmd {
+		if current, ok := m.runtime.Team.Get(item.id); ok && current.Write {
+			_, _ = m.runtime.PrepareDelegateVerification(context.Background(), item.id)
+		}
 		for _, status := range m.runtime.Team.Snapshot() {
 			if status.ID == item.id {
 				m.addPanel("Agent · "+status.Name, m.renderAgentDetails(status))
@@ -131,6 +136,16 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 	if status.PlanStep > 0 {
 		lines = append(lines, fmt.Sprintf("Plan step: %d", status.PlanStep))
 	}
+	if len(status.WriteScopes) > 0 {
+		lines = append(lines, "Write scope: "+strings.Join(status.WriteScopes, ", "))
+	}
+	if len(status.ScopeViolations) > 0 {
+		lines = append(lines, "", "Write-scope violations:")
+		for _, path := range status.ScopeViolations {
+			lines = append(lines, "- "+path)
+		}
+		lines = append(lines, "Guarded integration is blocked; inspect the retained worktree manually.")
+	}
 	if status.Provider != "" || status.Model != "" {
 		lines = append(lines, "Provider: "+m.runtime.Redactor.Redact(status.Provider+"/"+status.Model))
 	}
@@ -142,6 +157,13 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 		lines = append(lines, fmt.Sprintf("Tokens:   %d / %d", usage, status.TokenBudget))
 	} else if usage > 0 {
 		lines = append(lines, fmt.Sprintf("Tokens:   %d (%d input / %d output)", usage, status.Usage.InputTokens, status.Usage.OutputTokens))
+	}
+	if status.Usage.CostAvailable {
+		if status.CostBudgetUSD > 0 {
+			lines = append(lines, fmt.Sprintf("Cost:     $%.6f / $%.6f estimated", status.Usage.CostUSD, status.CostBudgetUSD))
+		} else {
+			lines = append(lines, fmt.Sprintf("Cost:     $%.6f estimated", status.Usage.CostUSD))
+		}
 	}
 	if status.TimeoutSeconds > 0 {
 		lines = append(lines, fmt.Sprintf("Timeout:  %ds (includes queue time)", status.TimeoutSeconds))
@@ -195,11 +217,63 @@ func (m *Model) renderAgentDetails(status agent.DelegateStatus) string {
 			lines = append(lines, "- "+path)
 		}
 	}
+	if status.IntegrationStatus != "" {
+		lines = append(lines, "", "Integration: "+delegateStatusLabel(status.IntegrationStatus))
+		if status.IntegrationError != "" {
+			lines = append(lines, "Reason: "+m.runtime.Redactor.Redact(status.IntegrationError))
+		}
+	}
+	if status.VerificationStatus != "" {
+		lines = append(lines, "", "Child verification: "+delegateStatusLabel(status.VerificationStatus))
+		if status.VerificationError != "" {
+			lines = append(lines, "Verification note: "+m.runtime.Redactor.Redact(status.VerificationError))
+		}
+		for _, result := range status.VerificationResults {
+			line := "- " + result.Command + ": " + delegateStatusLabel(result.Status)
+			if result.Purpose != "" {
+				line += " (" + result.Purpose + ")"
+			}
+			lines = append(lines, line)
+			if result.Error != "" {
+				lines = append(lines, "  "+m.runtime.Redactor.Redact(result.Error))
+			}
+		}
+		lines = append(lines, "Scope: retained child worktree only; verify the combined parent workspace after integration.")
+	}
 	if status.Status == agent.DelegateQueued || status.Status == agent.DelegateRunning || status.Status == agent.DelegateWaitingApproval || status.Status == agent.DelegateCancelling {
 		lines = append(lines, "", "Control:", "/agents steer "+status.ID+" <guidance…>", "/agents stop "+status.ID)
-	} else if status.Write && len(status.Changed) > 0 && status.Worktree != "" {
-		lines = append(lines, "", "Review and selectively integrate:", "/agents apply "+status.ID)
+	} else if status.Write && len(status.Changed) > 0 && status.Worktree != "" && len(status.ScopeViolations) == 0 {
+		lines = append(lines, "", "Review, verify, and selectively integrate:", "/agents verify "+status.ID, "/agents apply "+status.ID)
+		if m.runtime.Config.Options.AgentIntegration == "reviewed" {
+			lines = append(lines, "Primary-agent reviewed integration is enabled.")
+		}
 	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *Model) renderDelegateComparison(candidates []app.DelegateCandidateSummary) string {
+	var lines []string
+	for _, candidate := range candidates {
+		line := fmt.Sprintf("%s (%s) · %s · %d file(s), %d hunk(s), %d conflict(s)",
+			m.runtime.Redactor.Redact(candidate.Name), candidate.ID, candidate.Readiness,
+			candidate.SelectableFiles, candidate.SelectableHunks, candidate.Conflicts)
+		if candidate.VerificationStatus != "" {
+			line += " · verification " + delegateStatusLabel(candidate.VerificationStatus)
+		} else {
+			line += " · unverified"
+		}
+		if candidate.InputTokens+candidate.OutputTokens > 0 {
+			line += fmt.Sprintf(" · %d tokens", candidate.InputTokens+candidate.OutputTokens)
+		}
+		lines = append(lines, line)
+		if candidate.Summary != "" {
+			lines = append(lines, "  "+truncateRunes(strings.Join(strings.Fields(m.runtime.Redactor.Redact(candidate.Summary)), " "), 160))
+		}
+		if candidate.VerificationError != "" {
+			lines = append(lines, "  verification: "+m.runtime.Redactor.Redact(candidate.VerificationError))
+		}
+	}
+	lines = append(lines, "", "Comparison is read-only. Inspect the exact hunks before applying. A passing child-worktree suite grants no permission and does not prove the combined parent workspace.")
 	return strings.Join(lines, "\n")
 }
 

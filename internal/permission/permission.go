@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -50,12 +51,16 @@ type Grant struct {
 type Approver func(context.Context, Request) (Decision, error)
 
 type Manager struct {
-	mu           sync.RWMutex
-	mode         string
-	allowed      map[string]bool
-	denied       map[string]bool
-	allowOutside bool
-	rules        []appconfig.Rule
+	mu                    sync.RWMutex
+	mode                  string
+	baseMode              string
+	profileMode           string
+	allowed               map[string]bool
+	denied                map[string]bool
+	profileDenied         map[string]bool
+	profileDeniedCommands []*regexp.Regexp
+	allowOutside          bool
+	rules                 []appconfig.Rule
 	// restrictions are an independent, deny-or-prompt-only policy layer used
 	// by delegated agents. Evaluating it after the base policy and taking the
 	// stricter outcome prevents either layer's ordered rules from masking a
@@ -75,7 +80,7 @@ func New(cfg appconfig.Permissions, approver Approver) *Manager {
 	for _, name := range cfg.DeniedTools {
 		denied[name] = true
 	}
-	return &Manager{mode: cfg.Mode, allowed: allowed, denied: denied, allowOutside: cfg.AllowOutsideWorkspace, rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver}
+	return &Manager{mode: cfg.Mode, baseMode: cfg.Mode, allowed: allowed, denied: denied, profileDenied: map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace, rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver}
 }
 
 // SetLedger attaches the persistent audit ledger. Nil is safe.
@@ -107,9 +112,53 @@ func (m *Manager) SetMode(mode string) error {
 		return fmt.Errorf("unknown autonomy mode %q", mode)
 	}
 	m.mu.Lock()
-	m.mode = mode
+	m.baseMode = mode
+	m.mode = restrictedMode(mode, m.profileMode)
 	m.mu.Unlock()
 	return nil
+}
+
+// SetProfile installs the additive permission restrictions for the active
+// primary profile. It never changes the underlying user/project policy and
+// cannot widen autonomy.
+func (m *Manager) SetProfile(profile appconfig.AgentPermissions) error {
+	denied := make(map[string]bool, len(profile.DeniedTools))
+	for _, name := range profile.DeniedTools {
+		denied[name] = true
+	}
+	patterns := make([]*regexp.Regexp, 0, len(profile.DeniedCommands))
+	for _, pattern := range profile.DeniedCommands {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return fmt.Errorf("agent denied command %q: %w", pattern, err)
+		}
+		patterns = append(patterns, re)
+	}
+	restricted := make([]appconfig.Rule, 0, len(profile.Rules))
+	for _, rule := range profile.Rules {
+		if rule.Action == "prompt" || rule.Action == "deny" {
+			restricted = append(restricted, rule)
+		}
+	}
+	m.mu.Lock()
+	m.profileMode = profile.Mode
+	m.mode = restrictedMode(m.baseMode, profile.Mode)
+	m.profileDenied = denied
+	m.profileDeniedCommands = patterns
+	m.restrictions = restricted
+	m.mu.Unlock()
+	return nil
+}
+
+func restrictedMode(base, profile string) string {
+	if profile == "" {
+		return base
+	}
+	rank := map[string]int{"ask": 0, "workspace": 1, "autopilot": 2}
+	if rank[profile] < rank[base] {
+		return profile
+	}
+	return base
 }
 
 // Evaluate runs the decision pipeline without prompting or recording; used
@@ -154,12 +203,19 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	mode := m.mode
 	sessionAllowed := m.allowed[tool]
 	denied := m.denied[tool]
+	profileDenied := m.profileDenied[tool]
+	profilePatterns := append([]*regexp.Regexp(nil), m.profileDeniedCommands...)
 	rules := m.rules
 	allowOutside := m.allowOutside
 	m.mu.RUnlock()
 
-	if denied {
+	if denied || profileDenied {
 		return Grant{Source: "denied-tool"}, "deny", ""
+	}
+	for _, pattern := range profilePatterns {
+		if action.Command != "" && pattern.MatchString(action.Command) {
+			return Grant{Source: "agent-profile", Rule: "command matches additive agent-profile denial " + pattern.String()}, "deny", ""
+		}
 	}
 	// Catastrophic outcomes are not permissions. They are refused before
 	// configurable rules, autonomy modes, and session grants can widen access.

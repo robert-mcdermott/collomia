@@ -27,6 +27,7 @@ the [release guide](RELEASING.md).
 - [Instructions and skills](#instructions-and-skills)
 - [MCP servers](#mcp-servers)
 - [Lifecycle hooks](#lifecycle-hooks)
+- [Agent profiles](#agent-profiles)
 - [Sub-agents](#sub-agents)
 - [Sessions and context](#sessions-and-context)
 - [Browser terminal](#browser-terminal)
@@ -322,11 +323,12 @@ The effective configuration is assembled from lowest to highest precedence:
 2. Global user configuration.
 3. Trusted project `.collomia.json`.
 4. `COLLO_PROVIDER` and `COLLO_MODEL` environment selections.
-5. `--provider` and `--model` for the current invocation.
+5. `--provider`, `--model`, and `--agent` for the current invocation.
 
-`--autonomy` overrides `permissions.mode` for the current invocation. `/model`,
-`/autonomy`, `/plan`, and `/theme` can make session/runtime changes, but they do
-not rewrite configuration files.
+`default_agent` selects a primary profile after the provider/model defaults;
+`--agent` overrides it for one invocation. `--autonomy` overrides
+`permissions.mode`. `/model`, `/agent`, `/autonomy`, `/plan`, and `/theme` can
+make runtime changes, but they do not rewrite configuration files.
 
 Later layers override only values they supply. Scalar fields nested in an
 object inherit independently. Named maps such as `providers`, `mcp`, and
@@ -474,7 +476,10 @@ activate that file.
 
 `schema_version` is currently `1`. A missing version is treated as version 1.
 A file declaring a schema newer than the running binary is rejected with an
-instruction to upgrade Collomia.
+instruction to upgrade Collomia. Collomia does not silently rewrite
+configuration. The supported-format, upgrade, downgrade, and future migration
+rules are defined in the
+[compatibility and migration policy](COMPATIBILITY.md).
 
 ## Complete configuration reference
 
@@ -485,11 +490,12 @@ instruction to upgrade Collomia.
 | `schema_version` | integer | Configuration schema; currently `1`. |
 | `default_provider` | string | Local name of the selected provider when no environment or CLI override exists. |
 | `default_model` | string | Fallback model when the selected provider has no `model`. |
+| `default_agent` | string | Optional named profile for the primary conversation; it must have `availability` `primary` or `both`. |
 | `providers` | object/map | Named provider definitions. At least one is required after merging. |
 | `permissions` | object | Autonomy, rules, sandbox, and command-environment controls. |
 | `mcp` | object/map | Named MCP server definitions. |
 | `options` | object | Agent/TUI/runtime options. |
-| `agents` | object/map | Named sub-agent profiles used by `delegate`. |
+| `agents` | object/map | Named primary and/or delegated agent profiles. |
 | `lsp` | object/map | Language ID to language-server argv. |
 | `hooks` | object/map | Lifecycle event to a list of hook commands. |
 
@@ -517,6 +523,8 @@ applies to every provider type.
 | `max_tokens` | integer | Provider-neutral output budget; defaults to `8192`. |
 | `context_window` | integer | Configured model context size, used for status, preflight, and compaction. |
 | `temperature` | number | Optional sampling temperature. Omit for the provider/model default. |
+| `reasoning` | object | Optional provider-neutral reasoning control: `{"effort":"low|medium|high|xhigh|max"}`. Omit it to send no reasoning-specific field. |
+| `pricing` | object | Optional user-maintained USD rates per million tokens: required `input_per_million` and `output_per_million`, optional non-negative `cached_input_per_million`. |
 | `connect_timeout_seconds` | integer | Connection setup timeout; defaults to `10`. |
 | `request_timeout_seconds` | integer | Whole request timeout; defaults to `1800`. |
 | `stream_idle_timeout_seconds` | integer | Maximum silence between stream chunks; defaults to `300`. |
@@ -526,6 +534,24 @@ adapter sends `max_tokens` first and changes to `max_completion_tokens` only
 after an explicit provider rejection requiring it. The Responses adapter uses
 `max_output_tokens`; Anthropic and Bedrock translate the budget to their native
 request shapes.
+
+Reasoning is deliberately opt-in because support and accepted effort values
+vary by provider, model, deployment, and API version. When it is absent,
+Collomia does not add a reasoning field. OpenAI-compatible adapters translate
+it to `reasoning_effort`, Anthropic-compatible adapters use
+`output_config.effort`, Responses-style adapters use `reasoning.effort`, and
+native Bedrock uses Claude's `additionalModelRequestFields.output_config`.
+Native Bedrock omits that field and warns for a non-Claude model rather than
+guessing an incompatible Claude request shape.
+When a compatible service or a recognized Claude model explicitly rejects the
+optional field, Collomia warns and retries once with that model's default.
+Unrelated HTTP 400 responses are not rewritten or retried.
+
+Pricing is never bundled or downloaded. Rates can differ by date, region,
+contract, gateway, and caching tier, so you must configure values you have
+verified for the selected deployment. If `cached_input_per_million` is omitted,
+cached input is conservatively estimated at the ordinary input rate. Reasoning
+tokens are informational and are not added again to output tokens.
 
 ### Permission fields
 
@@ -585,6 +611,7 @@ inspect.
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
+| `agent_integration` | `manual` (default) keeps publication behind `/agents apply`; `reviewed` additionally gives the primary freshness-bound inspect, child-worktree verification, candidate comparison, and selective publication tools. Verification still uses ordinary command policy and never authorizes publication. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -599,16 +626,20 @@ inspect.
 
 | Field | Meaning |
 | --- | --- |
+| `availability` | `delegate` (default for backward compatibility), `primary`, or `both`. |
 | `model` | Model override on the same provider as the parent. |
-| `instructions` | Role instructions prepended to the sub-agent prompt. |
+| `reasoning` | Optional profile override of the provider's reasoning effort. |
+| `instructions` | Role instructions prepended to this agent's prompt. |
 | `tools` | Tool-name allowlist; empty inherits the parent tool surface. |
 | `skills` | Skill-name allowlist; empty inherits the parent catalog. |
 | `max_iterations` | Per-agent iteration override; zero inherits the normal budget. |
-| `token_budget` | Maximum provider-reported input plus output tokens for the task; zero disables this additional limit. |
-| `timeout_seconds` | Queue plus execution deadline; zero means `600`, maximum `3600`. |
-| `permissions` | Child-only restrictions: optional stricter `mode`, additive `denied_tools`/`denied_commands`, and `prompt`/`deny` rules. `allow` rules are rejected. |
+| `token_budget` | Maximum provider-reported input plus output tokens for the primary session or delegated task; zero disables this additional limit. |
+| `cost_budget_usd` | Maximum estimated provider spend for the session/task; requires explicit pricing on the selected provider. |
+| `timeout_seconds` | Delegated-task queue plus execution deadline; ignored for a primary profile. Zero means `600`, maximum `3600`. |
+| `permissions` | Additive restrictions for primary or delegated use: optional stricter `mode`, additive `denied_tools`/`denied_commands`, and `prompt`/`deny` rules. `allow` rules are rejected. |
 
-Profile permissions cannot weaken their parent. The effective autonomy is the
+Profile permissions cannot weaken their parent, including for a primary
+profile selected after startup. The effective autonomy is the
 stricter mode; profile denials are added to inherited denials; profile rules
 are evaluated as an independent restriction layer and may only prompt or deny,
 so neither layer can mask the other's denial. Sandbox, networking,
@@ -665,7 +696,7 @@ The provider/model selection order is command-line override, environment
 override, selected provider's `model`, then `default_model`:
 
 ```sh
-collo --provider openrouter --model vendor/model-id
+collo --provider openrouter --model vendor/model-id --agent builder
 COLLO_PROVIDER=openrouter COLLO_MODEL=vendor/model-id collo
 ```
 
@@ -1160,6 +1191,12 @@ rebuilds/retries after an explicit HTTP 400 names the unsupported parameter and
 required replacement. The accepted shape is remembered for that active
 provider/model client. Unrelated 400 responses are returned unchanged.
 
+If `reasoning.effort` is configured, Chat Completions adds
+`reasoning_effort`. Models and compatible gateways support different subsets;
+an explicit unsupported-parameter response makes Collomia warn, retry without
+the field, and remember that choice for the active client. With no `reasoning`
+object, the request is unchanged from earlier Collomia versions.
+
 ### Provider resilience and errors
 
 All built-in HTTP adapters share these behaviors:
@@ -1601,7 +1638,7 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+c` | Cancel the active turn; press again to quit. |
 
 Typing `/` filters commands by prefix and substring. Known first arguments for
-`/theme`, `/autonomy`, `/plan`, and `/model` are completed fuzzily. These menus
+`/theme`, `/autonomy`, `/plan`, `/model`, and `/agent` are completed fuzzily. These menus
 remain beside the composer; approvals and questions open as centered,
 theme-aware transient dialogs.
 
@@ -1624,8 +1661,9 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/help` | Show slash commands and keybindings. |
 | `/status` | Show workspace, provider/model, capabilities, health, context, plan, autonomy, and configuration/trust state. |
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
+| `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
-| `/context` | Show token usage, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
+| `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
@@ -1635,6 +1673,8 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/agents` | Search and inspect current or persisted delegated tasks. |
 | `/agents stop <id-or-name>` | Cancel one queued or active child without cancelling siblings or the parent. |
 | `/agents steer <id> <guidance...>` | Queue bounded guidance for the child's next model boundary. It never answers an approval or grants permission. |
+| `/agents verify <id>` | Detect and run the retained child worktree's standard build/lint/test suite sequentially. Every command receives its own ordinary `run_command` policy decision. |
+| `/agents compare <id> <id> [id…]` | Compare two to six completed write candidates by conflicts, selectable hunks, fresh verification, evidence, and token usage without selecting or publishing one. |
 | `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
 | `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
@@ -1656,7 +1696,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
 | `/config` | Show the active configuration source. |
-| `/clear` | Clear active conversation context. It does not delete the durable session file. |
+| `/clear` | Clear active conversation context. It does not delete the durable session file or reset cumulative token/cost accounting and budgets. |
 | `/quit` or `/exit` | Exit. |
 
 ### Workspace paths and prompt files
@@ -2260,6 +2300,7 @@ Common flags:
 --cwd <path>                         workspace
 --provider <name>                    configured provider alias
 --model <id>                         model/deployment override
+--agent <name>                       named primary-agent profile
 --autonomy ask|workspace|autopilot   permission policy override
 --autopilot                          shorthand for autopilot
 --workspace                          shorthand for workspace mode
@@ -2375,7 +2416,9 @@ sandbox, workspace, and minimal/full environment as `run_command`. They are
 listed in the Session tab and `/ps`. Their output retains the most recent 64
 KiB. `stop_process`, `/ps stop`, sub-agent completion, or Collomia shutdown
 kills the process group so session-owned processes do not intentionally
-outlive Collomia.
+outlive Collomia. Shutdown waits for each tracked command to report completion
+after termination is requested, with a finite safety bound so a broken
+platform kill primitive cannot hang terminal restoration indefinitely.
 
 ### Git inspection
 
@@ -3011,8 +3054,8 @@ audit/metrics system, notify another process, or block selected prompts/tools.
 | `tool_end` | After execution | tool, summary, error, output byte count |
 | `file_change` | After a successful write-risk action | tool and affected paths |
 | `compaction` | After active context is summarized | replaced-message count |
-| `subagent_start` | Before a delegated task | name as subject; task/write/profile in detail |
-| `subagent_end` | After a delegated task | name and changed paths |
+| `subagent_start` | Before a delegated task | name as subject; task/write/profile, normalized write scopes, and budgets in detail |
+| `subagent_end` | After a delegated task | name, changed paths, normalized write scopes, any scope violations, usage, and terminal state |
 | `stop` | A turn completes normally | iteration count |
 | `session_end` | Runtime closes | session ID |
 
@@ -3058,6 +3101,97 @@ Hook programs are not run through `run_command`, `command_env`, or the OS
 sandbox. They are trusted code. Keep them in global config or a reviewed,
 trusted project configuration.
 
+## Agent profiles
+
+An entry under `agents` can specialize the primary conversation, delegated
+tasks, or both. Existing profiles with no `availability` remain
+delegate-only, so upgrading cannot unexpectedly replace the primary agent.
+Set `default_agent` for a persistent primary choice, pass `--agent` for one
+invocation, or use `/agent` for the fuzzy runtime picker. `--agent default`,
+`--agent none`, and `/agent default` explicitly select the ordinary unprofiled
+primary even when `default_agent` is configured:
+
+```json
+{
+  "default_provider": "openrouter",
+  "default_agent": "builder",
+  "providers": {
+    "openrouter": {
+      "type": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OR_API_KEY",
+      "model": "vendor/default-model",
+      "max_tokens": 32000,
+      "context_window": 200000,
+      "pricing": {
+        "input_per_million": 1.25,
+        "output_per_million": 10.0,
+        "cached_input_per_million": 0.125
+      }
+    }
+  },
+  "agents": {
+    "builder": {
+      "availability": "primary",
+      "instructions": "Implement focused changes and verify them.",
+      "reasoning": {"effort": "high"},
+      "max_iterations": 24,
+      "token_budget": 200000,
+      "cost_budget_usd": 2.50
+    },
+    "reviewer": {
+      "availability": "both",
+      "instructions": "Review only. Prioritize correctness and security.",
+      "tools": ["read_file", "list_files", "search_files", "git_diff"],
+      "reasoning": {"effort": "medium"},
+      "cost_budget_usd": 0.75,
+      "permissions": {
+        "mode": "ask",
+        "denied_tools": ["run_command", "write_file", "edit_file", "apply_patch"]
+      }
+    }
+  }
+}
+```
+
+The profile's model override stays on the currently selected provider. An
+explicit CLI `--model` wins at startup; choosing a profile in the TUI selects
+that profile's model, or the configured provider/default model when it has no
+override. `/model` can then make another runtime-only selection.
+
+Primary profile restrictions are enforced, not merely described to the model:
+tool and skill allowlists are checked at execution, denied tools and command
+regexes are additive, prompt/deny rules remain independent, and the profile
+mode can only tighten the user/project mode. Selecting `default` removes only
+the profile layer; it never removes built-in, global, or project policy.
+Profile switching is unavailable during an active provider turn.
+
+`reasoning` is optional. Omit it when portability is more important than a
+specific effort level. Configured effort is translated by the adapter; a
+provider/model that explicitly rejects this optional field is retried once
+without it where a safe generic fallback exists. Native Bedrock only emits
+the Claude-specific shape for recognizable Claude model IDs, preventing a
+Claude field from being guessed for Nova or another model family; other
+families receive no reasoning field and retain their model default.
+
+Cost is estimated only when the selected provider has explicit `pricing`.
+Input, cached input, and output usage are multiplied by those rates; the
+result is shown in `/context`, `/status`, the Session tab, and delegated-agent
+details. A `cost_budget_usd` without usable pricing fails before a provider
+call. Before each call Collomia reserves estimated input and caps requested
+output to the remaining dollar allowance. Provider token accounting is
+authoritative only after a response, so the final response can overshoot; in
+that case Collomia records the spend and stops before any tool or subsequent
+provider call.
+
+Token and cost totals are session-scoped for the primary profile and
+task-scoped for a delegated profile. They survive session resume. Switching
+profiles or running `/clear` does not reset them, preventing a budget bypass;
+`/new` starts fresh accounting. Fork/rewind rebuild accounting from the usage
+events retained in the new conversation branch. Collomia does not claim that
+its estimate equals an invoice: tiered pricing, batch discounts, provider-side
+tools, taxes, and unreported charges remain outside this local calculation.
+
 ## Sub-agents
 
 The `delegate` tool can submit up to six bounded tasks per call. One FIFO
@@ -3078,6 +3212,7 @@ Conceptual tool request:
       "name": "retry-change",
       "task": "Implement bounded retry in the HTTP client and test it.",
       "write": true,
+      "write_paths": ["internal/provider/", "internal/provider/http_test.go"],
       "plan_step": 2
     },
     {
@@ -3095,13 +3230,35 @@ worktree under the OS temporary directory. Each has its own built-in tool
 registry, permission manager, audit ledger, background processes, and normal
 sandbox policy.
 
+Use `write_paths` to declare the files or directories a writer is expected to
+change. Values use repository-relative forward-slash paths. A plain value such
+as `README.md` names exactly one file; a trailing slash such as
+`internal/provider/` covers that directory and its descendants. Absolute
+paths, traversal, backslashes, colon-bearing drive paths, and glob syntax are
+rejected. `"*"` means the entire workspace. Omitting `write_paths` on a writer
+also means `"*"` so older calls remain safe.
+
+The scheduler admits known-disjoint writers concurrently and serializes
+exact, nested, case-folded, workspace-wide, or otherwise overlapping scopes.
+Read-only children do not hold write-scope locks. FIFO and provider/global
+limits continue to apply, and queue time still counts against the child's
+timeout.
+
+`write_paths` is a scheduling and result contract, not a new permission or
+sandbox primitive. A scoped child still has only its inherited tool and
+permission surface. Collomia instructs it to remain in scope and compares its
+actual Git change manifest with the declaration when it finishes. An
+out-of-scope change makes the child result an error, records
+`scope_violations`, retains the isolated worktree for inspection, and blocks
+both `/agents apply` and primary-reviewed integration. It never publishes the
+violation into the parent workspace.
+
 No sub-agent result is committed, merged, or pushed automatically. A clean
 write worktree is removed. A worktree with changes is left in place and its
-path/branch is reported for human review. When siblings modify the same path,
-the parent reports a conflict rather than attempting reconciliation. Because
-all siblings start at the same `HEAD`, Collomia also compares zero-context
-hunks against that common base and labels known overlap or disjoint ranges.
-This analysis is advisory; disjoint worktrees are still never auto-merged.
+path/branch is reported for review. When siblings modify the same path, the
+parent compares zero-context hunks against their common base and labels known
+overlap or disjoint ranges. This batch result is advisory. Actual publication
+uses the freshness-bound three-way process described below.
 
 An optional `plan_step` associates a child and its returned evidence with an
 existing structured-plan step. Collomia refuses an unknown step or one whose
@@ -3119,6 +3276,7 @@ Named profiles specialize a sub-agent without defining another provider:
 {
   "agents": {
     "security-reviewer": {
+      "availability": "delegate",
       "model": "a-compatible-model-on-the-current-provider",
       "instructions": "Focus on authentication, authorization, injection, and secret handling.",
       "tools": [
@@ -3131,6 +3289,7 @@ Named profiles specialize a sub-agent without defining another provider:
       "skills": ["security-review"],
       "max_iterations": 12,
       "token_budget": 50000,
+      "cost_budget_usd": 1.00,
       "timeout_seconds": 600,
       "permissions": {
         "mode": "ask",
@@ -3165,10 +3324,13 @@ more environment, or bypass parent/global/built-in denials.
 `token_budget` counts provider-reported input plus output tokens. Before each
 request Collomia reserves the estimated next input and reduces the requested
 output maximum to the remaining allowance, then checks the provider's reported
-usage afterward. Tokenizers and images are provider-specific, and a provider
-that omits usage cannot provide an exact token guarantee; iteration and timeout
-bounds still apply. `timeout_seconds` includes scheduler queue time and accepts
-up to 3600 seconds.
+usage afterward. `cost_budget_usd` uses the same reported usage and the
+selected provider's configured pricing; if usage is unavailable it fails
+closed before the child proceeds to another tool or request. Tokenizers,
+images, and billing details are provider-specific, and a final response can
+overshoot a target before usage arrives; iteration and timeout bounds still
+apply. `timeout_seconds` includes scheduler queue time and accepts up to 3600
+seconds.
 
 Configure scheduler limits independently of profiles:
 
@@ -3179,18 +3341,20 @@ Configure scheduler limits independently of profiles:
     "delegate_provider_concurrency": {
       "openrouter": 2,
       "bedrock": 1
-    }
+    },
+    "agent_integration": "manual"
   }
 }
 ```
 
 Each parent result is bounded structured JSON containing the child's terminal
 status, summary/error, up to eight bounded tool-evidence entries, provider
-usage, token budget, changed file/hunk manifest, and retained worktree/branch.
-The raw child transcript is not injected wholesale into parent context. If the
-complete batch would exceed `max_tool_output_bytes`, Collomia compacts details
-while preserving valid JSON and every task's identity/status, and sets
-`truncated: true`; `/agents` retains the bounded per-task outcome for review.
+usage, estimated cost and budgets, declared `write_scopes`, any `scope_violations`, changed
+file/hunk manifest, and retained worktree/branch. The raw child transcript is
+not injected wholesale into parent context. If the complete batch would
+exceed `max_tool_output_bytes`, Collomia compacts details while preserving
+valid JSON and every task's identity/status, and sets `truncated: true`;
+`/agents` retains the bounded per-task outcome for review.
 
 The Session tab shows the Collomia parent and its children as a tree, including
 queued, running, waiting-for-approval, cancelling, completed, failed,
@@ -3215,20 +3379,124 @@ following:
 
 - the saved path is still a worktree registered to the current repository;
 - its `collomia/*` branch still points at the recorded delegation base;
-- the parent copy of every selectable file still matches that base;
+- the child did not change a path outside its declared write scope;
 - source and destination are regular UTF-8 text files, at most 1 MiB each and
   4 MiB total for one review; and
 - no symlink, binary, oversized, mode-only, or otherwise unsupported entry is
   selected.
 
-Integration uses the normal `integrate_delegate` permission decision, then
-rechecks parent and child bytes after the approval dialog. Selected text is
-published through the same rooted atomic file primitive as built-in writes;
-multi-file failure rolls back earlier entries. Integrated changes enter the
-ordinary session change tracker, so `/diff` and `/undo` can review or revert
-them. Collomia does not commit, Git-merge, push, delete the branch, or remove
-the worktree. Parent drift and other conflicts remain for explicit manual
-reconciliation.
+For each changed path, Collomia reads the recorded Git base, current parent,
+and retained child:
+
+- If the parent still matches the base, the review shows the ordinary
+  parent-to-child hunks.
+- If parent and child changed different regions of an existing text file with
+  compatible modes, Collomia computes a clean three-way result. The dialog
+  labels it as a three-way preview, displays selectable parent-to-composed
+  hunks, and preserves the parent's unrelated edits.
+- If the edits overlap, or involve incompatible modes/additions/deletions,
+  the file is non-selectable. A bounded diff3 preview names the parent,
+  delegated base, and delegated result so the user can resolve it manually or
+  ask for fresh delegated work.
+
+This is not a branch merge. A clean composition is still only a review
+proposal. Its opaque review token covers the worktree identity, branch/base,
+exact parent and child bytes and modes, composed result, and conflict
+disposition. Integration uses the normal `integrate_delegate` permission
+decision, then recomputes and rechecks that complete state after the approval
+dialog. Selected text is published through the same rooted atomic file
+primitive as built-in writes; multi-file failure rolls back earlier entries.
+Integrated changes enter the ordinary session change tracker, so `/diff` and
+`/undo` can review or revert them. Collomia does not create a merge commit,
+commit, push, delete the branch, or remove the worktree.
+
+### Letting the primary agent review and integrate child work
+
+Manual integration is deliberately the default. If you prefer the primary
+agent to review write-agent results and copy the work it accepts into your
+currently checked-out branch, enable reviewed integration in the global or
+trusted project configuration:
+
+```json
+{
+  "options": {
+    "agent_integration": "reviewed"
+  }
+}
+```
+
+This does not turn delegation into Git merging and is independent of the
+`ask`/`workspace`/`autopilot` permission mode. It exposes four parent-only
+tools:
+
+| Tool | Behavior |
+| --- | --- |
+| `inspect_delegate_changes` | Read-only inspection of bounded child evidence, scope/conflict state, exact numbered ordinary or clean three-way hunks, current verification state, and repository-detected verification commands. It returns a publication review token bound to base, parent, child, and composed state plus a separate verification token bound only to child state. |
+| `verify_delegate_changes` | Runs exactly one command from `suggested_verification` in the retained child worktree. It uses the canonical `run_command` permission and hook identity plus the configured sandbox, network, environment, timeout, cancellation, denied-command, and output policies. |
+| `compare_delegate_changes` | Read-only comparison of two to six completed write candidates: selectable files/hunks, conflicts, machine-observed verification, bounded evidence, and token usage. It reports facts but never chooses or applies a candidate. |
+| `apply_delegate_changes` | Selects all safe hunks or specific numbered hunks using the review token. The ordinary write policy decides whether an approval is required. |
+
+The primary agent must inspect before applying. Any child edit, parent edit,
+branch movement, worktree replacement, relevant mode/content change, or
+different three-way outcome makes the publication review token stale before
+permission is requested. After permission, Collomia rechecks the base, source,
+destination, and composed result again, then uses the same rooted atomic
+writes, multi-file rollback, change tracking, hooks, `/diff`, and `/undo`
+behavior as `/agents apply`.
+
+Verification is intentionally one command per tool call so several shell
+actions cannot hide behind one approval. Commands come from the same
+repository-marker detector as `collo verify` (`go.mod`, `package.json`,
+`Cargo.toml`, Python project files, and `Makefile`); Collomia refuses an
+invented command in this path. `/agents verify <id>` runs the complete detected
+suite in order and stops on the first failed, blocked, rejected, cancelled,
+timed-out, or stale result.
+
+Each result records its purpose, exact command, status, bounded redacted
+output/error, timestamps, and a state token derived from the registered child
+worktree, branch, base commit, changed paths, modes, and exact child bytes.
+All detected commands must pass against the same token before the suite is
+`passed`. A child edit during or after verification preserves the old evidence
+but changes its aggregate state to `stale`; inspect and run the suite again. If
+no standard project marker exists, status is `unavailable` and Collomia does
+not guess. Ask the child to verify during its original task or inspect the
+worktree manually.
+
+The primary agent is expected to judge the child's evidence and diff, apply
+only work that satisfies your request, and verify the combined parent
+workspace afterward. A child-authored claim is not machine verification, and
+even a machine-observed child pass does not cover parent-only changes or
+interactions introduced by integrating multiple candidates. Passing
+verification grants no permission, does not bypass hooks, and never publishes
+files. Clean non-overlapping three-way composition preserves both sides but
+does not decide quality. Overlapping conflicts remain fail-closed: reviewed
+integration does not rebase, synthesize a winner, or overwrite a
+parent/sibling change.
+`/agents` and the Session tab retain integration and child-verification states
+independently.
+
+Permission configuration continues to match canonical identities:
+
+- `integrate_delegate` governs `/agents apply` and
+  `apply_delegate_changes`;
+- `run_command` governs every operator or primary child-verification command.
+
+Existing executable rules, catastrophic denials, environment policy,
+sandbox/network configuration, `tool_start` hooks, and audit records therefore
+continue to apply. Use
+`options.disabled_tools: ["apply_delegate_changes"]` to hide only primary
+publication, or add `verify_delegate_changes` and/or
+`compare_delegate_changes` to hide those model-facing helpers while preserving
+the corresponding operator commands. Listing canonical `run_command` or
+`integrate_delegate` in `options.disabled_tools` also hides its model-facing
+wrapper. To deny both primary and operator execution, use
+`permissions.denied_tools` with the canonical identity.
+
+The child worktree and `collomia/*` branch remain available after integration.
+No mode commits, merges, pushes, deletes recovery artifacts, or restarts an
+interrupted child. You can still use `/agents verify`, `/agents compare`, and
+`/agents apply` in `manual` mode; changing the option back to `manual` removes
+the four primary-only tools on the next Collomia start.
 
 Delegation lifecycle snapshots and completed outcomes are persisted in the
 parent session. On resume, terminal outcomes remain inspectable; any recorded
@@ -3303,10 +3571,33 @@ Session loading tolerates a torn final JSONL line after a crash. A tool call
 without a recorded result is marked interrupted and is not replayed
 automatically, preventing duplicate writes or commands. If the operating
 system returns a disk error or short write, Collomia latches the first
-persistence failure and stops appending records behind the torn tail. The
-current turn fails visibly in the TUI or headless result, and the Session tab
-shows persistence as failed. Resolve the storage problem before continuing;
-accepted history up to the final torn line remains recoverable.
+persistence failure and stops appending records behind the torn tail. A
+fail-stop guard checks that state before every following provider request and
+tool execution, including delegated agents. A tool that had already started
+cannot be rolled back, but Collomia will not begin the next one; resume marks
+the missing result as interrupted and requires verification rather than
+replaying it. The current turn fails visibly in the TUI or headless result,
+and the Session tab shows persistence as failed. Resolve the storage problem
+before continuing; accepted history up to the final torn line remains
+recoverable.
+
+Session attachment and retained-result files are accepted only after the full
+write, filesystem sync, and close succeed. Catchable write/sync/close failures
+remove the partial file. Direct source changes use private same-directory
+temporary files and atomic rename, so abrupt termination leaves either the
+complete old destination or the complete replacement—never a partially
+truncated accepted file. An uncatchable process termination before rename can
+leave an owner-only `.collomia-*.tmp` orphan beside the destination. It is not
+referenced or executed; inspect that no Collomia process is actively changing
+the file before deleting such a stale temporary.
+
+Every newly written session record carries `schema_version: 1`; older records
+without that field are treated as legacy version 1. Additive optional fields
+remain readable, while a newer record schema is rejected before Collomia opens
+the session for appending. Back up the global `.collomia` directory before a
+major upgrade when its sessions are important. Downgrading a state directory
+already used by a newer release is not guaranteed; see the
+[compatibility and migration policy](COMPATIBILITY.md).
 
 ### Context estimation and compaction
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
@@ -99,20 +100,20 @@ func exitCode(err error) int {
 }
 
 type options struct {
-	command, cwd, provider, model, autonomy       string
-	output                                        string
-	resume                                        string
-	mcpURL                                        string
-	webPort, mcpTimeout                           int
-	plan, global, help, version, jsonl, ephemeral bool
-	strict, revoke, status, debug, markdown, yes  bool
-	check                                         bool
-	includeLogs                                   bool
-	cont, withReference, web, webPortSet, noOpen  bool
-	mcpTimeoutSet                                 bool
-	altScreen                                     *bool
-	mcpEnv, mcpHeaders                            []string
-	args                                          []string
+	command, cwd, provider, model, agent, autonomy string
+	output                                         string
+	resume                                         string
+	mcpURL                                         string
+	webPort, mcpTimeout                            int
+	plan, global, help, version, jsonl, ephemeral  bool
+	strict, revoke, status, debug, markdown, yes   bool
+	check                                          bool
+	includeLogs                                    bool
+	cont, withReference, web, webPortSet, noOpen   bool
+	mcpTimeoutSet                                  bool
+	altScreen                                      *bool
+	mcpEnv, mcpHeaders                             []string
+	args                                           []string
 }
 
 func run(args []string) error {
@@ -249,7 +250,7 @@ func run(args []string) error {
 		return runNonInteractive(ctx, opts)
 	}
 	broker := tui.NewApprovalBroker()
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
+	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
 		return broker.Ask(ctx, tui.Question{Text: question, Options: options})
 	}})
 	if err != nil {
@@ -277,7 +278,7 @@ func usagePtr(u provider.Usage) *event.Usage {
 	if u.InputTokens == 0 && u.OutputTokens == 0 {
 		return nil
 	}
-	return &event.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CachedTokens: u.CachedTokens, ReasoningTokens: u.ReasoningTokens}
+	return &event.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CachedTokens: u.CachedTokens, ReasoningTokens: u.ReasoningTokens, CostUSD: u.CostUSD, CostAvailable: u.CostAvailable, CostEstimated: u.CostEstimated}
 }
 
 // runObservation collects the small amount of cross-event state needed by
@@ -353,7 +354,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 	}
 
 	var err error
-	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
+	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
 	if err != nil {
 		return classifyCommandError(err)
 	}
@@ -465,6 +466,9 @@ func failureFor(err error) event.Failure {
 	}
 	if errors.Is(err, permission.ErrDenied) {
 		return event.Failure{ID: id, Kind: event.FailurePermission}
+	}
+	if errors.Is(err, agent.ErrTokenBudgetExceeded) || errors.Is(err, agent.ErrCostBudgetExceeded) {
+		return event.Failure{ID: id, Kind: event.FailureUsage}
 	}
 	var validation appconfig.ValidationError
 	if errors.As(err, &validation) {
@@ -626,9 +630,11 @@ func parse(args []string) (options, error) {
 			opts.provider = strings.TrimPrefix(arg, "--provider=")
 		case strings.HasPrefix(arg, "--model="):
 			opts.model = strings.TrimPrefix(arg, "--model=")
+		case strings.HasPrefix(arg, "--agent="):
+			opts.agent = strings.TrimPrefix(arg, "--agent=")
 		case strings.HasPrefix(arg, "--autonomy="):
 			opts.autonomy = strings.TrimPrefix(arg, "--autonomy=")
-		case arg == "--cwd" || arg == "--provider" || arg == "--model" || arg == "--autonomy":
+		case arg == "--cwd" || arg == "--provider" || arg == "--model" || arg == "--agent" || arg == "--autonomy":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("%s requires a value", arg)
 			}
@@ -641,6 +647,8 @@ func parse(args []string) (options, error) {
 				opts.provider = value
 			case "--model":
 				opts.model = value
+			case "--agent":
+				opts.agent = value
 			case "--autonomy":
 				opts.autonomy = value
 			}
@@ -681,6 +689,9 @@ func tuiChildArgs(opts options) []string {
 	}
 	if opts.model != "" {
 		args = append(args, "--model", opts.model)
+	}
+	if opts.agent != "" {
+		args = append(args, "--agent", opts.agent)
 	}
 	if opts.autonomy != "" {
 		args = append(args, "--autonomy", opts.autonomy)
@@ -741,6 +752,7 @@ Flags:
   --cwd <path>                         workspace (default: current directory)
   --provider <name>                    configured provider name
   --model <id>                         model or deployment ID
+  --agent <name>                       named primary agent profile
   --autonomy ask|workspace|autopilot   permission policy
   --autopilot                          shorthand for --autonomy autopilot
   --plan                               start in read-only planning mode

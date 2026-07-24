@@ -63,6 +63,9 @@ type Request struct {
 	Tools       []ToolDefinition
 	MaxTokens   int
 	Temperature *float64
+	// ReasoningEffort is opt-in. An empty value must not alter the provider
+	// request, preserving compatibility with models that have no such control.
+	ReasoningEffort string
 }
 
 type Usage struct {
@@ -73,6 +76,14 @@ type Usage struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
 	// ReasoningTokens counts hidden reasoning output, when reported.
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// CostUSD is an estimate derived only from user-configured pricing.
+	CostUSD float64 `json:"cost_usd,omitempty"`
+	// CostAvailable distinguishes a genuine zero-cost estimate from absent
+	// pricing or absent usage.
+	CostAvailable bool `json:"cost_available,omitempty"`
+	// CostEstimated is true for Collomia-calculated costs rather than an
+	// authoritative charge returned by a provider.
+	CostEstimated bool `json:"cost_estimated,omitempty"`
 }
 
 type Response struct {

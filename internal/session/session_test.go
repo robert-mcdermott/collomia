@@ -1,13 +1,16 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -27,6 +30,19 @@ func (f *shortRecordFile) Write(data []byte) (int, error) {
 }
 
 func (f *shortRecordFile) Close() error { return f.file.Close() }
+
+type failedRecordFile struct {
+	file  recordFile
+	err   error
+	calls int
+}
+
+func (f *failedRecordFile) Write([]byte) (int, error) {
+	f.calls++
+	return 0, f.err
+}
+
+func (f *failedRecordFile) Close() error { return f.file.Close() }
 
 func TestSessionLatchesShortWriteAndLeavesRecoverableTornTail(t *testing.T) {
 	store, err := OpenAt(t.TempDir(), t.TempDir())
@@ -60,6 +76,115 @@ func TestSessionLatchesShortWriteAndLeavesRecoverableTornTail(t *testing.T) {
 	if len(recovered.TranscriptMessages()) != 0 {
 		t.Fatalf("partial record became accepted history: %+v", recovered.TranscriptMessages())
 	}
+}
+
+func TestSessionLatchesDiskWriteFailureAndStopsFollowingRecords(t *testing.T) {
+	store, err := OpenAt(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	diskErr := errors.New("injected ENOSPC")
+	failed := &failedRecordFile{file: sess.file, err: diskErr}
+	sess.file = failed
+	sess.AppendMessage(provider.Message{Role: "user", Content: "must not become accepted history"})
+	if err := sess.Err(); !errors.Is(err, diskErr) {
+		t.Fatalf("latched error=%v", err)
+	}
+	sess.AppendMessage(provider.Message{Role: "assistant", Content: "must not follow failed record"})
+	if failed.calls != 1 {
+		t.Fatalf("writer called %d times after disk failure", failed.calls)
+	}
+	sess.Close()
+
+	recovered, err := store.Load(id)
+	if err != nil {
+		t.Fatalf("accepted prefix should remain readable: %v", err)
+	}
+	defer recovered.Close()
+	if messages := recovered.TranscriptMessages(); len(messages) != 0 {
+		t.Fatalf("failed records became accepted history: %+v", messages)
+	}
+}
+
+func TestSessionAbruptProcessDeathLeavesRecoverableInterruptedTool(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionCrashHelper$")
+	cmd.Env = append(os.Environ(),
+		"COLLOMIA_SESSION_CRASH_HELPER=1",
+		"COLLOMIA_SESSION_CRASH_DIR="+dir,
+	)
+	output, err := cmd.CombinedOutput()
+	exitErr := new(exec.ExitError)
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 86 {
+		t.Fatalf("crash helper error=%v output=%s", err, output)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ""
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			id = strings.TrimSuffix(entry.Name(), ".jsonl")
+		}
+	}
+	if id == "" {
+		t.Fatal("crash helper did not create a session log")
+	}
+	store, err := OpenAt(dir, "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.Load(id)
+	if err != nil {
+		t.Fatalf("load after abrupt process death: %v", err)
+	}
+	messages := recovered.TranscriptMessages()
+	if len(messages) != 3 || messages[0].Content != "prepare mutation" || len(messages[1].ToolCalls) != 1 || messages[2].Role != "tool" || !strings.Contains(messages[2].Content, "may or may not have taken effect") {
+		t.Fatalf("recovered transcript=%+v", messages)
+	}
+	recovered.FlushInterrupted()
+	if err := recovered.Err(); err != nil {
+		t.Fatalf("persist interruption note: %v", err)
+	}
+	recovered.Close()
+
+	reloaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if messages := reloaded.TranscriptMessages(); len(messages) != 3 {
+		t.Fatalf("interruption note was lost or duplicated: %+v", messages)
+	}
+}
+
+func TestSessionCrashHelper(t *testing.T) {
+	if os.Getenv("COLLOMIA_SESSION_CRASH_HELPER") != "1" {
+		return
+	}
+	store, err := OpenAt(os.Getenv("COLLOMIA_SESSION_CRASH_DIR"), "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.AppendMessage(provider.Message{Role: "user", Content: "prepare mutation"})
+	sess.AppendMessage(provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
+		ID: "write-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"important.txt","content":"new"}`),
+	}}})
+	if err := sess.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = sess.file.Write([]byte(`{"schema_version":1,"type":"message","message":{"role":"tool"`))
+	os.Exit(86)
 }
 
 func testStore(t *testing.T) *Store {
@@ -96,6 +221,67 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 	if loaded.Meta.Turns != 1 || loaded.Meta.Provider != "ollama" {
 		t.Fatalf("meta=%+v", loaded.Meta)
+	}
+}
+
+func TestSessionRecordsWriteCurrentSchemaVersion(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+	data, err := os.ReadFile(store.path(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record Record
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.SchemaVersion != RecordSchemaVersion {
+		t.Fatalf("record schema_version=%d, want %d", record.SchemaVersion, RecordSchemaVersion)
+	}
+}
+
+func TestSessionLoadsLegacyV1RecordsWithAdditiveFields(t *testing.T) {
+	store := testStore(t)
+	id := "legacy-v1"
+	input := strings.Join([]string{
+		`{"type":"meta","time":"2026-07-23T00:00:00Z","meta":{"id":"legacy-v1","workspace":"/workspace","provider":"fixture","model":"model","created_at":"2026-07-23T00:00:00Z","updated_at":"2026-07-23T00:00:00Z","future_meta":"ignored"},"future_record":{"value":1}}`,
+		`{"type":"message","time":"2026-07-23T00:00:01Z","message":{"role":"user","content":"legacy message","future_message":true}}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(store.path(id), []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if messages := sess.TranscriptMessages(); len(messages) != 1 || messages[0].Content != "legacy message" {
+		t.Fatalf("legacy transcript=%+v", messages)
+	}
+}
+
+func TestSessionRejectsNewerRecordSchema(t *testing.T) {
+	store := testStore(t)
+	id := "future"
+	meta := Meta{
+		ID: id, Workspace: "/workspace", Provider: "fixture", Model: "model",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(Record{SchemaVersion: RecordSchemaVersion + 1, Type: "meta", Time: time.Now().UTC(), Meta: &meta})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.path(id), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(id); err == nil || !strings.Contains(err.Error(), "unsupported schema_version") {
+		t.Fatalf("future session schema error=%v", err)
 	}
 }
 
@@ -163,6 +349,43 @@ func TestInterruptedToolCallIsMarkedNotReplayed(t *testing.T) {
 	last := active[len(active)-1]
 	if last.Role != "tool" || last.ToolCallID != "t1" || !strings.Contains(last.Content, "interrupted") {
 		t.Fatalf("dangling tool call must be marked interrupted: %+v", last)
+	}
+}
+
+func BenchmarkLoadLongSession(b *testing.B) {
+	store, err := OpenAt(b.TempDir(), "/workspace")
+	if err != nil {
+		b.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < 2_000; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		sess.AppendMessage(provider.Message{Role: role, Content: fmt.Sprintf("message %04d with bounded representative content", i)})
+		if i%20 == 19 {
+			sess.AppendEvent(event.New(event.KindTurnEnd))
+		}
+	}
+	if err := sess.Err(); err != nil {
+		b.Fatal(err)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		loaded, err := store.Load(id)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(loaded.TranscriptMessages()) != 2_000 {
+			b.Fatalf("loaded %d messages", len(loaded.TranscriptMessages()))
+		}
+		loaded.Close()
 	}
 }
 
@@ -470,7 +693,13 @@ func TestDelegatedAgentSnapshotsPersistLatestStateWithoutExecution(t *testing.T)
 	queued.Delegate = &event.DelegateStatus{ID: "d1", Name: "review", Status: "queued", Task: "inspect auth"}
 	sess.AppendEvent(queued)
 	done := event.New(event.KindDelegateUpdate)
-	done.Delegate = &event.DelegateStatus{ID: "d1", Name: "review", Status: "done", Summary: "checked", ChangedFiles: []string{"auth.go"}, Usage: event.Usage{InputTokens: 12, OutputTokens: 3}}
+	done.Delegate = &event.DelegateStatus{
+		ID: "d1", Name: "review", Status: "done", Summary: "checked", ChangedFiles: []string{"auth.go"},
+		WriteScopes: []string{"internal/"}, ScopeViolations: []string{"README.md"},
+		VerificationStatus: "passed", VerificationToken: "verify-abc", VerificationRequired: []string{"go test ./..."},
+		VerificationResults: []event.DelegateVerification{{Purpose: "test", Command: "go test ./...", Status: "passed", Output: "ok", StateToken: "verify-abc"}},
+		Usage:               event.Usage{InputTokens: 12, OutputTokens: 3},
+	}
 	sess.AppendEvent(done)
 	sess.Close()
 
@@ -480,7 +709,7 @@ func TestDelegatedAgentSnapshotsPersistLatestStateWithoutExecution(t *testing.T)
 	}
 	defer loaded.Close()
 	statuses := loaded.Delegates()
-	if len(statuses) != 1 || statuses[0].Status != "done" || statuses[0].Summary != "checked" || statuses[0].Usage.InputTokens != 12 {
+	if len(statuses) != 1 || statuses[0].Status != "done" || statuses[0].Summary != "checked" || statuses[0].Usage.InputTokens != 12 || len(statuses[0].WriteScopes) != 1 || len(statuses[0].ScopeViolations) != 1 || statuses[0].VerificationStatus != "passed" || len(statuses[0].VerificationResults) != 1 {
 		t.Fatalf("delegates=%+v", statuses)
 	}
 }
@@ -535,5 +764,32 @@ func TestRecentEventsRestoreAndRemainBounded(t *testing.T) {
 	got := loaded.RecentEvents()
 	if len(got) != recentEventLimit || got[0].Text != "warning-5" || got[len(got)-1].Text != fmt.Sprintf("warning-%d", recentEventLimit+4) {
 		t.Fatalf("restored recent events: len=%d first=%q last=%q", len(got), got[0].Text, got[len(got)-1].Text)
+	}
+}
+
+func TestUsageAccountingSurvivesReloadBeyondRecentProjection(t *testing.T) {
+	store, err := OpenAt(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	for range recentEventLimit + 5 {
+		e := event.New(event.KindUsage)
+		e.Usage = &event.Usage{InputTokens: 1, OutputTokens: 2, CostUSD: 0.000003, CostAvailable: true, CostEstimated: true}
+		sess.AppendEvent(e)
+	}
+	sess.Close()
+	loaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	usage := loaded.Usage()
+	if usage.InputTokens != recentEventLimit+5 || usage.OutputTokens != 2*(recentEventLimit+5) || !usage.CostAvailable {
+		t.Fatalf("usage=%+v", usage)
 	}
 }

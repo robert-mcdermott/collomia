@@ -25,10 +25,25 @@ const (
 	DelegateBudgetExhausted = "budget_exhausted"
 	DelegateInterrupted     = "interrupted"
 	maxDelegateEvidence     = 8
+	maxDelegateVerification = 16
 	maxDelegateChangedFiles = 256
 	maxDelegateGuidance     = 8
 	maxDelegateRecentOutput = 4 << 10
 )
+
+// DelegateVerification is one machine-observed command result from the
+// retained child worktree. StateToken binds it to the exact delegated source
+// state; it is evidence, never authorization to publish changes.
+type DelegateVerification struct {
+	Purpose    string    `json:"purpose,omitempty"`
+	Command    string    `json:"command"`
+	Status     string    `json:"status"`
+	Output     string    `json:"output,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	StateToken string    `json:"state_token,omitempty"`
+	Started    time.Time `json:"started,omitempty"`
+	Finished   time.Time `json:"finished,omitempty"`
+}
 
 // DelegateStatus is a bounded, durable snapshot of one delegated task. It is
 // safe to put in the parent session; it contains results and evidence, not a
@@ -41,6 +56,8 @@ type DelegateStatus struct {
 	Provider        string
 	Model           string
 	Write           bool
+	WriteScopes     []string
+	ScopeViolations []string
 	PlanStep        int
 	Status          string
 	CurrentAction   string
@@ -56,9 +73,23 @@ type DelegateStatus struct {
 	Branch          string
 	BaseCommit      string
 	Integrated      []string
-	Usage           provider.Usage
-	TokenBudget     int
-	TimeoutSeconds  int
+	// IntegrationStatus records the parent-side disposition of retained write
+	// work without changing the child's terminal execution status.
+	IntegrationStatus string
+	IntegrationError  string
+	// VerificationStatus summarizes machine-observed commands run in the
+	// retained child worktree. It is intentionally separate from integration:
+	// a passing command grants no publication permission and does not prove
+	// the combined parent workspace.
+	VerificationStatus   string
+	VerificationError    string
+	VerificationToken    string
+	VerificationRequired []string
+	VerificationResults  []DelegateVerification
+	Usage                provider.Usage
+	TokenBudget          int
+	CostBudgetUSD        float64
+	TimeoutSeconds       int
 	// Revision makes concurrent durable observer writes order-independent.
 	// It is monotonic for one task and has no model-visible meaning.
 	Revision uint64
@@ -73,8 +104,10 @@ type DelegateStatus struct {
 type DelegateStart struct {
 	ID, Name, Task, Profile, Provider, Model string
 	Write                                    bool
+	WriteScopes                              []string
 	PlanStep                                 int
 	TokenBudget, TimeoutSeconds              int
+	CostBudgetUSD                            float64
 	Cancel                                   context.CancelFunc
 }
 
@@ -101,8 +134,9 @@ func (t *Team) Enqueue(start DelegateStart) {
 	status := DelegateStatus{
 		ID: start.ID, Name: start.Name, Task: start.Task, Profile: start.Profile,
 		Provider: start.Provider, Model: start.Model, Write: start.Write, PlanStep: start.PlanStep,
-		Status: DelegateQueued, CurrentAction: "waiting for scheduler",
-		TokenBudget: start.TokenBudget, TimeoutSeconds: start.TimeoutSeconds,
+		WriteScopes: append([]string(nil), start.WriteScopes...),
+		Status:      DelegateQueued, CurrentAction: delegateQueueAction(start.Write, start.WriteScopes),
+		TokenBudget: start.TokenBudget, CostBudgetUSD: start.CostBudgetUSD, TimeoutSeconds: start.TimeoutSeconds,
 		Revision: 1, Started: time.Now(), cancel: start.Cancel,
 	}
 	boundDelegateStatus(&status)
@@ -111,6 +145,16 @@ func (t *Team) Enqueue(start DelegateStart) {
 	t.order = append(t.order, status.ID)
 	t.mu.Unlock()
 	t.notify(status)
+}
+
+func delegateQueueAction(write bool, scopes []string) string {
+	if !write {
+		return "waiting for scheduler"
+	}
+	if len(scopes) == 1 && scopes[0] == workspaceWriteScope {
+		return "waiting for scheduler (workspace-wide write scope)"
+	}
+	return fmt.Sprintf("waiting for scheduler (%d declared write scope(s))", len(scopes))
 }
 
 // Start retains the original test/helper API and immediately marks a simple
@@ -256,7 +300,7 @@ func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, wo
 		s.Error = err.Error()
 		s.FailureID = failureid.ID(err)
 		switch {
-		case errors.Is(err, ErrTokenBudgetExceeded):
+		case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded):
 			s.Status = DelegateBudgetExhausted
 		case errors.Is(err, context.Canceled):
 			s.Status = DelegateCancelled
@@ -322,11 +366,104 @@ func (t *Team) findActiveLocked(idOrName string) (*DelegateStatus, error) {
 	return selected, nil
 }
 
-// MarkIntegrated records files explicitly copied into the parent workspace.
-// The child worktree remains available and is never removed automatically.
-func (t *Team) MarkIntegrated(id string, paths []string) {
+// MarkIntegrationReview records that the primary agent or user inspected the
+// current bounded diff. It is observational and grants no write permission.
+func (t *Team) MarkIntegrationReview(id, status, message string) {
+	t.update(id, func(s *DelegateStatus) {
+		s.IntegrationStatus = status
+		s.IntegrationError = message
+	})
+}
+
+// MarkScopeViolations records changed paths outside a delegated task's
+// scheduling contract. The child worktree is retained for inspection, but the
+// terminal task result is not represented as successful scoped work.
+func (t *Team) MarkScopeViolations(id string, paths []string) {
+	t.update(id, func(s *DelegateStatus) {
+		s.ScopeViolations = additiveValues(s.ScopeViolations, paths)
+	})
+}
+
+// MarkIntegrationOutcome records files explicitly copied into the parent
+// workspace and the guarded integration disposition. The child worktree
+// remains available and is never removed automatically.
+func (t *Team) MarkIntegrationOutcome(id, status string, paths []string, message string) {
 	t.update(id, func(s *DelegateStatus) {
 		s.Integrated = additiveValues(s.Integrated, paths)
+		s.IntegrationStatus = status
+		s.IntegrationError = message
+	})
+}
+
+// MarkIntegrated retains the original helper API for callers that only need
+// to report a successful integration.
+func (t *Team) MarkIntegrated(id string, paths []string) {
+	t.MarkIntegrationOutcome(id, "integrated", paths, "")
+}
+
+// MarkVerificationRunning records the exact suite and child-state token before
+// one command begins. Starting from a new state invalidates older results.
+func (t *Team) MarkVerificationRunning(id, token string, required []string, command string) {
+	t.update(id, func(s *DelegateStatus) {
+		if s.VerificationToken != "" && s.VerificationToken != token {
+			s.VerificationResults = nil
+		}
+		s.VerificationToken = token
+		s.VerificationRequired = append([]string(nil), required...)
+		s.VerificationStatus = "running"
+		s.VerificationError = ""
+		for i := range s.VerificationResults {
+			if s.VerificationResults[i].Command == command {
+				s.VerificationResults = append(s.VerificationResults[:i], s.VerificationResults[i+1:]...)
+				break
+			}
+		}
+	})
+}
+
+// MarkVerificationResult replaces the observation for one command and derives
+// the aggregate suite status. Every required command must pass against the
+// same state token before the result is called passed.
+func (t *Team) MarkVerificationResult(id, token string, required []string, result DelegateVerification) {
+	t.update(id, func(s *DelegateStatus) {
+		if s.VerificationToken != "" && s.VerificationToken != token {
+			s.VerificationResults = nil
+		}
+		s.VerificationToken = token
+		s.VerificationRequired = append([]string(nil), required...)
+		replaced := false
+		for i := range s.VerificationResults {
+			if s.VerificationResults[i].Command == result.Command {
+				s.VerificationResults[i] = result
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			s.VerificationResults = append(s.VerificationResults, result)
+		}
+		s.VerificationStatus, s.VerificationError = verificationAggregate(s.VerificationRequired, s.VerificationResults)
+	})
+}
+
+// MarkVerificationStale keeps the prior evidence visible but makes clear that
+// it no longer describes the current child bytes.
+func (t *Team) MarkVerificationStale(id, message string) {
+	t.update(id, func(s *DelegateStatus) {
+		if len(s.VerificationResults) == 0 && s.VerificationToken == "" {
+			return
+		}
+		s.VerificationStatus = "stale"
+		s.VerificationError = message
+	})
+}
+
+// MarkVerificationUnavailable records that Collomia could not derive a
+// standard suite from the retained worktree. It does not invent a command.
+func (t *Team) MarkVerificationUnavailable(id, message string) {
+	t.update(id, func(s *DelegateStatus) {
+		s.VerificationStatus = "unavailable"
+		s.VerificationError = message
 	})
 }
 
@@ -435,8 +572,12 @@ func (t *Team) notify(status DelegateStatus) {
 func copyDelegateStatus(status DelegateStatus) DelegateStatus {
 	status.Evidence = append([]string(nil), status.Evidence...)
 	status.Changed = append([]string(nil), status.Changed...)
+	status.WriteScopes = append([]string(nil), status.WriteScopes...)
+	status.ScopeViolations = append([]string(nil), status.ScopeViolations...)
 	status.Guidance = append([]string(nil), status.Guidance...)
 	status.Integrated = append([]string(nil), status.Integrated...)
+	status.VerificationRequired = append([]string(nil), status.VerificationRequired...)
+	status.VerificationResults = append([]DelegateVerification(nil), status.VerificationResults...)
 	status.pendingGuidance = append([]string(nil), status.pendingGuidance...)
 	status.cancel = nil
 	return status
@@ -449,10 +590,27 @@ func boundDelegateStatus(status *DelegateStatus) {
 	status.Profile = boundedDelegateText(status.Profile, 512)
 	status.Provider = boundedDelegateText(status.Provider, 512)
 	status.Model = boundedDelegateText(status.Model, 1024)
+	if len(status.WriteScopes) > maxWriteScopes {
+		status.WriteScopes = status.WriteScopes[:maxWriteScopes]
+	}
+	for i := range status.WriteScopes {
+		status.WriteScopes[i] = boundedDelegateText(status.WriteScopes[i], 1024)
+	}
+	if len(status.ScopeViolations) > maxDelegateChangedFiles {
+		status.ScopeViolations = status.ScopeViolations[:maxDelegateChangedFiles]
+	}
+	for i := range status.ScopeViolations {
+		status.ScopeViolations[i] = boundedDelegateText(status.ScopeViolations[i], 1024)
+	}
 	status.CurrentAction = boundedDelegateText(status.CurrentAction, 2<<10)
 	status.RecentOutput = tailDelegateText(status.RecentOutput, maxDelegateRecentOutput)
 	status.Summary = boundedDelegateText(status.Summary, 16<<10)
 	status.Error = boundedDelegateText(status.Error, 4<<10)
+	status.IntegrationStatus = boundedDelegateText(status.IntegrationStatus, 64)
+	status.IntegrationError = boundedDelegateText(status.IntegrationError, 4<<10)
+	status.VerificationStatus = boundedDelegateText(status.VerificationStatus, 64)
+	status.VerificationError = boundedDelegateText(status.VerificationError, 4<<10)
+	status.VerificationToken = boundedDelegateText(status.VerificationToken, 128)
 	status.Worktree = boundedDelegateText(status.Worktree, 4<<10)
 	status.Branch = boundedDelegateText(status.Branch, 1024)
 	status.BaseCommit = boundedDelegateText(status.BaseCommit, 128)
@@ -468,6 +626,24 @@ func boundDelegateStatus(status *DelegateStatus) {
 	for i := range status.Integrated {
 		status.Integrated[i] = boundedDelegateText(status.Integrated[i], 1024)
 	}
+	if len(status.VerificationRequired) > maxDelegateVerification {
+		status.VerificationRequired = status.VerificationRequired[:maxDelegateVerification]
+	}
+	for i := range status.VerificationRequired {
+		status.VerificationRequired[i] = boundedDelegateText(status.VerificationRequired[i], 2<<10)
+	}
+	if len(status.VerificationResults) > maxDelegateVerification {
+		status.VerificationResults = status.VerificationResults[:maxDelegateVerification]
+	}
+	for i := range status.VerificationResults {
+		result := &status.VerificationResults[i]
+		result.Purpose = boundedDelegateText(result.Purpose, 128)
+		result.Command = boundedDelegateText(result.Command, 2<<10)
+		result.Status = boundedDelegateText(result.Status, 64)
+		result.Output = tailDelegateText(result.Output, 4<<10)
+		result.Error = boundedDelegateText(result.Error, 2<<10)
+		result.StateToken = boundedDelegateText(result.StateToken, 128)
+	}
 	if len(status.Evidence) > maxDelegateEvidence {
 		status.Evidence = status.Evidence[:maxDelegateEvidence]
 	}
@@ -480,6 +656,31 @@ func boundDelegateStatus(status *DelegateStatus) {
 	for i := range status.Changed {
 		status.Changed[i] = boundedDelegateText(status.Changed[i], 1024)
 	}
+}
+
+func verificationAggregate(required []string, results []DelegateVerification) (string, string) {
+	observed := make(map[string]DelegateVerification, len(results))
+	for _, result := range results {
+		observed[result.Command] = result
+		switch result.Status {
+		case "failed", "cancelled", "timed_out", "blocked", "rejected", "stale":
+			message := result.Error
+			if message == "" {
+				message = result.Command + " " + result.Status
+			}
+			return result.Status, message
+		}
+	}
+	if len(required) == 0 {
+		return "unavailable", "no standard verification commands were detected"
+	}
+	for _, command := range required {
+		result, ok := observed[command]
+		if !ok || result.Status != "passed" {
+			return "partial", "not every detected verification command has passed"
+		}
+	}
+	return "passed", ""
 }
 
 func tailDelegateText(value string, limit int) string {
@@ -508,14 +709,18 @@ func (status DelegateStatus) Event() event.DelegateStatus {
 	return event.DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
 		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
+		WriteScopes: append([]string(nil), status.WriteScopes...), ScopeViolations: append([]string(nil), status.ScopeViolations...),
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
 		Summary: status.Summary, Error: status.Error,
 		FailureID: status.FailureID,
 		Evidence:  append([]string(nil), status.Evidence...), ChangedFiles: append([]string(nil), status.Changed...),
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, IntegratedFiles: append([]string(nil), status.Integrated...),
-		Usage:       event.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
-		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
+		IntegrationStatus: status.IntegrationStatus, IntegrationError: status.IntegrationError,
+		VerificationStatus: status.VerificationStatus, VerificationError: status.VerificationError, VerificationToken: status.VerificationToken,
+		VerificationRequired: append([]string(nil), status.VerificationRequired...), VerificationResults: verificationEvents(status.VerificationResults),
+		Usage:       event.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens, CostUSD: status.Usage.CostUSD, CostAvailable: status.Usage.CostAvailable, CostEstimated: status.Usage.CostEstimated},
+		TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,
 	}
 }
@@ -527,13 +732,41 @@ func DelegateStatusFromEvent(status event.DelegateStatus) DelegateStatus {
 	return DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
 		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
+		WriteScopes: append([]string(nil), status.WriteScopes...), ScopeViolations: append([]string(nil), status.ScopeViolations...),
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
 		Summary: status.Summary, Error: status.Error, FailureID: status.FailureID,
 		Evidence: append([]string(nil), status.Evidence...), Changed: append([]string(nil), status.ChangedFiles...),
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit, Integrated: append([]string(nil), status.IntegratedFiles...),
-		Usage:       provider.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens},
-		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
+		IntegrationStatus: status.IntegrationStatus, IntegrationError: status.IntegrationError,
+		VerificationStatus: status.VerificationStatus, VerificationError: status.VerificationError, VerificationToken: status.VerificationToken,
+		VerificationRequired: append([]string(nil), status.VerificationRequired...), VerificationResults: verificationStatuses(status.VerificationResults),
+		Usage:       provider.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, CachedTokens: status.Usage.CachedTokens, ReasoningTokens: status.Usage.ReasoningTokens, CostUSD: status.Usage.CostUSD, CostAvailable: status.Usage.CostAvailable, CostEstimated: status.Usage.CostEstimated},
+		TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds, Revision: status.Revision,
 		Started: status.Started, Finished: status.Finished,
 	}
+}
+
+func verificationEvents(results []DelegateVerification) []event.DelegateVerification {
+	out := make([]event.DelegateVerification, len(results))
+	for i, result := range results {
+		out[i] = event.DelegateVerification{
+			Purpose: result.Purpose, Command: result.Command, Status: result.Status,
+			Output: result.Output, Error: result.Error, StateToken: result.StateToken,
+			Started: result.Started, Finished: result.Finished,
+		}
+	}
+	return out
+}
+
+func verificationStatuses(results []event.DelegateVerification) []DelegateVerification {
+	out := make([]DelegateVerification, len(results))
+	for i, result := range results {
+		out[i] = DelegateVerification{
+			Purpose: result.Purpose, Command: result.Command, Status: result.Status,
+			Output: result.Output, Error: result.Error, StateToken: result.StateToken,
+			Started: result.Started, Finished: result.Finished,
+		}
+	}
+	return out
 }

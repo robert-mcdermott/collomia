@@ -80,7 +80,7 @@ func TestWriteGlobalStarterIncludesProvidersPermissionsAndOptions(t *testing.T) 
 	if err := json.Unmarshal(rawField(t, data, "options"), &options); err != nil {
 		t.Fatal(err)
 	}
-	if len(options) != 7 || string(options["max_iterations"]) != "24" || string(options["max_tool_output_bytes"]) != "65536" || string(options["delegate_max_concurrency"]) != "4" || options["delegate_provider_concurrency"] == nil || string(options["alternate_screen"]) != "true" || string(options["reduced_motion"]) != "false" || options["keybindings"] == nil {
+	if len(options) != 8 || string(options["max_iterations"]) != "24" || string(options["max_tool_output_bytes"]) != "65536" || string(options["delegate_max_concurrency"]) != "4" || options["delegate_provider_concurrency"] == nil || string(options["agent_integration"]) != `"manual"` || string(options["alternate_screen"]) != "true" || string(options["reduced_motion"]) != "false" || options["keybindings"] == nil {
 		t.Fatalf("global starter options should expose runtime defaults: %s", rawField(t, data, "options"))
 	}
 }

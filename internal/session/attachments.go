@@ -34,9 +34,10 @@ const (
 // raw image bytes; names, MIME types, sizes, and hashes live in the message
 // record that references them.
 type AttachmentManager struct {
-	mu   sync.RWMutex
-	opMu sync.Mutex
-	dir  string
+	mu       sync.RWMutex
+	opMu     sync.Mutex
+	dir      string
+	openFile durableFileOpener
 }
 
 func NewAttachmentManager() *AttachmentManager { return &AttachmentManager{} }
@@ -180,23 +181,8 @@ func (m *AttachmentManager) SaveBytes(name, advertisedType string, data []byte) 
 		return provider.ContentPart{}, err
 	}
 	path := filepath.Join(dir, id+".bin")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return provider.ContentPart{}, fmt.Errorf("create session attachment: %w", err)
-	}
-	written, writeErr := file.Write(data)
-	if writeErr == nil && written != len(data) {
-		writeErr = io.ErrShortWrite
-	}
-	if syncErr := file.Sync(); writeErr == nil {
-		writeErr = syncErr
-	}
-	if closeErr := file.Close(); writeErr == nil {
-		writeErr = closeErr
-	}
-	if writeErr != nil {
-		_ = os.Remove(path)
-		return provider.ContentPart{}, fmt.Errorf("write session attachment: %w", writeErr)
+	if err := writeExclusiveDurable(path, data, 0o600, m.openFile); err != nil {
+		return provider.ContentPart{}, fmt.Errorf("write session attachment: %w", err)
 	}
 	digest := sha256.Sum256(data)
 	return provider.ContentPart{Type: provider.ContentImage, AttachmentID: id, Name: safeAttachmentName(name), MediaType: mediaType, Size: len(data), SHA256: hex.EncodeToString(digest[:])}, nil

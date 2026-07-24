@@ -51,6 +51,47 @@ func (m *Model) openModelPicker() {
 	m.refresh()
 }
 
+// openPrimaryAgentPicker lists only profiles explicitly available to the
+// primary conversation. Existing delegate-only profiles stay out of this UI.
+func (m *Model) openPrimaryAgentPicker() {
+	var items []pickerItem
+	for _, name := range m.runtime.PrimaryAgentNames() {
+		desc := "ordinary primary agent"
+		if name != "default" {
+			profile := m.runtime.Config.Agents[name]
+			desc = profile.Availability
+			if profile.Model != "" {
+				desc += " · " + profile.Model
+			}
+			if profile.Reasoning != nil {
+				desc += " · reasoning " + profile.Reasoning.Effort
+			}
+			if profile.CostBudgetUSD > 0 {
+				desc += fmt.Sprintf(" · $%.2f budget", profile.CostBudgetUSD)
+			}
+		}
+		if name == m.runtime.ActiveAgent || (name == "default" && m.runtime.ActiveAgent == "") {
+			desc += " · current"
+		}
+		items = append(items, pickerItem{id: name, title: name, desc: desc})
+	}
+	m.picker = newPicker("Switch primary agent", items, func(m *Model, item pickerItem) tea.Cmd {
+		if err := m.runtime.SelectAgent(item.id); err != nil {
+			m.addError(err)
+			return nil
+		}
+		active := m.runtime.ActiveAgent
+		if active == "" {
+			active = "default"
+		}
+		providerName, model := m.runtime.Agent.Selection()
+		m.addSystem(fmt.Sprintf("Primary agent switched to %s (%s/%s). Conversation and cumulative usage were preserved.", active, providerName, model))
+		return nil
+	})
+	m.layout()
+	m.refresh()
+}
+
 // modelListMsg carries a provider's discovered model catalog.
 type modelListMsg struct {
 	provider string

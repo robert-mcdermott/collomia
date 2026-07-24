@@ -109,7 +109,11 @@ func TestStopAllKillsEverything(t *testing.T) {
 		t.Fatalf("running=%d", manager.Running())
 	}
 	manager.StopAll()
-	waitFor(t, 5*time.Second, func() bool { return manager.Running() == 0 })
+	if running := manager.Running(); running != 0 {
+		t.Fatalf("StopAll returned with %d processes still running", running)
+	}
+	// Shutdown is idempotent and must not block on already-completed jobs.
+	manager.StopAll()
 }
 
 func TestStartProcessHonorsDeniedPatterns(t *testing.T) {

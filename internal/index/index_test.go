@@ -1,6 +1,7 @@
 package index
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,7 +31,10 @@ func TestIndexExtractsAcrossLanguages(t *testing.T) {
 	if _, err := ix.Refresh(); err != nil {
 		t.Fatal(err)
 	}
-	cases := []struct{ query, kind, wantPath string; wantLine int }{
+	cases := []struct {
+		query, kind, wantPath string
+		wantLine              int
+	}{
 		{"HandleRequest", "func", "main.go", 3},
 		{"Start", "method", "main.go", 7},
 		{"Server", "type", "main.go", 5},
@@ -130,5 +134,52 @@ func TestQueryRanking(t *testing.T) {
 	}
 	if got[0].Name != "Run" || got[1].Name != "RunAll" || got[2].Name != "DryRun" {
 		t.Fatalf("ranking wrong: %v %v %v", got[0].Name, got[1].Name, got[2].Name)
+	}
+}
+
+func BenchmarkIndexLargeWorkspaceQuery(b *testing.B) {
+	dir := b.TempDir()
+	for i := 0; i < 2_000; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("pkg%04d", i), "service.go")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		content := fmt.Sprintf("package pkg%04d\n\nfunc HandleRequest%04d() {}\n", i, i)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	ix := New(dir)
+	if parsed, err := ix.Refresh(); err != nil || parsed != 2_000 {
+		b.Fatalf("initial refresh parsed=%d err=%v", parsed, err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := ix.Query("HandleRequest1999", "func", 20); len(got) != 1 {
+			b.Fatalf("query result=%+v", got)
+		}
+	}
+}
+
+func BenchmarkIndexWarmRefresh(b *testing.B) {
+	dir := b.TempDir()
+	for i := 0; i < 2_000; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("pkg%04d", i), "service.go")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			b.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("package fixture\n\nfunc Handle() {}\n"), 0o644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	ix := New(dir)
+	if _, err := ix.Refresh(); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if parsed, err := ix.Refresh(); err != nil || parsed != 0 {
+			b.Fatalf("warm refresh parsed=%d err=%v", parsed, err)
+		}
 	}
 }

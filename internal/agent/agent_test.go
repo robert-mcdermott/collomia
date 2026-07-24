@@ -40,6 +40,13 @@ type capabilityClient struct {
 
 type streamingClient struct{}
 
+type aliasedTool struct {
+	tools.Function
+	permissionName string
+}
+
+func (t aliasedTool) PermissionToolName() string { return t.permissionName }
+
 func (streamingClient) Name() string { return "streaming-fixture" }
 func (streamingClient) Chat(_ context.Context, _ provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
 	usage := provider.Usage{InputTokens: 7, OutputTokens: 3}
@@ -515,6 +522,20 @@ func TestDelegateRunsTasksConcurrently(t *testing.T) {
 	}
 }
 
+func TestDelegateRejectsInvalidWriteScopesBeforeAuthorization(t *testing.T) {
+	registry := tools.NewRegistry()
+	a := New(Options{
+		Client: &fakeClient{}, ProviderName: "fake", Model: "m",
+		ProviderConfig: appconfig.Provider{MaxTokens: 50}, Workspace: t.TempDir(),
+		Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+	})
+	a.AddDelegationTool(appconfig.Config{}, nil, NewTeam())
+	raw := json.RawMessage(`{"tasks":[{"task":"write outside","write":true,"write_paths":["../outside"]}]}`)
+	if _, err := registry.Assess("delegate", raw); err == nil || !strings.Contains(err.Error(), "escapes the workspace") {
+		t.Fatalf("invalid write scope assessment=%v", err)
+	}
+}
+
 func TestDelegateWriteTaskUsesIsolatedWorktree(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -685,6 +706,54 @@ func TestReadOnlyDelegateCannotMutateParentPlanArtifact(t *testing.T) {
 	a.AddDelegationTool(appconfig.Config{}, nil, NewTeam())
 	if _, err := registry.Execute(t.Context(), "delegate", json.RawMessage(`{"tasks":[{"task":"review the plan"}]}`)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReviewedIntegrationToolsArePrimaryOnly(t *testing.T) {
+	for _, name := range []string{"delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes"} {
+		if !parentOnlyTool(name) {
+			t.Fatalf("%s should be primary-only", name)
+		}
+	}
+	if parentOnlyTool("read_file") {
+		t.Fatal("ordinary workspace tools must remain available to delegated agents")
+	}
+}
+
+func TestCanonicalDisabledToolAlsoHidesAndBlocksWrapper(t *testing.T) {
+	ran := false
+	registry := tools.NewRegistry(aliasedTool{
+		Function: tools.Function{
+			Def:    provider.ToolDefinition{Name: "verify_wrapper", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			Action: tools.Action{Risk: tools.RiskExecute, Summary: "wrapped command"},
+			Run:    func(context.Context, json.RawMessage) (string, error) { ran = true; return "ran", nil },
+		},
+		permissionName: "run_command",
+	})
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if call == 1 {
+			for _, definition := range request.Tools {
+				if definition.Name == "verify_wrapper" {
+					t.Fatal("wrapper for disabled canonical tool was exposed")
+				}
+			}
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "1", Name: "verify_wrapper", Arguments: json.RawMessage(`{}`)}}}, nil
+		}
+		if last := request.Messages[len(request.Messages)-1]; !strings.Contains(last.Content, "not available") {
+			t.Fatalf("invented wrapper call was not blocked: %+v", last)
+		}
+		return provider.Response{Content: "done"}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		DisabledTools: []string{"run_command"}, MaxIterations: 4,
+	})
+	if _, err := a.Run(t.Context(), "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if ran {
+		t.Fatal("wrapper bypassed disabled canonical tool")
 	}
 }
 
@@ -1012,9 +1081,111 @@ func TestExecuteToolAppliesContentOverride(t *testing.T) {
 	}
 	a := New(Options{Client: &fakeClient{}, ProviderName: "fake", Model: "m", Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, approver)})
 	call := provider.ToolCall{ID: "1", Name: "write_file", Arguments: json.RawMessage(`{"path":"x.txt","content":"original content"}`)}
-	result := a.executeTool(t.Context(), call, false, func(event.Event) {})
+	result, err := a.executeTool(t.Context(), call, false, func(event.Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if received != override {
 		t.Fatalf("tool received content=%q, want override %q (full result: %s)", received, override, result.Content)
+	}
+}
+
+func TestPersistenceFailureAfterAssistantMessageBlocksToolExecution(t *testing.T) {
+	persistenceErr := error(nil)
+	executions := 0
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "mutate"},
+		Action: tools.Action{Risk: tools.RiskWrite, Summary: "mutate fixture"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return "mutated", nil
+		},
+	})
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{ToolCalls: []provider.ToolCall{{ID: "write-1", Name: "mutate", Arguments: json.RawMessage(`{}`)}}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		OnMessage: func(message provider.Message) {
+			if message.Role == "assistant" {
+				persistenceErr = errors.New("injected session disk failure")
+			}
+		},
+		PersistenceError: func() error { return persistenceErr },
+	})
+	if _, err := a.Run(t.Context(), "make the change", nil); !errors.Is(err, ErrPersistenceUnavailable) {
+		t.Fatalf("run error=%v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("tool executed %d times after persistence failed", executions)
+	}
+}
+
+func TestPersistenceFailureAtToolStartBlocksExecution(t *testing.T) {
+	persistenceErr := error(nil)
+	executions := 0
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect"},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect fixture"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return "inspected", nil
+		},
+	})
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{ToolCalls: []provider.ToolCall{{ID: "read-1", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		PersistenceError: func() error { return persistenceErr },
+	})
+	emit := func(e event.Event) {
+		if e.Kind == event.KindToolStart {
+			persistenceErr = errors.New("injected tool-start event failure")
+		}
+	}
+	if _, err := a.Run(t.Context(), "inspect", emit); !errors.Is(err, ErrPersistenceUnavailable) {
+		t.Fatalf("run error=%v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("tool executed %d times after its start event was not durable", executions)
+	}
+}
+
+func TestPersistenceFailureAfterToolResultStopsRemainingCalls(t *testing.T) {
+	persistenceErr := error(nil)
+	executions := 0
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect"},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect fixture"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return "inspected", nil
+		},
+	})
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{ToolCalls: []provider.ToolCall{
+			{ID: "read-1", Name: "inspect", Arguments: json.RawMessage(`{}`)},
+			{ID: "read-2", Name: "inspect", Arguments: json.RawMessage(`{}`)},
+		}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fixture", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		OnMessage: func(message provider.Message) {
+			if message.Role == "tool" {
+				persistenceErr = errors.New("injected tool-result record failure")
+			}
+		},
+		PersistenceError: func() error { return persistenceErr },
+	})
+	if _, err := a.Run(t.Context(), "inspect twice", nil); !errors.Is(err, ErrPersistenceUnavailable) {
+		t.Fatalf("run error=%v", err)
+	}
+	if executions != 1 {
+		t.Fatalf("executions=%d, want exactly the first already-started tool", executions)
 	}
 }
 
@@ -1201,5 +1372,30 @@ func TestValidatePlanAssignmentRequiresKnownStepAndCompletedDependencies(t *test
 	}
 	if err := validatePlanAssignment(board, 2); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCostBudgetUsesConfiguredPricingAndStopsAfterReportedOvershoot(t *testing.T) {
+	calls := 0
+	client := &fakeClient{chat: func(_ int, _ provider.Request) (provider.Response, error) {
+		calls++
+		return provider.Response{Content: "done", Usage: provider.Usage{InputTokens: 1000, OutputTokens: 1000}}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fake", Model: "m",
+		ProviderConfig: appconfig.Provider{MaxTokens: 100, Pricing: &appconfig.Pricing{InputPerMillion: 1, OutputPerMillion: 2}},
+		Workspace:      t.TempDir(), Registry: tools.NewRegistry(),
+		Permissions:   permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 2, CostBudgetUSD: 0.0025,
+	})
+	if _, err := a.Run(t.Context(), "test", nil); !errors.Is(err, ErrCostBudgetExceeded) {
+		t.Fatalf("cost budget error=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls=%d", calls)
+	}
+	usage := a.Usage()
+	if !usage.CostAvailable || usage.CostUSD != 0.003 {
+		t.Fatalf("usage=%+v", usage)
 	}
 }

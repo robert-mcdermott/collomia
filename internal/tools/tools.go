@@ -26,8 +26,11 @@ type Action struct {
 	// Normalized resources for scoped policy rules and the audit ledger.
 	Paths       []string
 	Executables []string
-	Hosts       []string
-	Server      string
+	// Command is the original immutable command text for additive agent-profile
+	// denial regexes. It is populated only by command-bearing built-ins.
+	Command string
+	Hosts   []string
+	Server  string
 	// Uninspectable marks actions (typically shell commands) whose full
 	// effect could not be statically determined; they always require
 	// interactive approval.
@@ -48,6 +51,32 @@ type Tool interface {
 	Definition() provider.ToolDefinition
 	Assess(args json.RawMessage) (Action, error)
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
+}
+
+// AuthorizationObserver is an optional tool hook for durable tool-specific
+// state that must reflect a denied outer agent permission. It cannot change
+// the decision and runs after Authorize has completed.
+type AuthorizationObserver interface {
+	ObserveAuthorization(args json.RawMessage, err error)
+}
+
+// ExecutionObserver is an optional tool hook for durable state when a
+// post-authorization lifecycle gate blocks execution. It observes but cannot
+// change the outcome.
+type ExecutionObserver interface {
+	ObserveExecution(args json.RawMessage, err error)
+}
+
+// PermissionIdentity lets a model-facing wrapper preserve an established
+// permission-policy name. It does not alter tool lookup or execution.
+type PermissionIdentity interface {
+	PermissionToolName() string
+}
+
+// HookIdentity lets a model-facing wrapper preserve the lifecycle-hook name
+// of the underlying action. It does not alter transcript tool names.
+type HookIdentity interface {
+	HookToolName() string
 }
 
 // Result preserves optional typed content returned by a tool. Ordinary tools

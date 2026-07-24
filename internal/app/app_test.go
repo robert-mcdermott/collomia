@@ -8,9 +8,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -59,6 +61,65 @@ func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testi
 	}
 }
 
+func TestRuntimeCloseCancelsActiveDelegates(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime.Team.Enqueue(agent.DelegateStart{ID: "active", Name: "worker", Task: "wait", Cancel: cancel})
+	runtime.Close()
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("runtime close did not cancel active delegated work")
+	}
+}
+
+func TestRuntimeCloseWaitsForBackgroundProcesses(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := "sleep 60"
+	if goruntime.GOOS == "windows" {
+		command = "ping -n 60 127.0.0.1"
+	}
+	args, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Registry.Execute(t.Context(), "start_process", args); err != nil {
+		runtime.Close()
+		t.Fatal(err)
+	}
+	if runtime.Processes.Running() != 1 {
+		runtime.Close()
+		t.Fatalf("running=%d", runtime.Processes.Running())
+	}
+	runtime.Close()
+	if running := runtime.Processes.Running(); running != 0 {
+		t.Fatalf("runtime close returned with %d background processes still running", running)
+	}
+}
+
+func BenchmarkRuntimeStartup(b *testing.B) {
+	home := b.TempDir()
+	b.Setenv("HOME", home)
+	b.Setenv("USERPROFILE", home)
+	workspace := b.TempDir()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runtime, err := New(context.Background(), Options{Workspace: workspace, Ephemeral: true})
+		if err != nil {
+			b.Fatal(err)
+		}
+		runtime.Close()
+	}
+}
+
 func TestDurableRuntimeEnablesBoundedResultArtifacts(t *testing.T) {
 	isolateGlobalFiles(t)
 	runtime, err := New(context.Background(), Options{Workspace: t.TempDir()})
@@ -79,6 +140,96 @@ func TestDurableRuntimeEnablesBoundedResultArtifacts(t *testing.T) {
 	}
 	if command.StreamOutputBytes != runtime.Config.Options.MaxToolOutputBytes || command.MaxOutputBytes != session.ArtifactResultLimit+1 {
 		t.Fatalf("command capture=%d stream=%d config=%d", command.MaxOutputBytes, command.StreamOutputBytes, runtime.Config.Options.MaxToolOutputBytes)
+	}
+}
+
+func TestSelectAgentTightensPermissionsAndPreservesUsage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configDir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configJSON := `{
+	  "schema_version": 1,
+	  "default_provider": "ollama",
+	  "default_model": "base-model",
+	  "providers": {
+	    "ollama": {
+	      "type": "openai-compatible",
+	      "base_url": "http://127.0.0.1:11434/v1",
+	      "model": "base-model",
+	      "max_tokens": 1024,
+	      "pricing": {
+	        "input_per_million": 1,
+	        "output_per_million": 2
+	      }
+	    }
+	  },
+	  "permissions": {
+	    "mode": "autopilot"
+	  },
+	  "agents": {
+	    "builder": {
+	      "availability": "primary",
+	      "model": "builder-model",
+	      "reasoning": {"effort": "high"},
+	      "tools": ["read_file"],
+	      "max_iterations": 4,
+	      "token_budget": 2000,
+	      "cost_budget_usd": 0.25,
+	      "permissions": {
+	        "mode": "ask",
+	        "denied_tools": ["run_command"]
+	      }
+	    }
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(configJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.Agent.SetUsage(provider.Usage{InputTokens: 30, OutputTokens: 10, CostUSD: 0.00005, CostAvailable: true, CostEstimated: true})
+
+	if err := runtime.SelectAgent("builder"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ActiveAgent != "builder" {
+		t.Fatalf("active agent=%q", runtime.ActiveAgent)
+	}
+	if providerName, model := runtime.Agent.Selection(); providerName != "ollama" || model != "builder-model" {
+		t.Fatalf("selection=%s/%s", providerName, model)
+	}
+	if profile, reasoning, tokens, cost := runtime.Agent.Profile(); profile != "builder" || reasoning != "high" || tokens != 2000 || cost != 0.25 {
+		t.Fatalf("profile=%q reasoning=%q tokens=%d cost=%v", profile, reasoning, tokens, cost)
+	}
+	if runtime.Permissions.Mode() != "ask" {
+		t.Fatalf("profile widened or ignored permission mode: %s", runtime.Permissions.Mode())
+	}
+	if grant, decision := runtime.Permissions.Evaluate("run_command", tools.Action{Risk: tools.RiskRead}); decision != "deny" || grant.Source != "denied-tool" {
+		t.Fatalf("profile denied tool decision=%q grant=%+v", decision, grant)
+	}
+	if usage := runtime.Agent.Usage(); usage.InputTokens != 30 || usage.OutputTokens != 10 || !usage.CostAvailable {
+		t.Fatalf("profile switch reset usage: %+v", usage)
+	}
+
+	if err := runtime.SelectAgent("default"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ActiveAgent != "" || runtime.Permissions.Mode() != "autopilot" {
+		t.Fatalf("default profile was not restored: active=%q mode=%s", runtime.ActiveAgent, runtime.Permissions.Mode())
+	}
+	if _, model := runtime.Agent.Selection(); model != "base-model" {
+		t.Fatalf("default model=%q", model)
+	}
+	if usage := runtime.Agent.Usage(); usage.InputTokens != 30 || usage.OutputTokens != 10 || !usage.CostAvailable {
+		t.Fatalf("restoring default reset usage: %+v", usage)
 	}
 }
 

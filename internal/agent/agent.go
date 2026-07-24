@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"sort"
 	"strings"
@@ -36,6 +37,15 @@ const maxDelegateTasks = 6
 // execution when a delegated agent's configured token budget is exhausted.
 var ErrTokenBudgetExceeded = errors.New("delegated-agent token budget exhausted")
 
+// ErrCostBudgetExceeded is returned before another provider request or tool
+// execution when an agent's configured estimated-cost budget is exhausted.
+var ErrCostBudgetExceeded = errors.New("agent cost budget exhausted")
+
+// ErrPersistenceUnavailable marks a fail-stop run: the durable session could
+// no longer accept records, so starting another provider call or tool would
+// make recovery ambiguous.
+var ErrPersistenceUnavailable = errors.New("durable session persistence unavailable")
+
 var delegateIDCounter atomic.Uint64
 
 // Emit receives the typed runtime events defined in internal/event.
@@ -43,6 +53,7 @@ type Emit = event.Emit
 
 type Agent struct {
 	mu                  sync.RWMutex
+	worktreeMu          sync.Mutex
 	client              provider.Client
 	providerName        string
 	model               string
@@ -59,7 +70,12 @@ type Agent struct {
 	maxIterations       int
 	maxToolOutput       int
 	tokenBudget         int
+	costBudgetUSD       float64
 	disabled            map[string]bool
+	allowedTools        map[string]bool
+	allowedSkills       map[string]bool
+	profileName         string
+	profileInstructions string
 	planMode            bool
 	subagent            bool
 	onMessage           func(provider.Message)
@@ -72,6 +88,7 @@ type Agent struct {
 	onUsage             func(provider.Usage)
 	onAction            func(string)
 	takeSteering        func() []string
+	persistenceError    func() error
 }
 
 type Options struct {
@@ -85,7 +102,10 @@ type Options struct {
 	MaxIterations, MaxToolOutput   int
 	// TokenBudget bounds cumulative provider-reported input plus output tokens.
 	// Zero disables this additional bound.
-	TokenBudget        int
+	TokenBudget int
+	// CostBudgetUSD bounds estimated provider spend. It requires explicit
+	// pricing on the selected provider.
+	CostBudgetUSD      float64
 	DisabledTools      []string
 	PlanMode, Subagent bool
 	// OnMessage observes every message appended to the conversation, for
@@ -112,6 +132,10 @@ type Options struct {
 	// TakeSteering returns parent guidance queued for the next provider
 	// boundary. It is used only by delegated agents.
 	TakeSteering func() []string
+	// PersistenceError reports a latched durable-session failure. The agent
+	// checks it before provider and tool boundaries so a failed session log
+	// cannot be followed by another external or mutating action.
+	PersistenceError func() error
 }
 
 func New(opts Options) *Agent {
@@ -125,7 +149,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError}
 }
 
 // appendMessage adds to the conversation and notifies the persistence hook.
@@ -146,6 +170,27 @@ func (a *Agent) SetHooks(onMessage func(provider.Message), onCompaction func(pro
 	a.onMessage = onMessage
 	a.onCompaction = onCompaction
 	a.mu.Unlock()
+}
+
+// SetPersistenceGuard rebinds fail-stop persistence checking when the active
+// durable session changes.
+func (a *Agent) SetPersistenceGuard(check func() error) {
+	a.mu.Lock()
+	a.persistenceError = check
+	a.mu.Unlock()
+}
+
+func (a *Agent) checkPersistence() error {
+	a.mu.RLock()
+	check := a.persistenceError
+	a.mu.RUnlock()
+	if check == nil {
+		return nil
+	}
+	if err := check(); err != nil {
+		return fmt.Errorf("%w; refusing further provider or tool actions: %w", ErrPersistenceUnavailable, err)
+	}
+	return nil
 }
 
 // SetMessages replaces the active conversation, used when resuming a
@@ -183,6 +228,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 	}
 	send(event.New(event.KindTurnStart))
+	if err := a.checkPersistence(); err != nil {
+		return "", reportError(send, err)
+	}
 	if err := a.lifecycle.Gate(ctx, hooks.Payload{Event: "user_prompt", Workspace: a.workspace, Subject: "user_prompt", Prompt: prompt}); err != nil {
 		blocked := fmt.Errorf("prompt blocked by hook: %w", err)
 		blocked = reportError(send, blocked)
@@ -195,10 +243,19 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		return "", wrapped
 	}
 	a.appendMessage(provider.Message{Role: "user", Content: prompt, Parts: retainedParts})
+	if err := a.checkPersistence(); err != nil {
+		return "", reportError(send, err)
+	}
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
+		if err := a.checkPersistence(); err != nil {
+			return "", reportError(send, err)
+		}
 		if a.shouldCompact() {
 			if _, err := a.compact(ctx, "", send); err != nil {
 				reportError(send, fmt.Errorf("automatic compaction failed: %w", err))
+			}
+			if err := a.checkPersistence(); err != nil {
+				return "", reportError(send, err)
 			}
 		}
 		select {
@@ -240,7 +297,11 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			budgetErr = reportError(send, budgetErr)
 			return "", budgetErr
 		}
-		req := provider.Request{Model: model, System: a.systemPrompt(plan), Messages: messages, Tools: defs, MaxTokens: requestMaxTokens, Temperature: a.providerConfig.Temperature}
+		reasoningEffort := ""
+		if a.providerConfig.Reasoning != nil {
+			reasoningEffort = a.providerConfig.Reasoning.Effort
+		}
+		req := provider.Request{Model: model, System: a.systemPrompt(plan), Messages: messages, Tools: defs, MaxTokens: requestMaxTokens, Temperature: a.providerConfig.Temperature, ReasoningEffort: reasoningEffort}
 		if reporter, ok := client.(provider.CapabilityReporter); ok {
 			if err := provider.ValidateRequest(reporter.Capabilities(), req); err != nil {
 				wrapped := fmt.Errorf("provider capability preflight: %w", err)
@@ -267,8 +328,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			}
 			if delta.Usage != nil {
 				streamedUsage.Store(true)
+				streamUsage := estimateCost(*delta.Usage, a.providerConfig.Pricing)
 				e := event.New(event.KindUsage)
-				e.Usage = &event.Usage{InputTokens: delta.Usage.InputTokens, OutputTokens: delta.Usage.OutputTokens, CachedTokens: delta.Usage.CachedTokens, ReasoningTokens: delta.Usage.ReasoningTokens}
+				e.Usage = eventUsage(streamUsage)
 				send(e)
 			}
 			if delta.Warning != "" {
@@ -281,11 +343,15 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			err = reportError(send, err)
 			return "", err
 		}
+		response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 		a.mu.Lock()
 		a.usage.InputTokens += response.Usage.InputTokens
 		a.usage.OutputTokens += response.Usage.OutputTokens
 		a.usage.CachedTokens += response.Usage.CachedTokens
 		a.usage.ReasoningTokens += response.Usage.ReasoningTokens
+		a.usage.CostUSD += response.Usage.CostUSD
+		a.usage.CostAvailable = a.usage.CostAvailable || response.Usage.CostAvailable
+		a.usage.CostEstimated = a.usage.CostEstimated || response.Usage.CostEstimated
 		if response.Usage.InputTokens > 0 {
 			a.lastInputTokens = response.Usage.InputTokens
 			a.usageWatermark = len(a.messages)
@@ -293,14 +359,18 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		usage := a.usage
 		onUsage := a.onUsage
 		budget := a.tokenBudget
+		costBudget := a.costBudgetUSD
 		a.mu.Unlock()
 		if onUsage != nil {
 			onUsage(usage)
 		}
 		a.appendMessage(provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls})
+		if err := a.checkPersistence(); err != nil {
+			return response.Content, reportError(send, err)
+		}
 		if !streamedUsage.Load() && (response.Usage.InputTokens > 0 || response.Usage.OutputTokens > 0) {
 			e := event.New(event.KindUsage)
-			e.Usage = &event.Usage{InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, CachedTokens: response.Usage.CachedTokens, ReasoningTokens: response.Usage.ReasoningTokens}
+			e.Usage = eventUsage(response.Usage)
 			send(e)
 		}
 		if budget > 0 && usage.InputTokens+usage.OutputTokens > budget {
@@ -308,13 +378,29 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			err = reportError(send, err)
 			return response.Content, err
 		}
+		if costBudget > 0 {
+			if !response.Usage.CostAvailable {
+				err := fmt.Errorf("%w: provider did not return usable token accounting for configured pricing", ErrCostBudgetExceeded)
+				return response.Content, reportError(send, err)
+			}
+			if usage.CostUSD > costBudget {
+				err := fmt.Errorf("%w: estimated spend $%.6f exceeded $%.6f", ErrCostBudgetExceeded, usage.CostUSD, costBudget)
+				return response.Content, reportError(send, err)
+			}
+		}
 		if len(response.ToolCalls) == 0 {
 			send(event.New(event.KindTurnEnd))
 			a.lifecycle.Fire(ctx, hooks.Payload{Event: "stop", Workspace: a.workspace, Subject: "stop", Detail: map[string]any{"iterations": iteration}})
 			return response.Content, nil
 		}
 		for _, call := range response.ToolCalls {
-			result := a.executeTool(ctx, call, plan, send)
+			if err := a.checkPersistence(); err != nil {
+				return response.Content, reportError(send, err)
+			}
+			result, fatalErr := a.executeTool(ctx, call, plan, send)
+			if fatalErr != nil {
+				return response.Content, reportError(send, fatalErr)
+			}
 			a.appendMessage(provider.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content, Parts: result.Parts})
 		}
 	}
@@ -418,50 +504,88 @@ func reportError(send Emit, err error) error {
 	return err
 }
 
-func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) tools.Result {
+func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, error) {
+	item, hasItem := a.registry.Get(call.Name)
 	a.mu.RLock()
 	disabled := a.disabled[call.Name]
+	if len(a.allowedTools) > 0 && !a.allowedTools[call.Name] {
+		disabled = true
+	}
+	allowedSkills := a.allowedSkills
+	if identity, ok := item.(tools.PermissionIdentity); hasItem && ok {
+		disabled = disabled || a.disabled[identity.PermissionToolName()]
+	}
 	a.mu.RUnlock()
-	if disabled || (a.subagent && call.Name == "delegate") {
-		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}
+	if disabled || (a.subagent && parentOnlyTool(call.Name)) {
+		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, nil
+	}
+	if call.Name == "load_skill" && len(allowedSkills) > 0 {
+		var input struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(call.Arguments, &input) == nil && !allowedSkills[input.Name] {
+			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, nil
+		}
 	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
-		return tools.Result{Content: "Tool error: " + err.Error()}
+		return tools.Result{Content: "Tool error: " + err.Error()}, nil
 	}
 	if plan && action.Risk != tools.RiskRead {
-		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}
+		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, nil
 	}
-	grant, err := a.permissions.Authorize(ctx, call.Name, action)
+	permissionTool := call.Name
+	hookTool := call.Name
+	if identity, ok := item.(tools.PermissionIdentity); hasItem && ok {
+		permissionTool = identity.PermissionToolName()
+	}
+	if identity, ok := item.(tools.HookIdentity); hasItem && ok {
+		hookTool = identity.HookToolName()
+	}
+	grant, err := a.permissions.Authorize(ctx, permissionTool, action)
+	if hasItem {
+		if observer, ok := item.(tools.AuthorizationObserver); ok {
+			observer.ObserveAuthorization(call.Arguments, err)
+		}
+	}
 	decided := event.New(event.KindPermissionDecision)
-	decided.Permission = &event.Permission{Tool: call.Name, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
+	decided.Permission = &event.Permission{Tool: permissionTool, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
 	send(decided)
-	allowed := err == nil
-	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
-	if err != nil {
-		return tools.Result{Content: "Tool denied: " + err.Error()}
+	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
+		return tools.Result{}, persistenceErr
 	}
-	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
-		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}
+	allowed := err == nil
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: permissionTool, Tool: permissionTool, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
+	if err != nil {
+		return tools.Result{Content: "Tool denied: " + err.Error()}, nil
+	}
+	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
+		if observer, ok := item.(tools.ExecutionObserver); hasItem && ok {
+			observer.ObserveExecution(call.Arguments, hookErr)
+		}
+		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, nil
 	}
 	args := call.Arguments
 	if grant.ContentOverride != nil {
 		var overridden error
 		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
 		if overridden != nil {
-			return tools.Result{Content: "Tool error: " + overridden.Error()}
+			return tools.Result{Content: "Tool error: " + overridden.Error()}, nil
 		}
 	}
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
 	send(start)
+	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
+		return tools.Result{}, persistenceErr
+	}
 	onOutput := func(chunk string) {
 		e := event.New(event.KindToolOutput)
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
 	}
 	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
-	a.permissions.RecordOutcome(call.Name, action, err)
+	a.permissions.RecordOutcome(permissionTool, action, err)
 	if len(result.Content) > a.maxToolOutput {
 		original := result.Content
 		result.Content = clipUTF8(original, a.maxToolOutput)
@@ -493,7 +617,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	done := event.New(event.KindToolResult)
 	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil}
 	send(done)
-	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result.Content), "image_parts": len(result.Parts)}}
+	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result.Content), "image_parts": len(result.Parts)}}
 	if err != nil {
 		endPayload.Error = err.Error()
 	}
@@ -501,7 +625,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if err == nil && action.Risk == tools.RiskWrite && len(action.Paths) > 0 {
 		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
 	}
-	return result
+	return result, nil
 }
 
 func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, send Emit) []provider.ContentPart {
@@ -544,7 +668,14 @@ func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, s
 func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 	return a.registry.Definitions(func(tool tools.Tool) bool {
 		name := tool.Definition().Name
-		if a.disabled[name] || (a.subagent && name == "delegate") {
+		disabled := a.disabled[name]
+		if len(a.allowedTools) > 0 && !a.allowedTools[name] {
+			disabled = true
+		}
+		if identity, ok := tool.(tools.PermissionIdentity); ok {
+			disabled = disabled || a.disabled[identity.PermissionToolName()]
+		}
+		if disabled || (a.subagent && parentOnlyTool(name)) {
 			return false
 		}
 		if !plan {
@@ -555,11 +686,20 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate",
+	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
 		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
 		return true
 	}
 	return false
+}
+
+func parentOnlyTool(name string) bool {
+	switch name {
+	case "delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Agent) systemPrompt(plan bool) string {
@@ -599,9 +739,17 @@ Operating rules:
 - When implementation is complete, use detect_verification to find this project's real build/lint/test commands, run proportionate verification with run_command, and summarize the outcome clearly.
 - Tool errors are recoverable: diagnose them and try a safer approach.
 
-%s%s
+%s%s%s
 
-%s`, a.workspace, runtime.GOOS, runtime.GOARCH, mode, sub, a.projectInstructions, pinned, a.catalog.Summary())
+%s`, a.workspace, runtime.GOOS, runtime.GOARCH, mode, sub, profileInstructions(a.profileInstructions), a.projectInstructions, pinned, a.catalog.Summary())
+}
+
+func profileInstructions(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return "Active agent profile instructions:\n" + value + "\n\n"
 }
 
 // DelegateTask is one unit of work requested through the delegate tool.
@@ -616,6 +764,11 @@ type DelegateTask struct {
 	// When false (the default) the sub-agent is read-only and shares the
 	// parent workspace, which is cheaper for pure investigation.
 	Write bool `json:"write,omitempty"`
+	// WritePaths declares the repository-relative files or directories this
+	// task is expected to change. Directory scopes end in "/". Overlapping
+	// writers are serialized; omitted scopes are workspace-wide. The retained
+	// result is checked against this contract after execution.
+	WritePaths []string `json:"write_paths,omitempty"`
 	// Agent selects a named profile from configuration (model, fixed role
 	// instructions, tool allowlist, iteration budget). Empty uses the
 	// parent's own model and full tool set.
@@ -636,16 +789,23 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		board = boards[0]
 	}
 	scheduler := NewScheduler(cfg.Options.DelegateMaxConcurrency, cfg.Options.DelegateProviderConcurrency)
-	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
+	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Write tasks should declare write_paths as repository-relative files or directory prefixes ending in /; overlapping scopes are serialized, omitted scopes are workspace-wide, and out-of-scope results are reported as violations. Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
+	if cfg.Options.AgentIntegration == "reviewed" {
+		desc += " Reviewed integration is enabled: after a successful write task, inspect its exact evidence and hunks with inspect_delegate_changes, run proportionate detected child-worktree verification with verify_delegate_changes, compare candidates when useful, and only then decide whether to publish selected changes with apply_delegate_changes."
+	}
 	if len(cfg.Agents) > 0 {
 		names := make([]string, 0, len(cfg.Agents))
-		for name := range cfg.Agents {
-			names = append(names, name)
+		for name, profile := range cfg.Agents {
+			if appconfig.AgentAvailableFor(profile, "delegate") {
+				names = append(names, name)
+			}
 		}
 		sort.Strings(names)
-		desc += " Named agent profiles available via \"agent\": " + strings.Join(names, ", ") + "."
+		if len(names) > 0 {
+			desc += " Named agent profiles available via \"agent\": " + strings.Join(names, ", ") + "."
+		}
 	}
-	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"agent":{"type":"string","description":"optional named agent profile from configuration"},"plan_step":{"type":"integer","minimum":1,"description":"optional existing structured plan step ID associated with this task"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
+	schema := json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":%d,"items":{"type":"object","properties":{"name":{"type":"string","description":"short label, e.g. \"auth-refactor\""},"task":{"type":"string","description":"the bounded task or question"},"write":{"type":"boolean","description":"true to allow file edits and shell commands in an isolated git worktree; false (default) for a fast read-only investigation"},"write_paths":{"type":"array","maxItems":64,"items":{"type":"string"},"description":"expected repository-relative files or directory prefixes ending in /; requires write=true; omitted means workspace-wide"},"agent":{"type":"string","description":"optional named agent profile from configuration"},"plan_step":{"type":"integer","minimum":1,"description":"optional existing structured plan step ID associated with this task"}},"required":["task"],"additionalProperties":false}}},"required":["tasks"],"additionalProperties":false}`, maxDelegateTasks))
 	assess := func(raw json.RawMessage) (tools.Action, error) {
 		var input struct {
 			Tasks []DelegateTask `json:"tasks"`
@@ -653,7 +813,10 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		risk := tools.RiskRead
 		summary := "delegate one or more read-only investigations"
 		if json.Unmarshal(raw, &input) == nil {
-			for _, t := range input.Tasks {
+			for index, t := range input.Tasks {
+				if _, err := NormalizeWriteScopes(t.WritePaths, t.Write); err != nil {
+					return tools.Action{}, fmt.Errorf("tasks[%d]: %w", index, err)
+				}
 				if t.Write {
 					risk = tools.RiskWrite
 					summary = "delegate one or more sub-agent tasks, including write-capable agents in isolated worktrees"
@@ -714,25 +877,29 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 // It carries evidence and artifact locations without injecting raw child
 // transcripts into the parent's model context.
 type DelegateResult struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Profile        string         `json:"profile,omitempty"`
-	PlanStep       int            `json:"plan_step,omitempty"`
-	Status         string         `json:"status"`
-	Summary        string         `json:"summary,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	FailureID      string         `json:"failure_id,omitempty"`
-	Evidence       []string       `json:"evidence,omitempty"`
-	ChangedFiles   []string       `json:"changed_files,omitempty"`
-	ChangedHunks   []DelegateHunk `json:"changed_hunks,omitempty"`
-	Worktree       string         `json:"worktree,omitempty"`
-	Branch         string         `json:"branch,omitempty"`
-	BaseCommit     string         `json:"base_commit,omitempty"`
-	InputTokens    int            `json:"input_tokens,omitempty"`
-	OutputTokens   int            `json:"output_tokens,omitempty"`
-	TokenBudget    int            `json:"token_budget,omitempty"`
-	TimeoutSeconds int            `json:"timeout_seconds"`
-	Truncated      bool           `json:"truncated,omitempty"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Profile         string         `json:"profile,omitempty"`
+	PlanStep        int            `json:"plan_step,omitempty"`
+	Status          string         `json:"status"`
+	Summary         string         `json:"summary,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	FailureID       string         `json:"failure_id,omitempty"`
+	Evidence        []string       `json:"evidence,omitempty"`
+	ChangedFiles    []string       `json:"changed_files,omitempty"`
+	WriteScopes     []string       `json:"write_scopes,omitempty"`
+	ScopeViolations []string       `json:"scope_violations,omitempty"`
+	ChangedHunks    []DelegateHunk `json:"changed_hunks,omitempty"`
+	Worktree        string         `json:"worktree,omitempty"`
+	Branch          string         `json:"branch,omitempty"`
+	BaseCommit      string         `json:"base_commit,omitempty"`
+	InputTokens     int            `json:"input_tokens,omitempty"`
+	OutputTokens    int            `json:"output_tokens,omitempty"`
+	CostUSD         float64        `json:"cost_usd,omitempty"`
+	TokenBudget     int            `json:"token_budget,omitempty"`
+	CostBudgetUSD   float64        `json:"cost_budget_usd,omitempty"`
+	TimeoutSeconds  int            `json:"timeout_seconds"`
+	Truncated       bool           `json:"truncated,omitempty"`
 }
 
 func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int) ([]byte, error) {
@@ -762,6 +929,9 @@ func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int)
 		}
 		if len(results[i].ChangedFiles) > 32 {
 			results[i].ChangedFiles = results[i].ChangedFiles[:32]
+		}
+		if len(results[i].ScopeViolations) > 32 {
+			results[i].ScopeViolations = results[i].ScopeViolations[:32]
 		}
 		for j := range results[i].ChangedFiles {
 			results[i].ChangedFiles[j] = boundedDelegateText(results[i].ChangedFiles[j], 256)
@@ -803,12 +973,24 @@ func encodeDelegateInbox(results []DelegateResult, warnings []string, limit int)
 			ID: boundedDelegateText(result.ID, 128), Name: boundedDelegateText(result.Name, 64),
 			Profile: boundedDelegateText(result.Profile, 64), PlanStep: result.PlanStep, Status: result.Status,
 			Error: boundedDelegateText(result.Error, 128), FailureID: result.FailureID, TokenBudget: result.TokenBudget,
+			WriteScopes: boundedDelegateValues(result.WriteScopes, 8, 128), ScopeViolations: boundedDelegateValues(result.ScopeViolations, 8, 128),
 			TimeoutSeconds: result.TimeoutSeconds, Truncated: true,
 		}
 	}
 	results = minimal
 	warnings = []string{"delegate details omitted by max_tool_output_bytes; inspect /agents"}
 	return encode()
+}
+
+func boundedDelegateValues(values []string, count, bytes int) []string {
+	if len(values) > count {
+		values = values[:count]
+	}
+	out := append([]string(nil), values...)
+	for i := range out {
+		out[i] = boundedDelegateText(out[i], bytes)
+	}
+	return out
 }
 
 // conflictWarning reports files touched by more than one sibling task in
@@ -945,6 +1127,8 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		profile, ok = cfg.Agents[task.Agent]
 		if !ok {
 			profileErr = fmt.Errorf("unknown agent profile %q", task.Agent)
+		} else if !appconfig.AgentAvailableFor(profile, "delegate") {
+			profileErr = fmt.Errorf("agent profile %q is not available for delegated tasks", task.Agent)
 		}
 	}
 	providerName, model := a.Selection()
@@ -957,11 +1141,13 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	}
 	taskCtx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
+	writeScopes, scopeErr := NormalizeWriteScopes(task.WritePaths, task.Write)
 	if team != nil {
 		team.Enqueue(DelegateStart{
 			ID: id, Name: name, Task: task.Task, Profile: task.Agent,
 			Provider: providerName, Model: model, Write: task.Write, PlanStep: task.PlanStep,
-			TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
+			WriteScopes: writeScopes,
+			TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
 		})
 	}
 	finishError := func(err error) DelegateResult {
@@ -972,7 +1158,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 				return delegateResult(status)
 			}
 		}
-		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), WriteScopes: writeScopes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds}
 	}
 	if strings.TrimSpace(task.Task) == "" {
 		return finishError(errors.New("empty task"))
@@ -980,10 +1166,13 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if profileErr != nil {
 		return finishError(profileErr)
 	}
+	if scopeErr != nil {
+		return finishError(scopeErr)
+	}
 	if err := validatePlanAssignment(board, task.PlanStep); err != nil {
 		return finishError(err)
 	}
-	release, err := scheduler.Acquire(taskCtx, providerName)
+	release, err := scheduler.AcquireScoped(taskCtx, providerName, writeScopes)
 	if err != nil {
 		return finishError(err)
 	}
@@ -992,9 +1181,20 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		team.MarkRunning(id)
 	}
 
-	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "agent": task.Agent, "token_budget": profile.TokenBudget, "timeout_seconds": timeoutSeconds}})
+	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "write_scopes": writeScopes, "agent": task.Agent, "token_budget": profile.TokenBudget, "cost_budget_usd": profile.CostBudgetUSD, "timeout_seconds": timeoutSeconds}})
 	output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
-	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_end", Workspace: a.workspace, Subject: name, Paths: changed, Error: errorString(runErr), Detail: map[string]any{"id": id, "status": delegateTerminalStatus(runErr), "input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens}})
+	violations := writeScopeViolations(writeScopes, changed)
+	if len(violations) > 0 {
+		scopeViolationErr := fmt.Errorf("delegated agent changed files outside its declared write_paths: %s", strings.Join(violations, ", "))
+		if runErr != nil {
+			scopeViolationErr = fmt.Errorf("%v; prior task error: %v", scopeViolationErr, runErr)
+		}
+		runErr = scopeViolationErr
+		if team != nil {
+			team.MarkScopeViolations(id, violations)
+		}
+	}
+	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_end", Workspace: a.workspace, Subject: name, Paths: changed, Error: errorString(runErr), Detail: map[string]any{"id": id, "status": delegateTerminalStatus(runErr), "write_scopes": writeScopes, "scope_violations": violations, "input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens}})
 	if team != nil {
 		team.FinishDetailed(id, boundedDelegateText(output, 16<<10), evidence, changed, worktreePath, branch, baseCommit, usage, runErr)
 		if status, ok := team.Get(id); ok {
@@ -1007,7 +1207,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TokenBudget: profile.TokenBudget, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds}
 }
 
 func validatePlanAssignment(board *plan.Board, stepID int) error {
@@ -1056,13 +1256,22 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	catalog, instructions, maxOut, maxIter := a.catalog, a.projectInstructions, a.maxToolOutput, a.maxIterations
 	auditRedact := a.auditRedact
 	disabled := keys(a.disabled)
+	persistenceError := a.persistenceError
 	a.mu.RUnlock()
 
 	if profile.Model != "" {
 		model = profile.Model
 	}
+	if profile.Reasoning != nil {
+		reasoning := *profile.Reasoning
+		providerConfig.Reasoning = &reasoning
+	}
 	if profile.Instructions != "" {
 		instructions = "Agent role: " + profile.Instructions + "\n\n" + instructions
+	}
+	if task.Write {
+		scopes, _ := NormalizeWriteScopes(task.WritePaths, true)
+		instructions = "Delegated write contract: change only these repository-relative scopes: " + strings.Join(scopes, ", ") + ". If the task requires another file, stop and report the mismatch instead of editing outside this scope.\n\n" + instructions
 	}
 	if profile.MaxIterations > 0 {
 		maxIter = profile.MaxIterations
@@ -1098,6 +1307,10 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	childWorkspace := workspace
 	childRegistry := parentRegistry.Clone()
 	childRegistry.Remove("delegate")
+	childRegistry.Remove("inspect_delegate_changes")
+	childRegistry.Remove("compare_delegate_changes")
+	childRegistry.Remove("verify_delegate_changes")
+	childRegistry.Remove("apply_delegate_changes")
 	// A child may report suggestions in its result but must not mutate the
 	// parent's shared structured plan artifact.
 	childRegistry.Remove("update_plan")
@@ -1111,7 +1324,12 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			return "", nil, nil, nil, "", "", "", provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
 		}
 		var err error
+		// Git mutates shared administrative state under .git/worktrees while
+		// adding a worktree. Serialize only this short setup operation per
+		// parent agent; child execution remains fully concurrent afterward.
+		a.worktreeMu.Lock()
 		wt, err = newWorktree(ctx, workspace, task.Name)
+		a.worktreeMu.Unlock()
 		if err != nil {
 			return "", nil, nil, nil, "", "", "", provider.Usage{}, err
 		}
@@ -1151,8 +1369,9 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		Client: client, ProviderName: providerName, Model: model, Workspace: childWorkspace,
 		ProviderConfig: providerConfig, Registry: childRegistry, Permissions: childManager,
 		Catalog: childCatalog, ProjectInstructions: instructions,
-		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: profile.TokenBudget,
+		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
 		DisabledTools: disabled, PlanMode: childPlan, Subagent: true,
+		PersistenceError: persistenceError,
 		OnUsage: func(current provider.Usage) {
 			if team != nil {
 				team.SetUsage(id, current)
@@ -1266,9 +1485,10 @@ func delegateResult(status DelegateStatus) DelegateResult {
 	return DelegateResult{
 		ID: status.ID, Name: status.Name, Profile: status.Profile, PlanStep: status.PlanStep, Status: status.Status,
 		Summary: status.Summary, Error: status.Error, FailureID: status.FailureID, Evidence: status.Evidence,
-		ChangedFiles: status.Changed, Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
+		ChangedFiles: status.Changed, WriteScopes: status.WriteScopes, ScopeViolations: status.ScopeViolations,
+		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
 		InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens,
-		TokenBudget: status.TokenBudget, TimeoutSeconds: status.TimeoutSeconds,
+		CostUSD: status.Usage.CostUSD, TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds,
 	}
 }
 
@@ -1277,6 +1497,8 @@ func delegateTerminalStatus(err error) string {
 	case err == nil:
 		return DelegateDone
 	case errors.Is(err, ErrTokenBudgetExceeded):
+		return DelegateBudgetExhausted
+	case errors.Is(err, ErrCostBudgetExceeded):
 		return DelegateBudgetExhausted
 	case errors.Is(err, context.Canceled):
 		return DelegateCancelled
@@ -1304,7 +1526,91 @@ func boundedDelegateText(value string, limit int) string {
 	return clipUTF8(value, limit)
 }
 
-func (a *Agent) Clear()               { a.mu.Lock(); a.messages = nil; a.usage = provider.Usage{}; a.mu.Unlock() }
+// Clear removes model-visible conversation context without resetting durable
+// token or cost accounting for the active session.
+func (a *Agent) Clear() {
+	a.mu.Lock()
+	a.messages = nil
+	a.lastInputTokens = 0
+	a.usageWatermark = 0
+	a.mu.Unlock()
+}
+
+// Reset starts fresh conversation and accounting state for a newly-created
+// session. It must not be used for /clear within an existing session.
+func (a *Agent) Reset() {
+	a.mu.Lock()
+	a.messages = nil
+	a.usage = provider.Usage{}
+	a.lastInputTokens = 0
+	a.usageWatermark = 0
+	a.mu.Unlock()
+}
+
+// SetUsage restores cumulative accounting reconstructed from durable events.
+func (a *Agent) SetUsage(usage provider.Usage) {
+	a.mu.Lock()
+	a.usage = usage
+	a.mu.Unlock()
+}
+
+// ProfileSettings is the effective runtime surface of a named primary
+// profile. Runtime owns restoration of the ordinary defaults.
+type ProfileSettings struct {
+	Name          string
+	Instructions  string
+	Catalog       skills.Catalog
+	Tools         []string
+	DisabledTools []string
+	Skills        []string
+	MaxIterations int
+	TokenBudget   int
+	CostBudgetUSD float64
+}
+
+// ApplyProfile changes only local agent behavior; the Runtime separately
+// changes provider/model and permission restrictions.
+func (a *Agent) ApplyProfile(settings ProfileSettings) {
+	disabled := map[string]bool{}
+	for _, name := range settings.DisabledTools {
+		disabled[name] = true
+	}
+	allowedTools := map[string]bool(nil)
+	if len(settings.Tools) > 0 {
+		allowedTools = make(map[string]bool, len(settings.Tools))
+		for _, name := range settings.Tools {
+			allowedTools[name] = true
+		}
+	}
+	allowedSkills := map[string]bool(nil)
+	if len(settings.Skills) > 0 {
+		allowedSkills = make(map[string]bool, len(settings.Skills))
+		for _, name := range settings.Skills {
+			allowedSkills[name] = true
+		}
+	}
+	a.mu.Lock()
+	a.profileName = settings.Name
+	a.profileInstructions = settings.Instructions
+	a.catalog = settings.Catalog
+	a.maxIterations = settings.MaxIterations
+	a.tokenBudget = settings.TokenBudget
+	a.costBudgetUSD = settings.CostBudgetUSD
+	a.disabled = disabled
+	a.allowedTools = allowedTools
+	a.allowedSkills = allowedSkills
+	a.mu.Unlock()
+}
+
+func (a *Agent) Profile() (name, reasoning string, tokenBudget int, costBudgetUSD float64) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.providerConfig.Reasoning != nil {
+		reasoning = a.providerConfig.Reasoning.Effort
+	}
+	return a.profileName, reasoning, a.tokenBudget, a.costBudgetUSD
+}
+
 func (a *Agent) SetPlan(enabled bool) { a.mu.Lock(); a.planMode = enabled; a.mu.Unlock() }
 func (a *Agent) Plan() bool           { a.mu.RLock(); defer a.mu.RUnlock(); return a.planMode }
 func (a *Agent) SetProvider(name, model string, p appconfig.Provider, client provider.Client) {
@@ -1355,27 +1661,75 @@ func (a *Agent) nextRequestMaxTokens() (int, error) {
 	a.mu.RLock()
 	budget := a.tokenBudget
 	used := a.usage.InputTokens + a.usage.OutputTokens
+	costBudget := a.costBudgetUSD
+	spent := a.usage.CostUSD
+	pricing := a.providerConfig.Pricing
 	configured := a.providerConfig.MaxTokens
 	a.mu.RUnlock()
-	if budget <= 0 {
+	if budget <= 0 && costBudget <= 0 {
 		return configured, nil
 	}
-	remaining := budget - used
-	if remaining <= 0 {
-		return 0, fmt.Errorf("%w: used %d of %d tokens", ErrTokenBudgetExceeded, used, budget)
-	}
 	estimatedInput, _ := a.ContextEstimate()
-	if estimatedInput >= remaining {
-		return 0, fmt.Errorf("%w: approximately %d input tokens need the remaining %d-token allowance", ErrTokenBudgetExceeded, estimatedInput, remaining)
+	if budget > 0 {
+		remaining := budget - used
+		if remaining <= 0 {
+			return 0, fmt.Errorf("%w: used %d of %d tokens", ErrTokenBudgetExceeded, used, budget)
+		}
+		if estimatedInput >= remaining {
+			return 0, fmt.Errorf("%w: approximately %d input tokens need the remaining %d-token allowance", ErrTokenBudgetExceeded, estimatedInput, remaining)
+		}
+		allowance := remaining - estimatedInput
+		if configured <= 0 || configured > allowance {
+			configured = allowance
+		}
 	}
-	allowance := remaining - estimatedInput
-	if configured <= 0 || configured > allowance {
-		configured = allowance
+	if costBudget > 0 {
+		if pricing == nil || pricing.InputPerMillion <= 0 || pricing.OutputPerMillion <= 0 {
+			return 0, fmt.Errorf("%w: cost_budget_usd requires positive pricing.input_per_million and pricing.output_per_million on the selected provider", ErrCostBudgetExceeded)
+		}
+		remainingUSD := costBudget - spent - float64(estimatedInput)*pricing.InputPerMillion/1_000_000
+		if remainingUSD <= 0 {
+			return 0, fmt.Errorf("%w: estimated input would exceed the remaining $%.6f", ErrCostBudgetExceeded, costBudget-spent)
+		}
+		costAllowance := int(math.Floor(remainingUSD * 1_000_000 / pricing.OutputPerMillion))
+		if configured <= 0 || configured > costAllowance {
+			configured = costAllowance
+		}
 	}
 	if configured <= 0 {
+		if costBudget > 0 {
+			return 0, fmt.Errorf("%w: no output allowance remains", ErrCostBudgetExceeded)
+		}
 		return 0, fmt.Errorf("%w: no output allowance remains", ErrTokenBudgetExceeded)
 	}
 	return configured, nil
+}
+
+func estimateCost(usage provider.Usage, pricing *appconfig.Pricing) provider.Usage {
+	if pricing == nil || pricing.InputPerMillion <= 0 || pricing.OutputPerMillion <= 0 ||
+		usage.InputTokens+usage.OutputTokens <= 0 {
+		return usage
+	}
+	cached := min(max(usage.CachedTokens, 0), max(usage.InputTokens, 0))
+	ordinaryInput := max(usage.InputTokens-cached, 0)
+	cachedRate := pricing.InputPerMillion
+	if pricing.CachedInputPerMillion != nil {
+		cachedRate = *pricing.CachedInputPerMillion
+	}
+	usage.CostUSD = (float64(ordinaryInput)*pricing.InputPerMillion +
+		float64(cached)*cachedRate +
+		float64(max(usage.OutputTokens, 0))*pricing.OutputPerMillion) / 1_000_000
+	usage.CostAvailable = true
+	usage.CostEstimated = true
+	return usage
+}
+
+func eventUsage(usage provider.Usage) *event.Usage {
+	return &event.Usage{
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		CachedTokens: usage.CachedTokens, ReasoningTokens: usage.ReasoningTokens,
+		CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
+	}
 }
 
 // ContextEstimate combines the provider-reported input size of the last
@@ -1436,13 +1790,13 @@ func (a *Agent) ContextBreakdown() ContextBreakdown {
 		pinned = strings.TrimSpace(a.pinnedContext())
 	}
 	totalSystem := len(a.systemPrompt(a.planMode))
-	baseSystem := totalSystem - len(a.projectInstructions) - len(a.catalog.Summary()) - len(pinned)
+	baseSystem := totalSystem - len(a.projectInstructions) - len(a.profileInstructions) - len(a.catalog.Summary()) - len(pinned)
 	if baseSystem < 0 {
 		baseSystem = totalSystem
 	}
 	b := ContextBreakdown{
 		SystemPromptChars:  baseSystem,
-		InstructionsChars:  len(a.projectInstructions),
+		InstructionsChars:  len(a.projectInstructions) + len(a.profileInstructions),
 		SkillsSummaryChars: len(a.catalog.Summary()),
 		PinnedStateChars:   len(pinned),
 		MessagesByRole:     map[string]int{},
@@ -1490,6 +1844,12 @@ func (a *Agent) Compact(ctx context.Context, focus string) (int, error) {
 	return a.compact(ctx, focus, nil)
 }
 
+// CompactWithEmit exposes compact's usage and lifecycle events to an
+// interactive caller so durable accounting remains complete.
+func (a *Agent) CompactWithEmit(ctx context.Context, focus string, send Emit) (int, error) {
+	return a.compact(ctx, focus, send)
+}
+
 func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, error) {
 	a.mu.RLock()
 	messages := append([]provider.Message(nil), a.messages...)
@@ -1526,10 +1886,46 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	if focus != "" {
 		instructions += " Give particular attention to: " + focus
 	}
-	req := provider.Request{Model: model, System: "You compress agent conversation history into faithful, information-dense summaries.", Messages: []provider.Message{{Role: "user", Content: instructions + "\n\n---\n" + serialized.String()}}, MaxTokens: a.providerConfig.MaxTokens}
+	requestMaxTokens, err := a.nextRequestMaxTokens()
+	if err != nil {
+		return 0, err
+	}
+	reasoningEffort := ""
+	if a.providerConfig.Reasoning != nil {
+		reasoningEffort = a.providerConfig.Reasoning.Effort
+	}
+	req := provider.Request{Model: model, System: "You compress agent conversation history into faithful, information-dense summaries.", Messages: []provider.Message{{Role: "user", Content: instructions + "\n\n---\n" + serialized.String()}}, MaxTokens: requestMaxTokens, ReasoningEffort: reasoningEffort}
 	response, err := client.Chat(ctx, req, nil)
 	if err != nil {
 		return 0, err
+	}
+	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
+	a.mu.Lock()
+	a.usage.InputTokens += response.Usage.InputTokens
+	a.usage.OutputTokens += response.Usage.OutputTokens
+	a.usage.CachedTokens += response.Usage.CachedTokens
+	a.usage.ReasoningTokens += response.Usage.ReasoningTokens
+	a.usage.CostUSD += response.Usage.CostUSD
+	a.usage.CostAvailable = a.usage.CostAvailable || response.Usage.CostAvailable
+	a.usage.CostEstimated = a.usage.CostEstimated || response.Usage.CostEstimated
+	usage := a.usage
+	onUsage := a.onUsage
+	tokenBudget := a.tokenBudget
+	costBudget := a.costBudgetUSD
+	a.mu.Unlock()
+	if onUsage != nil {
+		onUsage(usage)
+	}
+	if response.Usage.InputTokens+response.Usage.OutputTokens > 0 && send != nil {
+		e := event.New(event.KindUsage)
+		e.Usage = eventUsage(response.Usage)
+		send(e)
+	}
+	if tokenBudget > 0 && usage.InputTokens+usage.OutputTokens > tokenBudget {
+		return 0, fmt.Errorf("%w: provider reported %d tokens after a limit of %d", ErrTokenBudgetExceeded, usage.InputTokens+usage.OutputTokens, tokenBudget)
+	}
+	if costBudget > 0 && (!response.Usage.CostAvailable || usage.CostUSD > costBudget) {
+		return 0, fmt.Errorf("%w: estimated spend $%.6f exceeded or could not be verified against $%.6f", ErrCostBudgetExceeded, usage.CostUSD, costBudget)
 	}
 	failures := recentFailureEvidence(messages[:cut])
 	summaryContent := "[Context summary — earlier conversation compressed to save space]\n" + response.Content

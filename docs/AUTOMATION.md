@@ -46,6 +46,10 @@ Collomia may add optional fields to schema v1. Consumers should validate known
 fields and tolerate new optional fields as described by their chosen JSON
 decoder. For that reason, the published schema permits additional properties
 while still validating all known fields and kind-specific required payloads.
+New event kinds require an explicit compatibility decision because existing
+strict replay consumers reject unknown kinds. The repository's
+[compatibility and migration policy](COMPATIBILITY.md) defines the complete
+versioning contract.
 
 ## Event kinds
 
@@ -61,7 +65,7 @@ Current one-shot runs emit these events when applicable:
 | `tool.output` | `tool` | Live bounded tool output. |
 | `tool.result` | `tool` | Completed tool result and error flag. |
 | `permission.decision` | `permission` | Allow/deny decision, source, matched rule, and resources. |
-| `usage` | `usage` | Provider-reported input/output/cached/reasoning tokens. |
+| `usage` | `usage` | Provider-reported input/output/cached/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. |
 | `context.compaction` | `text` | Context was compacted. |
 | `warning` | `text` | Non-fatal runtime/provider warning. |
 | `error` | `error`, optional `provider`, optional `failure_id` | A failure observed during the run. |
@@ -75,14 +79,39 @@ Do not assume every reserved kind appears in every current CLI stream.
 
 When present, its `delegate` object includes stable identity/profile/provider,
 `plan_step`, lifecycle state/current action, bounded `recent_output`, steering
-history plus `pending_guidance`, evidence and changed/integrated file lists,
-usage/budgets, and retained worktree/branch/base metadata. These are
-observations only: replay never restarts a child, delivers stored guidance, or
-integrates stored changes. Consumers must tolerate additive fields.
+history plus `pending_guidance`, declared `write_scopes`, any
+`scope_violations`, evidence and changed/integrated file lists, optional
+`integration_status`/`integration_error`, usage plus token/cost budgets, and retained
+worktree/branch/base metadata. A writer without explicit paths records `["*"]`.
+Scope violations make the task an error and block guarded integration; the
+worktree remains available. Integration status describes a user/primary
+reviewed-copy disposition (`reviewed`, `reviewed_with_conflicts`, `integrated`,
+`partial`, `blocked`, or `rejected`), not a Git branch merge. A reviewed file
+may be a freshness-bound clean three-way composition; overlapping diff3
+content is observational and never published automatically.
+
+Delegated write records may also include `verification_status`,
+`verification_error`, `verification_token`, `verification_required`, and
+bounded `verification_results`. Each result carries the detected purpose,
+exact command, observed status, bounded output/error, state token, and
+timestamps. Aggregate status can be `running`, `partial`, `passed`, `failed`,
+`cancelled`, `timed_out`, `blocked`, `rejected`, `stale`, or `unavailable`.
+This is child-worktree evidence only; it grants no permission and says nothing
+about the combined parent workspace.
+
+These fields are observations only: replay never restarts a child, runs a
+stored verification command, delivers stored guidance, or integrates stored
+changes. Consumers must tolerate additive fields.
 
 Failed, cancelled, timed-out, budget-exhausted, or recovery-interrupted child
 records may also carry `delegate.failure_id`. It is the same opaque ID shown in
 that child's interactive diagnostic; it is not a task ID and grants no access.
+
+Costs are local estimates, not provider invoices. They appear only when the
+selected provider has explicit `pricing`; Collomia ships no price catalog.
+Headless runs using a named primary profile can enforce its durable
+`cost_budget_usd` with `--agent <name>`. A missing/invalid price configuration
+is a configuration failure; exhaustion is reported as failure kind `usage`.
 
 `tool.call.delta.arguments_delta` can be incomplete JSON until `done` is true.
 It is an observation stream, not an execution request. Collomia itself waits

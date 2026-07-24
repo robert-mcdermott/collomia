@@ -39,13 +39,20 @@ type Meta struct {
 	Turns      int       `json:"turns,omitempty"`
 }
 
+// RecordSchemaVersion identifies the durable session-log record shape.
+// Records written before this field was introduced omit schema_version and
+// are treated as version 1. Additive optional fields do not require a bump;
+// incompatible record semantics do.
+const RecordSchemaVersion = 1
+
 // Record is one line of the session log. Type selects the payload.
 type Record struct {
-	Type    string            `json:"type"` // meta, message, event, compaction, plan
-	Time    time.Time         `json:"time"`
-	Meta    *Meta             `json:"meta,omitempty"`
-	Message *provider.Message `json:"message,omitempty"`
-	Event   *event.Event      `json:"event,omitempty"`
+	SchemaVersion int               `json:"schema_version,omitempty"`
+	Type          string            `json:"type"` // meta, message, event, compaction, plan
+	Time          time.Time         `json:"time"`
+	Meta          *Meta             `json:"meta,omitempty"`
+	Message       *provider.Message `json:"message,omitempty"`
+	Event         *event.Event      `json:"event,omitempty"`
 	// Replaced is set on compaction records: how many active messages the
 	// summary message replaces.
 	Replaced int             `json:"replaced,omitempty"`
@@ -166,6 +173,9 @@ func (s *Store) Load(id string) (*Session, error) {
 				continue
 			}
 			return nil, fmt.Errorf("session %s line %d is corrupt: %w", id, i+1, err)
+		}
+		if err := validateRecordVersion(id, i+1, record); err != nil {
+			return nil, err
 		}
 		sess.replay(record)
 	}
@@ -377,13 +387,30 @@ func (s *Store) readRecords(id string) ([]Record, error) {
 			}
 			return nil, fmt.Errorf("session %s line %d is corrupt: %w", id, i+1, err)
 		}
+		if err := validateRecordVersion(id, i+1, record); err != nil {
+			return nil, err
+		}
 		records = append(records, record)
 	}
 	return records, nil
 }
 
+func validateRecordVersion(id string, line int, record Record) error {
+	version := record.SchemaVersion
+	if version == 0 {
+		version = 1 // legacy records written before explicit versioning
+	}
+	if version != RecordSchemaVersion {
+		return fmt.Errorf("session %s line %d uses unsupported schema_version %d (this build supports %d)", id, line, version, RecordSchemaVersion)
+	}
+	return nil
+}
+
 func writeRecords(w io.Writer, records []Record) error {
 	for _, record := range records {
+		if record.SchemaVersion == 0 {
+			record.SchemaVersion = RecordSchemaVersion
+		}
 		data, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -574,6 +601,10 @@ type Session struct {
 	// recentEvents is a bounded in-memory projection source for operator UIs.
 	// The append-only JSONL remains the complete durable event history.
 	recentEvents []event.Event
+	// usage is reconstructed from durable per-response usage events. It is
+	// intentionally independent of recentEvents so a long session cannot
+	// evade a budget when the in-memory projection rolls over.
+	usage provider.Usage
 
 	store              *Store
 	mu                 sync.Mutex
@@ -618,11 +649,25 @@ func (sess *Session) replay(record Record) {
 	case "event":
 		if record.Event != nil {
 			sess.retainEvent(*record.Event)
+			sess.accumulateUsage(*record.Event)
 			if record.Event.Kind == event.KindDelegateUpdate && record.Event.Delegate != nil {
 				sess.applyDelegate(*record.Event.Delegate)
 			}
 		}
 	}
+}
+
+func (sess *Session) accumulateUsage(e event.Event) {
+	if e.Kind != event.KindUsage || e.Usage == nil {
+		return
+	}
+	sess.usage.InputTokens += e.Usage.InputTokens
+	sess.usage.OutputTokens += e.Usage.OutputTokens
+	sess.usage.CachedTokens += e.Usage.CachedTokens
+	sess.usage.ReasoningTokens += e.Usage.ReasoningTokens
+	sess.usage.CostUSD += e.Usage.CostUSD
+	sess.usage.CostAvailable = sess.usage.CostAvailable || e.Usage.CostAvailable
+	sess.usage.CostEstimated = sess.usage.CostEstimated || e.Usage.CostEstimated
 }
 
 func (sess *Session) retainEvent(e event.Event) {
@@ -682,6 +727,7 @@ func (sess *Session) markInterrupted() {
 }
 
 func (sess *Session) append(record Record) error {
+	record.SchemaVersion = RecordSchemaVersion
 	record.Time = time.Now().UTC()
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -764,6 +810,7 @@ func (sess *Session) AppendEvent(e event.Event) {
 	}
 	sess.mu.Lock()
 	sess.retainEvent(e)
+	sess.accumulateUsage(e)
 	if e.Kind == event.KindTurnEnd {
 		sess.Meta.Turns++
 		sess.Meta.UpdatedAt = time.Now().UTC()
@@ -777,6 +824,13 @@ func (sess *Session) AppendEvent(e event.Event) {
 		_ = sess.append(Record{Type: "meta", Meta: &meta})
 	}
 	_ = sess.append(Record{Type: "event", Event: &e})
+}
+
+// Usage returns cumulative provider usage reconstructed from durable events.
+func (sess *Session) Usage() provider.Usage {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.usage
 }
 
 // RecentEvents returns the newest durable runtime events retained in memory.

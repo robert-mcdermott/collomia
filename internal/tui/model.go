@@ -224,6 +224,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.refreshWorkspaceStatus())
 		m.layout()
 		m.refresh()
+	case agentVerificationCompletedMsg:
+		m.busy = false
+		m.cancel = nil
+		m.input.Focus()
+		passed := 0
+		for _, result := range msg.results {
+			if result.Status == "passed" {
+				passed++
+			}
+		}
+		if msg.err != nil {
+			m.addError(fmt.Errorf("delegated verification %s stopped after %d/%d passing command(s): %w", msg.id, passed, len(msg.results), msg.err))
+		} else {
+			m.addSystem(fmt.Sprintf("Delegated verification %s passed %d command(s) in the isolated child worktree. This is evidence only; publication still requires review and permission, and the combined parent workspace should be verified after integration.", msg.id, passed))
+		}
+		m.layout()
+		m.refresh()
 	case questionMsg:
 		env := msg.envelope
 		m.question = &env
@@ -850,6 +867,13 @@ func (m *Model) sessionContent() string {
 	if window > 0 {
 		windowText = formatTokens(window)
 	}
+	activeProfile, reasoningEffort, tokenBudget, costBudget := m.runtime.Agent.Profile()
+	if activeProfile == "" {
+		activeProfile = "default"
+	}
+	if reasoningEffort == "" {
+		reasoningEffort = "provider default"
+	}
 	var b strings.Builder
 	b.WriteString(h("Session") + "\n")
 	b.WriteString(kv("workspace", m.runtime.Workspace) + "\n")
@@ -861,6 +885,8 @@ func (m *Model) sessionContent() string {
 		b.WriteString(kv("session", id) + "\n")
 	}
 	b.WriteString(kv("provider", providerName+"/"+model) + "\n")
+	b.WriteString(kv("agent", activeProfile) + "\n")
+	b.WriteString(kv("reasoning", reasoningEffort) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
@@ -915,6 +941,12 @@ func (m *Model) sessionContent() string {
 		usageText += fmt.Sprintf(" (%d cached)", usage.CachedTokens)
 	}
 	b.WriteString(kv("usage", usageText) + "\n")
+	if usage.CostAvailable {
+		b.WriteString(kv("cost", fmt.Sprintf("$%.6f estimated", usage.CostUSD)) + "\n")
+	}
+	if tokenBudget > 0 || costBudget > 0 {
+		b.WriteString(kv("budgets", fmt.Sprintf("%d tokens / $%.6f", tokenBudget, costBudget)) + "\n")
+	}
 	b.WriteString(kv("prompt", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
 	b.WriteString(kv("messages", fmt.Sprintf("%d", m.runtime.Agent.MessageCount())) + "\n")
 	b.WriteString("  " + contextGauge(m.theme, estimate, window, 30) + "\n\n")
@@ -1025,12 +1057,24 @@ func (m *Model) sessionContent() string {
 				continue
 			}
 			if len(a.Changed) > 0 {
-				b.WriteString(m.styles.muted.Render(fmt.Sprintf("       changed %d file(s) — /agents apply %s", len(a.Changed), a.ID)) + "\n")
+				if len(a.ScopeViolations) > 0 {
+					b.WriteString(m.styles.errText.Render(fmt.Sprintf("       scope violation in %d file(s) — retained worktree requires manual inspection", len(a.ScopeViolations))) + "\n")
+					continue
+				}
+				integration := ""
+				if a.IntegrationStatus != "" {
+					integration = " · " + delegateStatusLabel(a.IntegrationStatus)
+				}
+				verification := " · unverified"
+				if a.VerificationStatus != "" {
+					verification = " · verification " + delegateStatusLabel(a.VerificationStatus)
+				}
+				b.WriteString(m.styles.muted.Render(fmt.Sprintf("       changed %d file(s)%s%s — /agents verify|apply %s", len(a.Changed), integration, verification, a.ID)) + "\n")
 			} else if a.Error != "" {
 				b.WriteString(m.styles.muted.Render("      "+m.runtime.Redactor.Redact(a.Error)) + "\n")
 			}
 		}
-		b.WriteString(m.styles.muted.Render("  "+m.binding("agent_control")+" inspect · /agents steer|stop|apply") + "\n\n")
+		b.WriteString(m.styles.muted.Render("  "+m.binding("agent_control")+" inspect · /agents steer|stop|verify|compare|apply") + "\n\n")
 	}
 
 	b.WriteString(h("Providers") + "\n")
@@ -1093,7 +1137,7 @@ func (m *Model) helpContent() string {
 		{"tab (palette)", "complete the selected command"},
 		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
 		{m.binding("session_picker"), "open saved sessions without replacing the draft"},
-		{m.binding("agent_control"), "inspect active agents; use /agents to steer, stop, or apply"},
+		{m.binding("agent_control"), "inspect active agents; use /agents to steer, verify, compare, stop, or apply"},
 		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
@@ -1205,6 +1249,9 @@ func (m Model) renderStatusBar() string {
 	estimate, window := m.runtime.Agent.ContextEstimate()
 
 	left := badge("✿", m.theme.Primary)
+	if m.runtime.ActiveAgent != "" {
+		left += m.styles.statusBase.Render(" ") + badge(m.runtime.ActiveAgent, m.theme.Accent)
+	}
 	left += m.styles.statusBase.Render(" ") + badge(provider+"/"+model, m.theme.Border)
 	left += m.styles.statusBase.Render(" ") + badge(strings.ToUpper(mode), modeColor)
 	if m.runtime.Agent.Plan() {

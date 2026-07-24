@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 )
@@ -26,6 +27,39 @@ type agentIntegrationState struct {
 type agentIntegrationAppliedMsg struct {
 	paths []string
 	err   error
+}
+
+type agentVerificationCompletedMsg struct {
+	id      string
+	results []agent.DelegateVerification
+	err     error
+}
+
+func (m *Model) startAgentVerification(id string) (tea.Cmd, error) {
+	if m.busy {
+		return nil, fmt.Errorf("wait for the current turn to finish before verifying delegated changes")
+	}
+	plan, err := m.runtime.PrepareDelegateVerification(context.Background(), id)
+	if err != nil {
+		return nil, err
+	}
+	if len(plan.Commands) == 0 {
+		return nil, fmt.Errorf("no standard verification commands were detected in delegated worktree %s", id)
+	}
+	m.busy = true
+	m.turnStarted = time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.input.Blur()
+	m.addSystem(fmt.Sprintf("Verifying delegated agent %s (%s) in its isolated worktree with %d detected command(s). Each command uses the normal run_command permission and sandbox policy.", plan.Name, id, len(plan.Commands)))
+	m.layout()
+	m.refresh()
+	runtime := m.runtime
+	cmd := func() tea.Msg {
+		results, runErr := runtime.VerifyDelegateSuite(ctx, id, nil)
+		return agentVerificationCompletedMsg{id: id, results: results, err: runErr}
+	}
+	return tea.Batch(cmd, m.progressTick()), nil
 }
 
 func (m *Model) openAgentIntegration(id string) error {
@@ -51,6 +85,16 @@ func (m *Model) openAgentIntegration(id string) error {
 		for j := range state.keep[i] {
 			state.keep[i][j] = true
 		}
+	}
+	reviewStatus := "reviewed"
+	for _, file := range preview.Files {
+		if file.Conflict != "" {
+			reviewStatus = "reviewed_with_conflicts"
+			break
+		}
+	}
+	if m.runtime.Team != nil {
+		m.runtime.Team.MarkIntegrationReview(id, reviewStatus, "")
 	}
 	m.agentIntegration = state
 	m.input.Blur()
@@ -144,9 +188,15 @@ func (m Model) renderAgentIntegration() string {
 	body.WriteString("\n" + m.styles.heading.Render(ansi.Truncate(file.Path, inner, "…")))
 	if file.Conflict != "" {
 		body.WriteString("\n\n" + m.styles.errText.Render(wrapAndLimit("Not selectable: "+file.Conflict+". Resolve the parent copy manually or ask the child to re-run from a fresh base.", inner, 4)))
+		if file.ConflictPreview != "" {
+			body.WriteString("\n\n" + m.styles.muted.Render(wrapAndLimit(file.ConflictPreview, inner, min(12, max(3, m.height-18)))))
+		}
 	} else if file.AlreadyApplied {
 		body.WriteString("\n\n" + m.styles.success.Render("Already present in the parent workspace."))
 	} else if len(state.hunks[state.file]) > 0 {
+		if file.Reconciled {
+			body.WriteString("\n" + m.styles.warning.Render("Three-way preview: non-overlapping parent and delegated edits are preserved."))
+		}
 		hunks := state.hunks[state.file]
 		cursor := min(state.cursor, len(hunks)-1)
 		hunk := hunks[cursor]
@@ -193,6 +243,6 @@ func (m Model) renderAgentIntegration() string {
 	body.WriteString("\n\n" + ansi.Wordwrap(
 		badge("[ ]  File", m.theme.Border)+"  "+badge("↑↓  Hunk", m.theme.Border)+"  "+badge("Space  Toggle", m.theme.Warning)+"  "+badge("X  Toggle file", m.theme.Warning)+"  "+badge("Enter  Review/apply", m.theme.Success)+"  "+badge("Esc  Cancel", m.theme.Error),
 		inner, ""))
-	body.WriteString("\n" + m.styles.muted.Render(wrapAndLimit("Applying selected hunks uses the normal permission policy, rechecks parent and child bytes after approval, and never commits, merges, or removes the worktree.", inner, 3)))
+	body.WriteString("\n" + m.styles.muted.Render(wrapAndLimit("Applying selected hunks uses the normal permission policy and rechecks base, parent, child, and any three-way preview after approval. Overlapping conflicts are never selected automatically. No commit, branch merge, push, or worktree removal occurs.", inner, 3)))
 	return m.modalFrame(body.String(), m.theme.Accent, agentIntegrationModalMaxWidth)
 }
