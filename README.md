@@ -1,4 +1,7 @@
-# Collomia
+# Collomia - Agentic Coding System
+
+![screenshot](docs/collo-screenshot.png)
+
 
 Collomia is a safety-focused, multi-provider coding agent for the terminal. It is written in Go, ships as one `collo` binary, and runs on macOS, Linux, and Windows. Its permission system is a layered policy engine — with built-in OS sandbox backends on all three platforms — whose exact guarantees are documented in [docs/SECURITY.md](docs/SECURITY.md).
 
@@ -1227,3 +1230,10 @@ It makes two model requests per configured endpoint and is not enabled by the
 ordinary test suite.
 
 The implementation follows the MCP security recommendation to keep a human able to inspect and deny tool calls, and uses protocol-native JSON Schema tool definitions throughout.
+
+## License
+
+Collomia is licensed under the [Apache License 2.0](LICENSE).
+
+Copyright 2026 Robert McDermott
+([robert.c.mcdermott@gmail.com](mailto:robert.c.mcdermott@gmail.com)).
