@@ -20,6 +20,15 @@ The same schema is published in the repository at
 `internal/event/schema/events-v1.schema.json`. The binary and its schema
 therefore cannot drift when Collomia is distributed as a single executable.
 
+Headless runs use the same command policy as the TUI. The OS command sandbox
+defaults to capability-aware `auto`, command networking and broad macOS/Linux
+reads remain enabled, and sandboxed commands receive the minimal environment
+unless configuration explicitly selects `command_env: "full"`. CI builds may
+need narrow `sandbox_readable_roots` or `sandbox_writable_roots` entries for
+dependency stores and caches. Use `sandbox: "require"` when an unavailable
+backend must fail the job rather than emit a degradation warning, or an
+explicit `off` only when the job deliberately requires unsandboxed behavior.
+
 ## Stream guarantees
 
 With `--jsonl`:

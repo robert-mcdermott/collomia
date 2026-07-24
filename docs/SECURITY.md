@@ -8,11 +8,14 @@ required before advertising any unattended use.
 
 Collomia's permission prompts and rules are **in-process policy checks**, not
 an operating-system security boundary, unless the OS sandbox is enabled. A
-command approved by you — or auto-approved by autopilot mode — runs with
-your normal user privileges. macOS, Linux, and Windows 11 can additionally
-enable OS-level enforcement (`permissions.sandbox`). The Windows backend uses
-only inbox AppContainer and Job Object APIs; it does not require Windows
-Sandbox, Hyper-V, an administrator-installed driver, or another runtime.
+command approved by you — or auto-approved by autopilot mode — still has your
+normal account's authority unless the OS sandbox removes it. Collomia now
+requests that enforcement by default with `permissions.sandbox: auto` on
+macOS, Linux, and Windows 11, but `auto` visibly degrades when a backend is
+unavailable; use `require` when degraded execution is unacceptable. The
+Windows backend uses only inbox AppContainer and Job Object APIs; it does not
+require Windows Sandbox, Hyper-V, an administrator-installed driver, or
+another runtime.
 
 Do not point autopilot mode at untrusted code or untrusted instructions and
 walk away, on any platform, without the sandbox in `require` mode — and even
@@ -178,12 +181,18 @@ including background processes started with `start_process`, and commands
 run under a pseudo-terminal (`run_command` with `pty: true`) — in the
 platform's containment mechanism.
 
-Sandboxing is currently opt-in (`off` is the runtime default).
+Sandboxing defaults to `auto`: Collomia uses the platform backend when it is
+available and emits a visible warning before continuing with normal user
+privileges when it is not. `require` fails closed instead, while `off` is an
+explicit compatibility escape hatch. Existing configuration files that
+explicitly contain `off` remain off and are never rewritten.
 `sandbox_allow_network` and `sandbox_allow_read_outside_workspace` both
-default to `true`. Changing only `sandbox` from `off` to `auto` therefore
-preserves the network and dependency reads used by package installation and
-developer toolchains. Users opt into network denial or user-data read
-confinement by setting the corresponding value to `false` explicitly.
+default to `true`, preserving the network and dependency reads used by package
+installation and developer toolchains. Write confinement can still require a
+narrow external cache grant, and the sandbox's implicit minimal command
+environment can require a deliberate environment override. Users opt into
+network denial or user-data read confinement by setting the corresponding
+value to `false` explicitly.
 These switches control only `run_command`, PTY commands, and `start_process`.
 Provider HTTP, remote MCP, hooks, and language servers run in the Collomia
 process and are not blocked by command-sandbox read/network policy.

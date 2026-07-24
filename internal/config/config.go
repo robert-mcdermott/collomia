@@ -135,7 +135,8 @@ type Permissions struct {
 	// Rules are ordered allow/prompt/deny decisions matched before the
 	// autonomy mode's defaults. See internal/policy.
 	Rules []Rule `json:"rules,omitempty"`
-	// Sandbox selects OS sandbox enforcement for commands: off, auto, require.
+	// Sandbox selects OS sandbox enforcement for commands: off, auto (the
+	// compatibility-first default), or require.
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxAllowNetwork permits network egress inside the sandbox.
 	SandboxAllowNetwork bool `json:"sandbox_allow_network,omitempty"`
@@ -309,6 +310,7 @@ func Defaults() Config {
 		},
 		Permissions: Permissions{
 			Mode:                             "ask",
+			Sandbox:                          "auto",
 			SandboxAllowNetwork:              true,
 			SandboxAllowReadOutsideWorkspace: true,
 			DeniedCommands: []string{
@@ -493,7 +495,7 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 		c.Permissions.Mode = "ask"
 	}
 	if c.Permissions.Sandbox == "" {
-		c.Permissions.Sandbox = "off"
+		c.Permissions.Sandbox = "auto"
 	}
 	if c.Options.MaxIterations <= 0 {
 		c.Options.MaxIterations = 24

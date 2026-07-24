@@ -563,7 +563,7 @@ tokens are informational and are not added again to output tokens.
 | `denied_tools` | string list | Exact tool names that are always disabled by the permission manager. |
 | `denied_commands` | regex list | Additional hard command denials checked again at execution. Built-in, global, and project patterns accumulate and cannot be removed by a lower layer; structural catastrophic checks are separate and always active. |
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
-| `sandbox` | string | `off`, `auto`, or `require`; default `off`. |
+| `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch; `require` refuses degraded execution. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
@@ -1239,8 +1239,9 @@ credentials, endpoint construction, timeouts, and model capability problems.
 ## Permissions and safety
 
 Collomia evaluates every tool action as read, write, execute, or external.
-The permission engine is an in-process policy layer. Only an enabled OS sandbox
-adds an operating-system boundary around shell/background commands.
+The permission engine is an in-process policy layer. The default `auto` OS
+sandbox adds an operating-system boundary around shell/background commands
+when the platform backend is available and warns visibly when it is not.
 
 ### Autonomy modes
 
@@ -1398,9 +1399,8 @@ path for physical-disk administration.
 
 ### OS sandboxing
 
-Enable compatibility-first containment while preserving package installation,
-online documentation CLIs, command networking, and dependency reads outside
-the workspace:
+The default compatibility-first containment preserves online documentation
+CLIs, command networking, and dependency reads outside the workspace:
 
 ```json
 {
@@ -1413,14 +1413,19 @@ the workspace:
 }
 ```
 
-Sandboxing is `off` unless configured. `sandbox_allow_network` and
-`sandbox_allow_read_outside_workspace` default to `true`. Changing only
-`sandbox` to `auto` therefore adds write/process containment without blocking
-package downloads or dependencies stored in a user cache. Set either switch
-to `false` to deliberately request network denial or user-data read
-confinement. Package managers can still require a readable dependency store,
-writable cache, or environment-provided credentials; the examples below cover
-all three cases.
+Sandboxing defaults to `auto`. `sandbox_allow_network` and
+`sandbox_allow_read_outside_workspace` default to `true`, so the default adds
+write/process containment without blocking package downloads or broad
+dependency reads. Package managers can still require a readable dependency
+store, writable cache, or environment-provided credentials; the examples
+below cover all three cases. Set either switch to `false` to deliberately
+request network denial or user-data read confinement. Set `sandbox` to `off`
+only as an explicit compatibility escape hatch.
+
+Existing global or project files containing `"sandbox": "off"` remain off:
+Collomia does not rewrite configuration or reinterpret an explicit choice.
+New global starter files use `auto`, and project starters omit the field so
+they inherit the user or built-in value.
 
 Use `"require"` for fail-closed operation: if the backend is unavailable or
 cannot enforce every requested write/read/network protection, it refuses to run.
@@ -3959,8 +3964,10 @@ approval prompt for sandbox enforcement.
 
 ### A build works in the shell but fails in Collomia
 
-If sandboxing is enabled, reads/writes outside the granted roots or remote
-network access may be denied. Set `sandbox_allow_network: true` when the
+Because sandboxing is enabled by default, writes outside the granted roots may
+be denied; reads and remote network access may also be denied when their
+corresponding compatibility switches are disabled (and Windows AppContainer
+always confines user-data reads). Set `sandbox_allow_network: true` when the
 command genuinely needs package registries or online documentation. When read
 confinement is enabled, add immutable dependencies or SDKs to
 `sandbox_readable_roots`; add only caches that must change to

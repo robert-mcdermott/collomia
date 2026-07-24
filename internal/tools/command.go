@@ -163,7 +163,7 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	out := buffer.String()
 	if sandboxed && err != nil {
-		out += "\n(command ran inside the OS sandbox; denied file or network access can cause failures — use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, or permissions.sandbox_allow_network=true for outbound access; see docs/SECURITY.md)"
+		out += "\n(command ran inside the OS sandbox; it may also have failed normally. If access was denied, use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, permissions.sandbox_allow_network=true for outbound access, or permissions.command_env=full for deliberately inherited environment variables; inspect `collo doctor` and docs/SECURITY.md)"
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)

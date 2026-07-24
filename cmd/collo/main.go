@@ -183,8 +183,10 @@ func run(args []string) error {
 		fmt.Println("Validate changes with `collo config validate --strict`.")
 		if opts.global {
 			fmt.Println("Set provider API keys through the environment; the starter includes Ollama and OpenRouter examples.")
+			fmt.Println("Agent commands default to sandbox=auto with command networking and broad reads enabled; run `collo doctor` and add only the cache/dependency roots your tools need.")
 		} else {
 			fmt.Println("After reviewing project settings, run `collo trust` to enable them.")
+			fmt.Println("This project inherits the user/built-in sandbox policy; run `collo doctor` to inspect the effective boundary.")
 		}
 		return nil
 	}

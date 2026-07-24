@@ -18,11 +18,11 @@ type capabilityRow struct {
 
 func capabilityMatrix() []capabilityRow {
 	sandboxStatus := "unsupported"
-	sandboxNote := "macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; no OS backend active on " + runtime.GOOS
+	sandboxNote := "macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; no OS backend active on " + runtime.GOOS + "; default auto mode visibly degrades, while require refuses command execution"
 	backend := sandbox.ForPlatform()
 	if backend.Available() == nil {
 		sandboxStatus = "experimental"
-		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; optional workspace-scoped command user-data reads use sandbox_allow_read_outside_workspace=false; enable with permissions.sandbox=auto|require"
+		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; auto is the compatibility-first default; optional workspace-scoped command user-data reads use sandbox_allow_read_outside_workspace=false; set permissions.sandbox=off only as an explicit compatibility escape hatch"
 	}
 	return []capabilityRow{
 		{"provider", "openai / openai-compatible (Ollama, vLLM, LM Studio)", "implemented", "streaming chat completions + function tools; typed user-image content where the selected model/endpoint supports it"},

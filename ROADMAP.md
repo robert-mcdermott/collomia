@@ -34,7 +34,8 @@ also shipped:
 - layered validated configuration, project trust, diagnostics, stable events,
   and a generated capability matrix;
 - macOS Seatbelt, Linux Landlock, and Windows 11 AppContainer/Job Object
-  sandbox backends with capability-aware fail-closed behavior;
+  sandbox backends with compatibility-first `auto` enforcement by default,
+  visible degradation, and capability-aware fail-closed `require` behavior;
 - scoped permissions, conservative shell analysis, catastrophic-command
   denials, secret redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
@@ -61,35 +62,28 @@ Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
 and reliability gates are complete.
 
-## Active wave — complete governed agent profiles
+## Active wave — default-on command sandbox
 
-**Goal:** Make named agents useful for both the primary conversation and
-delegation while keeping model-specific controls optional, visible, bounded,
-and permission-safe.
+**Goal:** Make OS command containment the ordinary experience without
+silently disabling networking, broad Unix dependency reads, or an explicit
+compatibility choice.
 
-- [x] Add `delegate`/`primary`/`both` availability with backward-compatible
-  delegate-only defaults, plus `default_agent`, `--agent`, and a fuzzy `/agent`
-  picker.
-- [x] Apply primary role instructions, model selection, skill/tool allowlists,
-  iteration limits, and additive permission restrictions at execution time;
-  selecting a profile can never widen user/project policy.
-- [x] Add opt-in provider-neutral reasoning effort. Unset configurations retain
-  previous request shapes; adapters translate known fields, safely fall back
-  after explicit rejection, and never guess Claude-specific Bedrock fields for
-  another model family (those models keep their default).
-- [x] Add user-maintained per-million-token pricing without a hard-coded or
-  remotely fetched catalog, including conservative cached-input handling and
-  visible estimate caveats.
-- [x] Add enforceable primary-session and delegated-task token/USD budgets,
-  pre-request output caps, fail-closed missing accounting, post-response
-  overshoot stops, and durable resume/rewind/fork accounting that `/clear` or
-  profile switching cannot reset.
-- [x] Show active profile, reasoning, estimated cost, and budgets in status,
-  context, Session, delegated-agent, JSONL, and schema-v1 additive surfaces.
-- [x] Cover configuration validation, default request compatibility, adapter
-  translation/fallback, additive permissions, cost exhaustion, and durable
-  accounting; update user, security, automation, testing, capability, roadmap,
-  and history documentation.
+- [x] Change the built-in and new global-starter sandbox mode from `off` to
+  capability-aware `auto`; project starters continue to inherit.
+- [x] Preserve explicit `sandbox: "off"` at every configuration layer and
+  document the upgrade behavior without rewriting user files.
+- [x] Keep command networking and broad macOS/Linux reads enabled by default;
+  retain the sandboxed minimal-environment behavior and document narrow
+  read/write grants for dependencies and caches.
+- [x] Keep unavailable/partial backends visible under `auto` and fail closed
+  under `require`; document Windows AppContainer's always-confined reads and
+  unpackaged-loopback limitation.
+- [x] Update starter/reference configuration, diagnostics/capabilities, command
+  failure guidance, compatibility policy, beta/security/Linux/user
+  documentation, roadmap, and history.
+- [x] Add regression coverage for the implicit `auto` default, global starter,
+  inherited project configuration, and explicit `off` escape hatch; retain the
+  native cross-platform enforcement suite.
 
 ## Remaining work by phase
 
@@ -100,8 +94,8 @@ and permission-safe.
   environment, network, and process controls.
 - [ ] **P0 — Domain/endpoint network policy:** add explicit endpoint-scoped
   grants with understandable DNS/proxy behavior and Windows loopback
-  ergonomics. Preserve the current compatibility-first default until the
-  install-time policy is deliberately changed.
+  ergonomics. Preserve command networking by default until scoped grants can
+  replace the current all-or-nothing switch without breaking common tooling.
 - [ ] **P0 — Independent review:** sustain the adversarial suite and obtain an
   independent security assessment before 1.0.
 

@@ -19,7 +19,10 @@ go vet ./...
 `go test ./...` includes platform sandbox fixtures, provider/MCP contracts,
 TUI goldens, session recovery, and the offline agent evaluations. A native
 sandbox test skips only when the host cannot provide the backend being tested;
-cross-compilation in CI still type-checks platform-specific code.
+cross-compilation in CI still type-checks platform-specific code. Configuration
+tests also lock the implicit `sandbox: auto` default, compatibility-first
+network/read switches, minimal sandboxed command environment, and the
+authoritative explicit `sandbox: off` escape hatch.
 
 ## Offline agent evaluations
 
