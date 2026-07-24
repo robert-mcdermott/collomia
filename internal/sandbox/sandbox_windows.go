@@ -384,6 +384,14 @@ type appContainerNullDevice struct {
 	path      string
 }
 
+// processDeviceMapSetInformation is the set form of
+// PROCESS_DEVICEMAP_INFORMATION. Windows requires the input length to be
+// exactly one native handle; the larger query form is rejected with
+// STATUS_INFO_LENGTH_MISMATCH.
+type processDeviceMapSetInformation struct {
+	Directory windows.Handle
+}
+
 func newAppContainerNullDevice(appSID *windows.SID) (*appContainerNullDevice, error) {
 	file, err := os.CreateTemp("", "collomia-appcontainer-null-*")
 	if err != nil {
@@ -461,13 +469,7 @@ func (d *appContainerNullDevice) Install(process windows.Handle) error {
 	if d == nil || d.directory == 0 {
 		return errors.New("AppContainer null-device map is unavailable")
 	}
-	// PROCESS_DEVICEMAP_INFORMATION is a union. The set form uses only the
-	// leading handle; the remaining bytes retain the native query-form size.
-	var information struct {
-		Directory windows.Handle
-		QueryData [32]byte
-	}
-	information.Directory = d.directory
+	information := processDeviceMapSetInformation{Directory: d.directory}
 	if err := windows.NtSetInformationProcess(
 		process,
 		int32(windows.ProcessDeviceMap),

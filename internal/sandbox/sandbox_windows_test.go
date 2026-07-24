@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // TestMain also handles the backend's hidden re-exec shim so CI exercises the
@@ -210,5 +213,13 @@ func TestWindowsBackendReportsCompleteIsolation(t *testing.T) {
 	caps := ForPlatform().Capabilities()
 	if !caps.WriteIsolation || !caps.ReadIsolation || !caps.ReadIsolationAlways || caps.NetworkIsolation != NetworkFull || !caps.ProcessIsolation {
 		t.Fatalf("capabilities=%+v", caps)
+	}
+}
+
+func TestProcessDeviceMapSetInformationUsesHandleSizedABI(t *testing.T) {
+	got := unsafe.Sizeof(processDeviceMapSetInformation{})
+	want := unsafe.Sizeof(windows.Handle(0))
+	if got != want {
+		t.Fatalf("ProcessDeviceMap set information size=%d, want native handle size %d", got, want)
 	}
 }
