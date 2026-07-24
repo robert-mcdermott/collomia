@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 )
@@ -26,6 +27,39 @@ type agentIntegrationState struct {
 type agentIntegrationAppliedMsg struct {
 	paths []string
 	err   error
+}
+
+type agentVerificationCompletedMsg struct {
+	id      string
+	results []agent.DelegateVerification
+	err     error
+}
+
+func (m *Model) startAgentVerification(id string) (tea.Cmd, error) {
+	if m.busy {
+		return nil, fmt.Errorf("wait for the current turn to finish before verifying delegated changes")
+	}
+	plan, err := m.runtime.PrepareDelegateVerification(context.Background(), id)
+	if err != nil {
+		return nil, err
+	}
+	if len(plan.Commands) == 0 {
+		return nil, fmt.Errorf("no standard verification commands were detected in delegated worktree %s", id)
+	}
+	m.busy = true
+	m.turnStarted = time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.input.Blur()
+	m.addSystem(fmt.Sprintf("Verifying delegated agent %s (%s) in its isolated worktree with %d detected command(s). Each command uses the normal run_command permission and sandbox policy.", plan.Name, id, len(plan.Commands)))
+	m.layout()
+	m.refresh()
+	runtime := m.runtime
+	cmd := func() tea.Msg {
+		results, runErr := runtime.VerifyDelegateSuite(ctx, id, nil)
+		return agentVerificationCompletedMsg{id: id, results: results, err: runErr}
+	}
+	return tea.Batch(cmd, m.progressTick()), nil
 }
 
 func (m *Model) openAgentIntegration(id string) error {

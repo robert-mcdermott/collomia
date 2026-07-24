@@ -40,6 +40,13 @@ type capabilityClient struct {
 
 type streamingClient struct{}
 
+type aliasedTool struct {
+	tools.Function
+	permissionName string
+}
+
+func (t aliasedTool) PermissionToolName() string { return t.permissionName }
+
 func (streamingClient) Name() string { return "streaming-fixture" }
 func (streamingClient) Chat(_ context.Context, _ provider.Request, onDelta func(provider.Delta)) (provider.Response, error) {
 	usage := provider.Usage{InputTokens: 7, OutputTokens: 3}
@@ -689,13 +696,50 @@ func TestReadOnlyDelegateCannotMutateParentPlanArtifact(t *testing.T) {
 }
 
 func TestReviewedIntegrationToolsArePrimaryOnly(t *testing.T) {
-	for _, name := range []string{"delegate", "inspect_delegate_changes", "apply_delegate_changes"} {
+	for _, name := range []string{"delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes"} {
 		if !parentOnlyTool(name) {
 			t.Fatalf("%s should be primary-only", name)
 		}
 	}
 	if parentOnlyTool("read_file") {
 		t.Fatal("ordinary workspace tools must remain available to delegated agents")
+	}
+}
+
+func TestCanonicalDisabledToolAlsoHidesAndBlocksWrapper(t *testing.T) {
+	ran := false
+	registry := tools.NewRegistry(aliasedTool{
+		Function: tools.Function{
+			Def:    provider.ToolDefinition{Name: "verify_wrapper", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			Action: tools.Action{Risk: tools.RiskExecute, Summary: "wrapped command"},
+			Run:    func(context.Context, json.RawMessage) (string, error) { ran = true; return "ran", nil },
+		},
+		permissionName: "run_command",
+	})
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if call == 1 {
+			for _, definition := range request.Tools {
+				if definition.Name == "verify_wrapper" {
+					t.Fatal("wrapper for disabled canonical tool was exposed")
+				}
+			}
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "1", Name: "verify_wrapper", Arguments: json.RawMessage(`{}`)}}}, nil
+		}
+		if last := request.Messages[len(request.Messages)-1]; !strings.Contains(last.Content, "not available") {
+			t.Fatalf("invented wrapper call was not blocked: %+v", last)
+		}
+		return provider.Response{Content: "done"}, nil
+	}}
+	a := New(Options{
+		Client: client, ProviderName: "fake", Model: "m", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		DisabledTools: []string{"run_command"}, MaxIterations: 4,
+	})
+	if _, err := a.Run(t.Context(), "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if ran {
+		t.Fatal("wrapper bypassed disabled canonical tool")
 	}
 }
 

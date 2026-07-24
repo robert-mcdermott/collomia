@@ -203,8 +203,30 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 				if err := m.openAgentIntegration(args[1]); err != nil {
 					m.addError(err)
 				}
+			case "verify":
+				if len(args) != 2 {
+					m.addError(fmt.Errorf("usage: /agents verify <id>"))
+					break
+				}
+				cmd, err := m.startAgentVerification(args[1])
+				if err != nil {
+					m.addError(err)
+				} else {
+					return true, cmd
+				}
+			case "compare":
+				if len(args) < 3 {
+					m.addError(fmt.Errorf("usage: /agents compare <id> <id> [id…]"))
+					break
+				}
+				candidates, err := m.runtime.CompareDelegateCandidates(context.Background(), args[1:])
+				if err != nil {
+					m.addError(err)
+				} else {
+					m.addPanel("Delegated candidate comparison", m.renderDelegateComparison(candidates))
+				}
 			default:
-				m.addError(fmt.Errorf("usage: /agents [stop <id-or-name>|steer <id> <guidance…>|apply <id>]"))
+				m.addError(fmt.Errorf("usage: /agents [stop <id-or-name>|steer <id> <guidance…>|verify <id>|compare <id> <id> [id…]|apply <id>]"))
 			}
 			break
 		}

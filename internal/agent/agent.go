@@ -472,8 +472,12 @@ func reportError(send Emit, err error) error {
 }
 
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, error) {
+	item, hasItem := a.registry.Get(call.Name)
 	a.mu.RLock()
 	disabled := a.disabled[call.Name]
+	if identity, ok := item.(tools.PermissionIdentity); hasItem && ok {
+		disabled = disabled || a.disabled[identity.PermissionToolName()]
+	}
 	a.mu.RUnlock()
 	if disabled || (a.subagent && parentOnlyTool(call.Name)) {
 		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, nil
@@ -486,9 +490,12 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, nil
 	}
 	permissionTool := call.Name
-	item, hasItem := a.registry.Get(call.Name)
+	hookTool := call.Name
 	if identity, ok := item.(tools.PermissionIdentity); hasItem && ok {
 		permissionTool = identity.PermissionToolName()
+	}
+	if identity, ok := item.(tools.HookIdentity); hasItem && ok {
+		hookTool = identity.HookToolName()
 	}
 	grant, err := a.permissions.Authorize(ctx, permissionTool, action)
 	if hasItem {
@@ -507,7 +514,10 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if err != nil {
 		return tools.Result{Content: "Tool denied: " + err.Error()}, nil
 	}
-	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
+	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
+		if observer, ok := item.(tools.ExecutionObserver); hasItem && ok {
+			observer.ObserveExecution(call.Arguments, hookErr)
+		}
 		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, nil
 	}
 	args := call.Arguments
@@ -562,7 +572,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	done := event.New(event.KindToolResult)
 	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil}
 	send(done)
-	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result.Content), "image_parts": len(result.Parts)}}
+	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result.Content), "image_parts": len(result.Parts)}}
 	if err != nil {
 		endPayload.Error = err.Error()
 	}
@@ -613,7 +623,11 @@ func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, s
 func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 	return a.registry.Definitions(func(tool tools.Tool) bool {
 		name := tool.Definition().Name
-		if a.disabled[name] || (a.subagent && parentOnlyTool(name)) {
+		disabled := a.disabled[name]
+		if identity, ok := tool.(tools.PermissionIdentity); ok {
+			disabled = disabled || a.disabled[identity.PermissionToolName()]
+		}
+		if disabled || (a.subagent && parentOnlyTool(name)) {
 			return false
 		}
 		if !plan {
@@ -624,7 +638,7 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes",
+	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
 		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
 		return true
 	}
@@ -633,7 +647,7 @@ func planTool(name string) bool {
 
 func parentOnlyTool(name string) bool {
 	switch name {
-	case "delegate", "inspect_delegate_changes", "apply_delegate_changes":
+	case "delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes":
 		return true
 	default:
 		return false
@@ -716,7 +730,7 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 	scheduler := NewScheduler(cfg.Options.DelegateMaxConcurrency, cfg.Options.DelegateProviderConcurrency)
 	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
 	if cfg.Options.AgentIntegration == "reviewed" {
-		desc += " Reviewed integration is enabled: after a successful write task, inspect its exact evidence and hunks with inspect_delegate_changes before deciding whether to publish selected changes with apply_delegate_changes."
+		desc += " Reviewed integration is enabled: after a successful write task, inspect its exact evidence and hunks with inspect_delegate_changes, run proportionate detected child-worktree verification with verify_delegate_changes, compare candidates when useful, and only then decide whether to publish selected changes with apply_delegate_changes."
 	}
 	if len(cfg.Agents) > 0 {
 		names := make([]string, 0, len(cfg.Agents))
@@ -1181,6 +1195,8 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	childRegistry := parentRegistry.Clone()
 	childRegistry.Remove("delegate")
 	childRegistry.Remove("inspect_delegate_changes")
+	childRegistry.Remove("compare_delegate_changes")
+	childRegistry.Remove("verify_delegate_changes")
 	childRegistry.Remove("apply_delegate_changes")
 	// A child may report suggestions in its result but must not mutate the
 	// parent's shared structured plan artifact.

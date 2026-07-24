@@ -17,6 +17,14 @@ import (
 // guessing at them.
 type DetectVerificationTool struct{ Workspace string }
 
+// VerificationCommand is one repository-derived build, lint, or test command.
+// Purpose is display-only; Command is still assessed and authorized through
+// the ordinary run_command policy before execution.
+type VerificationCommand struct {
+	Purpose string `json:"purpose"`
+	Command string `json:"command"`
+}
+
 func (t DetectVerificationTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{Name: "detect_verification", Description: "Inspect the workspace root for known project files (go.mod, package.json, Cargo.toml, pyproject.toml/requirements.txt, Makefile) and return the build, lint, and test commands conventionally used for this kind of project. Use this before proposing verification commands instead of guessing.", InputSchema: schema(`{"type":"object","properties":{},"additionalProperties":false}`)}
 }
@@ -26,13 +34,30 @@ func (t DetectVerificationTool) Assess(json.RawMessage) (Action, error) {
 }
 
 func (t DetectVerificationTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
-	type suggestion struct{ purpose, command string }
+	found, suggestions := DetectVerificationCommands(t.Workspace)
+	if len(found) == 0 {
+		return "No known project files were found at the workspace root (checked go.mod, package.json, Cargo.toml, pyproject.toml/requirements.txt, Makefile). Ask the user how this project is built and tested, or inspect the repository further before proposing commands.", nil
+	}
+
+	var b strings.Builder
+	b.WriteString("Detected: " + strings.Join(found, ", ") + "\n")
+	b.WriteString("Suggested verification commands (confirm the actual result of each before trusting it):\n")
+	for _, suggestion := range suggestions {
+		fmt.Fprintf(&b, "- %s: %s\n", suggestion.Purpose, suggestion.Command)
+	}
+	return b.String(), nil
+}
+
+// DetectVerificationCommands returns the same structured repository-derived
+// suggestions used by detect_verification. It performs no execution and does
+// not inspect outside the supplied workspace root.
+func DetectVerificationCommands(workspace string) ([]string, []VerificationCommand) {
 	exists := func(name string) bool {
-		_, err := os.Stat(filepath.Join(t.Workspace, name))
+		_, err := os.Stat(filepath.Join(workspace, name))
 		return err == nil
 	}
 	read := func(name string) string {
-		data, err := os.ReadFile(filepath.Join(t.Workspace, name))
+		data, err := os.ReadFile(filepath.Join(workspace, name))
 		if err != nil {
 			return ""
 		}
@@ -40,14 +65,14 @@ func (t DetectVerificationTool) Execute(_ context.Context, _ json.RawMessage) (s
 	}
 
 	var found []string
-	var suggestions []suggestion
+	var suggestions []VerificationCommand
 
 	if exists("go.mod") {
 		found = append(found, "go.mod (Go module)")
 		suggestions = append(suggestions,
-			suggestion{"build", "go build ./..."},
-			suggestion{"vet", "go vet ./..."},
-			suggestion{"test", "go test ./..."},
+			VerificationCommand{"build", "go build ./..."},
+			VerificationCommand{"vet", "go vet ./..."},
+			VerificationCommand{"test", "go test ./..."},
 		)
 	}
 	if exists("package.json") {
@@ -64,31 +89,31 @@ func (t DetectVerificationTool) Execute(_ context.Context, _ json.RawMessage) (s
 		}
 		_ = json.Unmarshal([]byte(read("package.json")), &pkg)
 		if _, ok := pkg.Scripts["build"]; ok {
-			suggestions = append(suggestions, suggestion{"build", run + " build"})
+			suggestions = append(suggestions, VerificationCommand{"build", run + " build"})
 		}
 		if _, ok := pkg.Scripts["lint"]; ok {
-			suggestions = append(suggestions, suggestion{"lint", run + " lint"})
+			suggestions = append(suggestions, VerificationCommand{"lint", run + " lint"})
 		}
 		if _, ok := pkg.Scripts["test"]; ok {
-			suggestions = append(suggestions, suggestion{"test", run + " test"})
+			suggestions = append(suggestions, VerificationCommand{"test", run + " test"})
 		} else {
-			suggestions = append(suggestions, suggestion{"test", pm + " test"})
+			suggestions = append(suggestions, VerificationCommand{"test", pm + " test"})
 		}
 	}
 	if exists("Cargo.toml") {
 		found = append(found, "Cargo.toml (Rust)")
 		suggestions = append(suggestions,
-			suggestion{"build", "cargo build"},
-			suggestion{"lint", "cargo clippy"},
-			suggestion{"test", "cargo test"},
+			VerificationCommand{"build", "cargo build"},
+			VerificationCommand{"lint", "cargo clippy"},
+			VerificationCommand{"test", "cargo test"},
 		)
 	}
 	if exists("pyproject.toml") || exists("requirements.txt") || exists("setup.py") {
 		found = append(found, "Python project")
-		suggestions = append(suggestions, suggestion{"test", "pytest"})
+		suggestions = append(suggestions, VerificationCommand{"test", "pytest"})
 		text := read("pyproject.toml")
 		if strings.Contains(text, "ruff") {
-			suggestions = append(suggestions, suggestion{"lint", "ruff check ."})
+			suggestions = append(suggestions, VerificationCommand{"lint", "ruff check ."})
 		}
 	}
 	if exists("Makefile") {
@@ -96,22 +121,23 @@ func (t DetectVerificationTool) Execute(_ context.Context, _ json.RawMessage) (s
 		makefile := read("Makefile")
 		for _, target := range []string{"build", "test", "lint", "vet", "check"} {
 			if makeHasTarget(makefile, target) {
-				suggestions = append(suggestions, suggestion{target, "make " + target})
+				suggestions = append(suggestions, VerificationCommand{target, "make " + target})
 			}
 		}
 	}
 
-	if len(found) == 0 {
-		return "No known project files were found at the workspace root (checked go.mod, package.json, Cargo.toml, pyproject.toml/requirements.txt, Makefile). Ask the user how this project is built and tested, or inspect the repository further before proposing commands.", nil
+	// A repository can expose the same command through more than one marker.
+	// Preserve discovery order but never ask the operator to run it twice.
+	seen := make(map[string]bool, len(suggestions))
+	unique := suggestions[:0]
+	for _, suggestion := range suggestions {
+		if seen[suggestion.Command] {
+			continue
+		}
+		seen[suggestion.Command] = true
+		unique = append(unique, suggestion)
 	}
-
-	var b strings.Builder
-	b.WriteString("Detected: " + strings.Join(found, ", ") + "\n")
-	b.WriteString("Suggested verification commands (confirm the actual result of each before trusting it):\n")
-	for _, s := range suggestions {
-		fmt.Fprintf(&b, "- %s: %s\n", s.purpose, s.command)
-	}
-	return b.String(), nil
+	return found, unique
 }
 
 // makeHasTarget does a line-oriented scan for a "target:" rule, tolerating

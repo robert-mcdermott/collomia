@@ -181,10 +181,40 @@ func TestDelegateStatusEventRoundTripPreservesOperatorMetadata(t *testing.T) {
 		Summary: "done", FailureID: "err-0123456789abcdef", Changed: []string{"a.go"}, Integrated: []string{"a.go"},
 		Worktree: "/tmp/worktree", Branch: "collomia/writer", BaseCommit: "abcdef",
 		IntegrationStatus: "partial", IntegrationError: "one hunk remains",
+		VerificationStatus: "passed", VerificationToken: "verify-abc", VerificationRequired: []string{"go test ./..."},
+		VerificationResults: []DelegateVerification{{Purpose: "test", Command: "go test ./...", Status: "passed", Output: "ok", StateToken: "verify-abc"}},
 	}
 	restored := DelegateStatusFromEvent(original.Event())
-	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 || restored.IntegrationStatus != "partial" || restored.IntegrationError != "one hunk remains" {
+	if restored.PlanStep != 3 || restored.RecentOutput != "tests passed" || restored.FailureID != original.FailureID || len(restored.Guidance) != 1 || restored.BaseCommit != "abcdef" || len(restored.Integrated) != 1 || restored.IntegrationStatus != "partial" || restored.IntegrationError != "one hunk remains" || restored.VerificationStatus != "passed" || len(restored.VerificationResults) != 1 || restored.VerificationResults[0].Command != "go test ./..." {
 		t.Fatalf("restored=%+v", restored)
+	}
+}
+
+func TestTeamVerificationRequiresCompleteFreshSuite(t *testing.T) {
+	team := NewTeam()
+	team.Start("d1", "writer", "write", true)
+	team.Finish("d1", "done", []string{"a.go"}, "/tmp/worktree", "collomia/writer", nil)
+	required := []string{"go vet ./...", "go test ./..."}
+	team.MarkVerificationRunning("d1", "verify-one", required, required[0])
+	team.MarkVerificationResult("d1", "verify-one", required, DelegateVerification{Command: required[0], Status: "passed", StateToken: "verify-one"})
+	status, _ := team.Get("d1")
+	if status.VerificationStatus != "partial" {
+		t.Fatalf("one command must not verify the suite: %+v", status)
+	}
+	team.MarkVerificationResult("d1", "verify-one", required, DelegateVerification{Command: required[1], Status: "passed", StateToken: "verify-one"})
+	status, _ = team.Get("d1")
+	if status.VerificationStatus != "passed" {
+		t.Fatalf("complete suite=%+v", status)
+	}
+	team.MarkVerificationStale("d1", "child changed")
+	status, _ = team.Get("d1")
+	if status.VerificationStatus != "stale" || len(status.VerificationResults) != 2 {
+		t.Fatalf("stale evidence was not retained: %+v", status)
+	}
+	team.MarkVerificationRunning("d1", "verify-two", required, required[0])
+	status, _ = team.Get("d1")
+	if status.VerificationStatus != "running" || len(status.VerificationResults) != 0 {
+		t.Fatalf("new child state retained old results: %+v", status)
 	}
 }
 

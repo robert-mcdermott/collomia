@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
@@ -58,7 +60,16 @@ func newIntegrationFixture(t *testing.T, approver permission.Approver) integrati
 	if err := os.WriteFile(parentFile, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGitTest(t, workspace, "add", "sample.txt")
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module example.com/delegatefixture\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "fixture.go"), []byte("package delegatefixture\n\nfunc Fixture() string { return \"ok\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".gitignore"), []byte(".verify-started\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, workspace, "add", "sample.txt", "go.mod", "fixture.go", ".gitignore")
 	runGitTest(t, workspace, "commit", "-m", "base")
 	base := strings.TrimSpace(string(runGitOutputTest(t, workspace, "rev-parse", "HEAD")))
 	worktree := filepath.Join(t.TempDir(), "child")
@@ -303,6 +314,273 @@ func TestReviewedDelegateIntegrationRejectsStaleReviewToken(t *testing.T) {
 	}
 }
 
+func TestDelegateVerificationUsesRunCommandPolicyAndBindsExactChildState(t *testing.T) {
+	approvals := 0
+	approver := func(_ context.Context, request permission.Request) (permission.Decision, error) {
+		approvals++
+		if request.Tool != "run_command" || !strings.Contains(request.Action.Summary, "go test ./...") {
+			t.Fatalf("verification permission=%+v", request)
+		}
+		return permission.Decision{Allow: true}, nil
+	}
+	fixture := newIntegrationFixture(t, approver)
+	if err := os.WriteFile(fixture.delegatedFile, []byte("verified child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.Config.Options.AgentIntegration = "reviewed"
+	fixture.runtime.Registry = tools.NewRegistry()
+	fixture.runtime.addReviewedIntegrationTools()
+
+	rawReview, err := fixture.runtime.Registry.Execute(t.Context(), InspectDelegateChangesTool, json.RawMessage(`{"id":"d1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review delegateReviewDocument
+	if err := json.Unmarshal([]byte(rawReview), &review); err != nil {
+		t.Fatal(err)
+	}
+	if review.VerificationToken == "" || len(review.SuggestedVerification) != 3 {
+		t.Fatalf("verification review=%+v", review)
+	}
+	raw := json.RawMessage(fmt.Sprintf(`{"id":"d1","verification_token":%q,"command":"go test ./..."}`, review.VerificationToken))
+	action, err := fixture.runtime.Registry.Assess(VerifyDelegateChangesTool, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := fixture.runtime.Registry.Get(VerifyDelegateChangesTool)
+	identity, identityOK := item.(tools.PermissionIdentity)
+	if !ok || !identityOK || identity.PermissionToolName() != "run_command" {
+		t.Fatal("delegate verification did not preserve run_command permission identity")
+	}
+	hookIdentity, hookIdentityOK := item.(tools.HookIdentity)
+	if !hookIdentityOK || hookIdentity.HookToolName() != "run_command" {
+		t.Fatal("delegate verification did not preserve run_command hook identity")
+	}
+	if _, err := fixture.runtime.Permissions.Authorize(t.Context(), identity.PermissionToolName(), action); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.runtime.Registry.Execute(t.Context(), VerifyDelegateChangesTool, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approvals != 1 || !strings.Contains(result, `"status": "passed"`) {
+		t.Fatalf("approvals=%d result=%s", approvals, result)
+	}
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.VerificationStatus != "partial" || len(status.VerificationResults) != 1 || status.VerificationResults[0].StateToken != review.VerificationToken {
+		t.Fatalf("verification status=%+v", status)
+	}
+
+	if err := os.WriteFile(fixture.delegatedFile, []byte("changed after verification\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.runtime.PrepareDelegateVerification(t.Context(), "d1"); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = fixture.runtime.Team.Get("d1")
+	if status.VerificationStatus != "stale" || !strings.Contains(status.VerificationError, "changed") {
+		t.Fatalf("drift did not stale verification: %+v", status)
+	}
+}
+
+func TestDelegateVerificationRecordsFailedCommandWithoutPublishing(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	if err := os.WriteFile(filepath.Join(fixture.worktree, "fixture.go"), []byte("package delegatefixture\n\nthis is invalid Go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := fixture.runtime.PrepareDelegateVerification(t.Context(), "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.runtime.ExecuteDelegateVerificationCommand(t.Context(), "d1", plan.StateToken, "go test ./...", nil)
+	if err == nil || result.Status != "failed" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.VerificationStatus != "failed" || len(status.VerificationResults) != 1 {
+		t.Fatalf("verification status=%+v", status)
+	}
+	parent, readErr := os.ReadFile(filepath.Join(fixture.workspace, "fixture.go"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(parent), "invalid Go") {
+		t.Fatal("verification published delegated source into the parent")
+	}
+}
+
+func TestDelegateVerificationSuiteRequiresOneDecisionPerCommand(t *testing.T) {
+	approvals := 0
+	approver := func(_ context.Context, request permission.Request) (permission.Decision, error) {
+		approvals++
+		if request.Tool != "run_command" {
+			t.Fatalf("permission tool=%q", request.Tool)
+		}
+		return permission.Decision{Allow: true}, nil
+	}
+	fixture := newIntegrationFixture(t, approver)
+	if err := os.WriteFile(fixture.delegatedFile, []byte("suite candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results, err := fixture.runtime.VerifyDelegateSuite(t.Context(), "d1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 || approvals != 3 {
+		t.Fatalf("results=%+v approvals=%d", results, approvals)
+	}
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.VerificationStatus != "passed" || len(status.VerificationResults) != 3 {
+		t.Fatalf("verification status=%+v", status)
+	}
+}
+
+func TestDelegateVerificationRecordsOuterPermissionAndHookRefusals(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	if err := os.WriteFile(fixture.delegatedFile, []byte("candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.Config.Options.AgentIntegration = "reviewed"
+	fixture.runtime.Registry = tools.NewRegistry()
+	fixture.runtime.addReviewedIntegrationTools()
+	plan, err := fixture.runtime.PrepareDelegateVerification(t.Context(), "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := json.RawMessage(fmt.Sprintf(`{"id":"d1","verification_token":%q,"command":"go test ./..."}`, plan.StateToken))
+	item, ok := fixture.runtime.Registry.Get(VerifyDelegateChangesTool)
+	if !ok {
+		t.Fatal("verification tool is missing")
+	}
+	authorizationObserver, ok := item.(tools.AuthorizationObserver)
+	if !ok {
+		t.Fatal("verification tool does not observe permission refusal")
+	}
+	authorizationObserver.ObserveAuthorization(raw, fmt.Errorf("%w: user declined", permission.ErrDenied))
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.VerificationStatus != "rejected" {
+		t.Fatalf("permission refusal=%+v", status)
+	}
+	executionObserver, ok := item.(tools.ExecutionObserver)
+	if !ok {
+		t.Fatal("verification tool does not observe hook refusal")
+	}
+	executionObserver.ObserveExecution(raw, errors.New("blocked by verification hook"))
+	status, _ = fixture.runtime.Team.Get("d1")
+	if status.VerificationStatus != "blocked" || !strings.Contains(status.VerificationError, "hook") {
+		t.Fatalf("hook refusal=%+v", status)
+	}
+}
+
+func TestDelegateVerificationCancellationStopsCommandAndRecordsOutcome(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	testSource := `package delegatefixture
+
+import (
+	"os"
+	"testing"
+	"time"
+)
+
+func TestWaitForCancellation(t *testing.T) {
+	if err := os.WriteFile(".verify-started", []byte("started"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Second)
+}
+`
+	if err := os.WriteFile(filepath.Join(fixture.worktree, "fixture_test.go"), []byte(testSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := fixture.runtime.PrepareDelegateVerification(t.Context(), "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	type outcome struct {
+		result agent.DelegateVerification
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, runErr := fixture.runtime.ExecuteDelegateVerificationCommand(ctx, "d1", plan.StateToken, "go test ./...", nil)
+		done <- outcome{result: result, err: runErr}
+	}()
+	marker := filepath.Join(fixture.worktree, ".verify-started")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, statErr := os.Stat(marker); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("verification command did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	got := <-done
+	if got.err == nil || got.result.Status != "cancelled" {
+		t.Fatalf("cancelled result=%+v err=%v", got.result, got.err)
+	}
+	status, _ := fixture.runtime.Team.Get("d1")
+	if status.VerificationStatus != "cancelled" {
+		t.Fatalf("verification status=%+v", status)
+	}
+}
+
+func TestDelegateCandidateComparisonIsReadOnlyAndRefreshesVerification(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	if err := os.WriteFile(fixture.delegatedFile, []byte("candidate one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := fixture.runtime.PrepareDelegateVerification(t.Context(), "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.Team.MarkVerificationResult("d1", plan.StateToken, []string{"go test ./..."}, agent.DelegateVerification{Purpose: "test", Command: "go test ./...", Status: "passed", StateToken: plan.StateToken})
+
+	secondWorktree := filepath.Join(t.TempDir(), "child-two")
+	secondBranch := "collomia/integration-two"
+	runGitTest(t, fixture.workspace, "worktree", "add", "-b", secondBranch, secondWorktree, "HEAD")
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", fixture.workspace, "worktree", "remove", "--force", secondWorktree).Run()
+		_ = exec.Command("git", "-C", fixture.workspace, "branch", "-D", secondBranch).Run()
+	})
+	if err := os.WriteFile(filepath.Join(secondWorktree, "sample.txt"), []byte("candidate two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.Team.Enqueue(agent.DelegateStart{ID: "d2", Name: "writer-two", Task: "alternative", Write: true})
+	fixture.runtime.Team.FinishDetailed("d2", "alternative", nil, []string{"sample.txt"}, secondWorktree, secondBranch, fixture.base, provider.Usage{InputTokens: 3, OutputTokens: 4}, nil)
+
+	candidates, err := fixture.runtime.CompareDelegateCandidates(t.Context(), []string{"d1", "d2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 || candidates[0].Readiness != "verified" || candidates[1].Readiness != "review" || candidates[1].InputTokens != 3 {
+		t.Fatalf("candidates=%+v", candidates)
+	}
+	fixture.runtime.Config.Options.AgentIntegration = "reviewed"
+	fixture.runtime.Registry = tools.NewRegistry()
+	fixture.runtime.addReviewedIntegrationTools()
+	rawCompare := json.RawMessage(`{"ids":["d1","d2"]}`)
+	action, err := fixture.runtime.Registry.Assess(CompareDelegateChangesTool, rawCompare)
+	if err != nil || action.Risk != tools.RiskRead {
+		t.Fatalf("compare action=%+v err=%v", action, err)
+	}
+	compared, err := fixture.runtime.Registry.Execute(t.Context(), CompareDelegateChangesTool, rawCompare)
+	if err != nil || !strings.Contains(compared, `"readiness": "verified"`) || !strings.Contains(compared, "grants no permission") {
+		t.Fatalf("compare tool=%s err=%v", compared, err)
+	}
+	parent, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(parent), "candidate one") || strings.Contains(string(parent), "candidate two") {
+		t.Fatal("candidate comparison modified the parent workspace")
+	}
+}
+
 func TestManualAgentIntegrationDoesNotExposePrimaryTools(t *testing.T) {
 	runtime := &Runtime{Config: appconfig.Defaults(), Registry: tools.NewRegistry()}
 	runtime.addReviewedIntegrationTools()
@@ -311,6 +589,12 @@ func TestManualAgentIntegrationDoesNotExposePrimaryTools(t *testing.T) {
 	}
 	if _, ok := runtime.Registry.Get(ApplyDelegateChangesTool); ok {
 		t.Fatal("manual mode exposed apply_delegate_changes")
+	}
+	if _, ok := runtime.Registry.Get(VerifyDelegateChangesTool); ok {
+		t.Fatal("manual mode exposed verify_delegate_changes")
+	}
+	if _, ok := runtime.Registry.Get(CompareDelegateChangesTool); ok {
+		t.Fatal("manual mode exposed compare_delegate_changes")
 	}
 }
 

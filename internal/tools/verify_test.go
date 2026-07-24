@@ -97,6 +97,19 @@ func TestDetectVerificationMakefileTargets(t *testing.T) {
 	}
 }
 
+func TestDetectVerificationCommandsProvidesStableStructuredSuite(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", "module example.com/x\n\ngo 1.22\n")
+	writeFile(t, dir, "Makefile", "test:\n\tgo test ./...\n")
+	found, commands := DetectVerificationCommands(dir)
+	if len(found) != 2 || len(commands) != 4 {
+		t.Fatalf("found=%v commands=%+v", found, commands)
+	}
+	if commands[0].Purpose != "build" || commands[0].Command != "go build ./..." || commands[2].Command != "go test ./..." || commands[3].Command != "make test" {
+		t.Fatalf("unexpected structured order=%+v", commands)
+	}
+}
+
 func TestDetectVerificationNoProjectFilesFound(t *testing.T) {
 	dir := t.TempDir()
 	out, err := DetectVerificationTool{Workspace: dir}.Execute(t.Context(), nil)

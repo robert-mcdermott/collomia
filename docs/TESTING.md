@@ -47,6 +47,7 @@ The current corpus covers these outcome-oriented scenarios:
 | Conversation rewind | Durable branch creation and restoration | Rewind preserves the source, never replays recorded tools, and leaves workspace state unchanged. |
 | Governed parallel delegation | Real delegate tool, shared FIFO scheduler, structured plan, read-only child, isolated write child | Both children run concurrently, retain plan association/evidence, and the write appears only in its retained worktree. |
 | Selective delegated integration | Git worktree validation, common-base diff, hunk picker model, rooted publication, change tracker, real Go verification | With a Windows-style inherited `core.autocrlf=true`, parent and child remain byte-stable; one of two hunks lands, tests pass, and the child worktree remains available. |
+| Verified delegated results | Retained worktree validation, repository verification detection, canonical command policy, child-state fingerprints, durable team events, candidate comparison | A real child command passes or fails without publishing source, cancellation stops its process, later child drift makes evidence stale, and comparison remains read-only. |
 
 These are product evaluations rather than model-quality benchmarks. The
 scripted provider deliberately selects the tool calls so CI can test runtime
@@ -132,6 +133,12 @@ Important failure-oriented tests include:
   the guarantee that queued/running work resumes as inert `interrupted` state;
   common-base hunk comparison distinguishes overlapping and disjoint sibling
   edits without performing a merge.
+- Delegated verification with one permission decision per detected command,
+  canonical `run_command` rules/hooks/sandboxing, real pass/failure/cancellation
+  execution in retained worktrees, bounded redacted results, exact child-state
+  fingerprints, stale-state invalidation, additive event restoration, and
+  read-only multi-candidate comparison. A child pass is never treated as
+  publication permission or combined-parent verification.
 - Delegate cancellation at the scheduler queue, provider-call, and interactive
   approval boundaries. Cancelling an approval-waiting child cannot publish its
   proposed write, revive the child through a late state update, or cancel a

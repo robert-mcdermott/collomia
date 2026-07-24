@@ -184,6 +184,28 @@
         "integrated_files": { "type": "array", "items": { "type": "string" } },
         "integration_status": { "enum": ["reviewed", "reviewed_with_conflicts", "integrated", "partial", "blocked", "rejected"] },
         "integration_error": { "type": "string" },
+        "verification_status": { "enum": ["running", "partial", "passed", "failed", "cancelled", "timed_out", "blocked", "rejected", "stale", "unavailable"] },
+        "verification_error": { "type": "string" },
+        "verification_token": { "type": "string" },
+        "verification_required": { "type": "array", "items": { "type": "string" } },
+        "verification_results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["command", "status"],
+            "additionalProperties": true,
+            "properties": {
+              "purpose": { "type": "string" },
+              "command": { "type": "string" },
+              "status": { "enum": ["passed", "failed", "cancelled", "timed_out", "blocked", "rejected", "stale"] },
+              "output": { "type": "string" },
+              "error": { "type": "string" },
+              "state_token": { "type": "string" },
+              "started": { "type": "string", "format": "date-time" },
+              "finished": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
         "usage": { "$ref": "#/$defs/usage" },
         "token_budget": { "type": "integer", "minimum": 0 },
         "timeout_seconds": { "type": "integer", "minimum": 0 },

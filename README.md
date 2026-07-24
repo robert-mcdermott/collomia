@@ -6,7 +6,7 @@ New users and advanced operators should start with the [complete Collomia user g
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
-An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`). The [roadmap](ROADMAP.md) tracks what's still ahead.
+An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`). The concise [roadmap](ROADMAP.md) tracks what is still ahead; the dated implementation record is preserved in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
 ## Highlights
 
@@ -27,7 +27,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
 - Full-lifecycle skills: `SKILL.md` manifests with YAML front matter plus bundled `scripts/`, `references/`, and `assets/`, project and global scopes with deterministic precedence, on-demand loading, and `collo skills` management — plus hierarchical `AGENTS.md`/`COLLOMIA.md` instructions (user-level, then project).
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK, with explicit external-data provenance framing for model-visible server output.
-- **Governed multi-agent delegation**: the `delegate` tool queues up to six sub-agent tasks through one session-wide scheduler (four active by default, with optional provider limits). Read-only tasks share the workspace; write-capable tasks get isolated Git worktrees. Named profiles restrict tools, skills, permissions, tokens, iterations, and time; structured outcomes carry evidence, usage, changes, and hunk-overlap warnings. `alt+a` inspects, steers, or stops one child without cancelling its siblings or parent. Manual `/agents apply <id>` integration remains the default; opt-in `options.agent_integration: "reviewed"` lets the primary agent inspect exact child evidence/diffs and selectively publish accepted hunks through the same permission and drift safeguards.
+- **Governed multi-agent delegation**: the `delegate` tool queues up to six sub-agent tasks through one session-wide scheduler (four active by default, with optional provider limits). Read-only tasks share the workspace; write-capable tasks get isolated Git worktrees. Named profiles restrict tools, skills, permissions, tokens, iterations, and time; structured outcomes carry evidence, usage, changes, and hunk-overlap warnings. `alt+a` inspects, steers, or stops one child without cancelling its siblings or parent. Manual integration remains the default; operators can verify, compare, and selectively apply retained candidates, while opt-in `options.agent_integration: "reviewed"` exposes the same freshness-bound evidence and guarded publication decisions to the primary.
 - **Background processes**: `start_process`/`list_processes`/`process_output`/`stop_process` run dev servers, watchers, and long test runs without blocking the turn, with the same safety analysis as `run_command`; `/ps` manages them from the TUI, and everything is stopped at session exit.
 - **Code intelligence**: `search_symbols` queries an incremental, ignore-aware definition index (Go, Python, JS/TS, Rust); `diagnostics` runs a real language server (gopls, pyright, typescript-language-server, rust-analyzer) and returns exact-position findings.
 - **Verification loop**: `detect_verification` finds the project's real build/lint/test commands from its own files (`go.mod`, `package.json`, `Cargo.toml`, …); `collo verify`/`/verify` runs them and ties outcomes to the plan.
@@ -354,7 +354,7 @@ Inside the TUI:
 | `/autonomy <mode>` | Switch among `ask`, `workspace`, and `autopilot`. |
 | `/theme [name]` | List color themes or switch to one (fuzzy picker with no argument). |
 | `/skills [list]` | Fuzzy-pick a skill to use — choosing one pre-fills the prompt — or `list` to print them. |
-| `/agents [stop\|steer\|apply …]` | Inspect delegated tasks, stop one, queue boundary-safe guidance, or review/apply selected text hunks from its retained worktree. |
+| `/agents [stop\|steer\|verify\|compare\|apply …]` | Inspect delegated tasks, stop or guide one, verify its retained worktree, compare candidates, or review/apply selected text hunks. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; with no path, open a fuzzy file picker. |
 | `/attach [workspace-image]` | Attach a bounded PNG, JPEG, GIF, or WebP to the pending prompt; with no path, open an image picker. |
 | `/attachments` | List images attached to the pending prompt. |
@@ -1048,7 +1048,7 @@ delegate({
 - **Budgets and results**: `token_budget` counts provider-reported input plus output tokens. Before each request, Collomia reserves the estimated next input and caps requested output to the remainder; it checks reported usage afterward. Providers that omit usage cannot provide an exact token guarantee, so iteration and time limits remain the hard fallback. The parent receives bounded JSON containing status, summary, error, evidence from completed tools, usage, changed files/hunks, and worktree/branch—not the raw child transcript. Oversized batches remain valid JSON, preserve every task's identity/status, and mark compacted entries `truncated` for follow-up in `/agents`.
 - **Control and recovery**: the Session tab shows a parent/child tree with queued, running, waiting-for-approval, cancelling, completed, failed, timed-out, budget-exhausted, and interrupted states plus a bounded recent-output tail. `/agents steer <id> <guidance…>` queues guidance for the child's next provider boundary; it cannot alter an executing tool or answer an approval and explicitly grants no permissions. `/agents stop <id-or-name>` cancels one. `alt+a` exposes inspect/steer/stop actions while the parent runs. Lifecycle snapshots are stored in the parent session; resume restores outcomes but marks unfinished tasks `interrupted` and never restarts them or repeats tools.
 - **Selective integration**: `/agents apply <id>` opens a floating file/hunk review for a completed write task. Collomia verifies that the path is still this repository's registered worktree, that its `collomia/*` branch has not moved from the recorded base, and that each parent file still matches that base. It accepts only bounded regular UTF-8 text, runs the normal permission policy, rechecks both sides after approval, publishes selected hunks with rooted atomic mutations and rollback, and records them in `/diff`/`/undo`. Parent drift, symlinks, binary/oversized files, mode-only changes, or moved child branches require manual reconciliation. The branch and worktree remain; Collomia never commits or merges them.
-- **Optional primary-agent review and integration**: set `"agent_integration": "reviewed"` under `options` to expose `inspect_delegate_changes` and `apply_delegate_changes` to the primary agent only. The first tool returns bounded child evidence, exact selectable hunks, conflicts, and a review token derived from the current base/parent/child bytes. The second accepts selected files/hunks only while that token is still current, then uses the same canonical `integrate_delegate` permission identity, post-approval revalidation, atomic publication, rollback, `/diff`, and `/undo` path as the TUI. `manual` is the default. A reviewed primary may decline or leave a conflict for `/agents apply` or manual reconciliation; it cannot silently resolve overlap, and delegated agents never receive these parent-only tools.
+- **Optional primary-agent review, verification, comparison, and integration**: set `"agent_integration": "reviewed"` under `options` to expose four primary-only tools. `inspect_delegate_changes` returns bounded child evidence, exact selectable hunks, detected repository verification commands, and separate freshness tokens for child verification and parent publication. `verify_delegate_changes` runs exactly one detected command in the child worktree under the ordinary `run_command` permission, hook, sandbox, network, timeout, cancellation, and output policies; results are machine-observed and become stale if child source changes. `compare_delegate_changes` presents bounded conflict, verification, evidence, and budget facts for two to six candidates without picking a winner. `apply_delegate_changes` retains the existing `integrate_delegate` permission identity and guarded atomic publication path. `manual` remains the default, `/agents verify <id>` and `/agents compare <id> <id> [id…]` provide the operator equivalents, and a passing child suite neither grants permission nor proves the combined parent workspace.
 
   ```json
   {
@@ -1057,6 +1057,23 @@ delegate({
     }
   }
   ```
+
+  After a write delegate finishes, use:
+
+  ```text
+  /agents verify <id>
+  /agents compare <id-one> <id-two>
+  /agents apply <id>
+  ```
+
+  Verification commands are derived from the retained worktree using the same
+  detector as `collo verify`; Collomia does not invent a command. The suite
+  stops at the first failed, blocked, cancelled, timed-out, or stale command,
+  and each command receives its own policy decision. Agent details and the
+  Session tree distinguish `passed`, `partial`, `failed`, `blocked`,
+  `cancelled`, `unavailable`, and `stale` child verification. Verify the
+  combined parent workspace after integration because parent-only changes and
+  interactions between candidates are outside the child result's scope.
 
 Sub-agents cannot recursively delegate.
 

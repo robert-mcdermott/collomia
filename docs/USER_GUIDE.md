@@ -588,7 +588,7 @@ inspect.
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
-| `agent_integration` | `manual` (default) keeps publication behind `/agents apply`; `reviewed` additionally lets the primary agent inspect exact retained child hunks and selectively publish accepted changes through normal permission and drift checks. |
+| `agent_integration` | `manual` (default) keeps publication behind `/agents apply`; `reviewed` additionally gives the primary freshness-bound inspect, child-worktree verification, candidate comparison, and selective publication tools. Verification still uses ordinary command policy and never authorizes publication. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -1639,6 +1639,8 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/agents` | Search and inspect current or persisted delegated tasks. |
 | `/agents stop <id-or-name>` | Cancel one queued or active child without cancelling siblings or the parent. |
 | `/agents steer <id> <guidance...>` | Queue bounded guidance for the child's next model boundary. It never answers an approval or grants permission. |
+| `/agents verify <id>` | Detect and run the retained child worktree's standard build/lint/test suite sequentially. Every command receives its own ordinary `run_command` policy decision. |
+| `/agents compare <id> <id> [id…]` | Compare two to six completed write candidates by conflicts, selectable hunks, fresh verification, evidence, and token usage without selecting or publishing one. |
 | `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
 | `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
@@ -3253,40 +3255,74 @@ trusted project configuration:
 ```
 
 This does not turn delegation into Git merging and is independent of the
-`ask`/`workspace`/`autopilot` permission mode. It exposes two parent-only
+`ask`/`workspace`/`autopilot` permission mode. It exposes four parent-only
 tools:
 
 | Tool | Behavior |
 | --- | --- |
-| `inspect_delegate_changes` | Read-only inspection of the child's bounded evidence, base commit, conflicts, and exact numbered text hunks. It returns a review token bound to the current base, parent, and child bytes. |
-| `apply_delegate_changes` | Selects all safe hunks or specific numbered hunks using that token. The ordinary write policy decides whether an approval is required. |
+| `inspect_delegate_changes` | Read-only inspection of bounded child evidence, conflicts, exact numbered hunks, current verification state, and repository-detected verification commands. It returns a publication review token bound to parent and child state plus a separate verification token bound only to child state. |
+| `verify_delegate_changes` | Runs exactly one command from `suggested_verification` in the retained child worktree. It uses the canonical `run_command` permission and hook identity plus the configured sandbox, network, environment, timeout, cancellation, denied-command, and output policies. |
+| `compare_delegate_changes` | Read-only comparison of two to six completed write candidates: selectable files/hunks, conflicts, machine-observed verification, bounded evidence, and token usage. It reports facts but never chooses or applies a candidate. |
+| `apply_delegate_changes` | Selects all safe hunks or specific numbered hunks using the review token. The ordinary write policy decides whether an approval is required. |
 
 The primary agent must inspect before applying. Any child edit, parent edit,
 branch movement, worktree replacement, or relevant mode/content change makes
-the review token stale before permission is requested. After permission,
-Collomia rechecks the source and destination again, then uses the same rooted
-atomic writes, multi-file rollback, change tracking, hooks, `/diff`, and
-`/undo` behavior as `/agents apply`.
+the publication review token stale before permission is requested. After
+permission, Collomia rechecks the source and destination again, then uses the
+same rooted atomic writes, multi-file rollback, change tracking, hooks,
+`/diff`, and `/undo` behavior as `/agents apply`.
+
+Verification is intentionally one command per tool call so several shell
+actions cannot hide behind one approval. Commands come from the same
+repository-marker detector as `collo verify` (`go.mod`, `package.json`,
+`Cargo.toml`, Python project files, and `Makefile`); Collomia refuses an
+invented command in this path. `/agents verify <id>` runs the complete detected
+suite in order and stops on the first failed, blocked, rejected, cancelled,
+timed-out, or stale result.
+
+Each result records its purpose, exact command, status, bounded redacted
+output/error, timestamps, and a state token derived from the registered child
+worktree, branch, base commit, changed paths, modes, and exact child bytes.
+All detected commands must pass against the same token before the suite is
+`passed`. A child edit during or after verification preserves the old evidence
+but changes its aggregate state to `stale`; inspect and run the suite again. If
+no standard project marker exists, status is `unavailable` and Collomia does
+not guess. Ask the child to verify during its original task or inspect the
+worktree manually.
 
 The primary agent is expected to judge the child's evidence and diff, apply
 only work that satisfies your request, and verify the combined parent
-workspace afterward. Collomia does not treat a child's claim that tests passed
-as proof beyond the bounded evidence it reports. Conflicts remain fail-closed:
-reviewed integration does not rebase, synthesize conflict resolutions, or
-overwrite a parent/sibling change. `/agents` and the Session tab retain
-`reviewed`, `reviewed with conflicts`, `integrated`, `partial`, `blocked`, or
-`rejected` disposition details.
+workspace afterward. A child-authored claim is not machine verification, and
+even a machine-observed child pass does not cover parent-only changes or
+interactions introduced by integrating multiple candidates. Passing
+verification grants no permission, does not bypass hooks, and never publishes
+files. Conflicts remain fail-closed: reviewed integration does not rebase,
+synthesize conflict resolutions, or overwrite a parent/sibling change.
+`/agents` and the Session tab retain integration and child-verification states
+independently.
 
-Permission configuration continues to match the canonical
-`integrate_delegate` tool name for both `/agents apply` and primary-reviewed
-application. Use `options.disabled_tools: ["apply_delegate_changes"]` when you
-want to hide only the model-facing apply tool while leaving manual integration
-available.
+Permission configuration continues to match canonical identities:
+
+- `integrate_delegate` governs `/agents apply` and
+  `apply_delegate_changes`;
+- `run_command` governs every operator or primary child-verification command.
+
+Existing executable rules, catastrophic denials, environment policy,
+sandbox/network configuration, `tool_start` hooks, and audit records therefore
+continue to apply. Use
+`options.disabled_tools: ["apply_delegate_changes"]` to hide only primary
+publication, or add `verify_delegate_changes` and/or
+`compare_delegate_changes` to hide those model-facing helpers while preserving
+the corresponding operator commands. Listing canonical `run_command` or
+`integrate_delegate` in `options.disabled_tools` also hides its model-facing
+wrapper. To deny both primary and operator execution, use
+`permissions.denied_tools` with the canonical identity.
 
 The child worktree and `collomia/*` branch remain available after integration.
 No mode commits, merges, pushes, deletes recovery artifacts, or restarts an
-interrupted child. You can still use `/agents apply <id>` at any time; changing
-the option back to `manual` removes the two tools on the next Collomia start.
+interrupted child. You can still use `/agents verify`, `/agents compare`, and
+`/agents apply` in `manual` mode; changing the option back to `manual` removes
+the four primary-only tools on the next Collomia start.
 
 Delegation lifecycle snapshots and completed outcomes are persisted in the
 parent session. On resume, terminal outcomes remain inspectable; any recorded

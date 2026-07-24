@@ -57,10 +57,23 @@ type AuthorizationObserver interface {
 	ObserveAuthorization(args json.RawMessage, err error)
 }
 
+// ExecutionObserver is an optional tool hook for durable state when a
+// post-authorization lifecycle gate blocks execution. It observes but cannot
+// change the outcome.
+type ExecutionObserver interface {
+	ObserveExecution(args json.RawMessage, err error)
+}
+
 // PermissionIdentity lets a model-facing wrapper preserve an established
 // permission-policy name. It does not alter tool lookup or execution.
 type PermissionIdentity interface {
 	PermissionToolName() string
+}
+
+// HookIdentity lets a model-facing wrapper preserve the lifecycle-hook name
+// of the underlying action. It does not alter transcript tool names.
+type HookIdentity interface {
+	HookToolName() string
 }
 
 // Result preserves optional typed content returned by a tool. Ordinary tools

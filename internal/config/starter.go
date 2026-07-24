@@ -332,10 +332,12 @@ const configReferenceJSONC = `
     "delegate_provider_concurrency": {
       "openrouter": 2
     },
-    // manual keeps delegated writes behind /agents apply. reviewed lets the
-    // primary agent inspect exact child diffs and selectively publish accepted
-    // hunks through the same permission, drift, and atomic-write safeguards.
-    // It never commits, merges, pushes, or bypasses an approval.
+    // manual keeps delegated publication behind /agents apply; operators can
+    // still /agents verify and compare retained candidates. reviewed also lets
+    // the primary inspect exact child diffs, run repository-detected commands
+    // under run_command policy, compare candidates, and selectively publish
+    // accepted hunks. A child pass never grants permission or proves the
+    // combined parent workspace. Nothing commits, merges, or pushes.
     "agent_integration": "manual",
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",

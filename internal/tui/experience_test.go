@@ -11,6 +11,7 @@ import (
 	colorful "github.com/lucasb-eyer/go-colorful"
 	"github.com/muesli/termenv"
 	"github.com/robert-mcdermott/collomia/internal/agent"
+	"github.com/robert-mcdermott/collomia/internal/app"
 	"github.com/robert-mcdermott/collomia/internal/skills"
 )
 
@@ -104,6 +105,25 @@ func TestAgentPickerWithoutDelegatesExplainsFeature(t *testing.T) {
 	last := m.blocks[len(m.blocks)-1]
 	if last.role != "panel" || !strings.Contains(last.content, "delegate tool") {
 		t.Fatalf("expected delegated-agent guidance, got %+v", last)
+	}
+}
+
+func TestAgentDetailsAndComparisonExplainVerificationScope(t *testing.T) {
+	m := newTestModel(t)
+	status := agent.DelegateStatus{
+		ID: "delegate-1", Name: "writer", Task: "change parser", Write: true, Status: agent.DelegateDone,
+		Changed: []string{"parser.go"}, Worktree: "/tmp/delegate-1", VerificationStatus: "passed",
+		VerificationResults: []agent.DelegateVerification{{Purpose: "test", Command: "go test ./...", Status: "passed"}},
+	}
+	detail := m.renderAgentDetails(status)
+	if !strings.Contains(detail, "Child verification: passed") || !strings.Contains(detail, "retained child worktree only") || !strings.Contains(detail, "/agents verify delegate-1") {
+		t.Fatalf("verification detail=%q", detail)
+	}
+	comparison := m.renderDelegateComparison([]app.DelegateCandidateSummary{{
+		ID: "delegate-1", Name: "writer", Readiness: "verified", SelectableFiles: 1, SelectableHunks: 2, VerificationStatus: "passed",
+	}})
+	if !strings.Contains(comparison, "verification passed") || !strings.Contains(comparison, "grants no permission") {
+		t.Fatalf("comparison=%q", comparison)
 	}
 }
 

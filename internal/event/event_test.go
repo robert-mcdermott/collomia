@@ -140,6 +140,32 @@ func TestProviderFailureRoundTrips(t *testing.T) {
 	}
 }
 
+func TestDelegateVerificationRoundTrips(t *testing.T) {
+	e := New(KindDelegateUpdate)
+	e.Delegate = &DelegateStatus{
+		ID: "d1", Name: "writer", Status: "done",
+		VerificationStatus: "passed", VerificationToken: "verify-abc",
+		VerificationRequired: []string{"go test ./..."},
+		VerificationResults: []DelegateVerification{{
+			Purpose: "test", Command: "go test ./...", Status: "passed",
+			Output: "ok", StateToken: "verify-abc", Started: e.Time, Finished: e.Time,
+		}},
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Delegate == nil || decoded.Delegate.VerificationStatus != "passed" ||
+		len(decoded.Delegate.VerificationResults) != 1 ||
+		decoded.Delegate.VerificationResults[0].Command != "go test ./..." {
+		t.Fatalf("delegate verification round trip=%+v", decoded.Delegate)
+	}
+}
+
 func TestToolCallDeltaRoundTrips(t *testing.T) {
 	e := New(KindToolCallDelta)
 	e.ToolCall = &ToolCallDelta{Index: 2, ID: "call-2", Name: "read_file", ArgumentsDelta: `{"path":`, Done: false}

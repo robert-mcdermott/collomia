@@ -83,9 +83,20 @@ history plus `pending_guidance`, evidence and changed/integrated file lists,
 optional `integration_status`/`integration_error`, usage/budgets, and retained
 worktree/branch/base metadata. Integration status describes a user/primary
 reviewed-copy disposition (`reviewed`, `reviewed_with_conflicts`, `integrated`,
-`partial`, `blocked`, or `rejected`), not a Git merge. These are
-observations only: replay never restarts a child, delivers stored guidance, or
-integrates stored changes. Consumers must tolerate additive fields.
+`partial`, `blocked`, or `rejected`), not a Git merge.
+
+Delegated write records may also include `verification_status`,
+`verification_error`, `verification_token`, `verification_required`, and
+bounded `verification_results`. Each result carries the detected purpose,
+exact command, observed status, bounded output/error, state token, and
+timestamps. Aggregate status can be `running`, `partial`, `passed`, `failed`,
+`cancelled`, `timed_out`, `blocked`, `rejected`, `stale`, or `unavailable`.
+This is child-worktree evidence only; it grants no permission and says nothing
+about the combined parent workspace.
+
+These fields are observations only: replay never restarts a child, runs a
+stored verification command, delivers stored guidance, or integrates stored
+changes. Consumers must tolerate additive fields.
 
 Failed, cancelled, timed-out, budget-exhausted, or recovery-interrupted child
 records may also carry `delegate.failure_id`. It is the same opaque ID shown in

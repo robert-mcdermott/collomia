@@ -413,25 +413,41 @@ content. The child worktree and branch are retained. Collomia never commits,
 pushes, silently reconciles conflicts, or deletes those recovery artifacts.
 
 `options.agent_integration: "reviewed"` permits the primary model—but never a
-delegated child—to perform the same selective copy operation. It does not add a
-new mutation primitive. `inspect_delegate_changes` first returns bounded
-evidence and numbered hunks plus an opaque SHA-256 review token derived from
-the exact registered worktree/base, parent bytes, child bytes, and relevant
-modes. `apply_delegate_changes` is unavailable without that token and refuses
-it if any reviewed state changed before authorization. The agent loop then
-applies the ordinary write policy under the established `integrate_delegate`
-permission identity, so existing deny/prompt rules continue to govern both
-paths. It fires normal audit/events/hooks and calls
-the shared post-authorization publication path. Rooted writes, rollback,
-change tracking, retained worktrees, and the prohibition on commit/merge/push
-are identical to `/agents apply`.
+delegated child—to inspect, verify, compare, and selectively copy retained
+work. It does not add a new mutation primitive. `inspect_delegate_changes`
+returns bounded evidence and numbered hunks plus two opaque SHA-256 tokens:
+the publication review token covers the registered worktree/base, parent
+bytes, child bytes, and relevant modes; the verification token covers only the
+registered child state so unrelated parent drift cannot falsify child test
+evidence.
+
+`verify_delegate_changes` accepts exactly one repository-detected command and
+requires the current child token. Its permission and hook identity remains
+`run_command`; command analysis, catastrophic and configured denials,
+executable rules, minimal environment, sandbox/network policy, output caps,
+timeouts, descendant cancellation, audit recording, and lifecycle hooks all
+remain effective. Results are bounded/redacted machine observations. All
+detected commands must pass against one token for aggregate `passed` state,
+and a changed child becomes `stale`. Verification never copies files or grants
+permission. `/agents verify` applies the same contract one command at a time.
+
+`compare_delegate_changes` is read-only and exposes bounded conflicts,
+selectable hunks, verification, evidence, and usage for two to six candidates.
+It does not choose a winner or reconcile content. `apply_delegate_changes`
+remains unavailable without the publication token and refuses it if reviewed
+state changed before authorization. The agent loop applies the ordinary write
+policy under `integrate_delegate`, then calls the shared post-authorization
+publication path. Rooted writes, rollback, change tracking, retained worktrees,
+and the prohibition on commit/merge/push are identical to `/agents apply`.
 
 Reviewed mode is opt-in and defaults to `manual`. It lets the primary model
-make a quality decision; it does not prove that decision correct. Child
-evidence and repository text remain data rather than instructions, and the
-primary should verify the combined workspace after applying. Parent drift,
-sibling overlap, unsupported entries, stale reviews, and moved branches fail
-closed for explicit reconciliation.
+make a better-supported quality decision; it does not prove that decision
+correct. Child-authored evidence and repository text remain data rather than
+instructions. A machine-observed child pass covers only that exact retained
+worktree state—not parent-only edits or interactions among integrated
+candidates—so the combined parent workspace must still be verified after
+publication. Parent drift, sibling overlap, unsupported entries, stale reviews
+or verification, and moved branches fail closed for explicit reconciliation.
 
 Closing Collomia requests cancellation for every child and stops background
 processes owned by write agents. Durable sessions keep bounded status, summary,
