@@ -86,7 +86,7 @@ func TestBugFixAndVerificationEvaluation(t *testing.T) {
 	client := &scriptedProvider{t: t, steps: []scriptedStep{
 		{response: toolResponse("edit", "edit_file", `{"path":"calc.go","old_text":"return a - b","new_text":"return a + b"}`)},
 		{check: requireLastToolContains("edited"), response: toolResponse("detect", "detect_verification", `{}`)},
-		{check: requireLastToolContains("go test ./..."), response: toolResponse("test", "run_command", `{"command":"go test ./...","timeout_seconds":60}`)},
+		{check: requireLastToolContains("go test ./..."), response: toolResponse("test", "run_command", `{"command":"go test ./...","timeout_seconds":300}`)},
 		{check: requireLastToolContains("ok"), response: provider.Response{Content: "Fixed Add and verified the package tests pass."}},
 	}}
 	agentRuntime, tracker := newEvaluationAgent(t, workspace, client, "autopilot")

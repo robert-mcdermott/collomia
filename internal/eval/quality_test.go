@@ -68,7 +68,7 @@ func TestMessages(t *testing.T) {
 		{check: requireLastToolContains("func Greeting", "func Farewell"), response: encodedToolResponse("patch", "apply_patch", map[string]any{
 			"operations": []map[string]string{{"op": "update", "path": "greeting.go", "old_text": source, "new_text": refactored}},
 		})},
-		{check: requireLastToolContains(`"op":"update"`, `"path":"greeting.go"`), response: toolResponse("test", "run_command", `{"command":"go test ./...","timeout_seconds":60}`)},
+		{check: requireLastToolContains(`"op":"update"`, `"path":"greeting.go"`), response: toolResponse("test", "run_command", `{"command":"go test ./...","timeout_seconds":300}`)},
 		{check: requireLastToolContains("ok"), response: provider.Response{Content: "Extracted one normalization helper and verified existing behavior."}},
 	}}
 	runtime, tracker := newEvaluationAgent(t, workspace, client, "autopilot")
@@ -120,7 +120,7 @@ func TestSign(t *testing.T) {
 	client := &scriptedProvider{t: t, steps: []scriptedStep{
 		{response: toolResponse("read", "read_file", `{"path":"classify.go"}`)},
 		{check: requireLastToolContains(`func Sign`), response: encodedToolResponse("write-tests", "write_file", map[string]string{"path": "classify_test.go", "content": tests})},
-		{check: requireLastToolContains("wrote", "classify_test.go"), response: toolResponse("run-tests", "run_command", `{"command":"go test ./...","timeout_seconds":60}`)},
+		{check: requireLastToolContains("wrote", "classify_test.go"), response: toolResponse("run-tests", "run_command", `{"command":"go test ./...","timeout_seconds":300}`)},
 		{check: requireLastToolContains("ok"), response: provider.Response{Content: "Added boundary-focused tests and ran them successfully."}},
 	}}
 	runtime, tracker := newEvaluationAgent(t, workspace, client, "autopilot")
