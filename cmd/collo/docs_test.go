@@ -29,13 +29,20 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
+// A guard that matches source text across a line boundary must not depend on
+// how the checkout was configured: .gitattributes pins LF, but a working copy
+// predating it, or a file written by a Windows editor, still carries CRLF.
+func normalizeNewlines(text string) string {
+	return strings.ReplaceAll(text, "\r\n", "\n")
+}
+
 func docFiles(t *testing.T) map[string]string {
 	t.Helper()
 	root := repoRoot(t)
 	out := map[string]string{}
 	for _, name := range []string{"README.md", "ROADMAP.md", "SECURITY.md"} {
 		if data, err := os.ReadFile(filepath.Join(root, name)); err == nil {
-			out[name] = string(data)
+			out[name] = normalizeNewlines(string(data))
 		}
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "docs"))
@@ -48,7 +55,7 @@ func docFiles(t *testing.T) map[string]string {
 			if err != nil {
 				t.Fatal(err)
 			}
-			out["docs/"+entry.Name()] = string(data)
+			out["docs/"+entry.Name()] = normalizeNewlines(string(data))
 		}
 	}
 	return out
@@ -207,7 +214,7 @@ func literalsAfter(t *testing.T, relPath, declaration string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
+	text := normalizeNewlines(string(data))
 	start := strings.Index(text, declaration)
 	if start < 0 {
 		t.Fatalf("%s no longer contains %q; this guard needs updating", relPath, declaration)
