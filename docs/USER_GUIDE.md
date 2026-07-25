@@ -817,6 +817,7 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
+| `mouse` | Whether the TUI requests mouse reporting for wheel scrolling and tab clicks; defaults to `true`. While it is on, the terminal routes drags to Collomia rather than to its own selection, so set it to `false` if you copy text with the mouse more than you scroll. Most terminals still offer native selection under shift-drag. |
 | `reduced_motion` | Optional static working indicator. Defaults to `false`, so animations remain enabled; it never changes input, commands, cancellation, or other controls. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
@@ -2101,8 +2102,9 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 
 | Key | Action |
 | --- | --- |
-| `enter` | Send the prompt or run the selected palette item. |
-| `alt+enter` | Insert a newline in the prompt. |
+| `enter` | Send the prompt or run the selected palette item. A draft that ends in a backslash, or that sits inside an unclosed ``` fence, gains a line instead of sending. |
+| `alt+enter` / `ctrl+j` | Insert a newline in the prompt. `ctrl+j` is a literal line feed and works in every terminal; `alt+enter` works everywhere except macOS Terminal.app's defaults. Terminals that speak the Kitty keyboard protocol or xterm's `modifyOtherKeys` also get `shift+enter` and `ctrl+enter`. |
+| `alt+e` | Edit the current draft in `$EDITOR`, then return it to the composer. |
 | `/` | Open/filter the slash-command palette. |
 | `@` | Fuzzy-pick a workspace file or folder and insert its safely quoted path. |
 | `up` / `down` | Move in palettes/pickers; at the first or last composer line, navigate this session's prompt history. Multiline input retains normal cursor movement. |
@@ -2113,6 +2115,8 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+o` | Expand or collapse finished tool output. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
+| `alt+r` | Show or hide the context rail. It appears on its own at 146 columns and is unavailable below 116. |
+| Mouse wheel / click | Scroll the transcript; click a tab to select it. Set `options.mouse` to `false` to hand mouse handling back to the terminal. |
 | `f` in Activity | Cycle the activity categories present in this session. |
 | `/`, then `n` / `N` in Activity | Search activity and move between matches. |
 | `y` in Activity | Copy the selected failure ID, or the activity text when no ID is present. |
@@ -2453,6 +2457,8 @@ unambiguous.
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
       "session_picker": "alt+s",
+      "context_rail": "alt+r",
+      "compose_editor": "alt+e",
       "page_up": "pgup",
       "page_down": "pgdown",
       "scroll_top": "home",

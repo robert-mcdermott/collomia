@@ -232,10 +232,6 @@ func contextGauge(t Theme, used, window, width int) string {
 	if frac > 1 {
 		frac = 1
 	}
-	filled := int(frac*float64(width) + 0.5)
-	if filled > width {
-		filled = width
-	}
 	color := t.Success
 	switch {
 	case frac >= 0.85:
@@ -243,10 +239,32 @@ func contextGauge(t Theme, used, window, width int) string {
 	case frac >= 0.60:
 		color = t.Warning
 	}
-	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("▰", filled)) +
-		lipgloss.NewStyle().Foreground(lipgloss.Color(t.Border)).Render(strings.Repeat("▱", width-filled))
+	fill := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	track := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Border))
+
+	// Partial block glyphs give the bar eight times the resolution of its
+	// width, which matters at the ten cells the status bar can spare: without
+	// them the gauge sits on 0% for the first five percent of the window and
+	// then jumps a whole cell at a time.
+	exact := frac * float64(width)
+	filled := int(exact)
+	if filled > width {
+		filled = width
+	}
+	bar := fill.Render(strings.Repeat("█", filled))
+	remaining := width - filled
+	if eighth := int((exact - float64(filled)) * 8); remaining > 0 && eighth > 0 {
+		bar += fill.Render(string(gaugeEighths[eighth]))
+		remaining--
+	}
+	bar += track.Render(strings.Repeat("░", remaining))
 	return fmt.Sprintf("ctx %s %d%%", bar, int(frac*100+0.5))
 }
+
+// gaugeEighths are the left-aligned partial block glyphs, indexed by how many
+// eighths of a cell to fill. Index zero is unused; a zero remainder draws no
+// partial cell at all.
+var gaugeEighths = []rune{' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'}
 
 // setTerminalBackground asks the hosting terminal to adopt the theme
 // background via OSC 11 so unpainted cells match the theme. Terminals

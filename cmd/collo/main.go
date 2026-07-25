@@ -266,6 +266,12 @@ func run(args []string) error {
 	if altScreen {
 		programOptions = append(programOptions, tea.WithAltScreen())
 	}
+	// Cell motion, not all motion: Collomia needs wheel events and clicks, and
+	// requesting drag tracking as well would take over the terminal's own
+	// selection for no benefit.
+	if runtime.Config.Options.Mouse {
+		programOptions = append(programOptions, tea.WithMouseCellMotion())
+	}
 	program := tea.NewProgram(tui.New(runtime, broker, initial), programOptions...)
 	_, err = program.Run()
 	tui.ResetTerminalBackground()

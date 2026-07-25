@@ -1,5 +1,7 @@
  ✿ collomia  Chat  Session  Help
 ────────────────────────────────────────────────────────────────────────────────
+╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
+║  ║ ║║  ║  ║ ║║║║║╠═╣
 ╚═╝╚═╝╩═╝╩═╝╚═╝╩ ╩╩╩ ╩
 ✿ collo dev (unknown, unknown) · ollama/qwen3-coder · theme plain
 type a prompt · / commands · ctrl+t tabs · ctrl+o tool output
@@ -7,7 +9,7 @@ type a prompt · / commands · ctrl+t tabs · ctrl+o tool output
  YOU
 Inspect main.go and explain the result.
 
-⚙ read_file  read main.go
+✓ read_file  read main.go
   │ package main
   │
   │ func main() {}
@@ -17,7 +19,5 @@ main.go defines an empty Go entry point.
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │❯ Ask Collomia to build, debug, explain…  (/ for commands)                    │
-│❯                                                                             │
-│❯                                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ✿   ollama/qwen3-coder   ASK ⛨  ctx ▱▱▱▱▱▱▱▱▱▱ 1%
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ░░░░░░░░░░ 1%

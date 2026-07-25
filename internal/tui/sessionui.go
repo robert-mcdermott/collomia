@@ -172,6 +172,12 @@ func (m *Model) setComposerValue(value string) {
 	m.input.CursorEnd()
 	m.historyIndex = len(m.promptHistory)
 	m.historyDraft = ""
+	// A loaded prompt, a restored draft, or a recalled history entry can be
+	// any number of lines, and the transcript's height is derived from the
+	// editor's, so the surrounding layout has to follow the new content.
+	if m.syncComposerHeight() {
+		m.layout()
+	}
 }
 
 func (m *Model) sessionDraftKey() string {

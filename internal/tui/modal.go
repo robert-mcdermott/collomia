@@ -26,7 +26,11 @@ func (m Model) modalActive() bool {
 func (m Model) renderComposer() string {
 	box := m.styles.inputBox.Width(max(1, m.width-2))
 	if !m.modalActive() {
-		return box.Render(m.input.View())
+		rendered := box.Render(m.input.View())
+		if hint := m.continuationHint(); hint != "" {
+			rendered += "\n" + fitLine(" "+m.styles.muted.Render(ansi.Truncate(hint, max(1, m.width-2), "…")), max(1, m.width))
+		}
+		return rendered
 	}
 	message := "Dialog active"
 	if m.question != nil {
@@ -38,7 +42,9 @@ func (m Model) renderComposer() string {
 	} else if m.agentIntegration != nil {
 		message = "Reviewing delegated changes"
 	}
-	return box.Height(3).Render(m.styles.muted.Render("  " + message + "…"))
+	// Match the editor's live height so opening a dialog does not make the
+	// transcript jump by however many rows the draft happened to occupy.
+	return box.Height(m.input.Height()).Render(m.styles.muted.Render("  " + message + "…"))
 }
 
 func (m Model) renderApproval() string {
@@ -68,16 +74,14 @@ func (m Model) renderApproval() string {
 			lines = lines[:maxPreview]
 		}
 		body.WriteString("\n\n")
-		for i, line := range lines {
-			line = ansi.Truncate(line, inner, "…")
-			switch {
-			case strings.HasPrefix(line, "+"):
-				line = m.styles.success.Render(line)
-			case strings.HasPrefix(line, "-"):
-				line = m.styles.errText.Render(line)
-			default:
-				line = m.styles.muted.Render(line)
+		if looksLikeDiff(lines) {
+			lines = m.renderDiffPreview(lines, approvalPreviewPath(req), inner)
+		} else {
+			for i, line := range lines {
+				lines[i] = m.styles.muted.Render(ansi.Truncate(expandTabs(line), inner, "…"))
 			}
+		}
+		for i, line := range lines {
 			body.WriteString(line)
 			if i < len(lines)-1 || hidden > 0 {
 				body.WriteByte('\n')
@@ -108,6 +112,16 @@ func (m Model) renderApproval() string {
 	body.WriteString("\n\n" + ansi.Wordwrap(buttons, inner, ""))
 	body.WriteString(m.renderDurableHint(req, inner))
 	return m.modalFrame(body.String(), accent, approvalModalMaxWidth)
+}
+
+// approvalPreviewPath is the file the preview describes, used only to pick a
+// lexer. An action touching several paths gets the first: the preview is one
+// file's diff, and the resource list is ordered by the tool call.
+func approvalPreviewPath(req permission.Request) string {
+	if len(req.Action.Paths) == 0 {
+		return ""
+	}
+	return req.Action.Paths[0]
 }
 
 // renderDurableHint shows the configuration that ends a recurring prompt.
@@ -371,9 +385,35 @@ func wrapAndLimit(value string, width, maxLines int) string {
 	return strings.Join(lines, "\n")
 }
 
-// placeOverlay composites a centered ANSI-aware modal over the existing
-// screen. It replaces only the modal rectangle, preserving the transcript,
-// tabs, composer, and status bar around it.
+// overlayGutter is the ring of blanked cells kept between a modal's border
+// and whatever it covers.
+const overlayGutter = 1
+
+// overlayMinMargin is the narrowest strip of base layer worth keeping beside
+// a modal. A wide dialog on an 80-column terminal leaves one or two columns
+// on each side, and a single orphaned character per row looks like damage
+// rather than context, so anything under this is cleared as well.
+const overlayMinMargin = 6
+
+// scrim dims one line of the base layer so the modal reads as the focused
+// element. Colour is dropped entirely rather than blended: the transcript
+// carries syntax highlighting, diff greens and reds, and status accents, and
+// leaving any of them at full saturation next to the dialog keeps drawing the
+// eye back to content that is not currently actionable.
+func scrim(line string) string {
+	stripped := ansi.Strip(line)
+	if strings.TrimSpace(stripped) == "" {
+		return stripped
+	}
+	return scrimStyle.Render(stripped)
+}
+
+var scrimStyle = lipgloss.NewStyle().Faint(true)
+
+// placeOverlay composites a centered modal over the existing screen. The base
+// layer is dimmed and a gutter is cleared around the dialog, so the columns
+// framing it are blank instead of mid-word transcript fragments that read as
+// a corrupted redraw.
 func placeOverlay(base, overlay string, width, height int) string {
 	if width <= 0 || height <= 0 || overlay == "" {
 		return base
@@ -386,7 +426,7 @@ func placeOverlay(base, overlay string, width, height int) string {
 		baseLines = append(baseLines, "")
 	}
 	for i := range baseLines {
-		baseLines[i] = fitLine(baseLines[i], width)
+		baseLines[i] = fitLine(scrim(baseLines[i]), width)
 	}
 
 	overlayLines := strings.Split(overlay, "\n")
@@ -399,6 +439,23 @@ func placeOverlay(base, overlay string, width, height int) string {
 	}
 	x := max(0, (width-overlayWidth)/2)
 	y := max(0, (height-len(overlayLines))/2)
+
+	gutterTop := max(0, y-overlayGutter)
+	gutterBottom := min(height, y+len(overlayLines)+overlayGutter)
+	gutterLeft := max(0, x-overlayGutter)
+	gutterRight := min(width, x+overlayWidth+overlayGutter)
+	if gutterLeft < overlayMinMargin {
+		gutterLeft = 0
+	}
+	if width-gutterRight < overlayMinMargin {
+		gutterRight = width
+	}
+	for i := gutterTop; i < gutterBottom; i++ {
+		baseLines[i] = fitLine(ansi.Cut(baseLines[i], 0, gutterLeft), gutterLeft) +
+			strings.Repeat(" ", gutterRight-gutterLeft) +
+			fitLine(ansi.Cut(baseLines[i], gutterRight, width), width-gutterRight)
+	}
+
 	for i, line := range overlayLines {
 		line = fitLine(line, overlayWidth)
 		under := baseLines[y+i]

@@ -12,6 +12,8 @@ import (
 // visible y/a/n/enter/escape controls remain fixed and unambiguous.
 var KeybindingActions = []string{
 	"agent_control",
+	"compose_editor",
+	"context_rail",
 	"diff_view",
 	"next_tab",
 	"page_down",
@@ -25,8 +27,14 @@ var KeybindingActions = []string{
 
 // DefaultKeybindings returns a fresh copy of Collomia's default global keys.
 func DefaultKeybindings() map[string]string {
+	// alt+e and alt+r are deliberate: every ctrl+letter that reads as a
+	// mnemonic here (ctrl+e line end, ctrl+b character backward) is already an
+	// emacs motion the composer's textarea binds, and a global handler would
+	// shadow it before the editor ever saw the key.
 	return map[string]string{
 		"agent_control":      "alt+a",
+		"compose_editor":     "alt+e",
+		"context_rail":       "alt+r",
 		"diff_view":          "ctrl+d",
 		"next_tab":           "ctrl+t",
 		"page_down":          "pgdown",

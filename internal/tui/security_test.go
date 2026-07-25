@@ -70,7 +70,7 @@ func TestSecurityContentShowsTheCompleteStance(t *testing.T) {
 	m := newTestModel(t)
 	m.runtime.Config.Permissions.Preset = appconfig.PresetHardened
 	m.runtime.Config.Permissions.Network = "scoped"
-	content := ansi.Strip(m.securityContent())
+	content := ansi.Strip(m.securityContent(m.width))
 	for _, want := range []string{
 		// The three groups a reader arrives with a question for.
 		"Policy", "Enforcement", "This session",
@@ -92,7 +92,7 @@ func TestSecurityContentNamesRefusedProjectSettings(t *testing.T) {
 	m.runtime.Config.Clamped = []appconfig.ClampedField{
 		{Field: "sandbox", Requested: "off", Effective: "auto"},
 	}
-	content := ansi.Strip(m.securityContent())
+	content := ansi.Strip(m.securityContent(m.width))
 	for _, want := range []string{"refused project", "sandbox", "off", "auto"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("refused setting not reported (%q missing):\n%s", want, content)
