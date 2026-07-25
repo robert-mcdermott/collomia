@@ -77,9 +77,23 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, errors.New("command must not be empty")
 	}
 	analysis := shell.AnalyzeInWorkspace(a.Command, t.Workspace)
+	return ActionFromAnalysis("run: "+a.Command, a.Command, analysis), nil
+}
+
+// ActionFromAnalysis builds the permission-facing description of a shell
+// command from its static analysis.
+//
+// Every caller that evaluates a command must go through here rather than
+// assembling an Action by hand. A second construction site is how the host
+// matcher once shipped inert — documented, validated, and never populated —
+// and a hand-written copy in "collo policy check" reported the wrong decision
+// for a credential-reaching command for the same reason. Adding a field to
+// Analysis should require changing one function, not finding every caller.
+func ActionFromAnalysis(summary, command string, analysis shell.Analysis) Action {
 	return Action{
-		Risk: RiskExecute, Summary: "run: " + a.Command,
-		Command:           a.Command,
+		Risk:              RiskExecute,
+		Summary:           summary,
+		Command:           command,
 		Executables:       analysis.Executables,
 		Hosts:             analysis.Hosts,
 		Network:           analysis.NetworkCommand,
@@ -89,7 +103,8 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 		AnalysisReasons:   analysis.Reasons,
 		HardDenyReasons:   analysis.HardDenyReasons,
 		ConfirmReasons:    analysis.ConfirmReasons,
-	}, nil
+		CredentialTargets: analysis.CredentialTargets,
+	}
 }
 func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	return t.run(ctx, raw, nil)

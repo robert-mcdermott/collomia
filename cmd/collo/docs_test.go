@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/secrets"
 )
 
 // These tests keep the documentation honest about the surfaces users script
@@ -250,5 +253,89 @@ func TestGuideListsEveryReadableSystemRoot(t *testing.T) {
 				t.Errorf("%s permits reads under %s but the user guide does not list it", source.decl, root)
 			}
 		}
+	}
+}
+
+// Unlike the sandbox roots above, internal/secrets compiles on every platform,
+// so this guard calls the implementation instead of scraping its source.
+func TestGuideListsEveryProtectedCredentialLocation(t *testing.T) {
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	locations := secrets.Locations()
+	if len(locations) < 30 {
+		t.Fatalf("found only %d credential locations; the tables shrank and this guard needs updating", len(locations))
+	}
+	for _, location := range locations {
+		if !strings.Contains(guide, "`"+location+"`") {
+			t.Errorf("credential protection covers %s but the user guide does not list it", location)
+		}
+	}
+	exempt := secrets.ExemptLocations()
+	if len(exempt) < 8 {
+		t.Fatalf("found only %d exempt locations; the exclusions shrank and this guard needs updating", len(exempt))
+	}
+	for _, location := range exempt {
+		if !strings.Contains(guide, "`"+location+"`") {
+			t.Errorf("%s is exempt from credential protection but the user guide does not say so", location)
+		}
+	}
+}
+
+// Every selectable setting must be documented, so a new one cannot ship
+// unexplained.
+func TestGuideDocumentsEveryCredentialSetting(t *testing.T) {
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	for _, setting := range appconfig.ProtectCredentialsSettings() {
+		if !strings.Contains(guide, "`"+setting+"`") {
+			t.Errorf("permissions.protect_credentials accepts %q but the user guide does not document it", setting)
+		}
+	}
+}
+
+// Command-shaped actions must be built in exactly one place.
+//
+// This guard exists because the bug it prevents has now happened twice: the
+// `host` matcher shipped documented, validated, and never populated, and
+// `collo policy check` later reported the wrong decision for a
+// credential-reaching command because it assembled its own tools.Action and
+// silently missed a field. Both were second construction sites. A new field on
+// shell.Analysis should require editing one function.
+func TestCommandActionsAreBuiltInOnePlace(t *testing.T) {
+	root := repoRoot(t)
+	var offenders []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if name := entry.Name(); name == ".git" || name == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		// The single sanctioned constructor.
+		if filepath.ToSlash(strings.TrimPrefix(path, root)) == "/internal/tools/command.go" {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, marker := range []string{"Risk: RiskExecute", "Risk: tools.RiskExecute", "Risk:              RiskExecute"} {
+			if strings.Contains(string(body), marker) {
+				offenders = append(offenders, filepath.ToSlash(strings.TrimPrefix(path, root)))
+				break
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offenders) > 0 {
+		t.Errorf("these files build a command action by hand instead of calling tools.ActionFromAnalysis: %s", strings.Join(offenders, ", "))
 	}
 }

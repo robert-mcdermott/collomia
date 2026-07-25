@@ -18,6 +18,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/audit"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/policy"
+	"github.com/robert-mcdermott/collomia/internal/secrets"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -95,6 +96,11 @@ type Manager struct {
 	// decision: each can only turn an automatic approval into a prompt.
 	network  string
 	commands string
+	// protectCredentials decides what an action reaching a well-known
+	// credential store gets: off, prompt, or deny. Unlike the postures above
+	// it can deny, because refusing to hand a private key to a model is a
+	// defensible default in a way that refusing an ordinary command is not.
+	protectCredentials string
 	// allowedCommands and allowedHosts are session grants scoped to one
 	// executable or one endpoint, the narrow counterpart of "always allow
 	// this tool".
@@ -131,9 +137,13 @@ func New(cfg appconfig.Permissions, approver Approver) *Manager {
 	if commands == "" {
 		commands = "open"
 	}
+	protectCredentials := strings.ToLower(strings.TrimSpace(cfg.ProtectCredentials))
+	if protectCredentials == "" {
+		protectCredentials = appconfig.ProtectCredentialsPrompt
+	}
 	return &Manager{
 		mode: cfg.Mode, baseMode: cfg.Mode, allowed: allowed, denied: denied,
-		network: network, commands: commands,
+		network: network, commands: commands, protectCredentials: protectCredentials,
 		allowedCommands: map[string]bool{}, allowedHosts: map[string]bool{},
 		profileDenied: map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace,
 		rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver,
@@ -266,8 +276,10 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	allowOutside := m.allowOutside
 	networkPosture := m.network
 	commandPosture := m.commands
+	protectCredentials := m.protectCredentials
 	scopes := m.scopeSnapshotLocked()
 	m.mu.RUnlock()
+	credentials := credentialTargets(action, protectCredentials)
 
 	if denied || profileDenied {
 		return Grant{Source: "denied-tool"}, "deny", ""
@@ -293,12 +305,27 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 		case "allow":
 			// One-time confirmations and opaque commands may not be widened
 			// into automatic approval by an allow rule.
-			if len(action.ConfirmReasons) == 0 && !action.Uninspectable {
+			//
+			// A credential store is different: a rule that names its path is a
+			// deliberate written-down exception and is honored, while a
+			// blanket rule covering a tool or a whole directory is not allowed
+			// to sweep a private key in as a side effect.
+			if len(action.ConfirmReasons) == 0 && !action.Uninspectable && (len(credentials) == 0 || namesSpecificPath(decision.Rule.Path)) {
 				return grant, "allow", ""
 			}
 		case "prompt":
 			return grant, "prompt", "policy rule requires approval: " + decision.Describe()
 		}
+	}
+	// Credential stores are gated before the implicit-read fast path: a .env
+	// or a key checked into the workspace is an in-workspace read, and would
+	// otherwise be approved without anyone seeing it.
+	if len(credentials) > 0 {
+		reason := "action reaches " + strings.Join(credentials, "; ")
+		if protectCredentials == appconfig.ProtectCredentialsDeny {
+			return Grant{Source: "credentials", Rule: reason}, "deny", ""
+		}
+		return Grant{Source: "credentials", Rule: reason}, "prompt", reason
 	}
 	if action.Risk == tools.RiskRead && !action.Outside {
 		return Grant{Source: "implicit-read"}, "allow", ""
@@ -336,6 +363,53 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 		return Grant{Source: "mode"}, "allow", ""
 	}
 	return Grant{Source: "interactive"}, "prompt", ""
+}
+
+// credentialTargets reports the well-known credential stores this action
+// reaches, or nil when the protection is off.
+//
+// Targets carried on the action come from shell analysis, which sees paths no
+// structured field holds. Targets are additionally derived here from the
+// action's declared paths, so a tool added later is covered by virtue of
+// declaring what it touches rather than by remembering to classify it.
+func credentialTargets(action tools.Action, setting string) []string {
+	if setting == appconfig.ProtectCredentialsOff {
+		return nil
+	}
+	targets := append([]string(nil), action.CredentialTargets...)
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		seen[target] = true
+	}
+	for _, path := range action.Paths {
+		label := secrets.Classify(path)
+		if label == "" {
+			continue
+		}
+		if target := label + ": " + path; !seen[target] {
+			seen[target] = true
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
+func (m *Manager) credentialSetting() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.protectCredentials
+}
+
+// namesSpecificPath reports whether a rule's path pattern identifies a
+// location deliberately, rather than matching everything. A rule that names
+// where a credential lives is an exception its author wrote on purpose; a bare
+// "**" is a blanket grant that should not quietly include one.
+func namesSpecificPath(pattern string) bool {
+	trimmed := strings.TrimSpace(pattern)
+	if trimmed == "" {
+		return false
+	}
+	return strings.Trim(trimmed, `*?/\`) != ""
 }
 
 // scopeGrants is a point-in-time copy of the session's per-capability grants.
@@ -436,8 +510,11 @@ func posturePrompt(action tools.Action, network, commands string) string {
 func (m *Manager) Capabilities(action tools.Action) []Capability {
 	m.mu.RLock()
 	scopes := m.scopeSnapshotLocked()
+	protectCredentials := m.protectCredentials
 	m.mu.RUnlock()
-	oneTime := action.Uninspectable || len(action.ConfirmReasons) > 0
+	// An action reaching a credential store is approved once or not at all, so
+	// no dimension of it is offered as a reusable grant.
+	oneTime := action.Uninspectable || len(action.ConfirmReasons) > 0 || len(credentialTargets(action, protectCredentials)) > 0
 	var out []Capability
 	if len(action.Paths) > 0 {
 		out = append(out, Capability{Kind: CapabilityFilesystem, Values: action.Paths})
@@ -586,10 +663,11 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 		record(false)
 		return grant, fmt.Errorf("%w: %s", ErrDenied, action.Summary)
 	}
-	// "Always" never sticks for commands the analyzer could not read or that
-	// carry a mandatory confirmation; each must be approved on its own. The
-	// same restriction applies to the narrower per-capability grants.
-	if decision.Always && !action.Uninspectable && len(action.ConfirmReasons) == 0 {
+	// "Always" never sticks for commands the analyzer could not read, that
+	// carry a mandatory confirmation, or that reach a credential store; each
+	// must be approved on its own. The same restriction applies to the
+	// narrower per-capability grants.
+	if decision.Always && !action.Uninspectable && len(action.ConfirmReasons) == 0 && len(credentialTargets(action, m.credentialSetting())) == 0 {
 		m.mu.Lock()
 		m.allowed[tool] = true
 		m.mu.Unlock()

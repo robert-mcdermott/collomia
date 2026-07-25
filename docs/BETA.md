@@ -31,6 +31,12 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   `network: "scoped"` posture, and per-capability session grants — but it
   describes only the endpoints a command names, and OS-level endpoint-scoped
   egress enforcement is not implemented.
+- Credential files are protected by conventional location, not by detecting
+  secret material. Reaching one prompts by default and is not covered by a
+  broad approval, but a key stored somewhere unconventional is not recognized,
+  and the check describes what a command's text names rather than what a
+  running process opens. Redaction does not sit between a tool result and the
+  provider, so a secret an agent legitimately reads still reaches the model.
 - `autopilot` is not a promise that arbitrary commands are safe. Built-in
   catastrophic denials, policy, and OS sandboxing reduce risk but do not replace
   review, backups, source control, or host isolation.

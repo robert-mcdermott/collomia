@@ -239,19 +239,7 @@ func (t StartProcessTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, errors.New("command must not be empty")
 	}
 	analysis := shell.AnalyzeInWorkspace(a.Command, t.Runner.Workspace)
-	return Action{
-		Risk: RiskExecute, Summary: "start background process: " + a.Command,
-		Command:           a.Command,
-		Executables:       analysis.Executables,
-		Hosts:             analysis.Hosts,
-		Network:           analysis.NetworkCommand,
-		HostsUndetermined: analysis.UndeterminedHosts,
-		HostReasons:       analysis.HostReasons,
-		Uninspectable:     !analysis.Inspectable,
-		AnalysisReasons:   analysis.Reasons,
-		HardDenyReasons:   analysis.HardDenyReasons,
-		ConfirmReasons:    analysis.ConfirmReasons,
-	}, nil
+	return ActionFromAnalysis("start background process: "+a.Command, a.Command, analysis), nil
 }
 
 func (t StartProcessTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {

@@ -44,6 +44,11 @@ type Analysis struct {
 	// ConfirmReasons identifies destructive but potentially legitimate actions
 	// that require a fresh interactive approval, even in autopilot mode.
 	ConfirmReasons []string
+	// CredentialTargets names the well-known credential stores this command's
+	// arguments reach, each as "label: argument". Populating this is not by
+	// itself a decision: what happens to an action that reaches one is
+	// configurable, so the analysis reports and the permission layer rules.
+	CredentialTargets []string
 }
 
 // wrappers run another command given as their arguments; the wrapped command
@@ -142,6 +147,15 @@ func (a *Analysis) confirm(reason string) {
 		}
 	}
 	a.ConfirmReasons = append(a.ConfirmReasons, reason)
+}
+
+func (a *Analysis) credential(target string) {
+	for _, existing := range a.CredentialTargets {
+		if existing == target {
+			return
+		}
+	}
+	a.CredentialTargets = append(a.CredentialTargets, target)
 }
 
 func (a *Analysis) flag(reason string) {

@@ -1636,6 +1636,110 @@ commands are not path-contained by this built-in guard; an approved shell can
 read any path available to your operating-system user unless another OS control
 prevents it.
 
+### Credential files
+
+Reading a file is how a secret leaves your machine. A private key or a registry
+token that a command prints becomes part of the conversation sent to your
+provider, and no amount of output redaction can take it back — Collomia has to
+show an agent the files it was asked to work on.
+
+So reaching a well-known credential store is treated as its own decision:
+
+```jsonc
+"permissions": {
+  "protect_credentials": "prompt"   // off | prompt | deny
+}
+```
+
+| Setting | Behavior |
+| --- | --- |
+| `off` | Credential files are treated as ordinary files. This is how Collomia behaved before this setting existed. |
+| `prompt` | The default. Reaching one always asks, and no blanket approval can cover it. |
+| `deny` | Reaching one is refused outright. |
+
+`prompt` is stronger than the `ask` mode it resembles. In `ask` mode you can
+approve a tool once with **always** and stop being asked; under autopilot you
+are not asked at all. Neither of those covers a credential file. Specifically, a
+`deny` rule still denies, but **an allow rule matched on a tool, a command, or a
+bare `**` path glob will not cover a credential store**, and neither will a
+tool-wide "always allow", a per-capability session grant, or `autopilot`. That
+is the entire point: a broad approval you granted for ordinary work must not
+quietly include your SSH key.
+
+#### Exactly which locations are protected
+
+Anchored to your home directory:
+
+`~/.aws/credentials`, `~/.azure/`, `~/.cargo/credentials.toml`,
+`~/.collomia/config.json`, `~/.collomia/mcp.json`, `~/.config/gcloud/`,
+`~/.config/gh/hosts.yml`, `~/.config/glab-cli/config.yml`,
+`~/.docker/config.json`, `~/.gem/credentials`, `~/.git-credentials`,
+`~/.gnupg/`, `~/.kube/config`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.ssh/`,
+`~/_netrc`
+
+Recognized by filename wherever they appear, including inside your repository:
+
+`.env`, `.envrc`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `_netrc`,
+`id_dsa`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk`, `id_rsa`,
+`service-account.json`
+
+Recognized by extension:
+
+`*.asc`, `*.jks`, `*.key`, `*.keystore`, `*.p12`, `*.pem`, `*.pfx`, `*.ppk`
+
+Any name ending `.env.` followed by anything else — `.env.production`,
+`.env.local` — counts as an environment file too.
+
+#### What is deliberately not protected
+
+These are read, copied, and committed constantly. Prompting on them would teach
+you to approve without reading, which costs more than it protects:
+
+`~/.ssh/authorized_keys`, `~/.ssh/config`, `~/.ssh/environment`,
+`~/.ssh/known_hosts`, `~/.ssh/rc`, and anything ending `*.dist`, `*.example`,
+`*.md`, `*.pub`, `*.sample`, or `*.template`.
+
+So `cat ~/.ssh/id_rsa` prompts and `cat ~/.ssh/id_rsa.pub` does not;
+`cat .env` prompts and `cat .env.example` does not.
+
+#### Making a deliberate exception
+
+A rule that *names the path* is honored, so a project that genuinely needs one
+file does not have to switch the protection off:
+
+```jsonc
+"rules": [
+  { "action": "allow", "path": "/work/repo/.env", "reason": "app config read by tests" }
+]
+```
+
+The rule has to identify a location. A pattern that is nothing but wildcards
+(`**`, `*`, `*/*`) is treated as a blanket grant and will not cover a
+credential store.
+
+#### Four limits to know
+
+**It matches names, not contents.** A private key stored somewhere unusual —
+`~/work/deploy-thing` — is not recognized. This is a list of conventional
+locations, not detection of secret material.
+
+**It reads what a command says, not what it does.** `cat ~/.ssh/id_rsa` is
+caught because the path is in the command text. A script that opens the same
+file is not, though a command Collomia cannot analyze already requires approval
+for that reason. Confining what a command can read at the OS level is
+[read confinement](#exactly-what-read-confinement-denies)'s job, not this one.
+
+**Reaching a file is not reading it.** The check fires on any command naming
+the path, including one that writes or deletes it. That is deliberate — an
+overwrite of your SSH key is worth a prompt too.
+
+**It does not protect a secret already in the conversation.** Once a value has
+been read and sent, this setting has nothing left to do. It reduces how often
+that happens; it does not undo it.
+
+The current setting is shown in the Session tab's Security block, next to the
+sandbox and posture settings.
+
 ### Command analysis and hard denials
 
 Before a shell action reaches approval, Collomia extracts executables and

@@ -346,6 +346,19 @@ const configReferenceJSONC = `
     // choose full deliberately when a command needs inherited credentials,
     // proxy settings, or other toolchain variables.
     "command_env": "minimal",
+    // off | prompt | deny. Decides what happens when an action reaches a
+    // well-known credential store: an SSH or GPG private key, a cloud CLI token
+    // cache, a registry authentication file, a .env. prompt (the default) always
+    // asks, deny refuses outright, off treats those files as ordinary.
+    //
+    // Under prompt this is stronger than the ask mode alone. A blanket allow
+    // rule, a tool-wide "always allow", and autopilot all decline to cover a
+    // credential store, so a broad approval cannot sweep a private key in as a
+    // side effect. A rule naming the path is still honored, which keeps an
+    // intentional exception possible and written down:
+    //
+    //   { "action": "allow", "path": "/work/repo/.env", "reason": "app config" }
+    "protect_credentials": "prompt",
     // Optional executable receiving approval requests as JSON on stdin.
     "reviewer_command": ""
   },

@@ -52,6 +52,12 @@ type Action struct {
 	// ConfirmReasons are destructive but potentially legitimate operations
 	// that require a fresh interactive decision for each invocation.
 	ConfirmReasons []string
+	// CredentialTargets names the well-known credential stores this action
+	// reaches, each as "label: path". Tools that expose Paths do not need to
+	// set this; the permission layer derives those itself so a tool added
+	// later is covered without having to remember. Command-shaped tools set it
+	// from their shell analysis, which sees targets no path field carries.
+	CredentialTargets []string
 	// Preview carries a human-reviewable rendering of the proposed change
 	// (typically a unified diff) for approval prompts.
 	Preview string

@@ -121,6 +121,7 @@ func (m Model) securityContent() string {
 
 	b.WriteString(kv("network policy", orDefault(permissions.Network, "open")+" — declared endpoints only, not egress enforcement") + "\n")
 	b.WriteString(kv("command policy", orDefault(permissions.Commands, "open")) + "\n")
+	b.WriteString(kv("credentials", credentialSummary(permissions.ProtectCredentials)) + "\n")
 	b.WriteString(kv("rules", fmt.Sprintf("%d scoped rule(s), %d regex denial(s)", len(permissions.Rules), len(permissions.DeniedCommands))) + "\n")
 
 	commands, hosts := m.runtime.Permissions.SessionGrants()
@@ -130,6 +131,19 @@ func (m Model) securityContent() string {
 	}
 	b.WriteString(m.styles.muted.Render("  full reference: collo config reference · docs/SECURITY.md") + "\n\n")
 	return b.String()
+}
+
+// credentialSummary states what reaching a key or token store actually does,
+// rather than echoing the setting name back at the reader.
+func credentialSummary(setting string) string {
+	switch strings.ToLower(strings.TrimSpace(setting)) {
+	case appconfig.ProtectCredentialsOff:
+		return "off — key and token files are treated as ordinary"
+	case appconfig.ProtectCredentialsDeny:
+		return "deny — reaching a key or token store is refused"
+	default:
+		return "prompt — reaching a key or token store always asks"
+	}
 }
 
 func describeGrants(commands, hosts []string) string {

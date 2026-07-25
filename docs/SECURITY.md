@@ -143,6 +143,33 @@ a new human decision—even in autopilot and even when an allow rule matches:
 The approval dialog does not offer a persistent grant for this tier. In a
 headless run, the operation fails closed because no human approver is present.
 
+### Credential stores sit alongside tier 2
+
+Reaching a well-known credential store — an SSH or GPG private key, a cloud
+CLI token cache, a registry authentication file, a `.env` — is governed by
+`permissions.protect_credentials` (`off`, `prompt` by default, or `deny`).
+
+Under the default it behaves like tier 2 in the way that matters: a blanket
+allow rule, a tool-wide "always allow", a per-capability session grant, and
+`autopilot` all decline to cover it, and the dialog offers no persistent grant.
+It differs from tier 2 in two respects. A rule that names the path is honored,
+so an intentional exception is expressible and stays written down; and the
+setting can be raised to `deny`, which the `hardened` preset selects.
+
+The threat is specific. Redaction runs on Collomia's transcript, audit ledger,
+and events — it does not sit between a tool result and the provider, because
+an agent has to see the files it was asked to work on. A credential a command
+reads therefore reaches the model. Keeping it out is a permission decision, and
+this is that decision.
+
+Two limits follow from how it works. Recognition is by conventional location,
+not by inspecting contents, so a key stored somewhere unusual is not covered.
+And it describes what a command's text names, not what the process opens —
+confining reads at the OS level is the sandbox's job. The complete list of
+protected and deliberately exempt locations is in the
+[user guide](USER_GUIDE.md#credential-files), and a test fails if that list and
+the implementation drift apart.
+
 ### Tier 3: normal permission flow
 
 Scoped cleanup and ordinary development operations continue through the
@@ -664,10 +691,22 @@ never executed. See [Live provider contract tests](LIVE_PROVIDER_CONTRACTS.md).
 ## Secrets
 
 Configured provider keys, MCP headers/env values, and common credential
-shapes (OpenAI/Anthropic/AWS/GitHub/Slack keys, JWTs, bearer tokens) are
-redacted from debug logs, JSONL events, and the audit ledger. Redaction is
-best-effort defense in depth — it reduces accidental exposure and does not
-defeat deliberate exfiltration.
+shapes are redacted from debug logs, JSONL events, and the audit ledger:
+OpenAI, Anthropic, AWS, GitHub, GitLab, Google, npm, Stripe, and Slack keys;
+JWTs; bearer tokens; `key=value` credential assignments; and PEM private key
+blocks (`RSA`, `EC`, `OPENSSH`, `ENCRYPTED`, PKCS#8, and PGP), which are
+removed whole. Public keys and certificates are deliberately left alone.
+
+Redaction is best-effort defense in depth, and two limits are worth stating
+because they decide what it can be relied on for. It does not sit between a
+tool result and the provider — an agent has to see the files it was asked to
+work on, so a secret a command legitimately reads still reaches the model, and
+keeping it out is [the permission layer's
+job](#credential-stores-sit-alongside-tier-2). And it is applied to bounded
+chunks rather than an unbounded stream, so a credential split across two chunks
+can be matched in the one carrying its recognizable prefix and missed in the
+next. Neither limit defeats deliberate exfiltration, which redaction was never
+positioned to stop.
 
 For native Amazon Bedrock, `auth: "sigv4"` delegates credential discovery to
 the AWS SDK chain (environment access/secret/session values, shared profiles,

@@ -28,13 +28,7 @@ func runPolicyCommand(opts options) error {
 		return err
 	}
 	analysis := shell.AnalyzeInWorkspace(command, opts.cwd)
-	action := tools.Action{
-		Risk: tools.RiskExecute, Summary: "run: " + command,
-		Executables: analysis.Executables, Uninspectable: !analysis.Inspectable, AnalysisReasons: analysis.Reasons,
-		Hosts: analysis.Hosts, Network: analysis.NetworkCommand,
-		HostsUndetermined: analysis.UndeterminedHosts, HostReasons: analysis.HostReasons,
-		HardDenyReasons: analysis.HardDenyReasons, ConfirmReasons: analysis.ConfirmReasons,
-	}
+	action := tools.ActionFromAnalysis("run: "+command, command, analysis)
 	manager := permission.New(cfg.Permissions, nil)
 	if opts.autonomy != "" {
 		if err := manager.SetMode(opts.autonomy); err != nil {
@@ -45,7 +39,7 @@ func runPolicyCommand(opts options) error {
 
 	fmt.Printf("command:      %s\n", command)
 	fmt.Printf("autonomy:     %s\n", manager.Mode())
-	fmt.Printf("postures:     network=%s commands=%s\n", cfg.Permissions.Network, cfg.Permissions.Commands)
+	fmt.Printf("postures:     network=%s commands=%s protect_credentials=%s\n", cfg.Permissions.Network, cfg.Permissions.Commands, cfg.Permissions.ProtectCredentials)
 	if len(analysis.Executables) > 0 {
 		fmt.Printf("executables:  %s\n", strings.Join(analysis.Executables, ", "))
 	}
@@ -63,6 +57,9 @@ func runPolicyCommand(opts options) error {
 		fmt.Println("analysis:     inspectable")
 	} else {
 		fmt.Printf("analysis:     UNINSPECTABLE (%s) — interactive approval always required\n", strings.Join(analysis.Reasons, "; "))
+	}
+	if len(analysis.CredentialTargets) > 0 {
+		fmt.Printf("credentials:  %s\n", strings.Join(analysis.CredentialTargets, "; "))
 	}
 	if len(analysis.HardDenyReasons) > 0 {
 		fmt.Printf("safety:       catastrophic (%s)\n", strings.Join(analysis.HardDenyReasons, "; "))

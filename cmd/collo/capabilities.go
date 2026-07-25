@@ -55,6 +55,7 @@ func capabilityMatrix() []capabilityRow {
 		{"tui", "always-visible containment mark", "implemented", "the autonomy badge carries ⛨ (contained), ⛉ (no OS sandbox), or ⛨! (applied less than requested); the Session tab lists the full stance and session grants"},
 		{"permissions", "per-capability approval grants", "implemented", "the approval dialog shows files/executables/endpoints separately; 'g' grants exactly the reach shown for the session, and every dimension must be covered before a later action is automatic"},
 		{"permissions", "catastrophic command protection", "implemented", "non-overridable outcome denials plus mandatory one-time confirmation for destructive but legitimate commands; same checks for foreground, PTY, and background execution"},
+		{"permissions", "credential-store protection", "implemented", "permissions.protect_credentials off/prompt/deny, default prompt; recognized by conventional path, not content inspection; a blanket allow rule, tool-wide grant, per-capability grant, and autopilot never cover one, while a rule naming the path does"},
 		{"permissions", "audit ledger", "implemented", "JSONL ledger outside the workspace"},
 		{"permissions", "OS sandbox", sandboxStatus, sandboxNote},
 		{"config", "layering defaults→user→project→env", "implemented", "inspect with `collo config show`"},

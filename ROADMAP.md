@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-24
+**Status updated:** 2026-07-25
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -37,7 +37,7 @@ also shipped:
   sandbox backends with compatibility-first `auto` enforcement by default,
   visible degradation, and capability-aware fail-closed `require` behavior;
 - scoped permissions, conservative shell analysis, catastrophic-command
-  denials, secret redaction, and an audit ledger;
+  denials, credential-store protection, secret redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
   artifacts, rewind/fork, and fail-stop persistence handling;
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
@@ -62,7 +62,41 @@ Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
 and reliability gates are complete.
 
-## Active wave — host-scoped policy surface and per-capability grants
+## Active wave — credential files as their own decision
+
+**Goal:** Stop a broad approval from silently including a private key, without
+adding configuration a user must understand before starting work.
+
+- [x] Recognize the conventional credential locations — SSH and GPG private
+  keys, cloud CLI token caches, registry authentication files, environment
+  files — by path, with public keys, `known_hosts`, and example environment
+  files excluded explicitly rather than by luck.
+- [x] Report the credential stores a command's arguments name from shell
+  analysis, keyed on the argument rather than on a table of reading programs,
+  and derive the same for any tool that declares its paths.
+- [x] Gate reaching one behind `permissions.protect_credentials`
+  (`off`/`prompt`/`deny`, default `prompt`), placed so a blanket allow rule, a
+  tool-wide session grant, the implicit in-workspace read path, and autopilot
+  cannot cover it, while a rule naming the path still can.
+- [x] Carry the setting on the preset ladder (frictionless off, standard
+  prompt, hardened deny) and clamp it monotonically like every other
+  containment field.
+- [x] Redact PEM private key blocks and the remaining common provider token
+  shapes, and state plainly in the package and in SECURITY.md that redaction
+  does not sit between a tool result and the provider.
+- [x] Show the setting in the Session tab's Security block and in
+  `collo policy check`.
+- [x] Build every command-shaped action in one constructor, with a test that
+  fails on a second construction site. **This was not cosmetic:**
+  `collo policy check` was reporting the wrong decision for a
+  credential-reaching command because it assembled its own action and missed
+  the field — the same defect shape that let the `host` matcher ship inert.
+
+**Behavior change:** an action reaching a credential store now prompts by
+default, including under `autopilot`, where a headless run fails closed. See
+the [compatibility note](docs/COMPATIBILITY.md#credential-file-protection).
+
+## Completed wave — host-scoped policy surface and per-capability grants
 
 **Goal:** Make the documented `host` matcher real, and make an approval a
 decision about what an action reaches rather than about a tool name — without
@@ -112,6 +146,12 @@ claiming enforcement the policy layer does not provide.
 - [x] **P0 — Complete separate capability controls:** executable allowlisting
   and a per-capability grant UI now ship alongside the independent filesystem,
   environment, network, and process controls.
+- [x] **P0 — Credential-store protection:** reaching a conventional credential
+  location is its own decision (`permissions.protect_credentials`, default
+  `prompt`), not coverable by a blanket allow rule, a tool-wide grant, or
+  autopilot. Recognition is by conventional path, so it is a usable default
+  rather than secret detection; enforcing what a running process may read
+  remains sandbox read confinement's job.
 - [ ] **P0 — Enforced endpoint-scoped egress:** the policy surface, declared
   endpoints, and scoped grants ship; OS-level enforcement does not. Add a
   Collomia-owned loopback egress broker that allows only policy-matched

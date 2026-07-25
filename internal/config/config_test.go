@@ -982,3 +982,89 @@ func TestLayerReportOmitsPresetSectionWithoutAPreset(t *testing.T) {
 		t.Fatalf("preset section shown without a preset:\n%s", cfg.LayerReport())
 	}
 }
+
+func TestProtectCredentialsDefaultsToPrompt(t *testing.T) {
+	cfg := loadWithGlobal(t, "", "")
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsPrompt {
+		t.Fatalf("protect_credentials = %q, want %q", got, ProtectCredentialsPrompt)
+	}
+}
+
+func TestPresetsCarryTheirCredentialSetting(t *testing.T) {
+	cases := map[string]string{
+		PresetFrictionless: ProtectCredentialsOff,
+		PresetStandard:     ProtectCredentialsPrompt,
+		PresetHardened:     ProtectCredentialsDeny,
+	}
+	for name, want := range cases {
+		cfg := loadWithGlobal(t, `{"permissions":{"preset":"`+name+`"}}`, "")
+		if got := cfg.Permissions.ProtectCredentials; got != want {
+			t.Errorf("preset %s: protect_credentials = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// An explicit field beats the preset that accompanies it, matching every other
+// containment setting.
+func TestExplicitCredentialSettingWinsOverThePreset(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"hardened","protect_credentials":"prompt"}}`, "")
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsPrompt {
+		t.Fatalf("protect_credentials = %q, want prompt", got)
+	}
+}
+
+func TestProjectCanTightenCredentialProtection(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"protect_credentials":"off"}}`,
+		`{"permissions":{"protect_credentials":"deny"}}`)
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsDeny {
+		t.Fatalf("protect_credentials = %q, want deny", got)
+	}
+	if len(cfg.Clamped) != 0 {
+		t.Fatalf("tightening should not be clamped: %v", cfg.Clamped)
+	}
+}
+
+// The escape hatch lives in the global configuration only: a repository must
+// not be able to switch off a protection the user chose.
+func TestProjectCannotWeakenCredentialProtection(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"protect_credentials":"deny"}}`,
+		`{"permissions":{"protect_credentials":"off"}}`)
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsDeny {
+		t.Fatalf("protect_credentials = %q, want deny", got)
+	}
+	found := false
+	for _, note := range cfg.Clamped {
+		if note.Field == "protect_credentials" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal was not reported: %v", cfg.Clamped)
+	}
+}
+
+// A project preset is clamped the same way an explicit field is.
+func TestProjectPresetCannotWeakenCredentialProtection(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"protect_credentials":"deny"}}`,
+		`{"permissions":{"preset":"frictionless"}}`)
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsDeny {
+		t.Fatalf("protect_credentials = %q, want deny", got)
+	}
+}
+
+func TestUnknownCredentialSettingIsRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.ProtectCredentials = "sometimes"
+	found := false
+	for _, e := range cfg.ValidateFields() {
+		if e.Field == "permissions.protect_credentials" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("invalid setting was accepted")
+	}
+}

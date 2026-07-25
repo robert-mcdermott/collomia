@@ -174,6 +174,19 @@ type Permissions struct {
 	// additional explicit roots (for example a package-manager cache). Relative
 	// paths are resolved from the workspace.
 	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"`
+	// ProtectCredentials decides what happens when an action reaches a
+	// well-known credential store — an SSH or GPG private key, a cloud CLI
+	// token cache, a registry authentication file, an environment file:
+	// "prompt" (the default) always asks, "deny" refuses, and "off" restores
+	// the earlier behavior of treating those files as ordinary.
+	//
+	// Under "prompt" this is not merely the default autonomy mode reasserting
+	// itself. Reaching a credential store is deliberately not coverable by a
+	// blanket allow rule, a tool-wide session grant, or autopilot, because the
+	// point of the control is to stop a broad approval from silently including
+	// a private key. A rule naming the path is still honored, so an
+	// intentional exception stays possible and stays written down.
+	ProtectCredentials string `json:"protect_credentials,omitempty"`
 	// CommandEnv controls the environment passed to agent commands: "full"
 	// (inherit everything, the default) or "minimal" (PATH, HOME, and other
 	// basics only, keeping parent secrets out of child processes).
@@ -336,6 +349,7 @@ func Defaults() Config {
 			Sandbox:                          "auto",
 			SandboxAllowNetwork:              true,
 			SandboxAllowReadOutsideWorkspace: true,
+			ProtectCredentials:               ProtectCredentialsPrompt,
 			DeniedCommands: []string{
 				`(?i)(^|[;&|]\s*)(rm\s+-[^\s]*(rf|fr)[^\s]*|rmdir\s+/s)\s+([/~]|\.{1,2}|\*|[a-z]:\\)($|\s)`,
 				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
@@ -494,6 +508,19 @@ const (
 	PresetFrictionless = "frictionless"
 )
 
+// Settings for permissions.protect_credentials, from weakest to strongest.
+const (
+	ProtectCredentialsOff    = "off"
+	ProtectCredentialsPrompt = "prompt"
+	ProtectCredentialsDeny   = "deny"
+)
+
+// ProtectCredentialsSettings lists the selectable settings in increasing
+// strictness.
+func ProtectCredentialsSettings() []string {
+	return []string{ProtectCredentialsOff, ProtectCredentialsPrompt, ProtectCredentialsDeny}
+}
+
 // preset is one named containment bundle. Every field it sets is an ordinary
 // configuration field: a preset is a starting point a user can read and
 // override, never a hidden mode.
@@ -505,6 +532,7 @@ type preset struct {
 	Network                          string
 	Commands                         string
 	CommandEnv                       string
+	ProtectCredentials               string
 	AllowOutsideWorkspace            bool
 }
 
@@ -520,6 +548,7 @@ var presets = map[string]preset{
 		Network:                          "open",
 		Commands:                         "open",
 		CommandEnv:                       "minimal",
+		ProtectCredentials:               ProtectCredentialsPrompt,
 	},
 	PresetHardened: {
 		// The strongest bundle an ordinary toolchain can still work under.
@@ -533,6 +562,7 @@ var presets = map[string]preset{
 		Network:                          "scoped",
 		Commands:                         "allowlist",
 		CommandEnv:                       "minimal",
+		ProtectCredentials:               ProtectCredentialsDeny,
 	},
 	PresetFrictionless: {
 		// An explicit opt-out for users whose toolchain fights containment.
@@ -544,6 +574,7 @@ var presets = map[string]preset{
 		Network:                          "open",
 		Commands:                         "open",
 		CommandEnv:                       "full",
+		ProtectCredentials:               ProtectCredentialsOff,
 	},
 }
 
@@ -582,6 +613,7 @@ func (c *Config) applyPreset(name, layer string, declared map[string]bool) {
 	set("network", func() { c.Permissions.Network = bundle.Network })
 	set("commands", func() { c.Permissions.Commands = bundle.Commands })
 	set("command_env", func() { c.Permissions.CommandEnv = bundle.CommandEnv })
+	set("protect_credentials", func() { c.Permissions.ProtectCredentials = bundle.ProtectCredentials })
 }
 
 // ClampedField records a containment setting a repository asked for and did
@@ -600,10 +632,11 @@ func (c ClampedField) String() string {
 // Only these fields are clamped: they decide what an approved action can
 // reach. Autonomy mode, rules, and denied commands have their own rules.
 var containmentRank = map[string]map[string]int{
-	"sandbox":     {"off": 0, "auto": 1, "require": 2},
-	"command_env": {"full": 0, "": 1, "minimal": 2},
-	"network":     {"open": 0, "scoped": 1},
-	"commands":    {"open": 0, "allowlist": 1},
+	"sandbox":             {"off": 0, "auto": 1, "require": 2},
+	"command_env":         {"full": 0, "": 1, "minimal": 2},
+	"network":             {"open": 0, "scoped": 1},
+	"commands":            {"open": 0, "allowlist": 1},
+	"protect_credentials": {"off": 0, "": 1, ProtectCredentialsPrompt: 1, ProtectCredentialsDeny: 2},
 }
 
 // tightenContainment keeps the stronger of what was inherited and what this
@@ -634,6 +667,9 @@ func tightenContainment(inherited, declared Permissions) (Permissions, []Clamped
 	enum("command_env", inherited.CommandEnv, declared.CommandEnv, func(v string) { result.CommandEnv = v })
 	enum("network", inherited.Network, declared.Network, func(v string) { result.Network = v })
 	enum("commands", inherited.Commands, declared.Commands, func(v string) { result.Commands = v })
+	enum("protect_credentials", inherited.ProtectCredentials, declared.ProtectCredentials, func(v string) {
+		result.ProtectCredentials = v
+	})
 	boolean("sandbox_allow_network", inherited.SandboxAllowNetwork, declared.SandboxAllowNetwork, func(v bool) { result.SandboxAllowNetwork = v })
 	boolean("sandbox_allow_read_outside_workspace", inherited.SandboxAllowReadOutsideWorkspace, declared.SandboxAllowReadOutsideWorkspace, func(v bool) {
 		result.SandboxAllowReadOutsideWorkspace = v
@@ -874,6 +910,11 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "full", "minimal":
 	default:
 		errs = append(errs, FieldError{"permissions.command_env", fmt.Sprintf("must be full or minimal (got %q)", c.Permissions.CommandEnv)})
+	}
+	switch c.Permissions.ProtectCredentials {
+	case "", ProtectCredentialsOff, ProtectCredentialsPrompt, ProtectCredentialsDeny:
+	default:
+		errs = append(errs, FieldError{"permissions.protect_credentials", fmt.Sprintf("must be %s (got %q)", strings.Join(ProtectCredentialsSettings(), ", "), c.Permissions.ProtectCredentials)})
 	}
 	for i, root := range c.Permissions.SandboxWritableRoots {
 		if strings.TrimSpace(root) == "" {
