@@ -308,6 +308,12 @@ type Options struct {
 	// alternate screen buffer. It defaults to true; disabling it keeps the
 	// final screen in native terminal scrollback.
 	AlternateScreen bool `json:"alternate_screen"`
+	// Mouse enables wheel scrolling in the transcript and click-to-select on
+	// the tab bar. It defaults to true. Turning mouse reporting on means the
+	// terminal routes drags to Collomia instead of its own selection, so a
+	// user who copies text with the mouse more than they scroll can set this
+	// to false. Most terminals still offer native selection under shift-drag.
+	Mouse bool `json:"mouse"`
 	// Keybindings overrides named global TUI actions. Modal safety decisions
 	// retain fixed, visible keys so a local remap cannot make an approval
 	// ambiguous.
@@ -362,6 +368,7 @@ func Defaults() Config {
 			MaxToolOutputBytes: 64 * 1024,
 			AgentIntegration:   "manual",
 			AlternateScreen:    true,
+			Mouse:              true,
 			Keybindings:        DefaultKeybindings(),
 		},
 	}

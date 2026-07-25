@@ -75,11 +75,21 @@ func (m *Model) finishExternalEditor(msg editorFinishedMsg) {
 	m.rebuildDiffView()
 }
 
+// externalEditorCommand opens a workspace file. The path is checked against
+// the workspace root first: diff targets come from the agent, so the editor
+// must not be steered outside the trusted tree.
 func externalEditorCommand(cfg appconfig.EditorOptions, workspace, path string, line, column int) (*exec.Cmd, error) {
 	contained, err := containedWorkspacePath(workspace, path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open editor: %w", err)
 	}
+	return editorCommand(cfg, workspace, contained, line, column)
+}
+
+// editorCommand builds the editor invocation for an already-trusted absolute
+// path. Callers that did not derive the path from agent output — the composer
+// writes its own temp file — use this directly.
+func editorCommand(cfg appconfig.EditorOptions, workspace, contained string, line, column int) (*exec.Cmd, error) {
 	command := strings.TrimSpace(cfg.Command)
 	args := append([]string(nil), cfg.Args...)
 	if command == "" {
@@ -89,7 +99,7 @@ func externalEditorCommand(cfg appconfig.EditorOptions, workspace, path string, 
 		}
 		fields := strings.Fields(value)
 		if len(fields) == 0 {
-			return nil, errors.New("configure options.editor or set VISUAL/EDITOR to use e")
+			return nil, errors.New("configure options.editor or set VISUAL/EDITOR to use an external editor")
 		}
 		command, args = fields[0], fields[1:]
 	}

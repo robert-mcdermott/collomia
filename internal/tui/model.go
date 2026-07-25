@@ -35,6 +35,13 @@ import (
 type block struct {
 	role, title, content string
 	tool, summary        string
+	// status and elapsed are set on "tool" header blocks as the turn runs.
+	// Replayed sessions leave both zero: the transcript records what a tool
+	// did but not how long it took, and inventing a duration there would be
+	// worse than omitting one.
+	status  toolStatus
+	started time.Time
+	elapsed time.Duration
 }
 
 type pendingAttachment struct {
@@ -85,6 +92,11 @@ type Model struct {
 	expandTools bool
 	streaming   bool
 
+	// railManual records that the user chose a rail state explicitly, so a
+	// later resize does not silently overrule them.
+	railOn     bool
+	railManual bool
+
 	palette          []commandInfo
 	paletteSel       int
 	paletteOn        bool
@@ -123,13 +135,7 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	if os.Getenv("NO_COLOR") != "" {
 		theme, _ = themeByName("plain")
 	}
-	in := textarea.New()
-	in.Placeholder = "Ask Collomia to build, debug, explain…  (/ for commands)"
-	in.Prompt = "❯ "
-	in.ShowLineNumbers = false
-	in.SetHeight(3)
-	in.CharLimit = 0
-	in.Focus()
+	in := newComposer()
 	spin := spinner.New()
 	spin.Spinner = spinner.Points
 	m := Model{
@@ -153,10 +159,7 @@ func (m *Model) applyTheme(t Theme) {
 	m.theme = t
 	m.styles = newStyles(t)
 	m.spinner.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Secondary))
-	m.input.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Secondary)).Bold(true)
-	m.input.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted))
-	m.input.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	m.input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted))
+	m.restyleComposer()
 	m.renderer = nil // force glamour rebuild with the new style
 	if t.Background == "" {
 		ResetTerminalBackground()
@@ -178,6 +181,19 @@ func (m Model) progressTick() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	// Terminals that speak a keyboard disambiguation protocol report
+	// shift+enter and ctrl+enter as CSI sequences Bubble Tea 1.x does not
+	// recognise, so they never arrive as a KeyMsg and have to be intercepted
+	// ahead of the type switch.
+	if isNewlineSequence(msg) {
+		if !m.composerActive() {
+			return m, nil
+		}
+		m.insertComposerNewline()
+		m.layout()
+		m.refresh()
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		oldOffset := m.viewport.YOffset
@@ -212,6 +228,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case editorFinishedMsg:
 		m.finishExternalEditor(msg)
+	case composerEditorMsg:
+		m.finishComposerEditor(msg)
 	case agentIntegrationAppliedMsg:
 		m.busy = false
 		m.cancel = nil
@@ -259,6 +277,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = false
 			m.cancel = nil
 			m.input.Focus()
+			m.settleRunningTools()
 			elapsed := time.Since(m.turnStarted).Round(time.Second / 10)
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
@@ -286,6 +305,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refresh()
 			}
 		}
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	case tea.KeyMsg:
 		if m.agentIntegration != nil {
 			return m.handleAgentIntegrationKey(msg)
@@ -359,6 +380,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.expandTools = !m.expandTools
 			m.refresh()
 			return m, nil
+		}
+		if m.keyIs("context_rail", key) {
+			if m.width < railMinTotalWidth {
+				m.addSystem(fmt.Sprintf("The context rail needs a window at least %d columns wide; this one is %d.", railMinTotalWidth, m.width))
+				m.refresh()
+				return m, nil
+			}
+			m.toggleRail()
+			m.layout()
+			m.refresh()
+			return m, nil
+		}
+		if m.keyIs("compose_editor", key) {
+			return m.openComposerEditor()
 		}
 		if m.keyIs("transcript_view", key) {
 			m.openTranscriptView()
@@ -458,6 +493,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key == "enter" && !msg.Alt {
+			// A draft that is visibly unfinished extends instead of sending.
+			// Most users never discover a newline chord, so the common way to
+			// write a multi-line prompt has to be plain Enter.
+			if draft, extend := continueDraft(m.input.Value()); extend {
+				m.setComposerValue(draft)
+				m.layout()
+				m.refresh()
+				return m, nil
+			}
 			value := strings.TrimSpace(m.input.Value())
 			if value == "" {
 				return m, nil
@@ -530,7 +574,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.openFilePicker()
 			}
 		}
-		if m.updatePalette() {
+		// Height first, unconditionally: the editor grows and shrinks as the
+		// draft wraps, and the transcript's height is derived from it, so a
+		// keystroke that adds a row has to re-run layout even when the
+		// palette is unchanged.
+		resized := m.syncComposerHeight()
+		if m.updatePalette() || resized {
 			m.layout()
 			m.refresh()
 		}
@@ -615,7 +664,12 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 	case runtimeevent.KindToolStart:
 		if e.Tool != nil {
 			m.streaming = false
-			m.blocks = append(m.blocks, block{role: "tool", content: e.Tool.Name + "\x00" + e.Tool.Summary})
+			m.blocks = append(m.blocks, block{
+				role:    "tool",
+				content: e.Tool.Name + "\x00" + e.Tool.Summary,
+				status:  toolRunning,
+				started: time.Now(),
+			})
 		}
 	case runtimeevent.KindToolOutput:
 		// Live output from a running command: grow a tool-result block in
@@ -642,6 +696,7 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 			} else {
 				m.blocks = append(m.blocks, block{role: "tool-result", content: summary, tool: e.Tool.Name, summary: e.Tool.Summary})
 			}
+			m.completeToolBlock(e.Tool.Name, e.Tool.IsError)
 			m.streaming = false
 		}
 	case runtimeevent.KindWarning:
@@ -745,7 +800,11 @@ func (m Model) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) layout() {
 	headerHeight := 2
 	statusHeight := 1
-	inputArea := 5
+	// Width first: the editor wraps against it, and the wrap decides how many
+	// rows the draft needs and therefore how much height is left over.
+	m.input.SetWidth(max(10, m.width-2))
+	m.syncComposerHeight()
+	inputArea := m.composerHeight()
 	if m.picker != nil {
 		inputArea += m.pickerHeight()
 	} else {
@@ -755,13 +814,15 @@ func (m *Model) layout() {
 	if h < 3 {
 		h = 3
 	}
+	// The context rail borrows columns from the transcript only. Narrowing
+	// the composer as well would punish the user for opening a reference
+	// panel by shrinking the thing they are typing into.
 	if !m.vpInit {
-		m.viewport = viewport.New(max(10, m.width), h)
+		m.viewport = viewport.New(max(10, m.bodyWidth()), h)
 		m.vpInit = true
 	}
-	m.viewport.Width = max(10, m.width)
+	m.viewport.Width = max(10, m.bodyWidth())
 	m.viewport.Height = h
-	m.input.SetWidth(max(10, m.width-2))
 }
 
 func (m *Model) refresh() {
@@ -804,6 +865,9 @@ func (m *Model) switchTab(next int) {
 }
 
 func (m *Model) chatContent() string {
+	if len(m.blocks) == 0 {
+		return m.renderEmptyState()
+	}
 	var b strings.Builder
 	b.WriteString(m.banner() + "\n\n")
 	for i, block := range m.blocks {
@@ -813,8 +877,7 @@ func (m *Model) chatContent() string {
 		case "assistant":
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
 		case "tool":
-			name, summary, _ := strings.Cut(block.content, "\x00")
-			b.WriteString(m.styles.tool.Render("⚙ ") + m.styles.toolName.Render(name) + m.styles.tool.Render("  "+summary) + "\n")
+			b.WriteString(m.renderToolHeader(block) + "\n")
 		case "tool-result":
 			b.WriteString(m.renderToolResult(i) + "\n\n")
 		case "error":
@@ -859,17 +922,92 @@ func (m *Model) banner() string {
 	if m.width < 30 {
 		return m.styles.brand.Render("✿ Collomia")
 	}
+	tips := m.styles.system.Render(fmt.Sprintf("type a prompt · / commands · %s tabs · %s tool output", m.binding("next_tab"), m.binding("toggle_tool_output")))
+	return m.bannerArt() + "\n" + tips
+}
+
+// bannerArt is the logo and the one-line identity beneath it, without the
+// keyboard tips. The empty state carries its own, longer set of openers and
+// would otherwise say much the same thing twice, two lines apart.
+func (m *Model) bannerArt() string {
+	if m.width < 30 {
+		return m.styles.brand.Render("✿ Collomia")
+	}
 	art := gradient(asciiBanner, m.theme.Primary, m.theme.Secondary)
 	providerName, model := m.runtime.Agent.Selection()
 	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), providerName, model, m.theme.Name))
-	tips := m.styles.system.Render(fmt.Sprintf("type a prompt · / commands · %s tabs · %s tool output", m.binding("next_tab"), m.binding("toggle_tool_output")))
-	return art + "\n" + sub + "\n" + tips
+	return art + "\n" + sub
 }
 
+// sessionTwoColumnWidth is where the Session tab splits in two. Below it a
+// column would be too narrow for the longer values (a workspace path, a
+// sandbox summary) to survive without truncation.
+const sessionTwoColumnWidth = 120
+
+// sessionColumnGap separates the two columns.
+const sessionColumnGap = 3
+
+// sessionContent lays the Session tab out in cards. On a wide terminal it is
+// two columns: the tab is a reference sheet a reader scans rather than a
+// narrative they read top to bottom, and a single column of it scrolled for
+// several screens while half the display sat empty.
 func (m *Model) sessionContent() string {
+	width := max(1, m.width)
+	if m.width < sessionTwoColumnWidth {
+		return m.sessionSections(width)
+	}
+	column := (width - sessionColumnGap) / 2
+	// The sections already separate themselves with a blank line, which is
+	// exactly the card boundary, so the layout does not need its own notion
+	// of where one topic ends and the next begins.
+	cards := strings.Split(strings.TrimRight(m.sessionSections(column), "\n"), "\n\n")
+	return packColumns(cards, column, sessionColumnGap)
+}
+
+// packColumns distributes cards over two columns, splitting where the running
+// height first reaches half the total so the columns end at roughly the same
+// row.
+func packColumns(cards []string, column, gap int) string {
+	heights := make([]int, len(cards))
+	total := 0
+	for i, card := range cards {
+		heights[i] = strings.Count(card, "\n") + 1
+		total += heights[i] + 1 // the blank line that follows each card
+	}
+	split, running := len(cards), 0
+	for i := range cards {
+		if running*2 >= total {
+			split = i
+			break
+		}
+		running += heights[i] + 1
+	}
+	left := strings.Split(strings.Join(cards[:split], "\n\n"), "\n")
+	right := strings.Split(strings.Join(cards[split:], "\n\n"), "\n")
+
+	var b strings.Builder
+	for i := 0; i < max(len(left), len(right)); i++ {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		row := ""
+		if i < len(left) {
+			// A section that never learned to budget its width would
+			// otherwise run straight through the second column.
+			row = ansi.Truncate(left[i], column, "…")
+		}
+		if i < len(right) && strings.TrimSpace(right[i]) != "" {
+			row = fitLine(row, column+gap) + ansi.Truncate(right[i], column, "…")
+		}
+		b.WriteString(strings.TrimRight(row, " "))
+	}
+	return b.String()
+}
+
+func (m *Model) sessionSections(width int) string {
 	h := m.styles.heading.Render
 	kv := func(key, value string) string {
-		return fitLine(m.styles.accent.Render(fmt.Sprintf("  %-12s", key))+value, max(1, m.width))
+		return fitLine(m.styles.accent.Render(fmt.Sprintf("  %-12s", key))+value, max(1, width))
 	}
 	providerName, model := m.runtime.Agent.Selection()
 	usage := m.runtime.Agent.Usage()
@@ -919,7 +1057,7 @@ func (m *Model) sessionContent() string {
 	}
 	b.WriteString(m.styles.muted.Render("  "+refresh) + "\n\n")
 
-	b.WriteString(m.securityContent())
+	b.WriteString(m.securityContent(width))
 
 	b.WriteString(h("Runtime health") + "\n")
 	providerHealth := m.runtime.Agent.ProviderHealth()
@@ -1006,7 +1144,7 @@ func (m *Model) sessionContent() string {
 			if item.Detail != "" {
 				line += m.styles.muted.Render(" · " + m.runtime.Redactor.Redact(item.Detail))
 			}
-			b.WriteString(fitLine(line, max(1, m.width)) + "\n")
+			b.WriteString(fitLine(line, max(1, width)) + "\n")
 		}
 		b.WriteString(m.styles.muted.Render("  /activity to search, filter, and copy failure IDs") + "\n\n")
 	}
@@ -1094,14 +1232,15 @@ func (m *Model) sessionContent() string {
 		}
 		b.WriteString(fmt.Sprintf("%s%s  [%s]  %s\n", marker, m.styles.accent.Render(name), p.Type, p.Model))
 	}
-	b.WriteString("\n" + h("Tools") + "\n  " + strings.Join(m.runtime.Registry.Names(), ", ") + "\n\n")
+	b.WriteString("\n" + h("Tools") + "\n" + indent(ansi.Wordwrap(strings.Join(m.runtime.Registry.Names(), ", "), max(1, width-2), ""), "  ") + "\n\n")
 
 	b.WriteString(h("Skills") + "\n")
 	if len(m.runtime.Skills.Skills) == 0 {
 		b.WriteString(m.styles.muted.Render("  none discovered") + "\n")
 	}
 	for _, skill := range m.runtime.Skills.Skills {
-		b.WriteString("  " + m.styles.accent.Render(skill.Name) + "  " + m.styles.muted.Render(skill.Description) + "\n")
+		row := "  " + m.styles.accent.Render(skill.Name) + "  " + m.styles.muted.Render(skill.Description)
+		b.WriteString(ansi.Truncate(row, max(1, width), "…") + "\n")
 	}
 	b.WriteString("\n" + h("MCP servers") + "\n")
 	servers := m.runtime.MCP.Servers()
@@ -1109,7 +1248,7 @@ func (m *Model) sessionContent() string {
 		b.WriteString(m.styles.muted.Render("  none connected") + "\n")
 	} else {
 		sort.Strings(servers)
-		b.WriteString("  " + strings.Join(servers, ", ") + "\n")
+		b.WriteString(indent(ansi.Wordwrap(strings.Join(servers, ", "), max(1, width-2), ""), "  ") + "\n")
 	}
 	b.WriteString("\n" + h("Themes") + "\n")
 	for _, t := range themes {
@@ -1138,7 +1277,9 @@ func (m *Model) helpContent() string {
 	b.WriteString("\n" + m.styles.heading.Render("Keys") + "\n")
 	keys := [][2]string{
 		{"enter", "send prompt / run selected command"},
-		{"alt+enter", "insert newline"},
+		{"alt+enter · ctrl+j", "insert a newline without sending"},
+		{"enter (unfinished)", "a draft ending in \\ or inside an open code fence gains a line instead"},
+		{m.binding("compose_editor"), "edit the current draft in $EDITOR"},
 		{"/", "open the command palette (with argument completion)"},
 		{"@", "fuzzy-pick a workspace file into the prompt"},
 		{"↑ ↓ (palette)", "select a command or completion"},
@@ -1149,6 +1290,8 @@ func (m *Model) helpContent() string {
 		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
+		{m.binding("context_rail"), "show / hide the context rail (automatic above " + fmt.Sprintf("%d", railAutoWidth) + " columns)"},
+		{"wheel · click", "scroll the transcript · select a tab (set options.mouse false to disable)"},
 		{"/activity", "search/filter runtime activity and copy failure IDs"},
 		{"↑ / ↓ (composer)", "previous / next prompt at the first or last line"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
@@ -1202,7 +1345,7 @@ func (m Model) View() string {
 	if m.activityView != nil && !m.modalActive() {
 		return m.renderActivityView()
 	}
-	sections := []string{m.renderHeader(), m.viewport.View()}
+	sections := []string{m.renderHeader(), m.renderBody()}
 	if m.picker != nil && !m.modalActive() {
 		sections = append(sections, m.renderPicker())
 	} else if m.paletteOn && !m.modalActive() {
@@ -1223,6 +1366,32 @@ func (m Model) View() string {
 	default:
 		return base
 	}
+}
+
+// renderBody joins the transcript with the context rail. The rail is a chat
+// affordance only: the Session tab is already the long-form version of
+// everything in it, so mirroring it there would just be two copies of the
+// same data competing for the same columns.
+func (m Model) renderBody() string {
+	body := m.viewport.View()
+	if !m.railVisible() {
+		return body
+	}
+	rail := strings.Split(m.renderRail(m.viewport.Height), "\n")
+	lines := strings.Split(body, "\n")
+	for len(lines) < m.viewport.Height {
+		lines = append(lines, "")
+	}
+	// Pad against the intended body width rather than letting a horizontal
+	// join measure the widest transcript line: a short line would otherwise
+	// pull the whole rail leftwards for that row.
+	for i := range lines {
+		lines[i] = fitLine(lines[i], m.bodyWidth())
+		if i < len(rail) {
+			lines[i] += rail[i]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderHeader() string {
@@ -1328,11 +1497,47 @@ func (m Model) renderStatusBar() string {
 			left = candidate
 		}
 	}
+	// Spend is the last thing to claim space and the first to lose it. It is
+	// useful to watch during a turn but never worth displacing the controls
+	// that stop one.
+	if spend := m.spendReadout(); spend != "" {
+		candidate := left + spend + m.styles.statusBase.Render(" ")
+		if m.width-lipgloss.Width(candidate)-lipgloss.Width(right) >= 1 {
+			left = candidate
+		}
+	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		return ansi.Truncate(left, max(1, m.width), "")
 	}
 	return left + m.styles.statusBase.Render(strings.Repeat(" ", gap)) + right
+}
+
+// spendReadout is the session's running token count and estimated cost.
+// Providers that do not report pricing get the token count alone rather than
+// a fabricated dollar figure.
+func (m Model) spendReadout() string {
+	usage := m.runtime.Agent.Usage()
+	total := usage.InputTokens + usage.OutputTokens
+	if total == 0 {
+		return ""
+	}
+	text := formatTokens(total)
+	if usage.CostAvailable && usage.CostUSD > 0 {
+		text += " · " + formatCost(usage.CostUSD)
+	}
+	return m.styles.statusBase.Render(text)
+}
+
+func formatCost(usd float64) string {
+	switch {
+	case usd >= 1:
+		return fmt.Sprintf("$%.2f", usd)
+	case usd >= 0.01:
+		return fmt.Sprintf("$%.3f", usd)
+	default:
+		return fmt.Sprintf("$%.4f", usd)
+	}
 }
 
 func indent(value, prefix string) string {

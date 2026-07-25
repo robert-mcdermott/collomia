@@ -35,6 +35,7 @@ func WriteStarter(path string, global bool) error {
 		DelegateProviderConcurrency map[string]int    `json:"delegate_provider_concurrency"`
 		AgentIntegration            string            `json:"agent_integration"`
 		AlternateScreen             bool              `json:"alternate_screen"`
+		Mouse                       bool              `json:"mouse"`
 		ReducedMotion               bool              `json:"reduced_motion"`
 		Keybindings                 map[string]string `json:"keybindings"`
 	}
@@ -83,6 +84,7 @@ func WriteStarter(path string, global bool) error {
 			DelegateProviderConcurrency: map[string]int{},
 			AgentIntegration:            "manual",
 			AlternateScreen:             true,
+			Mouse:                       true,
 			ReducedMotion:               false,
 			Keybindings:                 DefaultKeybindings(),
 		}
@@ -412,6 +414,10 @@ const configReferenceJSONC = `
     // true uses a clean full-screen buffer. false keeps the final TUI frame
     // in the terminal's native scrollback; --no-alt-screen overrides it.
     "alternate_screen": true,
+    // true lets the wheel scroll the transcript and a click select a tab.
+    // While it is on the terminal routes drags here rather than to its own
+    // selection; set false to keep native mouse selection everywhere.
+    "mouse": true,
     // Optional. false preserves the animated working indicator. true uses a
     // static marker without changing input, cancellation, or other controls.
     "reduced_motion": false,
@@ -424,6 +430,8 @@ const configReferenceJSONC = `
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
       "session_picker": "alt+s",
+      "context_rail": "alt+r",
+      "compose_editor": "alt+e",
       "page_up": "pgup",
       "page_down": "pgdown",
       "scroll_top": "home",

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 type commandInfo struct {
@@ -190,6 +192,21 @@ func (m *Model) paletteRows() int {
 	return len(m.palette)
 }
 
+const (
+	// paletteMarkerWidth is the "▸ " selection gutter, which is present on
+	// every row so the name column does not shift as the selection moves.
+	paletteMarkerWidth = 2
+	// paletteGapWidth separates the name column from the description.
+	paletteGapWidth = 2
+	// paletteMinDescWidth is the narrowest description worth keeping. Below
+	// it the column is dropped entirely rather than shown as an ellipsis.
+	paletteMinDescWidth = 16
+	// paletteNameMaxWidth fits every command and argument list but /mcp's,
+	// which is longer than most terminals are wide. Sizing the column to that
+	// one entry would leave a hand's width of empty space on every other row.
+	paletteNameMaxWidth = 30
+)
+
 func (m *Model) renderPalette() string {
 	rows := m.paletteRows()
 	if rows == 0 {
@@ -199,29 +216,71 @@ func (m *Model) renderPalette() string {
 	if m.paletteSel >= rows {
 		start = m.paletteSel - rows + 1
 	}
+
+	// Match the composer: same outer width, so the two boxes stack as one
+	// control instead of two differently sized panels.
+	outer := max(1, m.width-2)
+	inner := max(1, outer-2) // the box pads one column on each side
+
+	// Padding every name to the widest entry is what pushed descriptions off
+	// the edge and made lipgloss soft-wrap each row into the next one. Cap
+	// the column and truncate into it.
+	nameCap := max(8, min(paletteNameMaxWidth, (inner-paletteMarkerWidth-paletteGapWidth)/2))
 	nameWidth := 0
 	for _, cmd := range m.palette {
-		if w := len(cmd.name + " " + cmd.args); w > nameWidth {
+		if w := ansi.StringWidth(paletteLabel(cmd)); w > nameWidth {
 			nameWidth = w
 		}
 	}
+	nameWidth = min(nameWidth, nameCap)
+
+	descWidth := inner - paletteMarkerWidth - nameWidth - paletteGapWidth
+	if descWidth < paletteMinDescWidth {
+		descWidth = 0
+		nameWidth = inner - paletteMarkerWidth
+	}
+
 	var lines []string
 	for i := start; i < start+rows && i < len(m.palette); i++ {
 		cmd := m.palette[i]
-		label := cmd.name
-		if cmd.args != "" {
-			label += " " + cmd.args
+		label := padTo(ansi.Truncate(paletteLabel(cmd), nameWidth, "…"), nameWidth)
+		desc := ""
+		if descWidth > 0 {
+			desc = ansi.Truncate(cmd.desc, descWidth, "…")
 		}
-		label += strings.Repeat(" ", max(0, nameWidth-len(label)))
 		if i == m.paletteSel {
-			lines = append(lines, m.styles.paletteSel.Render("▸ "+label)+"  "+m.styles.paletteDesc.Render(cmd.desc))
-		} else {
-			lines = append(lines, "  "+m.styles.paletteCmd.Render(label)+"  "+m.styles.paletteDesc.Render(cmd.desc))
+			// Highlight the whole row rather than just the name. Styling the
+			// padded label alone drew a bar whose length tracked the longest
+			// command in the list, which read as a rendering fault.
+			row := padTo("▸ "+label+strings.Repeat(" ", paletteGapWidth)+desc, inner)
+			lines = append(lines, m.styles.paletteSel.Render(row))
+			continue
 		}
+		row := strings.Repeat(" ", paletteMarkerWidth) + m.styles.paletteCmd.Render(label)
+		if desc != "" {
+			row += strings.Repeat(" ", paletteGapWidth) + m.styles.paletteDesc.Render(desc)
+		}
+		lines = append(lines, row)
 	}
-	hint := m.styles.paletteDesc.Render("↑↓ select · tab complete · enter run · esc dismiss")
+	hint := m.styles.paletteDesc.Render(ansi.Truncate("↑↓ select · tab complete · enter run · esc dismiss", inner, "…"))
 	body := strings.Join(lines, "\n") + "\n" + hint
-	return m.styles.paletteBox.Width(max(1, m.width-2) - 4).Render(body)
+	return m.styles.paletteBox.Width(outer).Render(body)
+}
+
+func paletteLabel(cmd commandInfo) string {
+	if cmd.args == "" {
+		return cmd.name
+	}
+	return cmd.name + " " + cmd.args
+}
+
+// padTo right-pads to an exact display width, measuring cells rather than
+// bytes so multi-byte names stay aligned.
+func padTo(value string, width int) string {
+	if gap := width - ansi.StringWidth(value); gap > 0 {
+		return value + strings.Repeat(" ", gap)
+	}
+	return value
 }
 
 // paletteHeight is the number of terminal rows the palette currently occupies.

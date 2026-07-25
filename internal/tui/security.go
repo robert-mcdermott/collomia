@@ -93,10 +93,10 @@ func (m Model) stanceNameBadge() string {
 // securitySection renders the complete containment picture in one place:
 // every switch that decides what an approved action can reach, plus the
 // session grants that have accumulated since startup.
-func (m Model) securityContent() string {
+func (m Model) securityContent(width int) string {
 	h := m.styles.heading.Render
 	kv := func(key, value string) string {
-		return fitLine(m.styles.accent.Render(fmt.Sprintf("  %-16s", key))+value, max(1, m.width))
+		return fitLine(m.styles.accent.Render(fmt.Sprintf("  %-16s", key))+value, max(1, width))
 	}
 	// The block grew past a dozen rows, at which point an unbroken list stops
 	// being readable. Three groups match the three questions a reader actually
@@ -125,14 +125,14 @@ func (m Model) securityContent() string {
 	// A setting a repository asked for and did not get looks like a bug until
 	// it is named, so it is reported here rather than only by config show.
 	for _, note := range m.runtime.Config.Clamped {
-		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ refused project "+note.Field+"="+note.Requested+"; kept "+note.Effective, max(1, m.width))) + "\n")
+		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ refused project "+note.Field+"="+note.Requested+"; kept "+note.Effective, max(1, width))) + "\n")
 	}
 
 	b.WriteString(group("Enforcement"))
 	sandboxSummary := m.runtime.SandboxSummary()
 	b.WriteString(kv("sandbox", sandboxSummary) + "\n")
 	if strings.Contains(sandboxSummary, "unavailable") || strings.Contains(sandboxSummary, "degraded") {
-		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ commands are running with less containment than requested; run collo doctor", max(1, m.width))) + "\n")
+		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ commands are running with less containment than requested; run collo doctor", max(1, width))) + "\n")
 	}
 	b.WriteString(kv("command env", orDefault(permissions.CommandEnv, "minimal when sandboxed")) + "\n")
 	b.WriteString(kv("outside reads", fmt.Sprintf("%t (built-in file tools)", permissions.AllowOutsideWorkspace)) + "\n")
