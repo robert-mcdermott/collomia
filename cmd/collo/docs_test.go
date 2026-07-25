@@ -339,3 +339,25 @@ func TestCommandActionsAreBuiltInOnePlace(t *testing.T) {
 		t.Errorf("these files build a command action by hand instead of calling tools.ActionFromAnalysis: %s", strings.Join(offenders, ", "))
 	}
 }
+
+// Every containment setting must be explained where a user actually looks.
+//
+// This guard exists because permissions.protect_credentials shipped fully
+// documented in the user guide, security model, compatibility policy, starter
+// reference, and capability matrix — and was missed in the README, which is
+// where the rest of the containment surface is introduced. No existing check
+// covered that file for configuration coverage.
+func TestEveryContainmentSettingIsIntroducedInTheReadme(t *testing.T) {
+	docs := docFiles(t)
+	fields := appconfig.ContainmentFields()
+	if len(fields) < 7 {
+		t.Fatalf("found only %d containment fields; the set shrank and this guard needs updating", len(fields))
+	}
+	for _, source := range []string{"README.md", "docs/USER_GUIDE.md"} {
+		for _, field := range fields {
+			if !strings.Contains(docs[source], field) {
+				t.Errorf("%s does not mention the containment setting %q", source, field)
+			}
+		}
+	}
+}

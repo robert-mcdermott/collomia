@@ -639,6 +639,21 @@ var containmentRank = map[string]map[string]int{
 	"protect_credentials": {"off": 0, "": 1, ProtectCredentialsPrompt: 1, ProtectCredentialsDeny: 2},
 }
 
+// ContainmentFields lists the settings subject to monotonic clamping, sorted.
+// These are the settings that decide what an approved action can reach, so
+// documentation is checked against this list rather than against a hand-kept
+// copy of it.
+func ContainmentFields() []string {
+	fields := make([]string, 0, len(containmentRank)+3)
+	for field := range containmentRank {
+		fields = append(fields, field)
+	}
+	// The boolean switches are clamped too, but carry no rank table.
+	fields = append(fields, "sandbox_allow_network", "sandbox_allow_read_outside_workspace", "allow_outside_workspace")
+	sort.Strings(fields)
+	return fields
+}
+
 // tightenContainment keeps the stronger of what was inherited and what this
 // layer asked for, field by field, and reports every setting it refused.
 func tightenContainment(inherited, declared Permissions) (Permissions, []ClampedField) {
