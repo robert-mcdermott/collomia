@@ -97,6 +97,32 @@ func runDoctorCommand(opts options) error {
 		}
 	}
 
+	// Permission stance. Sandbox health below answers "is containment
+	// working"; this answers "what was asked for", which is the question a
+	// screenshot or a support bundle otherwise cannot settle.
+	if err == nil {
+		p := cfg.Permissions
+		stance := "preset=" + orDefaultString(p.Preset, "none")
+		stance += fmt.Sprintf("; autonomy=%s; network=%s; commands=%s; credentials=%s",
+			orDefaultString(p.Mode, "ask"),
+			orDefaultString(p.Network, "open"),
+			orDefaultString(p.Commands, "open"),
+			orDefaultString(p.ProtectCredentials, appconfig.ProtectCredentialsPrompt))
+		stance += fmt.Sprintf("; %d rule(s)", len(p.Rules))
+		status := "ok"
+		if len(cfg.Clamped) > 0 {
+			// A refused project setting is the one stance detail a user is
+			// most likely to be surprised by, so it is not merely informational.
+			status = "warn"
+			refused := make([]string, 0, len(cfg.Clamped))
+			for _, note := range cfg.Clamped {
+				refused = append(refused, note.Field)
+			}
+			stance += "; refused project weakening of " + strings.Join(refused, ", ")
+		}
+		add("permissions", status, stance)
+	}
+
 	// Sandbox readiness.
 	backend := sandbox.ForPlatform()
 	mode := "off"
@@ -253,4 +279,13 @@ func providerTimeoutDiagnostic(p appconfig.Provider) string {
 		idle = 5 * 60
 	}
 	return fmt.Sprintf("; timeouts connect=%ds request=%ds idle=%ds", connect, request, idle)
+}
+
+// orDefaultString names the effective value when a field was left empty, so
+// the report never shows a blank where a default is in force.
+func orDefaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }

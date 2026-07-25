@@ -711,7 +711,8 @@ func (m Model) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		value := permission.Decision{Allow: true}
 		decision = &value
 	case "a":
-		if m.pending.request.Action.Uninspectable || len(m.pending.request.Action.ConfirmReasons) > 0 || m.pending.request.PostureGated {
+		// Same single authority the dialog uses to decide whether to offer it.
+		if !m.pending.request.AllowsAlways {
 			return m, nil
 		}
 		value := permission.Decision{Allow: true, Always: true}

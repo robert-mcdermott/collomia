@@ -62,7 +62,34 @@ Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
 and reliability gates are complete.
 
-## Active wave — credential files as their own decision
+## Active wave — approval comfort
+
+**Goal:** Make the controls added above livable, so they are read rather than
+dismissed.
+
+- [x] Fix an approval offer that did nothing: the dialog advertised a
+  tool-wide "always" for a credential-reaching action, the permission layer
+  declined to record it, and the next identical action prompted again. Whether
+  an "always" is available is now one field the permission layer owns, the two
+  stale copies in the TUI are gone, and a test fails on a third.
+- [x] Offer one narrow session grant on a credential prompt, scoped to the
+  exact target shown — never the tool, the directory, a sibling file, or
+  anything past this process, and never offered under `deny`. A control whose
+  only answer is "approve again" is a control people switch off.
+- [x] Give a credential approval its own identity: its own header and accent,
+  the file named first with the kind of secret after it, and a grant button
+  short enough not to wrap the row.
+- [x] Show the configuration rule that ends a recurring prompt, with the path
+  or endpoint filled in — and deliberately not for an uninspectable command,
+  where no rule would help.
+- [x] Report the permission stance in `collo doctor` (preset, autonomy,
+  postures, credential setting, rule count) and warn when a project's
+  containment weakening was refused.
+- [x] Group the Session tab's Security block into policy, enforcement, and
+  session, and mark degraded sandboxing and refused project settings visibly
+  rather than as ordinary rows.
+
+## Completed wave — credential files as their own decision
 
 **Goal:** Stop a broad approval from silently including a private key, without
 adding configuration a user must understand before starting work.

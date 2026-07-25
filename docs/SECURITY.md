@@ -150,11 +150,25 @@ CLI token cache, a registry authentication file, a `.env` — is governed by
 `permissions.protect_credentials` (`off`, `prompt` by default, or `deny`).
 
 Under the default it behaves like tier 2 in the way that matters: a blanket
-allow rule, a tool-wide "always allow", a per-capability session grant, and
-`autopilot` all decline to cover it, and the dialog offers no persistent grant.
-It differs from tier 2 in two respects. A rule that names the path is honored,
-so an intentional exception is expressible and stays written down; and the
-setting can be raised to `deny`, which the `hardened` preset selects.
+allow rule, a tool-wide "always allow", and `autopilot` all decline to cover
+it. It differs from tier 2 in three respects. A rule that names the path is
+honored, so an intentional exception is expressible and stays written down;
+the setting can be raised to `deny`, which the `hardened` preset selects; and
+the approval dialog offers one narrow session grant, scoped to the exact
+credential target shown.
+
+That grant covers that target and nothing else — never the tool, never the
+directory, never a sibling file that classifies the same way, and never past
+this process. An action reaching one granted and one ungranted store still
+prompts. Under `deny` no grant is offered at all, and raising the setting to
+`deny` mid-session invalidates a grant handed out while it was `prompt`.
+
+The grant exists because a control with no durable answer is a control people
+switch off. A project whose tests read its own `.env` would otherwise face the
+same prompt on every read, and a prompt answered dozens of times is a prompt
+nobody reads. The approval dialog also shows the rule that ends the asking
+permanently, so the session grant is the convenient answer and the
+configuration rule is the durable one.
 
 The threat is specific. Redaction runs on Collomia's transcript, audit ledger,
 and events — it does not sit between a tool result and the provider, because

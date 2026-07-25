@@ -1702,6 +1702,30 @@ you to approve without reading, which costs more than it protects:
 So `cat ~/.ssh/id_rsa` prompts and `cat ~/.ssh/id_rsa.pub` does not;
 `cat .env` prompts and `cat .env.example` does not.
 
+#### Answering the prompt
+
+The dialog offers three answers, and they differ in how long they last:
+
+| Key | Lasts | Covers |
+| --- | --- | --- |
+| `y` | This action only | This action only |
+| `g` | Until Collomia exits | Exactly the credential file shown, and nothing else |
+| `n` | — | Denies the action |
+
+`g` is the everyday answer for a project that legitimately reads its own
+`.env`. It covers the one target you saw — never the tool, never the
+directory, never a sibling file that happens to classify the same way. An
+action reaching one granted and one ungranted store still prompts, and raising
+`protect_credentials` to `deny` invalidates a grant made while it was `prompt`.
+
+There is deliberately no `a` (always) on a credential prompt: a tool-wide grant
+is exactly the broad approval this control exists to stop. Under `deny`, `g`
+is not offered either.
+
+The dialog also prints the configuration rule that ends the asking permanently,
+with the path filled in, so the session grant is the convenient answer and the
+rule below is the durable one.
+
 #### Making a deliberate exception
 
 A rule that *names the path* is honored, so a project that genuinely needs one

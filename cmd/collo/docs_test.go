@@ -361,3 +361,52 @@ func TestEveryContainmentSettingIsIntroducedInTheReadme(t *testing.T) {
 		}
 	}
 }
+
+// Whether a tool-wide "always allow" is available must be decided in one
+// place.
+//
+// The approval dialog and the key handler each carried their own copy of this
+// rule. When credential stores were added, both copies went stale: the dialog
+// offered "Always" for a private key and the permission layer then declined to
+// record it, so the user pressed a button that did nothing and was asked again
+// on the next identical action. Request.AllowsAlways is now the only answer.
+func TestAlwaysAvailabilityIsDecidedInOnePlace(t *testing.T) {
+	root := repoRoot(t)
+	var offenders []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if name := entry.Name(); name == ".git" || name == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		// The permission package owns the rule and is allowed to state it.
+		if strings.HasPrefix(filepath.ToSlash(strings.TrimPrefix(path, root)), "/internal/permission/") {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		// Re-deriving the rule means reading these fields together outside the
+		// permission package; asking Request.AllowsAlways needs neither.
+		text := string(body)
+		if strings.Contains(text, "ConfirmReasons) > 0") && strings.Contains(text, "Uninspectable") {
+			offenders = append(offenders, filepath.ToSlash(strings.TrimPrefix(path, root)))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offenders) > 0 {
+		t.Errorf("these files re-derive whether a persistent grant is available instead of reading permission.Request.AllowsAlways: %s", strings.Join(offenders, ", "))
+	}
+}

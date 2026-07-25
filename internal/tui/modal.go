@@ -45,7 +45,14 @@ func (m Model) renderApproval() string {
 	req := m.pending.request
 	inner := m.modalInnerWidth(approvalModalMaxWidth)
 	var body strings.Builder
-	body.WriteString(m.modalHeader("⚠", "Permission required", m.theme.Warning, inner))
+	// A credential approval is a different kind of decision from "may this
+	// command run", so it does not wear the same chrome. Reading a key is not
+	// reversible by declining the next prompt.
+	header, accent := "Permission required", m.theme.Warning
+	if credentialCapability(req.Capabilities) != nil {
+		header, accent = "Credential access", m.theme.Error
+	}
+	body.WriteString(m.modalHeader("⚠", header, accent, inner))
 	body.WriteString("\n\n")
 	body.WriteString(m.styles.muted.Render("Tool    ") + m.styles.accent.Render(ansi.Truncate(req.Tool, max(1, inner-8), "…")) + "\n")
 	body.WriteString(m.styles.muted.Render("Action  ") + wrapAndLimit(req.Action.Summary, max(1, inner-8), 3))
@@ -81,11 +88,12 @@ func (m Model) renderApproval() string {
 		}
 	}
 	body.WriteString(m.renderCapabilities(req.Capabilities, inner))
-	oneTime := req.Action.Uninspectable || len(req.Action.ConfirmReasons) > 0
 	buttons := badge("Y  Approve", m.theme.Success) + "  "
-	// A tool-wide "always" cannot satisfy a posture gate, so it is not offered
-	// where it would look like an answer and then prompt again.
-	if !oneTime && !req.PostureGated {
+	// Whether a tool-wide "always" is available is the permission layer's
+	// answer, not a rule restated here. Restating it is how this dialog came
+	// to offer "Always" for a private key that the permission layer then
+	// declined to remember.
+	if req.AllowsAlways {
 		buttons += badge("A  Always", m.theme.Warning) + "  "
 	}
 	if grantable := grantableCapabilities(req.Capabilities); len(grantable) > 0 {
@@ -98,7 +106,52 @@ func (m Model) renderApproval() string {
 		}
 	}
 	body.WriteString("\n\n" + ansi.Wordwrap(buttons, inner, ""))
-	return m.modalFrame(body.String(), m.theme.Warning, approvalModalMaxWidth)
+	body.WriteString(m.renderDurableHint(req, inner))
+	return m.modalFrame(body.String(), accent, approvalModalMaxWidth)
+}
+
+// renderDurableHint shows the configuration that ends a recurring prompt.
+//
+// A prompt with no durable answer is how approval fatigue starts: the same
+// question every time teaches people to answer without reading it. This is
+// deliberately absent for an uninspectable command, where no rule would help
+// and suggesting one would be a lie.
+func (m Model) renderDurableHint(req permission.Request, inner int) string {
+	rule := ""
+	switch {
+	case credentialCapability(req.Capabilities) != nil:
+		capability := credentialCapability(req.Capabilities)
+		if _, path := splitCredentialTarget(capability.Values[0]); path != "" {
+			rule = fmt.Sprintf(`{ "action": "allow", "path": %q }`, path)
+		}
+	case req.PostureGated && len(req.Action.Hosts) > 0 && !req.Action.HostsUndetermined:
+		rule = fmt.Sprintf(`{ "action": "allow", "host": %q }`, req.Action.Hosts[0])
+	case req.PostureGated && len(req.Action.Executables) > 0 && !req.Action.Uninspectable:
+		rule = fmt.Sprintf(`{ "action": "allow", "command": %q }`, req.Action.Executables[0])
+	}
+	if rule == "" {
+		return ""
+	}
+	return "\n\n" + m.styles.muted.Render(wrapAndLimit("To stop being asked, add to permissions.rules:  "+rule, inner, 3))
+}
+
+func credentialCapability(capabilities []permission.Capability) *permission.Capability {
+	for i, capability := range capabilities {
+		if capability.Kind == permission.CapabilityCredential && len(capability.Values) > 0 {
+			return &capabilities[i]
+		}
+	}
+	return nil
+}
+
+// splitCredentialTarget separates a "label: path" target for display. The
+// permission layer keeps the two joined because that exact string is the grant
+// key; presentation is this package's problem.
+func splitCredentialTarget(target string) (label, path string) {
+	if index := strings.Index(target, ": "); index > 0 {
+		return target[:index], target[index+2:]
+	}
+	return "", target
 }
 
 // renderCapabilities shows what the action reaches, one dimension at a time,
@@ -117,6 +170,20 @@ func (m Model) renderCapabilities(capabilities []permission.Capability, inner in
 		label += strings.Repeat(" ", max(1, labelWidth-len(label)))
 		value := summarizeValues(capability.Values)
 		style := m.styles.panelBody
+		if capability.Kind == permission.CapabilityCredential {
+			// Lead with the path and keep the kind of secret as a suffix: the
+			// file is what the reader is deciding about.
+			named := make([]string, 0, len(capability.Values))
+			for _, target := range capability.Values {
+				if kind, path := splitCredentialTarget(target); kind != "" {
+					named = append(named, path+" ("+kind+")")
+				} else {
+					named = append(named, path)
+				}
+			}
+			value = summarizeValues(named)
+			style = m.styles.errText
+		}
 		switch {
 		case capability.Unknown && value == "":
 			value = "could not be determined"
@@ -143,6 +210,8 @@ func capabilityLabel(kind string) string {
 		return "net"
 	case permission.CapabilityServer:
 		return "server"
+	case permission.CapabilityCredential:
+		return "secret"
 	}
 	return kind
 }
@@ -152,9 +221,30 @@ func capabilityLabel(kind string) string {
 func describeGrant(capabilities []permission.Capability) string {
 	parts := make([]string, 0, len(capabilities))
 	for _, capability := range capabilities {
+		// A credential target carries its label and full path, which is right
+		// for the Reach block above and far too long for a button — it wrapped
+		// the row and split "Deny" onto its own line. The file names suffice
+		// here because the full paths are listed directly above.
+		if capability.Kind == permission.CapabilityCredential {
+			parts = append(parts, credentialGrantLabel(capability.Values))
+			continue
+		}
 		parts = append(parts, capabilityLabel(capability.Kind)+" "+summarizeValues(capability.Values))
 	}
 	return strings.Join(parts, " + ")
+}
+
+// credentialGrantLabel names what a credential grant covers in as few
+// characters as stay unambiguous.
+func credentialGrantLabel(values []string) string {
+	if len(values) == 1 {
+		_, path := splitCredentialTarget(values[0])
+		if base := path[strings.LastIndexAny(path, `/\`)+1:]; base != "" {
+			return base
+		}
+		return path
+	}
+	return fmt.Sprintf("these %d files", len(values))
 }
 
 func grantableCapabilities(capabilities []permission.Capability) []permission.Capability {

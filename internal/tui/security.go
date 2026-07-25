@@ -98,6 +98,13 @@ func (m Model) securityContent() string {
 	kv := func(key, value string) string {
 		return fitLine(m.styles.accent.Render(fmt.Sprintf("  %-16s", key))+value, max(1, m.width))
 	}
+	// The block grew past a dozen rows, at which point an unbroken list stops
+	// being readable. Three groups match the three questions a reader actually
+	// arrives with: what did I choose, what is the OS enforcing, and what has
+	// this session handed out.
+	group := func(name string) string {
+		return m.styles.muted.Render("  "+name) + "\n"
+	}
 	permissions := m.runtime.Config.Permissions
 	var b strings.Builder
 	b.WriteString(h("Security") + "\n")
@@ -108,25 +115,32 @@ func (m Model) securityContent() string {
 	} else if summary := appconfig.PresetSummary(posture); summary != "" {
 		posture += " — " + summary
 	}
+	b.WriteString(group("Policy"))
 	b.WriteString(kv("stance", posture) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
-
-	sandboxSummary := m.runtime.SandboxSummary()
-	b.WriteString(kv("sandbox", sandboxSummary) + "\n")
-	if strings.Contains(sandboxSummary, "unavailable") || strings.Contains(sandboxSummary, "degraded") {
-		b.WriteString(m.styles.warning.Render("  commands are running with less containment than requested; run collo doctor") + "\n")
-	}
-	b.WriteString(kv("command env", orDefault(permissions.CommandEnv, "minimal when sandboxed")) + "\n")
-	b.WriteString(kv("outside reads", fmt.Sprintf("%t (built-in file tools)", permissions.AllowOutsideWorkspace)) + "\n")
-
 	b.WriteString(kv("network policy", orDefault(permissions.Network, "open")+" — declared endpoints only, not egress enforcement") + "\n")
 	b.WriteString(kv("command policy", orDefault(permissions.Commands, "open")) + "\n")
 	b.WriteString(kv("credentials", credentialSummary(permissions.ProtectCredentials)) + "\n")
 	b.WriteString(kv("rules", fmt.Sprintf("%d scoped rule(s), %d regex denial(s)", len(permissions.Rules), len(permissions.DeniedCommands))) + "\n")
+	// A setting a repository asked for and did not get looks like a bug until
+	// it is named, so it is reported here rather than only by config show.
+	for _, note := range m.runtime.Config.Clamped {
+		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ refused project "+note.Field+"="+note.Requested+"; kept "+note.Effective, max(1, m.width))) + "\n")
+	}
 
-	commands, hosts := m.runtime.Permissions.SessionGrants()
-	b.WriteString(kv("session grants", describeGrants(commands, hosts)) + "\n")
-	if len(commands) > 0 || len(hosts) > 0 {
+	b.WriteString(group("Enforcement"))
+	sandboxSummary := m.runtime.SandboxSummary()
+	b.WriteString(kv("sandbox", sandboxSummary) + "\n")
+	if strings.Contains(sandboxSummary, "unavailable") || strings.Contains(sandboxSummary, "degraded") {
+		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ commands are running with less containment than requested; run collo doctor", max(1, m.width))) + "\n")
+	}
+	b.WriteString(kv("command env", orDefault(permissions.CommandEnv, "minimal when sandboxed")) + "\n")
+	b.WriteString(kv("outside reads", fmt.Sprintf("%t (built-in file tools)", permissions.AllowOutsideWorkspace)) + "\n")
+
+	b.WriteString(group("This session"))
+	commands, hosts, credentials := m.runtime.Permissions.SessionGrants()
+	b.WriteString(kv("grants", describeGrants(commands, hosts, credentials)) + "\n")
+	if len(commands) > 0 || len(hosts) > 0 || len(credentials) > 0 {
 		b.WriteString(m.styles.muted.Render("  grants last until this process exits; persistent policy belongs in configuration") + "\n")
 	}
 	b.WriteString(m.styles.muted.Render("  full reference: collo config reference · docs/SECURITY.md") + "\n\n")
@@ -146,13 +160,16 @@ func credentialSummary(setting string) string {
 	}
 }
 
-func describeGrants(commands, hosts []string) string {
+func describeGrants(commands, hosts, credentials []string) string {
 	var parts []string
 	if len(commands) > 0 {
 		parts = append(parts, "commands "+strings.Join(commands, ", "))
 	}
 	if len(hosts) > 0 {
 		parts = append(parts, "endpoints "+strings.Join(hosts, ", "))
+	}
+	if len(credentials) > 0 {
+		parts = append(parts, fmt.Sprintf("credentials %d file(s)", len(credentials)))
 	}
 	if len(parts) == 0 {
 		return "none"

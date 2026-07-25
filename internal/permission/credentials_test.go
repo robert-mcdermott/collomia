@@ -186,15 +186,127 @@ func TestOrdinaryReadsAndCommandsAreUnaffected(t *testing.T) {
 	}
 }
 
-// A reusable grant would defeat a one-time confirmation, so no dimension of a
-// credential-reaching action is offered as grantable.
-func TestCredentialActionsOfferNoReusableGrant(t *testing.T) {
+// The credential dimension is grantable so a project that legitimately reads
+// its own .env has a durable answer; every other dimension of the same action
+// is not, and the tool-wide "always" stays unavailable. Granting one file must
+// not be a back door to granting the tool.
+func TestOnlyTheCredentialDimensionIsGrantable(t *testing.T) {
+	home := fakeHome(t)
+	action := keyReadAction(home)
+	action.Network, action.Hosts = true, []string{"example.com"}
+	m := New(appconfig.Permissions{Mode: "ask"}, nil)
+	var sawCredential bool
+	for _, capability := range m.Capabilities(action) {
+		if capability.Kind == CapabilityCredential {
+			sawCredential = true
+			if !capability.Grantable {
+				t.Error("credential dimension was not grantable under the prompt setting")
+			}
+			continue
+		}
+		if capability.Grantable {
+			t.Errorf("dimension %q was offered as grantable alongside a credential", capability.Kind)
+		}
+	}
+	if !sawCredential {
+		t.Fatal("no credential capability was reported")
+	}
+}
+
+// "deny" makes the answer unavailable rather than merely inconvenient.
+func TestDenySettingOffersNoCredentialGrant(t *testing.T) {
+	home := fakeHome(t)
+	m := New(appconfig.Permissions{Mode: "ask", ProtectCredentials: appconfig.ProtectCredentialsDeny}, nil)
+	for _, capability := range m.Capabilities(keyReadAction(home)) {
+		if capability.Kind == CapabilityCredential && capability.Grantable {
+			t.Error("deny offered a credential grant")
+		}
+	}
+}
+
+// An uninspectable command or a mandatory confirmation is one-time in the
+// strong sense: not even the narrow credential grant is offered.
+func TestOneTimeActionsOfferNoCredentialGrantEither(t *testing.T) {
 	home := fakeHome(t)
 	m := New(appconfig.Permissions{Mode: "ask"}, nil)
-	for _, capability := range m.Capabilities(keyReadAction(home)) {
-		if capability.Grantable {
-			t.Errorf("capability %v was offered as grantable", capability.Kind)
+	for name, mutate := range map[string]func(*tools.Action){
+		"uninspectable": func(a *tools.Action) { a.Uninspectable = true },
+		"must confirm":  func(a *tools.Action) { a.ConfirmReasons = []string{"destructive"} },
+	} {
+		action := keyReadAction(home)
+		mutate(&action)
+		for _, capability := range m.Capabilities(action) {
+			if capability.Kind == CapabilityCredential && capability.Grantable {
+				t.Errorf("%s action offered a credential grant", name)
+			}
 		}
+	}
+}
+
+// The grant covers the exact target and nothing else: a second credential in
+// the same action still prompts, and so does a different file.
+func TestCredentialGrantCoversOnlyTheTargetShown(t *testing.T) {
+	home := fakeHome(t)
+	m := New(appconfig.Permissions{Mode: "ask"}, nil)
+	key := keyReadAction(home)
+	m.applyGrants(key, []string{CapabilityCredential})
+
+	if _, outcome, _ := m.decideBase("run_command", key); outcome != "allow" {
+		t.Fatalf("granted target still %q", outcome)
+	}
+	envAction := tools.Action{
+		Risk: tools.RiskRead, Summary: "read .env",
+		Paths: []string{filepath.Join("/work", "repo", ".env")},
+	}
+	if _, outcome, _ := m.decideBase("read_file", envAction); outcome != "prompt" {
+		t.Fatalf("a different credential file was covered by the grant: %q", outcome)
+	}
+	both := key
+	both.CredentialTargets = append(append([]string(nil), key.CredentialTargets...), "environment file: /work/repo/.env")
+	if _, outcome, _ := m.decideBase("run_command", both); outcome != "prompt" {
+		t.Fatalf("an action reaching one granted and one ungranted store was allowed: %q", outcome)
+	}
+}
+
+// Raising the setting to deny must not be satisfiable by a grant handed out
+// while it was still prompt.
+func TestRaisingToDenyOverridesAnEarlierGrant(t *testing.T) {
+	home := fakeHome(t)
+	m := New(appconfig.Permissions{Mode: "ask"}, nil)
+	action := keyReadAction(home)
+	m.applyGrants(action, []string{CapabilityCredential})
+	m.mu.Lock()
+	m.protectCredentials = appconfig.ProtectCredentialsDeny
+	m.mu.Unlock()
+	if _, outcome, _ := m.decideBase("run_command", action); outcome != "deny" {
+		t.Fatalf("outcome = %q, want deny", outcome)
+	}
+}
+
+// A credential grant is never a tool-wide always, whichever way it was
+// obtained.
+func TestCredentialRequestNeverAllowsAlways(t *testing.T) {
+	home := fakeHome(t)
+	var seen Request
+	m := New(appconfig.Permissions{Mode: "ask"}, func(_ context.Context, r Request) (Decision, error) {
+		seen = r
+		return Decision{Allow: true, Always: true, Grants: []string{CapabilityCredential}}, nil
+	})
+	if _, err := m.Authorize(t.Context(), "run_command", keyReadAction(home)); err != nil {
+		t.Fatal(err)
+	}
+	if seen.AllowsAlways {
+		t.Error("credential request advertised a tool-wide always")
+	}
+	m.mu.RLock()
+	toolWide := m.allowed["run_command"]
+	m.mu.RUnlock()
+	if toolWide {
+		t.Error("a tool-wide always was recorded for a credential action")
+	}
+	// The narrow grant it did ask for must have stuck.
+	if _, _, credentials := m.SessionGrants(); len(credentials) != 1 {
+		t.Fatalf("session credential grants = %v, want exactly one", credentials)
 	}
 }
 
