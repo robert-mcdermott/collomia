@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-23
+**Status updated:** 2026-07-25
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -37,7 +37,7 @@ also shipped:
   sandbox backends with compatibility-first `auto` enforcement by default,
   visible degradation, and capability-aware fail-closed `require` behavior;
 - scoped permissions, conservative shell analysis, catastrophic-command
-  denials, secret redaction, and an audit ledger;
+  denials, credential-store protection, secret redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
   artifacts, rewind/fork, and fail-stop persistence handling;
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
@@ -62,40 +62,132 @@ Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
 and reliability gates are complete.
 
-## Active wave — default-on command sandbox
+## Active wave — approval comfort
 
-**Goal:** Make OS command containment the ordinary experience without
-silently disabling networking, broad Unix dependency reads, or an explicit
-compatibility choice.
+**Goal:** Make the controls added above livable, so they are read rather than
+dismissed.
 
-- [x] Change the built-in and new global-starter sandbox mode from `off` to
-  capability-aware `auto`; project starters continue to inherit.
-- [x] Preserve explicit `sandbox: "off"` at every configuration layer and
-  document the upgrade behavior without rewriting user files.
-- [x] Keep command networking and broad macOS/Linux reads enabled by default;
-  retain the sandboxed minimal-environment behavior and document narrow
-  read/write grants for dependencies and caches.
-- [x] Keep unavailable/partial backends visible under `auto` and fail closed
-  under `require`; document Windows AppContainer's always-confined reads and
-  unpackaged-loopback limitation.
-- [x] Update starter/reference configuration, diagnostics/capabilities, command
-  failure guidance, compatibility policy, beta/security/Linux/user
-  documentation, roadmap, and history.
-- [x] Add regression coverage for the implicit `auto` default, global starter,
-  inherited project configuration, and explicit `off` escape hatch; retain the
-  native cross-platform enforcement suite.
+- [x] Fix an approval offer that did nothing: the dialog advertised a
+  tool-wide "always" for a credential-reaching action, the permission layer
+  declined to record it, and the next identical action prompted again. Whether
+  an "always" is available is now one field the permission layer owns, the two
+  stale copies in the TUI are gone, and a test fails on a third.
+- [x] Offer one narrow session grant on a credential prompt, scoped to the
+  exact target shown — never the tool, the directory, a sibling file, or
+  anything past this process, and never offered under `deny`. A control whose
+  only answer is "approve again" is a control people switch off.
+- [x] Give a credential approval its own identity: its own header and accent,
+  the file named first with the kind of secret after it, and a grant button
+  short enough not to wrap the row.
+- [x] Show the configuration rule that ends a recurring prompt, with the path
+  or endpoint filled in — and deliberately not for an uninspectable command,
+  where no rule would help.
+- [x] Report the permission stance in `collo doctor` (preset, autonomy,
+  postures, credential setting, rule count) and warn when a project's
+  containment weakening was refused.
+- [x] Group the Session tab's Security block into policy, enforcement, and
+  session, and mark degraded sandboxing and refused project settings visibly
+  rather than as ordinary rows.
+
+## Completed wave — credential files as their own decision
+
+**Goal:** Stop a broad approval from silently including a private key, without
+adding configuration a user must understand before starting work.
+
+- [x] Recognize the conventional credential locations — SSH and GPG private
+  keys, cloud CLI token caches, registry authentication files, environment
+  files — by path, with public keys, `known_hosts`, and example environment
+  files excluded explicitly rather than by luck.
+- [x] Report the credential stores a command's arguments name from shell
+  analysis, keyed on the argument rather than on a table of reading programs,
+  and derive the same for any tool that declares its paths.
+- [x] Gate reaching one behind `permissions.protect_credentials`
+  (`off`/`prompt`/`deny`, default `prompt`), placed so a blanket allow rule, a
+  tool-wide session grant, the implicit in-workspace read path, and autopilot
+  cannot cover it, while a rule naming the path still can.
+- [x] Carry the setting on the preset ladder (frictionless off, standard
+  prompt, hardened deny) and clamp it monotonically like every other
+  containment field.
+- [x] Redact PEM private key blocks and the remaining common provider token
+  shapes, and state plainly in the package and in SECURITY.md that redaction
+  does not sit between a tool result and the provider.
+- [x] Show the setting in the Session tab's Security block and in
+  `collo policy check`.
+- [x] Build every command-shaped action in one constructor, with a test that
+  fails on a second construction site. **This was not cosmetic:**
+  `collo policy check` was reporting the wrong decision for a
+  credential-reaching command because it assembled its own action and missed
+  the field — the same defect shape that let the `host` matcher ship inert.
+
+**Behavior change:** an action reaching a credential store now prompts by
+default, including under `autopilot`, where a headless run fails closed. See
+the [compatibility note](docs/COMPATIBILITY.md#credential-file-protection).
+
+## Completed wave — host-scoped policy surface and per-capability grants
+
+**Goal:** Make the documented `host` matcher real, and make an approval a
+decision about what an action reaches rather than about a tool name — without
+claiming enforcement the policy layer does not provide.
+
+- [x] Derive the endpoints a command's text names (URL arguments, ssh-family
+  destinations, Git remote URLs) and the endpoint of an HTTP-transport MCP
+  server; normalize them to comparable bare hostnames.
+- [x] Report an endpoint that resolves elsewhere — a named Git remote, a
+  configured registry, a URL read from a file — as explicitly undetermined,
+  and never as "no endpoints".
+- [x] Populate the previously inert `Rule.Host` matcher from command, PTY,
+  background-process, and MCP actions; block host-scoped `allow` rules from
+  covering undetermined endpoints, mirroring the uninspectable-command rule.
+- [x] Add the `permissions.network: scoped` and `permissions.commands:
+  allowlist` postures: prompt-only escalation, defaulting to the earlier
+  `open` behavior, monotonic across configuration layers, and not satisfiable
+  by a tool-wide session grant.
+- [x] Show an action's reach one dimension at a time in the approval dialog
+  and add a session grant covering exactly the reach shown; grant nothing for
+  an uninspectable command, a one-time confirmation, or an unreadable
+  endpoint.
+- [x] Treat an interpreter that reads its program from a pipe (`curl … | sh`)
+  as uninspectable while still reporting the endpoint it fetches from.
+- [x] Update starter/reference configuration, the capability matrix,
+  `collo policy check`, and the README/security/user documentation to state
+  that this is a policy layer and not egress enforcement.
+- [x] Add host-extraction, policy-matching, posture, layering, and grant-UI
+  regression coverage plus fuzz invariants that no unreadable endpoint is ever
+  reported as a plain host.
+- [x] Keep the growing security surface usable: add `permissions.preset`
+  (`frictionless`/`standard`/`hardened`) as sugar over the existing fields —
+  explicit fields win within a layer, and no preset sets autonomy mode — and
+  make the effective stance always visible through a containment mark on the
+  autonomy badge plus a consolidated Security block in the Session tab.
+- [x] Replace the per-field precedence exceptions with one rule: a repository
+  can tighten any containment setting but never weaken one, by explicit field
+  or preset alike, with every refusal reported rather than applied silently.
+  Document the complete precedence matrix. **Behavior change:** a project
+  `"sandbox": "off"` (or any other project-level weakening) is now refused;
+  the escape hatch lives in the global configuration only.
 
 ## Remaining work by phase
 
 ### Phase 1 — Safety boundary
 
-- [ ] **P0 — Complete separate capability controls:** executable allowlisting
-  and a clear per-capability grant UI remain after independent filesystem,
+- [x] **P0 — Complete separate capability controls:** executable allowlisting
+  and a per-capability grant UI now ship alongside the independent filesystem,
   environment, network, and process controls.
-- [ ] **P0 — Domain/endpoint network policy:** add explicit endpoint-scoped
-  grants with understandable DNS/proxy behavior and Windows loopback
-  ergonomics. Preserve command networking by default until scoped grants can
-  replace the current all-or-nothing switch without breaking common tooling.
+- [x] **P0 — Credential-store protection:** reaching a conventional credential
+  location is its own decision (`permissions.protect_credentials`, default
+  `prompt`), not coverable by a blanket allow rule, a tool-wide grant, or
+  autopilot. Recognition is by conventional path, so it is a usable default
+  rather than secret detection; enforcing what a running process may read
+  remains sandbox read confinement's job.
+- [ ] **P0 — Enforced endpoint-scoped egress:** the policy surface, declared
+  endpoints, and scoped grants ship; OS-level enforcement does not. Add a
+  Collomia-owned loopback egress broker that allows only policy-matched
+  destinations by CONNECT/SNI host without TLS interception, deny direct
+  remote egress in the sandbox where the backend supports it (macOS Seatbelt,
+  Linux Landlock ABI ≥ 4), degrade visibly on Windows AppContainer given its
+  unpackaged-loopback limitation, and keep `require` fail-closed. Preserve
+  command networking by default until this can replace the all-or-nothing
+  switch without breaking common tooling.
 - [ ] **P0 — Independent review:** sustain the adversarial suite and obtain an
   independent security assessment before 1.0.
 
@@ -199,14 +291,17 @@ compatibility choice.
 
 ## Recommended next sequence
 
-1. Gather real beta feedback on named primary profiles, cost estimates,
-   verified delegated results, scoped scheduling, and three-way review.
-2. Add opt-in plan-graph execution using verified results, write scopes,
+1. Build the enforced egress broker on top of the shipped policy surface: a
+   loopback CONNECT/SNI allowlist, sandbox-level denial of direct remote
+   egress where the backend supports it, and honest per-platform degradation.
+   This is the last P0 outside Phase 8.
+2. Gather real beta feedback on named primary profiles, cost estimates,
+   verified delegated results, scoped scheduling, three-way review, and the
+   new postures.
+3. Add opt-in plan-graph execution using verified results, write scopes,
    dependency readiness, and stale-state invalidation.
-3. Add explicit combined-parent verification and conservative result-ranking
+4. Add explicit combined-parent verification and conservative result-ranking
    criteria without turning a score into permission.
-4. Return to the P0 endpoint-scoped network-policy design before advertising
-   broader unattended autonomy.
 5. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 

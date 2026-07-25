@@ -21,4 +21,4 @@ ma│  ╰───────────────────────�
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ✿   ollama/qwen3-coder   ASK  ctx ▱▱▱▱▱▱▱▱▱▱ 1%     enter answer · esc decline
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▱▱▱▱▱▱▱▱▱▱ 1%   enter answer · esc decline

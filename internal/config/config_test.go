@@ -247,18 +247,68 @@ func TestProjectCanOptIntoSandboxReadConfinement(t *testing.T) {
 	}
 }
 
-func TestProjectCanExplicitlyDisableDefaultSandbox(t *testing.T) {
+// A repository cannot disable the sandbox, even by writing the field out
+// explicitly and even once the workspace is trusted. Turning containment off
+// is the machine owner's decision, made in their own configuration.
+func TestProjectCannotDisableTheInheritedSandbox(t *testing.T) {
 	dir := t.TempDir()
 	writeProject(t, dir, `{"permissions":{"sandbox":"off"}}`)
 	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Permissions.Sandbox != "off" {
-		t.Fatalf("explicit sandbox setting=%q, want off", cfg.Permissions.Sandbox)
+	if cfg.Permissions.Sandbox != "auto" {
+		t.Fatalf("project weakened the sandbox to %q", cfg.Permissions.Sandbox)
 	}
-	if cfg.Origins["permissions.sandbox"] != "project" {
-		t.Fatalf("sandbox origin=%q, want project", cfg.Origins["permissions.sandbox"])
+	// Ignoring the setting silently would read as a bug, so the refusal is
+	// reported.
+	if len(cfg.Clamped) != 1 || cfg.Clamped[0].Field != "sandbox" {
+		t.Fatalf("refusal not reported: %+v", cfg.Clamped)
+	}
+	if !strings.Contains(cfg.LayerReport(), "Refused project containment changes") {
+		t.Fatalf("layer report does not explain the refusal:\n%s", cfg.LayerReport())
+	}
+}
+
+// The global layer remains free to opt out: a built-in default is not a
+// choice the user made, so it does not clamp their own configuration.
+func TestGlobalLayerCanStillDisableTheSandbox(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"sandbox":"off"}}`, "")
+	if cfg.Permissions.Sandbox != "off" {
+		t.Fatalf("global sandbox=%q, want off", cfg.Permissions.Sandbox)
+	}
+	if len(cfg.Clamped) != 0 {
+		t.Fatalf("global choice should not be clamped: %+v", cfg.Clamped)
+	}
+}
+
+// Every containment switch follows the same rule, so the model is one
+// sentence rather than a table of exceptions.
+func TestProjectCannotWeakenAnyContainmentSetting(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"preset":"hardened","command_env":"minimal"}}`,
+		`{"permissions":{"sandbox":"auto","command_env":"full","network":"open","commands":"open","sandbox_allow_read_outside_workspace":true,"allow_outside_workspace":true}}`)
+	p := cfg.Permissions
+	if p.Sandbox != "require" || p.CommandEnv != "minimal" || p.Network != "scoped" || p.Commands != "allowlist" {
+		t.Fatalf("project weakened containment: %+v", p)
+	}
+	if p.SandboxAllowReadOutsideWorkspace || p.AllowOutsideWorkspace {
+		t.Fatalf("project widened reads: %+v", p)
+	}
+	if len(cfg.Clamped) != 6 {
+		t.Fatalf("expected every refusal reported, got %d: %+v", len(cfg.Clamped), cfg.Clamped)
+	}
+}
+
+// Tightening from a project file stays available and is not reported as a
+// refusal.
+func TestProjectCanStillTightenContainment(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"sandbox":"auto"}}`, `{"permissions":{"sandbox":"require","network":"scoped"}}`)
+	if cfg.Permissions.Sandbox != "require" || cfg.Permissions.Network != "scoped" {
+		t.Fatalf("project could not tighten: %+v", cfg.Permissions)
+	}
+	if len(cfg.Clamped) != 0 {
+		t.Fatalf("tightening should not be reported as refused: %+v", cfg.Clamped)
 	}
 }
 
@@ -706,5 +756,315 @@ func TestPartialKeybindingOverrideInheritsDefaults(t *testing.T) {
 	}
 	if got := cfg.Options.Keybindings["session_picker"]; got != "alt+s" {
 		t.Fatalf("new session-picker binding did not inherit default: %q", got)
+	}
+}
+
+// An omitted posture must keep the behavior every earlier release had, so
+// loading an existing configuration with this build changes nothing.
+func TestPosturesDefaultToOpen(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, `{"permissions":{"mode":"workspace"}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Permissions.Network != "open" || cfg.Permissions.Commands != "open" {
+		t.Fatalf("postures = %q/%q", cfg.Permissions.Network, cfg.Permissions.Commands)
+	}
+}
+
+func TestPosturesAreValidated(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.Network = "enforced"
+	cfg.Permissions.Commands = "strict"
+	errs := cfg.ValidateFields()
+	fields := map[string]bool{}
+	for _, err := range errs {
+		fields[err.Field] = true
+	}
+	if !fields["permissions.network"] || !fields["permissions.commands"] {
+		t.Fatalf("errors=%+v", errs)
+	}
+}
+
+// Postures are monotonic across layers like denied commands: a project file
+// may tighten what the user configured, never loosen it.
+func TestProjectLayerCannotLoosenAPosture(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	global, err := GlobalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(global), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(global, []byte(`{"permissions":{"network":"scoped","commands":"allowlist"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeProject(t, dir, `{"permissions":{"network":"open","commands":"open"}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Permissions.Network != "scoped" || cfg.Permissions.Commands != "allowlist" {
+		t.Fatalf("project layer loosened the postures: %q/%q", cfg.Permissions.Network, cfg.Permissions.Commands)
+	}
+}
+
+// A lower layer may still tighten, and an omitted value inherits.
+func TestProjectLayerCanTightenAPosture(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeProject(t, dir, `{"permissions":{"network":"scoped"}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Permissions.Network != "scoped" || cfg.Permissions.Commands != "open" {
+		t.Fatalf("postures = %q/%q", cfg.Permissions.Network, cfg.Permissions.Commands)
+	}
+}
+
+func loadWithGlobal(t *testing.T, global, project string) Config {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if global != "" {
+		path, err := GlobalPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(global), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	if project != "" {
+		writeProject(t, dir, project)
+	}
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestHardenedPresetExpandsToContainmentFields(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"hardened"}}`, "")
+	p := cfg.Permissions
+	if p.Sandbox != "require" || p.SandboxAllowReadOutsideWorkspace || p.Network != "scoped" || p.Commands != "allowlist" || p.CommandEnv != "minimal" {
+		t.Fatalf("hardened expansion = %+v", p)
+	}
+	// Command networking stays on: denying it breaks package installs, so it
+	// remains a deliberate extra line rather than part of the bundle.
+	if !p.SandboxAllowNetwork {
+		t.Fatal("hardened must not silently deny command networking")
+	}
+	// A preset never chooses autonomy for the user.
+	if p.Mode != "ask" {
+		t.Fatalf("preset changed autonomy mode to %q", p.Mode)
+	}
+	if origin := cfg.Origins["permissions.network"]; origin != "user (preset hardened)" {
+		t.Fatalf("expansion is not attributable: %q", origin)
+	}
+}
+
+func TestFrictionlessPresetIsAnExplicitOptOut(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"frictionless"}}`, "")
+	p := cfg.Permissions
+	if p.Sandbox != "off" || p.CommandEnv != "full" || p.Network != "open" || p.Commands != "open" {
+		t.Fatalf("frictionless expansion = %+v", p)
+	}
+	// Reduced containment is not reduced safety policy: prompts still apply.
+	if p.Mode != "ask" {
+		t.Fatalf("frictionless changed autonomy mode to %q", p.Mode)
+	}
+}
+
+// A preset is a starting point. Anything the same layer states explicitly
+// must win, or a user could not adjust one field without abandoning it.
+func TestExplicitFieldsWinOverThePreset(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"hardened","sandbox":"auto","commands":"open"}}`, "")
+	p := cfg.Permissions
+	if p.Sandbox != "auto" || p.Commands != "open" {
+		t.Fatalf("explicit fields lost to the preset: %+v", p)
+	}
+	if p.Network != "scoped" {
+		t.Fatalf("undeclared field should still come from the preset: %+v", p)
+	}
+	if origin := cfg.Origins["permissions.sandbox"]; origin != "user" {
+		t.Fatalf("explicit field origin = %q", origin)
+	}
+}
+
+// A weaker preset in a lower layer must not undo containment established
+// above it. An explicit field remains the documented escape hatch.
+func TestPresetCannotLoosenAStricterLayer(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"preset":"hardened"}}`,
+		`{"permissions":{"preset":"frictionless"}}`)
+	p := cfg.Permissions
+	if p.Sandbox != "require" {
+		t.Fatalf("project preset weakened the sandbox to %q", p.Sandbox)
+	}
+	if p.Network != "scoped" || p.Commands != "allowlist" {
+		t.Fatalf("project preset weakened the postures: %+v", p)
+	}
+	if p.CommandEnv != "minimal" {
+		t.Fatalf("project preset restored the inherited environment: %q", p.CommandEnv)
+	}
+}
+
+func TestPresetCanTightenALooserLayer(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"standard"}}`, `{"permissions":{"preset":"hardened"}}`)
+	if cfg.Permissions.Sandbox != "require" || cfg.Permissions.Network != "scoped" {
+		t.Fatalf("project preset could not tighten: %+v", cfg.Permissions)
+	}
+}
+
+func TestUnknownPresetIsRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.Preset = "paranoid"
+	errs := cfg.ValidateFields()
+	found := false
+	for _, err := range errs {
+		if err.Field == "permissions.preset" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("errors=%+v", errs)
+	}
+}
+
+// An omitted preset must change nothing at all.
+func TestOmittedPresetKeepsExistingBehavior(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"mode":"workspace"}}`, "")
+	p := cfg.Permissions
+	if p.Sandbox != "auto" || !p.SandboxAllowNetwork || !p.SandboxAllowReadOutsideWorkspace {
+		t.Fatalf("defaults changed: %+v", p)
+	}
+	if p.Network != "open" || p.Commands != "open" {
+		t.Fatalf("postures changed: %+v", p)
+	}
+}
+
+// A preset must never be a value whose source the user cannot see.
+func TestLayerReportAttributesPresetExpansion(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"hardened","sandbox":"auto"}}`, "")
+	report := cfg.LayerReport()
+	if !strings.Contains(report, "Expanded by a preset") {
+		t.Fatalf("report does not attribute the expansion:\n%s", report)
+	}
+	if !strings.Contains(report, "permissions.network") || !strings.Contains(report, "user (preset hardened)") {
+		t.Fatalf("expanded field missing from the report:\n%s", report)
+	}
+	// An explicitly set field belongs to its layer, not to the preset.
+	for _, line := range strings.Split(report, "\n") {
+		if strings.Contains(line, "permissions.sandbox ") && strings.Contains(line, "preset") {
+			t.Fatalf("explicit field attributed to the preset: %q", line)
+		}
+	}
+}
+
+func TestLayerReportOmitsPresetSectionWithoutAPreset(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"mode":"workspace"}}`, "")
+	if strings.Contains(cfg.LayerReport(), "Expanded by a preset") {
+		t.Fatalf("preset section shown without a preset:\n%s", cfg.LayerReport())
+	}
+}
+
+func TestProtectCredentialsDefaultsToPrompt(t *testing.T) {
+	cfg := loadWithGlobal(t, "", "")
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsPrompt {
+		t.Fatalf("protect_credentials = %q, want %q", got, ProtectCredentialsPrompt)
+	}
+}
+
+func TestPresetsCarryTheirCredentialSetting(t *testing.T) {
+	cases := map[string]string{
+		PresetFrictionless: ProtectCredentialsOff,
+		PresetStandard:     ProtectCredentialsPrompt,
+		PresetHardened:     ProtectCredentialsDeny,
+	}
+	for name, want := range cases {
+		cfg := loadWithGlobal(t, `{"permissions":{"preset":"`+name+`"}}`, "")
+		if got := cfg.Permissions.ProtectCredentials; got != want {
+			t.Errorf("preset %s: protect_credentials = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// An explicit field beats the preset that accompanies it, matching every other
+// containment setting.
+func TestExplicitCredentialSettingWinsOverThePreset(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"hardened","protect_credentials":"prompt"}}`, "")
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsPrompt {
+		t.Fatalf("protect_credentials = %q, want prompt", got)
+	}
+}
+
+func TestProjectCanTightenCredentialProtection(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"protect_credentials":"off"}}`,
+		`{"permissions":{"protect_credentials":"deny"}}`)
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsDeny {
+		t.Fatalf("protect_credentials = %q, want deny", got)
+	}
+	if len(cfg.Clamped) != 0 {
+		t.Fatalf("tightening should not be clamped: %v", cfg.Clamped)
+	}
+}
+
+// The escape hatch lives in the global configuration only: a repository must
+// not be able to switch off a protection the user chose.
+func TestProjectCannotWeakenCredentialProtection(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"protect_credentials":"deny"}}`,
+		`{"permissions":{"protect_credentials":"off"}}`)
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsDeny {
+		t.Fatalf("protect_credentials = %q, want deny", got)
+	}
+	found := false
+	for _, note := range cfg.Clamped {
+		if note.Field == "protect_credentials" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal was not reported: %v", cfg.Clamped)
+	}
+}
+
+// A project preset is clamped the same way an explicit field is.
+func TestProjectPresetCannotWeakenCredentialProtection(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"protect_credentials":"deny"}}`,
+		`{"permissions":{"preset":"frictionless"}}`)
+	if got := cfg.Permissions.ProtectCredentials; got != ProtectCredentialsDeny {
+		t.Fatalf("protect_credentials = %q, want deny", got)
+	}
+}
+
+func TestUnknownCredentialSettingIsRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.ProtectCredentials = "sometimes"
+	found := false
+	for _, e := range cfg.ValidateFields() {
+		if e.Field == "permissions.protect_credentials" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("invalid setting was accepted")
 	}
 }

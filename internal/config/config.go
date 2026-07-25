@@ -58,6 +58,9 @@ type Config struct {
 	ProjectTrusted bool `json:"-"`
 	// Quarantined lists project-provided capabilities that were ignored.
 	Quarantined []string `json:"-"`
+	// Clamped lists containment settings a trusted project asked to weaken
+	// and did not get. They are reported rather than applied silently.
+	Clamped []ClampedField `json:"-"`
 	// EnvProvider/EnvModel hold COLLO_PROVIDER / COLLO_MODEL overrides.
 	EnvProvider string `json:"-"`
 	EnvModel    string `json:"-"`
@@ -125,6 +128,13 @@ type Pricing struct {
 }
 
 type Permissions struct {
+	// Preset selects a named containment bundle so a working configuration
+	// does not require composing every switch below by hand: standard (the
+	// default behavior), hardened, or frictionless. It is sugar over the
+	// same fields — any field this layer sets explicitly wins over the
+	// preset, and a preset can never loosen a stricter inherited layer.
+	// Autonomy mode is deliberately not part of any preset.
+	Preset                string   `json:"preset,omitempty"`
 	Mode                  string   `json:"mode"`
 	AllowOutsideWorkspace bool     `json:"allow_outside_workspace"`
 	AllowedTools          []string `json:"allowed_tools,omitempty"`
@@ -135,6 +145,17 @@ type Permissions struct {
 	// Rules are ordered allow/prompt/deny decisions matched before the
 	// autonomy mode's defaults. See internal/policy.
 	Rules []Rule `json:"rules,omitempty"`
+	// Network selects the posture for actions that reach the network: open
+	// (the default, matching earlier releases) or scoped. Under scoped, a
+	// network-bearing action is never approved automatically unless a rule or
+	// a session grant covers every endpoint it declares. This is a policy
+	// posture evaluated by Collomia, not OS-enforced egress confinement.
+	Network string `json:"network,omitempty"`
+	// Commands selects the posture for command execution: open (the default)
+	// or allowlist. Under allowlist, a command is never approved
+	// automatically unless a rule or a session grant covers every executable
+	// it runs.
+	Commands string `json:"commands,omitempty"`
 	// Sandbox selects OS sandbox enforcement for commands: off, auto (the
 	// compatibility-first default), or require.
 	Sandbox string `json:"sandbox,omitempty"`
@@ -153,6 +174,19 @@ type Permissions struct {
 	// additional explicit roots (for example a package-manager cache). Relative
 	// paths are resolved from the workspace.
 	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"`
+	// ProtectCredentials decides what happens when an action reaches a
+	// well-known credential store — an SSH or GPG private key, a cloud CLI
+	// token cache, a registry authentication file, an environment file:
+	// "prompt" (the default) always asks, "deny" refuses, and "off" restores
+	// the earlier behavior of treating those files as ordinary.
+	//
+	// Under "prompt" this is not merely the default autonomy mode reasserting
+	// itself. Reaching a credential store is deliberately not coverable by a
+	// blanket allow rule, a tool-wide session grant, or autopilot, because the
+	// point of the control is to stop a broad approval from silently including
+	// a private key. A rule naming the path is still honored, so an
+	// intentional exception stays possible and stays written down.
+	ProtectCredentials string `json:"protect_credentials,omitempty"`
 	// CommandEnv controls the environment passed to agent commands: "full"
 	// (inherit everything, the default) or "minimal" (PATH, HOME, and other
 	// basics only, keeping parent secrets out of child processes).
@@ -310,9 +344,12 @@ func Defaults() Config {
 		},
 		Permissions: Permissions{
 			Mode:                             "ask",
+			Network:                          "open",
+			Commands:                         "open",
 			Sandbox:                          "auto",
 			SandboxAllowNetwork:              true,
 			SandboxAllowReadOutsideWorkspace: true,
+			ProtectCredentials:               ProtectCredentialsPrompt,
 			DeniedCommands: []string{
 				`(?i)(^|[;&|]\s*)(rm\s+-[^\s]*(rf|fr)[^\s]*|rmdir\s+/s)\s+([/~]|\.{1,2}|\*|[a-z]:\\)($|\s)`,
 				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
@@ -426,6 +463,7 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 		decoder.DisallowUnknownFields()
 	}
 	inheritedDeniedCommands := append([]string(nil), c.Permissions.DeniedCommands...)
+	inheritedPermissions := c.Permissions
 	if err := decoder.Decode(c); err != nil {
 		return fmt.Errorf("parse config %s: %w", path, err)
 	}
@@ -434,9 +472,225 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 	for _, key := range keys {
 		c.Origins[key] = layer
 	}
+	// A preset fills only what this layer did not state itself, so an explicit
+	// field always wins over the bundle that accompanies it.
+	declared := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		declared[key] = true
+	}
+	if declared["permissions.preset"] {
+		c.applyPreset(strings.ToLower(strings.TrimSpace(c.Permissions.Preset)), layer, declared)
+	}
+	// A repository can tighten containment but never weaken it, by any means:
+	// an explicit field, a preset, or both. The machine owner's own
+	// configuration is not restricted this way — a built-in default is not a
+	// choice they made, so the global layer remains free to select `off` or
+	// the frictionless preset.
+	if layer == "project" {
+		tightened, clamped := tightenContainment(inheritedPermissions, c.Permissions)
+		c.Permissions = tightened
+		for _, note := range clamped {
+			// Ignoring a setting silently would read as a bug. Say so.
+			c.Clamped = append(c.Clamped, note)
+			c.Origins["permissions."+note.Field] = "user (project request refused)"
+		}
+	}
 	c.Layers = append(c.Layers, Layer{Name: layer, Path: path, Applied: true, Keys: keys})
 	c.Source = path
 	return nil
+}
+
+// Preset names. An empty preset means standard, so an existing configuration
+// keeps its meaning.
+const (
+	PresetStandard     = "standard"
+	PresetHardened     = "hardened"
+	PresetFrictionless = "frictionless"
+)
+
+// Settings for permissions.protect_credentials, from weakest to strongest.
+const (
+	ProtectCredentialsOff    = "off"
+	ProtectCredentialsPrompt = "prompt"
+	ProtectCredentialsDeny   = "deny"
+)
+
+// ProtectCredentialsSettings lists the selectable settings in increasing
+// strictness.
+func ProtectCredentialsSettings() []string {
+	return []string{ProtectCredentialsOff, ProtectCredentialsPrompt, ProtectCredentialsDeny}
+}
+
+// preset is one named containment bundle. Every field it sets is an ordinary
+// configuration field: a preset is a starting point a user can read and
+// override, never a hidden mode.
+type preset struct {
+	Summary                          string
+	Sandbox                          string
+	SandboxAllowNetwork              bool
+	SandboxAllowReadOutsideWorkspace bool
+	Network                          string
+	Commands                         string
+	CommandEnv                       string
+	ProtectCredentials               string
+	AllowOutsideWorkspace            bool
+}
+
+// presets deliberately omit permissions.mode. Autonomy is the one choice a
+// user should make knowingly; a bundle that quietly selected autopilot would
+// be exactly the surprise these presets exist to avoid.
+var presets = map[string]preset{
+	PresetStandard: {
+		Summary:                          "platform sandbox where available, command networking and broad reads on",
+		Sandbox:                          "auto",
+		SandboxAllowNetwork:              true,
+		SandboxAllowReadOutsideWorkspace: true,
+		Network:                          "open",
+		Commands:                         "open",
+		CommandEnv:                       "minimal",
+		ProtectCredentials:               ProtectCredentialsPrompt,
+	},
+	PresetHardened: {
+		// The strongest bundle an ordinary toolchain can still work under.
+		// Denying command egress outright stays a deliberate extra line
+		// (`"sandbox_allow_network": false`) because it breaks package
+		// installs, so it is not folded in here.
+		Summary:                          "fail-closed sandbox, confined reads, scoped endpoints and commands",
+		Sandbox:                          "require",
+		SandboxAllowNetwork:              true,
+		SandboxAllowReadOutsideWorkspace: false,
+		Network:                          "scoped",
+		Commands:                         "allowlist",
+		CommandEnv:                       "minimal",
+		ProtectCredentials:               ProtectCredentialsDeny,
+	},
+	PresetFrictionless: {
+		// An explicit opt-out for users whose toolchain fights containment.
+		// It is never a default and never reached by inheritance.
+		Summary:                          "no OS sandbox, inherited environment; policy prompts still apply",
+		Sandbox:                          "off",
+		SandboxAllowNetwork:              true,
+		SandboxAllowReadOutsideWorkspace: true,
+		Network:                          "open",
+		Commands:                         "open",
+		CommandEnv:                       "full",
+		ProtectCredentials:               ProtectCredentialsOff,
+	},
+}
+
+// PresetNames lists the selectable presets in increasing strictness.
+func PresetNames() []string {
+	return []string{PresetFrictionless, PresetStandard, PresetHardened}
+}
+
+// PresetSummary describes one preset for diagnostics and error messages.
+func PresetSummary(name string) string { return presets[name].Summary }
+
+// applyPreset expands a named bundle into ordinary fields. It only fills
+// fields this layer did not declare itself, so an explicit setting always
+// wins over the preset that accompanies it. Monotonicity is not this
+// function's job: tightenContainment clamps the project layer afterwards,
+// whether a value came from a preset or was written out by hand.
+func (c *Config) applyPreset(name, layer string, declared map[string]bool) {
+	bundle, ok := presets[name]
+	if !ok {
+		return
+	}
+	origin := layer + " (preset " + name + ")"
+	set := func(field string, apply func()) {
+		if declared["permissions."+field] {
+			return
+		}
+		apply()
+		c.Origins["permissions."+field] = origin
+	}
+	set("sandbox", func() { c.Permissions.Sandbox = bundle.Sandbox })
+	set("sandbox_allow_network", func() { c.Permissions.SandboxAllowNetwork = bundle.SandboxAllowNetwork })
+	set("sandbox_allow_read_outside_workspace", func() {
+		c.Permissions.SandboxAllowReadOutsideWorkspace = bundle.SandboxAllowReadOutsideWorkspace
+	})
+	set("allow_outside_workspace", func() { c.Permissions.AllowOutsideWorkspace = bundle.AllowOutsideWorkspace })
+	set("network", func() { c.Permissions.Network = bundle.Network })
+	set("commands", func() { c.Permissions.Commands = bundle.Commands })
+	set("command_env", func() { c.Permissions.CommandEnv = bundle.CommandEnv })
+	set("protect_credentials", func() { c.Permissions.ProtectCredentials = bundle.ProtectCredentials })
+}
+
+// ClampedField records a containment setting a repository asked for and did
+// not get, so the refusal is visible instead of looking like a bug.
+type ClampedField struct {
+	Field     string
+	Requested string
+	Effective string
+}
+
+func (c ClampedField) String() string {
+	return fmt.Sprintf("permissions.%s: project asked for %s; kept %s (a repository can tighten containment but never weaken it)", c.Field, c.Requested, c.Effective)
+}
+
+// containmentRank orders each containment setting from weakest to strongest.
+// Only these fields are clamped: they decide what an approved action can
+// reach. Autonomy mode, rules, and denied commands have their own rules.
+var containmentRank = map[string]map[string]int{
+	"sandbox":             {"off": 0, "auto": 1, "require": 2},
+	"command_env":         {"full": 0, "": 1, "minimal": 2},
+	"network":             {"open": 0, "scoped": 1},
+	"commands":            {"open": 0, "allowlist": 1},
+	"protect_credentials": {"off": 0, "": 1, ProtectCredentialsPrompt: 1, ProtectCredentialsDeny: 2},
+}
+
+// ContainmentFields lists the settings subject to monotonic clamping, sorted.
+// These are the settings that decide what an approved action can reach, so
+// documentation is checked against this list rather than against a hand-kept
+// copy of it.
+func ContainmentFields() []string {
+	fields := make([]string, 0, len(containmentRank)+3)
+	for field := range containmentRank {
+		fields = append(fields, field)
+	}
+	// The boolean switches are clamped too, but carry no rank table.
+	fields = append(fields, "sandbox_allow_network", "sandbox_allow_read_outside_workspace", "allow_outside_workspace")
+	sort.Strings(fields)
+	return fields
+}
+
+// tightenContainment keeps the stronger of what was inherited and what this
+// layer asked for, field by field, and reports every setting it refused.
+func tightenContainment(inherited, declared Permissions) (Permissions, []ClampedField) {
+	result := declared
+	var clamped []ClampedField
+	enum := func(field, inheritedValue, declaredValue string, assign func(string)) {
+		ranks := containmentRank[field]
+		normalize := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+		inheritedValue, declaredValue = normalize(inheritedValue), normalize(declaredValue)
+		if ranks[declaredValue] >= ranks[inheritedValue] {
+			return
+		}
+		assign(inheritedValue)
+		clamped = append(clamped, ClampedField{Field: field, Requested: declaredValue, Effective: inheritedValue})
+	}
+	boolean := func(field string, inheritedValue, declaredValue bool, assign func(bool)) {
+		// For these switches false is the stronger setting.
+		if !declaredValue || !inheritedValue {
+			assign(inheritedValue && declaredValue)
+		}
+		if declaredValue && !inheritedValue {
+			clamped = append(clamped, ClampedField{Field: field, Requested: "true", Effective: "false"})
+		}
+	}
+	enum("sandbox", inherited.Sandbox, declared.Sandbox, func(v string) { result.Sandbox = v })
+	enum("command_env", inherited.CommandEnv, declared.CommandEnv, func(v string) { result.CommandEnv = v })
+	enum("network", inherited.Network, declared.Network, func(v string) { result.Network = v })
+	enum("commands", inherited.Commands, declared.Commands, func(v string) { result.Commands = v })
+	enum("protect_credentials", inherited.ProtectCredentials, declared.ProtectCredentials, func(v string) {
+		result.ProtectCredentials = v
+	})
+	boolean("sandbox_allow_network", inherited.SandboxAllowNetwork, declared.SandboxAllowNetwork, func(v bool) { result.SandboxAllowNetwork = v })
+	boolean("sandbox_allow_read_outside_workspace", inherited.SandboxAllowReadOutsideWorkspace, declared.SandboxAllowReadOutsideWorkspace, func(v bool) {
+		result.SandboxAllowReadOutsideWorkspace = v
+	})
+	boolean("allow_outside_workspace", inherited.AllowOutsideWorkspace, declared.AllowOutsideWorkspace, func(v bool) { result.AllowOutsideWorkspace = v })
+	return result, clamped
 }
 
 // additiveStrings preserves inherited safety policy while allowing a lower
@@ -496,6 +750,17 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	}
 	if c.Permissions.Sandbox == "" {
 		c.Permissions.Sandbox = "auto"
+	}
+	// An omitted posture keeps the behavior every earlier release had. Only
+	// an explicit choice tightens it, so no existing configuration changes
+	// meaning when it is loaded by this version.
+	c.Permissions.Network = strings.ToLower(strings.TrimSpace(c.Permissions.Network))
+	if c.Permissions.Network == "" {
+		c.Permissions.Network = "open"
+	}
+	c.Permissions.Commands = strings.ToLower(strings.TrimSpace(c.Permissions.Commands))
+	if c.Permissions.Commands == "" {
+		c.Permissions.Commands = "open"
 	}
 	if c.Options.MaxIterations <= 0 {
 		c.Options.MaxIterations = 24
@@ -641,10 +906,30 @@ func (c Config) ValidateFields() []FieldError {
 	default:
 		errs = append(errs, FieldError{"permissions.sandbox", fmt.Sprintf("must be off, auto, or require (got %q)", c.Permissions.Sandbox)})
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Permissions.Preset)) {
+	case "", PresetStandard, PresetHardened, PresetFrictionless:
+	default:
+		errs = append(errs, FieldError{"permissions.preset", fmt.Sprintf("must be %s (got %q)", strings.Join(PresetNames(), ", "), c.Permissions.Preset)})
+	}
+	switch c.Permissions.Network {
+	case "", "open", "scoped":
+	default:
+		errs = append(errs, FieldError{"permissions.network", fmt.Sprintf("must be open or scoped (got %q)", c.Permissions.Network)})
+	}
+	switch c.Permissions.Commands {
+	case "", "open", "allowlist":
+	default:
+		errs = append(errs, FieldError{"permissions.commands", fmt.Sprintf("must be open or allowlist (got %q)", c.Permissions.Commands)})
+	}
 	switch c.Permissions.CommandEnv {
 	case "", "full", "minimal":
 	default:
 		errs = append(errs, FieldError{"permissions.command_env", fmt.Sprintf("must be full or minimal (got %q)", c.Permissions.CommandEnv)})
+	}
+	switch c.Permissions.ProtectCredentials {
+	case "", ProtectCredentialsOff, ProtectCredentialsPrompt, ProtectCredentialsDeny:
+	default:
+		errs = append(errs, FieldError{"permissions.protect_credentials", fmt.Sprintf("must be %s (got %q)", strings.Join(ProtectCredentialsSettings(), ", "), c.Permissions.ProtectCredentials)})
 	}
 	for i, root := range c.Permissions.SandboxWritableRoots {
 		if strings.TrimSpace(root) == "" {
@@ -984,7 +1269,31 @@ func (c Config) LayerReport() string {
 			}
 		}
 	}
+	b.WriteString(c.presetReport())
+	if len(c.Clamped) > 0 {
+		b.WriteString("\nRefused project containment changes:\n")
+		for _, clamped := range c.Clamped {
+			fmt.Fprintf(&b, "  %s\n", clamped)
+		}
+	}
 	return b.String()
+}
+
+// presetReport lists the fields a preset filled in, so a bundle is never a
+// value whose source the user cannot see. Fields the user set themselves are
+// attributed to their layer and do not appear here.
+func (c Config) presetReport() string {
+	var expanded []string
+	for key, origin := range c.Origins {
+		if strings.Contains(origin, "(preset ") {
+			expanded = append(expanded, fmt.Sprintf("  %-44s %s", key, origin))
+		}
+	}
+	if len(expanded) == 0 {
+		return ""
+	}
+	sort.Strings(expanded)
+	return "\nExpanded by a preset (an explicit field always wins over these):\n" + strings.Join(expanded, "\n") + "\n"
 }
 
 func expandEnv(value string) string {

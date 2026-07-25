@@ -1,0 +1,12 @@
+# Windows checkouts default to core.autocrlf=true, which rewrites every text
+# file to CRLF on the way out of git. That silently breaks anything matching
+# source text across a line boundary -- the documentation drift guards in
+# cmd/collo/docs_test.go did exactly that -- and makes gofmt want to rewrite
+# every file. Normalize in the repository and check out LF everywhere.
+* text=auto eol=lf
+
+# The Windows installers are run by PowerShell, which is the one place CRLF is
+# the native convention.
+*.ps1 text eol=crlf
+
+*.png binary

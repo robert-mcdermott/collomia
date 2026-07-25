@@ -22,7 +22,8 @@ sandbox test skips only when the host cannot provide the backend being tested;
 cross-compilation in CI still type-checks platform-specific code. Configuration
 tests also lock the implicit `sandbox: auto` default, compatibility-first
 network/read switches, minimal sandboxed command environment, and the
-authoritative explicit `sandbox: off` escape hatch.
+global-only explicit `sandbox: off` escape hatch, and the refusal of any
+project-level attempt to weaken a containment setting.
 
 ## Offline agent evaluations
 

@@ -29,8 +29,18 @@ type Action struct {
 	// Command is the original immutable command text for additive agent-profile
 	// denial regexes. It is populated only by command-bearing built-ins.
 	Command string
-	Hosts   []string
-	Server  string
+	// Hosts are the normalized network endpoints the action declares.
+	Hosts []string
+	// Network marks an action that reaches the network at all, so a scoped
+	// network posture can require an explicit grant for it.
+	Network bool
+	// HostsUndetermined is true when the action reaches an endpoint it could
+	// not name (a configured registry, a named Git remote). A host-scoped
+	// allow rule must never cover such an action.
+	HostsUndetermined bool
+	// HostReasons explains every undetermined endpoint.
+	HostReasons []string
+	Server      string
 	// Uninspectable marks actions (typically shell commands) whose full
 	// effect could not be statically determined; they always require
 	// interactive approval.
@@ -42,6 +52,12 @@ type Action struct {
 	// ConfirmReasons are destructive but potentially legitimate operations
 	// that require a fresh interactive decision for each invocation.
 	ConfirmReasons []string
+	// CredentialTargets names the well-known credential stores this action
+	// reaches, each as "label: path". Tools that expose Paths do not need to
+	// set this; the permission layer derives those itself so a tool added
+	// later is covered without having to remember. Command-shaped tools set it
+	// from their shell analysis, which sees targets no path field carries.
+	CredentialTargets []string
 	// Preview carries a human-reviewable rendering of the proposed change
 	// (typically a unified diff) for approval prompts.
 	Preview string

@@ -553,17 +553,114 @@ verified for the selected deployment. If `cached_input_per_million` is omitted,
 cached input is conservatively estimated at the ordinary input rate. Reasoning
 tokens are informational and are not added again to output tokens.
 
+### Presets: one line instead of eight
+
+`permissions.preset` selects a named containment bundle so a working, coherent
+policy does not require composing every switch below by hand. Omit it and you
+get `standard`, which is exactly what earlier releases did.
+
+```json
+{ "permissions": { "preset": "hardened" } }
+```
+
+| | `frictionless` | `standard` (default) | `hardened` |
+| --- | --- | --- | --- |
+| `sandbox` | `off` | `auto` | `require` |
+| `sandbox_allow_network` | `true` | `true` | `true` |
+| `sandbox_allow_read_outside_workspace` | `true` | `true` | `false` |
+| `network` | `open` | `open` | `scoped` |
+| `commands` | `open` | `open` | `allowlist` |
+| `command_env` | `full` | `minimal` | `minimal` |
+
+Four properties make a preset safe to adopt:
+
+- **It is sugar, not a mode.** Every value it chooses is an ordinary field,
+  and `collo config show` attributes each one to `user (preset hardened)` or
+  similar. There is no hidden behavior.
+- **Your explicit fields win.** Anything the same layer states itself
+  overrides the bundle, so `{"preset": "hardened", "sandbox": "auto"}` means
+  hardened with `auto` — you never have to abandon the preset to adjust one
+  setting.
+- **A repository cannot weaken it.** A project file can tighten containment
+  but never relax it, whether it uses a preset or writes the field out by
+  hand. See the precedence rules below.
+- **It never sets `mode`.** Autonomy is the one choice you should make
+  knowingly, so no preset selects `autopilot` for you.
+
+`hardened` deliberately leaves command networking on: denying it outright
+breaks package installs, so add `"sandbox_allow_network": false` when you want
+an offline command sandbox.
+
+`frictionless` is an explicit opt-out for a toolchain that fights containment
+— it removes the OS sandbox and restores the inherited environment. It is
+never a default and can only be selected in your own global configuration.
+Policy prompts, command-safety denials, and the audit ledger still apply; you
+are opting out of OS containment, not out of the permission engine.
+
+### Precedence: presets, explicit fields, and layers
+
+Two rules decide every case.
+
+**Rule 1 — within one layer, your explicit field wins.** A preset only fills
+fields that layer did not state itself. It does not matter which is stricter:
+
+| you write | result |
+| --- | --- |
+| `{"preset": "hardened", "sandbox": "auto"}` | `auto` |
+| `{"preset": "frictionless", "sandbox": "require"}` | `require` |
+
+`collo config show` attributes the value to `user` when you set it and to
+`user (preset hardened)` when the bundle supplied it, so the source is never
+ambiguous.
+
+**Rule 2 — a project file can tighten containment, never weaken it.** This
+applies to `sandbox`, `sandbox_allow_network`,
+`sandbox_allow_read_outside_workspace`, `command_env`, `network`, `commands`,
+and `allow_outside_workspace`, and it applies the same way to an explicit
+field and to a preset:
+
+| global (`~/.collomia/config.json`) | project (`.collomia.json`) | effective |
+| --- | --- | --- |
+| `sandbox: auto` | `preset: hardened` | `require` — tightened |
+| `preset: hardened` | `sandbox: auto` | `require` — **refused** |
+| `preset: hardened` | `sandbox: off` | `require` — **refused** |
+| `preset: hardened` | `preset: frictionless` | `require` — **refused** |
+| `sandbox: off` | `sandbox: require` | `require` — tightened |
+| *(nothing)* | `sandbox: off` | `auto` — **refused** |
+
+A refusal is never silent. `collo config show` and `collo config validate`
+list them:
+
+```
+Refused project containment changes:
+  permissions.sandbox: project asked for off; kept auto (a repository can
+  tighten containment but never weaken it)
+```
+
+**Your own global configuration is not restricted this way.** A built-in
+default is not a choice you made, so `{"preset": "frictionless"}` or
+`{"sandbox": "off"}` in your global file works exactly as written — that is
+where the compatibility escape hatch lives. If a repository needs less
+containment than you run by default, that is a decision you make in your
+configuration, not one the repository makes for you.
+
+This is separate from repository trust. Trust decides whether the project
+layer is read at all; these rules decide what it may do once it is trusted.
+
 ### Permission fields
 
 | Field | Type | Meaning |
 | --- | --- | --- |
+| `preset` | string | `frictionless`, `standard` (default), or `hardened`. Fills only the containment fields you do not set yourself. |
 | `mode` | string | `ask`, `workspace`, or `autopilot`; default `ask`. |
 | `allow_outside_workspace` | boolean | Allows built-in path tools to resolve outside the workspace; permission checks still apply. |
 | `allowed_tools` | string list | Persistent session-start allowlist by exact tool name. |
 | `denied_tools` | string list | Exact tool names that are always disabled by the permission manager. |
 | `denied_commands` | regex list | Additional hard command denials checked again at execution. Built-in, global, and project patterns accumulate and cannot be removed by a lower layer; structural catastrophic checks are separate and always active. |
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
-| `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch; `require` refuses degraded execution. |
+| `network` | string | `open` (default) or `scoped`. Under `scoped`, an action that reaches the network is never approved automatically unless a rule or a session grant covers every endpoint it declares. |
+| `commands` | string | `open` (default) or `allowlist`. Under `allowlist`, a command is never approved automatically unless a rule or a session grant covers every executable it runs. |
+| `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch available in your global configuration; a project file cannot select it. `require` refuses degraded execution. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
@@ -579,7 +676,7 @@ Each rule supports:
 | `tool` | Tool-name glob, for example `run_command` or `mcp_*`. |
 | `path` | Glob matched against resolved native paths; a suffix of `/**` includes the directory and descendants. |
 | `command` | Executable-name glob such as `go`, `git`, or `npm`. |
-| `host` | Network host/domain glob for tools that declare hosts. |
+| `host` | Network host/domain glob matched against the endpoints an action declares. |
 | `server` | MCP server-name glob. |
 | `reason` | Human-readable explanation shown with the rule decision. |
 
@@ -588,6 +685,110 @@ match. For an `allow` rule, every resource in the request must be covered;
 `deny` and `prompt` match when any resource in that category matches. An allow
 rule never vouches for a shell command the static analyzer could not fully
 inspect.
+
+### Declared endpoints and host rules
+
+A `host` matcher is compared against the endpoints an action's own text names:
+a URL argument to `curl` or `wget`, an `ssh`/`scp`/`rsync` destination, a Git
+remote given as a URL, and the configured endpoint of an HTTP-transport MCP
+server. Hosts are normalized to a lowercase name without scheme, credentials,
+port, or path, so `https://User@API.Example.com:8443/v1` matches
+`api.example.com`.
+
+Many network commands do not name their endpoint at all — `git push origin`
+resolves a remote from repository configuration, `npm install` uses a
+registry from configuration, `curl -K file` reads URLs from a file. Collomia
+reports those endpoints as **undetermined** rather than as "no endpoints". An
+`allow` rule scoped to a host never covers an action with undetermined
+endpoints, exactly as it never covers a command the analyzer could not read;
+`deny` and `prompt` rules still fire on whatever endpoints were readable.
+`collo policy check` prints the endpoints a command declares.
+
+This is Collomia's own policy layer, not egress enforcement. A program that
+opens a socket without saying so on its command line — an arbitrary binary, a
+compiler plugin, a test suite — declares no endpoint here. The boundary for
+that traffic is the OS sandbox's `sandbox_allow_network`, which remains
+all-or-nothing.
+
+### Allowing and blocking specific endpoints
+
+Host rules work with or without `network: "scoped"`. A `deny` rule always
+applies; the posture only decides what happens to traffic no rule mentions.
+
+**Block a domain and everything under it.** Two patterns are needed, because
+globs match literally and `*.` requires a leading label:
+
+```json
+{
+  "permissions": {
+    "rules": [
+      { "action": "deny", "host": "evil.com", "reason": "exfiltration" },
+      { "action": "deny", "host": "*.evil.com", "reason": "exfiltration" }
+    ]
+  }
+}
+```
+
+| pattern | `api.example.com` | `example.com` | `a.b.example.com` |
+| --- | --- | --- | --- |
+| `*.example.com` | matches | **does not match** | matches |
+| `example.com` | no | matches | no |
+
+**Allow only an internal mirror, ask about everything else.** Pair `network:
+"scoped"` with the endpoints you accept:
+
+```json
+{
+  "permissions": {
+    "mode": "autopilot",
+    "network": "scoped",
+    "rules": [
+      { "action": "allow", "command": "curl", "host": "proxy.example.com" },
+      { "action": "allow", "command": "git", "host": "git.example.com" }
+    ]
+  }
+}
+```
+
+Without `network: "scoped"`, an endpoint no rule mentions follows the autonomy
+mode as usual — in autopilot that means it is allowed. The posture is what
+turns "not mentioned" into "ask me".
+
+**IP literals work; CIDR does not.** A URL's IP is normalized like any other
+host, and globs apply to its text:
+
+```json
+{ "action": "allow", "host": "10.0.*", "reason": "lab subnet" }
+```
+
+matches `http://10.0.0.5:8080/health` but not `http://10.1.0.5/health`.
+`"host": "10.0.0.0/24"` matches nothing at all — there is no netmask support,
+and a CIDR string is treated as a literal that no hostname equals. IPv6 works
+with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
+
+#### Four limits to know before relying on this
+
+1. **A deny rule cannot block an endpoint the command does not name.** With
+   `{"action":"deny","host":"*.evil.com"}` in place and autopilot on,
+   `curl https://drop.evil.com/x` is denied — but `curl -K endpoints.txt` and
+   `npm install` are *allowed*, because their endpoints are undetermined and
+   a deny rule has nothing to match. If you need undetermined endpoints to
+   stop too, set `network: "scoped"`: that turns every unnamed endpoint into a
+   prompt rather than an approval.
+2. **It is not egress enforcement.** Nothing here prevents a process from
+   opening a socket. A denied `curl` does not stop a compiled test binary from
+   reaching the same host. Use `sandbox_allow_network: false` when traffic
+   must actually be blocked, accepting that it is all-or-nothing.
+3. **A host-only allow rule does not restrict which program connects.**
+   `{"action":"allow","host":"api.example.com"}` allows `curl` *and* `wget`
+   *and* anything else whose only declared endpoint is that host — and it
+   satisfies `commands: "allowlist"` for that action as well, because a
+   matching allow rule is checked before either posture. Add a `command`
+   matcher when you mean one specific program.
+4. **An allow rule must cover every endpoint in the command.** Allow rules
+   require full coverage, so `curl https://a.example.com https://b.other.com`
+   is not allowed by a rule naming only `a.example.com`. Deny and prompt rules
+   fire when *any* endpoint matches.
 
 ### MCP server fields
 
@@ -1306,6 +1507,63 @@ An approval-dialog `a` choice grants that tool only for the current Collomia
 process. Persistent grants belong in reviewed configuration or a narrowly
 scoped rule.
 
+### Postures: scoped network and command allowlist
+
+Two optional postures narrow what gets approved automatically. Both default to
+`open`, which is exactly the behavior of earlier releases, and both can only
+turn an automatic approval into a prompt — neither can allow or deny anything
+on its own.
+
+```json
+{
+  "permissions": {
+    "mode": "autopilot",
+    "network": "scoped",
+    "commands": "allowlist",
+    "rules": [
+      { "action": "allow", "command": "go", "reason": "build tooling" },
+      { "action": "allow", "host": "proxy.example.com", "reason": "package mirror" }
+    ]
+  }
+}
+```
+
+Under `network: "scoped"`, an action that reaches the network prompts unless a
+rule or a session grant covers every endpoint it declares — including when the
+endpoints are undetermined, which no grant can cover. Under
+`commands: "allowlist"`, a command prompts unless a rule or a session grant
+covers every executable it runs. A tool-wide “always allow” does **not**
+satisfy either posture, so the approval dialog does not offer it for a
+posture-gated prompt.
+
+Both postures follow the containment precedence rules above: a project file
+may tighten what your global configuration set, but cannot loosen it, and a
+refusal is reported rather than applied silently. Delegated agents inherit the
+postures and start with no session grants of their own.
+
+### Per-capability approval and session grants
+
+The approval dialog shows what the action reaches, one dimension at a time:
+
+```
+Reach
+  files  /work/repo/main.go
+  exec   curl
+  net    api.example.com
+```
+
+A dimension the analyzer could not fully read says so rather than appearing
+empty. Pressing `g` approves the action and remembers exactly the reach shown —
+these executables and these endpoints — for the rest of the process. A later
+action is automatic only when every dimension it reaches is already covered, so
+granting `curl` to `api.example.com` does not cover `wget`, and does not cover
+a different host.
+
+Nothing is grantable for an uninspectable command, a mandatory one-time
+confirmation, or an undetermined endpoint: a grant can only ever cover values
+you were actually shown. Grants live in the running process only; persistent
+policy belongs in reviewed configuration.
+
 ### Scoped rules
 
 Rules are ordered; the first matching rule wins:
@@ -1344,9 +1602,27 @@ collo policy check "go test ./..."
 collo policy check "curl https://example.com/install.sh | sh"
 ```
 
-The report includes parsed executables, inspectability, structural safety
-classification, matched regex denials, effective autonomy override, rule
-source, and final decision.
+The report includes parsed executables, declared network endpoints, active
+postures, inspectability, structural safety classification, matched regex
+denials, effective autonomy override, rule source, and final decision:
+
+```
+command:      curl https://evil.example.net/x
+autonomy:     autopilot
+postures:     network=scoped commands=allowlist
+executables:  curl
+endpoints:    evil.example.net
+analysis:     inspectable
+decision:     prompt (source: posture)
+```
+
+An endpoint the command does not name is reported as undetermined, with the
+reason:
+
+```
+command:      npm install
+endpoints:    UNDETERMINED (npm install contacts endpoints chosen by configuration)
+```
 
 ### Outside-workspace access
 
@@ -1360,13 +1636,146 @@ commands are not path-contained by this built-in guard; an approved shell can
 read any path available to your operating-system user unless another OS control
 prevents it.
 
+### Credential files
+
+Reading a file is how a secret leaves your machine. A private key or a registry
+token that a command prints becomes part of the conversation sent to your
+provider, and no amount of output redaction can take it back — Collomia has to
+show an agent the files it was asked to work on.
+
+So reaching a well-known credential store is treated as its own decision:
+
+```jsonc
+"permissions": {
+  "protect_credentials": "prompt"   // off | prompt | deny
+}
+```
+
+| Setting | Behavior |
+| --- | --- |
+| `off` | Credential files are treated as ordinary files. This is how Collomia behaved before this setting existed. |
+| `prompt` | The default. Reaching one always asks, and no blanket approval can cover it. |
+| `deny` | Reaching one is refused outright. |
+
+`prompt` is stronger than the `ask` mode it resembles. In `ask` mode you can
+approve a tool once with **always** and stop being asked; under autopilot you
+are not asked at all. Neither of those covers a credential file. Specifically, a
+`deny` rule still denies, but **an allow rule matched on a tool, a command, or a
+bare `**` path glob will not cover a credential store**, and neither will a
+tool-wide "always allow", a per-capability session grant, or `autopilot`. That
+is the entire point: a broad approval you granted for ordinary work must not
+quietly include your SSH key.
+
+#### Exactly which locations are protected
+
+Anchored to your home directory:
+
+`~/.aws/credentials`, `~/.azure/`, `~/.cargo/credentials.toml`,
+`~/.collomia/config.json`, `~/.collomia/mcp.json`, `~/.config/gcloud/`,
+`~/.config/gh/hosts.yml`, `~/.config/glab-cli/config.yml`,
+`~/.docker/config.json`, `~/.gem/credentials`, `~/.git-credentials`,
+`~/.gnupg/`, `~/.kube/config`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.ssh/`,
+`~/_netrc`
+
+Recognized by filename wherever they appear, including inside your repository:
+
+`.env`, `.envrc`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `_netrc`,
+`id_dsa`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk`, `id_rsa`,
+`service-account.json`
+
+Recognized by extension:
+
+`*.asc`, `*.jks`, `*.key`, `*.keystore`, `*.p12`, `*.pem`, `*.pfx`, `*.ppk`
+
+Any name ending `.env.` followed by anything else — `.env.production`,
+`.env.local` — counts as an environment file too.
+
+#### What is deliberately not protected
+
+These are read, copied, and committed constantly. Prompting on them would teach
+you to approve without reading, which costs more than it protects:
+
+`~/.ssh/authorized_keys`, `~/.ssh/config`, `~/.ssh/environment`,
+`~/.ssh/known_hosts`, `~/.ssh/rc`, and anything ending `*.dist`, `*.example`,
+`*.md`, `*.pub`, `*.sample`, or `*.template`.
+
+So `cat ~/.ssh/id_rsa` prompts and `cat ~/.ssh/id_rsa.pub` does not;
+`cat .env` prompts and `cat .env.example` does not.
+
+#### Answering the prompt
+
+The dialog offers three answers, and they differ in how long they last:
+
+| Key | Lasts | Covers |
+| --- | --- | --- |
+| `y` | This action only | This action only |
+| `g` | Until Collomia exits | Exactly the credential file shown, and nothing else |
+| `n` | — | Denies the action |
+
+`g` is the everyday answer for a project that legitimately reads its own
+`.env`. It covers the one target you saw — never the tool, never the
+directory, never a sibling file that happens to classify the same way. An
+action reaching one granted and one ungranted store still prompts, and raising
+`protect_credentials` to `deny` invalidates a grant made while it was `prompt`.
+
+There is deliberately no `a` (always) on a credential prompt: a tool-wide grant
+is exactly the broad approval this control exists to stop. Under `deny`, `g`
+is not offered either.
+
+The dialog also prints the configuration rule that ends the asking permanently,
+with the path filled in, so the session grant is the convenient answer and the
+rule below is the durable one.
+
+#### Making a deliberate exception
+
+A rule that *names the path* is honored, so a project that genuinely needs one
+file does not have to switch the protection off:
+
+```jsonc
+"rules": [
+  { "action": "allow", "path": "/work/repo/.env", "reason": "app config read by tests" }
+]
+```
+
+The rule has to identify a location. A pattern that is nothing but wildcards
+(`**`, `*`, `*/*`) is treated as a blanket grant and will not cover a
+credential store.
+
+#### Four limits to know
+
+**It matches names, not contents.** A private key stored somewhere unusual —
+`~/work/deploy-thing` — is not recognized. This is a list of conventional
+locations, not detection of secret material.
+
+**It reads what a command says, not what it does.** `cat ~/.ssh/id_rsa` is
+caught because the path is in the command text. A script that opens the same
+file is not, though a command Collomia cannot analyze already requires approval
+for that reason. Confining what a command can read at the OS level is
+[read confinement](#exactly-what-read-confinement-denies)'s job, not this one.
+
+**Reaching a file is not reading it.** The check fires on any command naming
+the path, including one that writes or deletes it. That is deliberate — an
+overwrite of your SSH key is worth a prompt too.
+
+**It does not protect a secret already in the conversation.** Once a value has
+been read and sent, this setting has nothing left to do. It reduces how often
+that happens; it does not undo it.
+
+The current setting is shown in the Session tab's Security block, next to the
+sandbox and posture settings.
+
 ### Command analysis and hard denials
 
-Before a shell action reaches approval, Collomia extracts executables and looks
-for command substitutions, `eval`, inline interpreter payloads, variable
-commands, and other constructs it cannot fully analyze. An uninspectable
-command always requires a human in the interactive TUI. In headless mode it
-fails because no approver is available.
+Before a shell action reaches approval, Collomia extracts executables and
+declared network endpoints, and looks for command substitutions, `eval`,
+inline interpreter payloads, variable commands, and other constructs it cannot
+fully analyze. An uninspectable command always requires a human in the
+interactive TUI. In headless mode it fails because no approver is available.
+
+An interpreter that takes its program from a pipe — the `curl … | sh` install
+pattern — is uninspectable by the same rule: the code that will run is not in
+the command text and does not exist yet. The endpoint the pipeline fetches
+from is still reported, so a `deny` host rule applies to it.
 
 Collomia uses an outcome-aware built-in classifier in addition to regex
 denials. It tracks common wrappers and literal shell payloads, resolves paths
@@ -1420,10 +1829,14 @@ dependency reads. Package managers can still require a readable dependency
 store, writable cache, or environment-provided credentials; the examples
 below cover all three cases. Set either switch to `false` to deliberately
 request network denial or user-data read confinement. Set `sandbox` to `off`
-only as an explicit compatibility escape hatch.
+only as an explicit compatibility escape hatch, and only in your global
+configuration.
 
-Existing global or project files containing `"sandbox": "off"` remain off:
-Collomia does not rewrite configuration or reinterpret an explicit choice.
+An existing global file containing `"sandbox": "off"` remains off: Collomia
+does not rewrite configuration or reinterpret an explicit choice. A project
+file containing `"sandbox": "off"` is refused and reported, keeping the
+inherited mode; move the setting to your global configuration (or use
+`"preset": "frictionless"` there) if you want it.
 New global starter files use `auto`, and project starters omit the field so
 they inherit the user or built-in value.
 
@@ -1478,6 +1891,38 @@ Platform behavior:
   explicit `sandbox: "off"` exception for a workflow that must own the Windows
   debugging relationship itself.
 
+#### Exactly what read confinement denies
+
+`sandbox_allow_read_outside_workspace: false` targets *your data*, not the
+operating system. The workspace, temporary directories, writable roots, every
+`PATH` entry, and your `sandbox_readable_roots` stay readable on every
+platform. Beyond those:
+
+- **macOS** denies file *contents* under `/Users`, `/Volumes`, and your home
+  directory, then re-permits these system roots: `/System`, `/usr`, `/bin`,
+  `/sbin`, `/Library`, `/Applications`, `/opt/homebrew`, `/opt/local`, `/nix`,
+  `/private/etc`, `/private/var/db`, `/private/var/select`, `/dev`. File
+  *metadata* stays visible, so `ls ~` still works while reading a file there
+  fails — path lookups fail cleanly instead of crashing tools that expect a
+  directory to exist.
+- **Linux** works the other way around: Landlock permits only these roots and
+  denies everything else — `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc`,
+  `/opt`, `/nix`, `/snap`, `/dev`, `/proc/self`, `/proc/thread-self`.
+- **Windows** confines user-data reads under AppContainer *always*, whether or
+  not this switch is set.
+
+In practice `~/.ssh`, `~/.aws`, `~/.config`, browser profiles, your documents,
+other repositories, and mounted volumes become unreadable, while system
+libraries and public OS configuration such as `/etc/passwd` stay readable.
+This is deliberate: the boundary is ungranted user data, not a claim that
+public operating-system configuration becomes invisible. Because `PATH`
+entries remain readable, a user-installed binary in `~/.local/bin` still
+launches without opening the rest of your home directory.
+
+When a build legitimately needs something outside the workspace, add a narrow
+`sandbox_readable_roots` entry for it rather than returning the switch to
+`true`.
+
 The network setting is deliberately command-specific. It does not block model
 providers, remote MCP servers, hooks, or LSP processes. On Windows, allowing
 network adds Internet and private-network AppContainer capabilities, but
@@ -1512,14 +1957,38 @@ instructions.
 ### Command environment
 
 `command_env: "full"` passes the parent environment to shell and background
-commands. `"minimal"` keeps only basics such as `PATH`, `HOME`, user/shell/temp,
-locale, terminal, and essential Windows command variables. When `command_env`
-is omitted and sandboxing is `auto` or `require`, Collomia automatically uses
-the minimal environment.
+commands. When `command_env` is omitted and sandboxing is `auto` or `require`,
+Collomia automatically uses the minimal environment.
 
-Minimal mode can cause builds that require proxy variables, package-registry
-tokens, compiler flags, or cloud credentials to fail. Prefer adding a narrow
-purpose-built wrapper or explicitly opting into `full` only when needed.
+`"minimal"` is an allowlist, not a filter. Exactly these variables are passed
+through, and only when they are set in the parent environment:
+
+| Purpose | Variables |
+| --- | --- |
+| Identity and paths | `PATH` `HOME` `USER` `LOGNAME` `SHELL` |
+| Temporary directories | `TMPDIR` `TEMP` `TMP` |
+| Terminal | `TERM` `COLUMNS` `LINES` |
+| Locale | `LANG` `LC_ALL` `LC_CTYPE` |
+| Windows essentials | `SYSTEMROOT` `COMSPEC` `PATHEXT` `USERPROFILE` `LOCALAPPDATA` |
+| Build cache | `GOCACHE` |
+
+Everything else is dropped, which is the point: `GITHUB_TOKEN`, `NPM_TOKEN`,
+`AWS_*`, `ANTHROPIC_API_KEY`, and any other credential in your shell never
+reach an agent command.
+
+What predictably stops working: proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`,
+`NO_PROXY`), registry credentials (`NPM_TOKEN`, `PIP_INDEX_URL`), cloud SDK
+configuration (`AWS_PROFILE`, `AWS_REGION`,
+`GOOGLE_APPLICATION_CREDENTIALS`), toolchain overrides (`GOPATH`, `GOPROXY`,
+`CARGO_HOME`, `JAVA_HOME`, `NODE_OPTIONS`), and anything injected by direnv,
+asdf, or nvm shims. Note that `GOCACHE` is kept while `GOPATH` and `GOPROXY`
+are not — a deliberate narrow carve-out for Go builds, not general toolchain
+support.
+
+There is no per-variable passthrough: `command_env` is `full` or `minimal`. A
+command that needs one value can set it inline, because the command string is
+yours — `HTTPS_PROXY=http://proxy.example.com:3128 npm ci`. Prefer that, or a
+narrow purpose-built wrapper, over opting the whole session into `full`.
 
 ### External reviewer
 
@@ -1595,7 +2064,11 @@ background processes, Git branch/upstream and working-tree counts,
 provider/sandbox/MCP/trust health with concise recovery actions, and bounded
 recent activity. Git inspection is read-only,
 runs asynchronously with a short timeout, and reports non-Git workspaces
-normally; press `r` in the Session tab to refresh it. `/agents` provides a
+normally; press `r` in the Session tab to refresh it. The Session tab's
+**Security** block is the complete containment picture in one place — stance,
+autonomy, sandbox backend and what it actually applied, command environment,
+network and command postures, rule counts, and any session grants handed out
+so far — placed high enough to read without scrolling. `/agents` provides a
 searchable view of each retained delegated outcome, and `alt+a` opens explicit
 inspect, steer, and stop actions for one active child while its parent turn is
 still running. Help lists commands,
@@ -1702,7 +2175,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/undo` | Revert the most recent tracked agent file change when the file has not diverged externally. |
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
-| `/sessions` | Fuzzy-pick and switch to another durable session in place. |
+| `/sessions` (alias `/resume`) | Fuzzy-pick and switch to another durable session in place. |
 | `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
@@ -1759,6 +2232,22 @@ may be quoted or use backslash-escaped spaces. Images must resolve to regular
 files inside the active workspace; symlink escapes and outside paths are
 refused.
 
+### The containment mark in the status bar
+
+The autonomy badge always carries a containment mark, so the answer to "what
+is protecting me right now?" is on screen rather than several commands away:
+
+| Mark | Meaning |
+| --- | --- |
+| `ASK ⛨` | OS containment is configured for commands. |
+| `ASK ⛉` | No OS sandbox — `sandbox: off` or the `frictionless` preset. |
+| `ASK ⛨!` | Containment was requested but the platform applied less than was asked for. Run `collo doctor`. |
+
+When the stance is not the ordinary one — `hardened`, `frictionless`, a
+degraded sandbox — a second badge spells it out, but only when the terminal is
+wide enough that it does not push the run controls off the bar. The mark
+itself is never dropped, and the Session tab always carries the full detail.
+
 The status bar shows an `images N` badge while a prompt has pending images.
 Run `/attachments` to review their names, types, and sizes, `/detach 2` to
 remove one, or `/detach all` to remove them all. Pending images follow the
@@ -1799,7 +2288,8 @@ summary, reason, normalized resources, and a colored diff when available.
 | Key | Approval action |
 | --- | --- |
 | `y` or `enter` | Allow once. |
-| `a` | Allow and auto-approve this exact tool for the remainder of the process. |
+| `a` | Allow and auto-approve this exact tool for the remainder of the process. Not offered for a posture-gated prompt, where it would not satisfy the posture. |
+| `g` | Allow and remember exactly the reach shown — these executables, these endpoints — for the remainder of the process. Offered only when something is safely grantable. |
 | `n` or `esc` | Deny. |
 | `h` | For a `write_file` proposal with at least two hunks, enter hunk review. |
 
@@ -1949,7 +2439,7 @@ Global navigation keys can be remapped by action. Each omitted action inherits
 its earlier/default binding, so a project may override just one user binding.
 Supported values are `ctrl+letter`, `alt+letter`, `f1` through `f12`, `pgup`,
 `pgdown`, `home`, and `end`. Duplicate global bindings fail configuration
-validation. Approval `y`/`a`/`n`, question `enter`/`esc`, and keys shown inside
+validation. Approval `y`/`a`/`g`/`n`, question `enter`/`esc`, and keys shown inside
 transcript/diff modes remain fixed so safety decisions and modal help stay
 unambiguous.
 

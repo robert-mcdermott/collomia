@@ -20,6 +20,8 @@ func classifySegment(tokens []string, cwd string, a *Analysis) string {
 	if inv.name == "" {
 		return cwd
 	}
+	classifyNetwork(inv, a)
+	classifyCredentialTargets(inv, cwd, a)
 	if isInlineInterpreter(inv.name) {
 		if payload, encoded := inlinePayload(inv.name, inv.args); payload != "" {
 			nested := analyzeAt(payload, a.workspace, cwd)
@@ -288,6 +290,23 @@ func mergeSafety(dst *Analysis, src Analysis) {
 	for _, reason := range src.ConfirmReasons {
 		dst.confirm(reason)
 	}
+	// A credential store named inside an inline payload is reached by the
+	// outer command just the same, so `bash -c "cat ~/.ssh/id_rsa"` must not
+	// launder the target that the nested analysis already read.
+	for _, target := range src.CredentialTargets {
+		dst.credential(target)
+	}
+	// Endpoints named inside an inline payload are endpoints of the outer
+	// command; losing them here would let an allow rule cover traffic the
+	// nested analysis did see.
+	dst.NetworkCommand = dst.NetworkCommand || src.NetworkCommand
+	for _, host := range src.Hosts {
+		dst.addHost(host)
+	}
+	for _, reason := range src.HostReasons {
+		dst.undeterminedHost(reason)
+	}
+	dst.UndeterminedHosts = dst.UndeterminedHosts || src.UndeterminedHosts
 }
 
 func classifyRM(args []string, cwd string, a *Analysis) {

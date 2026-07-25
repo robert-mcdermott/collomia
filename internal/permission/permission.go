@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/audit"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/policy"
+	"github.com/robert-mcdermott/collomia/internal/secrets"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -26,13 +28,61 @@ type Request struct {
 	Tool   string
 	Action tools.Action
 	// Reason explains why the prompt is being shown (matched prompt rule,
-	// uninspectable command analysis, or the autonomy mode).
+	// uninspectable command analysis, a posture gate, or the autonomy mode).
 	Reason string
+	// Capabilities describe the action's reach one dimension at a time so the
+	// prompt can show it and grant it a dimension at a time.
+	Capabilities []Capability
+	// PostureGated marks a prompt produced by the scoped-network or
+	// command-allowlist posture. A tool-wide "always" would not satisfy that
+	// posture, so the prompt offers the scoped grants instead.
+	PostureGated bool
+	// AllowsAlways reports whether a tool-wide "always allow" is available for
+	// this request. It is the single authority on that question.
+	//
+	// It exists as a field rather than as a rule each caller re-derives
+	// because the rule was previously copied into the approval dialog and the
+	// key handler, and both copies went stale when credential stores were
+	// added: the dialog offered "Always" for a private key, the permission
+	// layer then declined to record it, and the next identical action prompted
+	// again. An offer that does nothing is worse than no offer.
+	AllowsAlways bool
+}
+
+// Capability kinds. They name what an action reaches, not which tool asked.
+const (
+	CapabilityFilesystem = "filesystem"
+	CapabilityExecutable = "executable"
+	CapabilityNetwork    = "network"
+	CapabilityServer     = "server"
+	// CapabilityCredential is the credential store an action reaches. It is
+	// grantable only under protect_credentials=prompt, and a grant covers the
+	// exact target shown and nothing else — never the tool, never the
+	// directory, and never past this process.
+	CapabilityCredential = "credential"
+)
+
+// Capability is one dimension of an action's reach. Values are the normalized
+// resources in that dimension; Unknown marks a dimension the analyzer could
+// not fully determine, which is why a session grant is never offered for it.
+type Capability struct {
+	Kind    string
+	Values  []string
+	Unknown bool
+	Reasons []string
+	// Grantable is true when approving this action can also record a session
+	// grant for this dimension's values.
+	Grantable bool
+	// Granted is true when a session grant already covers every value.
+	Granted bool
 }
 
 type Decision struct {
 	Allow  bool
 	Always bool
+	// Grants lists capability kinds to remember for the rest of the session,
+	// scoped to this action's values rather than to the whole tool.
+	Grants []string
 	// Content, when set, replaces the write's proposed content before
 	// execution — used when the user approved only some hunks of a
 	// write_file diff rather than the whole file.
@@ -41,7 +91,7 @@ type Decision struct {
 
 // Grant reports how an authorization was decided, for events and audit.
 type Grant struct {
-	Source string // rule, mode, session, interactive, implicit-read, denied-tool, analysis
+	Source string // rule, mode, session, session-scope, posture, interactive, implicit-read, denied-tool, analysis
 	Rule   string
 	// ContentOverride carries a selectively-approved write, when the user
 	// picked hunks instead of accepting the whole proposed change.
@@ -51,12 +101,30 @@ type Grant struct {
 type Approver func(context.Context, Request) (Decision, error)
 
 type Manager struct {
-	mu                    sync.RWMutex
-	mode                  string
-	baseMode              string
-	profileMode           string
-	allowed               map[string]bool
-	denied                map[string]bool
+	mu          sync.RWMutex
+	mode        string
+	baseMode    string
+	profileMode string
+	allowed     map[string]bool
+	denied      map[string]bool
+	// network and commands are the posture settings. They never widen a
+	// decision: each can only turn an automatic approval into a prompt.
+	network  string
+	commands string
+	// protectCredentials decides what an action reaching a well-known
+	// credential store gets: off, prompt, or deny. Unlike the postures above
+	// it can deny, because refusing to hand a private key to a model is a
+	// defensible default in a way that refusing an ordinary command is not.
+	protectCredentials string
+	// allowedCommands and allowedHosts are session grants scoped to one
+	// executable or one endpoint, the narrow counterpart of "always allow
+	// this tool".
+	allowedCommands map[string]bool
+	allowedHosts    map[string]bool
+	// allowedCredentials holds credential targets approved for this session,
+	// stored as the exact "label: path" string the user was shown.
+	allowedCredentials map[string]bool
+
 	profileDenied         map[string]bool
 	profileDeniedCommands []*regexp.Regexp
 	allowOutside          bool
@@ -80,7 +148,25 @@ func New(cfg appconfig.Permissions, approver Approver) *Manager {
 	for _, name := range cfg.DeniedTools {
 		denied[name] = true
 	}
-	return &Manager{mode: cfg.Mode, baseMode: cfg.Mode, allowed: allowed, denied: denied, profileDenied: map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace, rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver}
+	network := strings.ToLower(strings.TrimSpace(cfg.Network))
+	if network == "" {
+		network = "open"
+	}
+	commands := strings.ToLower(strings.TrimSpace(cfg.Commands))
+	if commands == "" {
+		commands = "open"
+	}
+	protectCredentials := strings.ToLower(strings.TrimSpace(cfg.ProtectCredentials))
+	if protectCredentials == "" {
+		protectCredentials = appconfig.ProtectCredentialsPrompt
+	}
+	return &Manager{
+		mode: cfg.Mode, baseMode: cfg.Mode, allowed: allowed, denied: denied,
+		network: network, commands: commands, protectCredentials: protectCredentials,
+		allowedCommands: map[string]bool{}, allowedHosts: map[string]bool{}, allowedCredentials: map[string]bool{},
+		profileDenied: map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace,
+		rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver,
+	}
 }
 
 // SetLedger attaches the persistent audit ledger. Nil is safe.
@@ -181,7 +267,7 @@ func (m *Manager) decide(tool string, action tools.Action) (Grant, string, strin
 	if len(restrictions) == 0 {
 		return grant, outcome, reason
 	}
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	restriction := policy.Evaluate(restrictions, request)
 	if !restriction.Matched() {
 		return grant, outcome, reason
@@ -207,7 +293,12 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	profilePatterns := append([]*regexp.Regexp(nil), m.profileDeniedCommands...)
 	rules := m.rules
 	allowOutside := m.allowOutside
+	networkPosture := m.network
+	commandPosture := m.commands
+	protectCredentials := m.protectCredentials
+	scopes := m.scopeSnapshotLocked()
 	m.mu.RUnlock()
+	credentials := credentialTargets(action, protectCredentials)
 
 	if denied || profileDenied {
 		return Grant{Source: "denied-tool"}, "deny", ""
@@ -223,7 +314,7 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 		reason := strings.Join(action.HardDenyReasons, "; ")
 		return Grant{Source: "safety", Rule: reason}, "deny", ""
 	}
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	decision := policy.Evaluate(rules, request)
 	if decision.Matched() {
 		grant := Grant{Source: "rule", Rule: decision.Describe()}
@@ -233,12 +324,39 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 		case "allow":
 			// One-time confirmations and opaque commands may not be widened
 			// into automatic approval by an allow rule.
-			if len(action.ConfirmReasons) == 0 && !action.Uninspectable {
+			//
+			// A credential store is different: a rule that names its path is a
+			// deliberate written-down exception and is honored, while a
+			// blanket rule covering a tool or a whole directory is not allowed
+			// to sweep a private key in as a side effect.
+			if len(action.ConfirmReasons) == 0 && !action.Uninspectable && (len(credentials) == 0 || namesSpecificPath(decision.Rule.Path)) {
 				return grant, "allow", ""
 			}
 		case "prompt":
 			return grant, "prompt", "policy rule requires approval: " + decision.Describe()
 		}
+	}
+	// Credential stores are gated before the implicit-read fast path: a .env
+	// or a key checked into the workspace is an in-workspace read, and would
+	// otherwise be approved without anyone seeing it.
+	//
+	// A deny is evaluated against every target, not just the ungranted ones:
+	// raising the setting to deny mid-session must not be satisfiable by a
+	// grant handed out while it was still prompt.
+	if len(credentials) > 0 {
+		if protectCredentials == appconfig.ProtectCredentialsDeny {
+			return Grant{Source: "credentials", Rule: "action reaches " + strings.Join(credentials, "; ")}, "deny", ""
+		}
+		if outstanding := scopes.outstandingCredentials(credentials); len(outstanding) > 0 {
+			// The detail goes in the rule, which the audit ledger and
+			// "collo policy check" print. The prompt text says what approving
+			// costs, because the dialog already lists the paths right below it
+			// and repeating them there crowded out the part a reader needs.
+			detail := "action reaches " + strings.Join(outstanding, "; ")
+			return Grant{Source: "credentials", Rule: detail}, "prompt",
+				"approving lets this action read the file's contents into the conversation"
+		}
+		return Grant{Source: "session-scope", Rule: "credential granted this session: " + strings.Join(credentials, "; ")}, "allow", ""
 	}
 	if action.Risk == tools.RiskRead && !action.Outside {
 		return Grant{Source: "implicit-read"}, "allow", ""
@@ -251,6 +369,18 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	if len(action.ConfirmReasons) > 0 && action.Risk == tools.RiskExecute {
 		reason := strings.Join(action.ConfirmReasons, "; ")
 		return Grant{Source: "safety", Rule: reason}, "prompt", "one-time confirmation required: " + reason
+	}
+	// A grant scoped to this action's executables and endpoints is the narrow
+	// counterpart of "always allow this tool", and satisfies the postures
+	// below on its own.
+	if scopes.cover(action) {
+		return Grant{Source: "session-scope", Rule: scopes.describe(action)}, "allow", ""
+	}
+	// Postures can only turn an automatic approval into a prompt. They are
+	// evaluated before the tool-wide session grant and the autonomy mode so
+	// neither can hand out the access the posture exists to withhold.
+	if reason := posturePrompt(action, networkPosture, commandPosture); reason != "" {
+		return Grant{Source: "posture"}, "prompt", reason
 	}
 	if sessionAllowed {
 		return Grant{Source: "session"}, "allow", ""
@@ -266,9 +396,322 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	return Grant{Source: "interactive"}, "prompt", ""
 }
 
+// credentialTargets reports the well-known credential stores this action
+// reaches, or nil when the protection is off.
+//
+// Targets carried on the action come from shell analysis, which sees paths no
+// structured field holds. Targets are additionally derived here from the
+// action's declared paths, so a tool added later is covered by virtue of
+// declaring what it touches rather than by remembering to classify it.
+func credentialTargets(action tools.Action, setting string) []string {
+	if setting == appconfig.ProtectCredentialsOff {
+		return nil
+	}
+	targets := append([]string(nil), action.CredentialTargets...)
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		seen[target] = true
+	}
+	for _, path := range action.Paths {
+		label := secrets.Classify(path)
+		if label == "" {
+			continue
+		}
+		if target := label + ": " + path; !seen[target] {
+			seen[target] = true
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
+func (m *Manager) credentialSetting() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.protectCredentials
+}
+
+// oneTimeOnly reports whether an action must be approved on its own, with no
+// tool-wide "always allow". Every caller asks this function rather than
+// restating the rule; see Request.AllowsAlways for why.
+func oneTimeOnly(action tools.Action, credentials []string) bool {
+	return action.Uninspectable || len(action.ConfirmReasons) > 0 || len(credentials) > 0
+}
+
+// namesSpecificPath reports whether a rule's path pattern identifies a
+// location deliberately, rather than matching everything. A rule that names
+// where a credential lives is an exception its author wrote on purpose; a bare
+// "**" is a blanket grant that should not quietly include one.
+func namesSpecificPath(pattern string) bool {
+	trimmed := strings.TrimSpace(pattern)
+	if trimmed == "" {
+		return false
+	}
+	return strings.Trim(trimmed, `*?/\`) != ""
+}
+
+// scopeGrants is a point-in-time copy of the session's per-capability grants.
+type scopeGrants struct {
+	commands    map[string]bool
+	hosts       map[string]bool
+	credentials map[string]bool
+}
+
+func (m *Manager) scopeSnapshotLocked() scopeGrants {
+	snapshot := scopeGrants{
+		commands:    make(map[string]bool, len(m.allowedCommands)),
+		hosts:       make(map[string]bool, len(m.allowedHosts)),
+		credentials: make(map[string]bool, len(m.allowedCredentials)),
+	}
+	for name := range m.allowedCommands {
+		snapshot.commands[name] = true
+	}
+	for host := range m.allowedHosts {
+		snapshot.hosts[host] = true
+	}
+	for target := range m.allowedCredentials {
+		snapshot.credentials[target] = true
+	}
+	return snapshot
+}
+
+// coversCredentials reports whether every target is already granted. Every
+// target must be covered: an action touching a granted .env and an ungranted
+// private key is still an action touching an ungranted private key.
+func (g scopeGrants) coversCredentials(targets []string) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for _, target := range targets {
+		if !g.credentials[target] {
+			return false
+		}
+	}
+	return true
+}
+
+// outstandingCredentials returns the targets this session has not granted.
+func (g scopeGrants) outstandingCredentials(targets []string) []string {
+	var outstanding []string
+	for _, target := range targets {
+		if !g.credentials[target] {
+			outstanding = append(outstanding, target)
+		}
+	}
+	return outstanding
+}
+
+// cover reports whether the session's scoped grants account for every
+// capability this action reaches. A dimension the analyzer could not read is
+// never covered: a grant applies to the values the user saw, not to whatever
+// the action turns out to touch.
+func (g scopeGrants) cover(action tools.Action) bool {
+	if action.Uninspectable || len(action.ConfirmReasons) > 0 {
+		return false
+	}
+	if len(action.Executables) == 0 && !action.Network {
+		return false
+	}
+	if !g.coversExecutables(action) || !g.coversNetwork(action) {
+		return false
+	}
+	return true
+}
+
+func (g scopeGrants) coversExecutables(action tools.Action) bool {
+	for _, executable := range action.Executables {
+		if !g.commands[executable] {
+			return false
+		}
+	}
+	return true
+}
+
+func (g scopeGrants) coversNetwork(action tools.Action) bool {
+	if !action.Network {
+		return true
+	}
+	if action.HostsUndetermined || len(action.Hosts) == 0 {
+		return false
+	}
+	for _, host := range action.Hosts {
+		if !g.hosts[host] {
+			return false
+		}
+	}
+	return true
+}
+
+func (g scopeGrants) describe(action tools.Action) string {
+	var parts []string
+	if len(action.Executables) > 0 {
+		parts = append(parts, "session grant for command "+strings.Join(action.Executables, ", "))
+	}
+	if action.Network && len(action.Hosts) > 0 {
+		parts = append(parts, "session grant for host "+strings.Join(action.Hosts, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// posturePrompt returns the reason an otherwise automatic approval must be
+// escalated to a person under the configured postures, or "" when neither
+// posture applies. It never allows or denies.
+func posturePrompt(action tools.Action, network, commands string) string {
+	if commands == "allowlist" && action.Risk == tools.RiskExecute && len(action.Executables) > 0 {
+		return "command allowlist requires an explicit grant for: " + strings.Join(action.Executables, ", ")
+	}
+	if network == "scoped" && action.Network {
+		if action.HostsUndetermined {
+			reason := "scoped network posture requires an explicit grant, and this action's endpoints could not be read"
+			if len(action.HostReasons) > 0 {
+				reason += ": " + strings.Join(action.HostReasons, "; ")
+			}
+			return reason
+		}
+		if len(action.Hosts) == 0 {
+			return "scoped network posture requires an explicit grant, and this action named no endpoint"
+		}
+		return "scoped network posture requires an explicit grant for: " + strings.Join(action.Hosts, ", ")
+	}
+	return ""
+}
+
+// Capabilities describes an action's reach one dimension at a time, marking
+// which dimensions a session grant could cover. A dimension the analyzer
+// could not fully read is reported as unknown and is never grantable.
+func (m *Manager) Capabilities(action tools.Action) []Capability {
+	m.mu.RLock()
+	scopes := m.scopeSnapshotLocked()
+	protectCredentials := m.protectCredentials
+	m.mu.RUnlock()
+	credentials := credentialTargets(action, protectCredentials)
+	oneTime := oneTimeOnly(action, credentials)
+	var out []Capability
+	if len(action.Paths) > 0 {
+		out = append(out, Capability{Kind: CapabilityFilesystem, Values: action.Paths})
+	}
+	if len(credentials) > 0 {
+		// A credential store is the one dimension that stays grantable while
+		// the tool-wide "always" does not. Repeatedly reading a project's own
+		// .env is ordinary work, and a prompt with no durable answer trains
+		// people to stop reading prompts. The grant covers exactly the target
+		// shown, so it is a decision about one file rather than about a tool.
+		//
+		// Under "deny" nothing is grantable: that setting exists to make the
+		// answer unavailable, not merely inconvenient. It never reaches a
+		// prompt anyway, and saying so here keeps the rule local.
+		capability := Capability{
+			Kind:      CapabilityCredential,
+			Values:    credentials,
+			Grantable: protectCredentials == appconfig.ProtectCredentialsPrompt && !action.Uninspectable && len(action.ConfirmReasons) == 0,
+		}
+		capability.Granted = capability.Grantable && scopes.coversCredentials(credentials)
+		out = append(out, capability)
+	}
+	if len(action.Executables) > 0 || action.Uninspectable {
+		capability := Capability{
+			Kind:      CapabilityExecutable,
+			Values:    action.Executables,
+			Unknown:   action.Uninspectable,
+			Reasons:   action.AnalysisReasons,
+			Grantable: !oneTime && len(action.Executables) > 0,
+		}
+		capability.Granted = capability.Grantable && scopes.coversExecutables(action)
+		out = append(out, capability)
+	}
+	if action.Network {
+		capability := Capability{
+			Kind:      CapabilityNetwork,
+			Values:    action.Hosts,
+			Unknown:   action.HostsUndetermined,
+			Reasons:   action.HostReasons,
+			Grantable: !oneTime && !action.HostsUndetermined && len(action.Hosts) > 0,
+		}
+		capability.Granted = capability.Grantable && scopes.coversNetwork(action)
+		out = append(out, capability)
+	}
+	if action.Server != "" {
+		out = append(out, Capability{Kind: CapabilityServer, Values: []string{action.Server}})
+	}
+	return out
+}
+
+// SessionGrants reports the per-capability grants accumulated this process,
+// sorted, so the user can see what they have handed out without reading the
+// audit ledger.
+func (m *Manager) SessionGrants() (commands, hosts, credentials []string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for name := range m.allowedCommands {
+		commands = append(commands, name)
+	}
+	for host := range m.allowedHosts {
+		hosts = append(hosts, host)
+	}
+	for target := range m.allowedCredentials {
+		credentials = append(credentials, target)
+	}
+	sort.Strings(commands)
+	sort.Strings(hosts)
+	sort.Strings(credentials)
+	return commands, hosts, credentials
+}
+
+// GrantableKinds lists the dimensions an approver may hand a session grant
+// for. Anything omitted here — an unreadable dimension, a one-time
+// confirmation — cannot be remembered, so a caller cannot grant access the
+// user was never shown.
+func GrantableKinds(capabilities []Capability) []string {
+	var kinds []string
+	for _, capability := range capabilities {
+		if capability.Grantable && !capability.Granted {
+			kinds = append(kinds, capability.Kind)
+		}
+	}
+	return kinds
+}
+
+// applyGrants records the session grants the user chose alongside an
+// approval. Only fully-readable dimensions can be granted, so a grant can
+// never cover an endpoint or executable the user was not shown.
+func (m *Manager) applyGrants(action tools.Action, kinds []string) {
+	if len(kinds) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, kind := range kinds {
+		switch kind {
+		case CapabilityExecutable:
+			if action.Uninspectable || len(action.ConfirmReasons) > 0 {
+				continue
+			}
+			for _, executable := range action.Executables {
+				m.allowedCommands[executable] = true
+			}
+		case CapabilityNetwork:
+			if action.HostsUndetermined || len(action.ConfirmReasons) > 0 {
+				continue
+			}
+			for _, host := range action.Hosts {
+				m.allowedHosts[host] = true
+			}
+		case CapabilityCredential:
+			if action.Uninspectable || len(action.ConfirmReasons) > 0 || m.protectCredentials != appconfig.ProtectCredentialsPrompt {
+				continue
+			}
+			// The exact strings the user saw, so a grant can never widen to a
+			// sibling file that happens to classify the same way.
+			for _, target := range credentialTargets(action, m.protectCredentials) {
+				m.allowedCredentials[target] = true
+			}
+		}
+	}
+}
+
 func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Action) (Grant, error) {
 	grant, outcome, reason := m.decide(tool, action)
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	record := func(allowed bool) {
 		decision := "deny"
 		if allowed {
@@ -309,7 +752,13 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 		record(false)
 		return grant, fmt.Errorf("%w: %s requires interactive approval", ErrDenied, action.Summary)
 	}
-	decision, err := approver(ctx, Request{Tool: tool, Action: action, Reason: reason})
+	postureGated := grant.Source == "posture"
+	credentials := credentialTargets(action, m.credentialSetting())
+	decision, err := approver(ctx, Request{
+		Tool: tool, Action: action, Reason: reason,
+		Capabilities: m.Capabilities(action), PostureGated: postureGated,
+		AllowsAlways: !oneTimeOnly(action, credentials) && !postureGated,
+	})
 	if err != nil {
 		record(false)
 		return grant, err
@@ -319,13 +768,16 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 		record(false)
 		return grant, fmt.Errorf("%w: %s", ErrDenied, action.Summary)
 	}
-	// "Always" never sticks for commands the analyzer could not read or that
-	// carry a mandatory confirmation; each must be approved on its own.
-	if decision.Always && !action.Uninspectable && len(action.ConfirmReasons) == 0 {
+	// "Always" never sticks for commands the analyzer could not read, that
+	// carry a mandatory confirmation, or that reach a credential store; each
+	// must be approved on its own. The narrower per-capability grants below
+	// remain available and are the intended answer for a recurring action.
+	if decision.Always && !oneTimeOnly(action, credentials) {
 		m.mu.Lock()
 		m.allowed[tool] = true
 		m.mu.Unlock()
 	}
+	m.applyGrants(action, decision.Grants)
 	record(true)
 	return grant, nil
 }

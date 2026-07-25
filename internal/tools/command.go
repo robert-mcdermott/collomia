@@ -77,15 +77,34 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, errors.New("command must not be empty")
 	}
 	analysis := shell.AnalyzeInWorkspace(a.Command, t.Workspace)
+	return ActionFromAnalysis("run: "+a.Command, a.Command, analysis), nil
+}
+
+// ActionFromAnalysis builds the permission-facing description of a shell
+// command from its static analysis.
+//
+// Every caller that evaluates a command must go through here rather than
+// assembling an Action by hand. A second construction site is how the host
+// matcher once shipped inert — documented, validated, and never populated —
+// and a hand-written copy in "collo policy check" reported the wrong decision
+// for a credential-reaching command for the same reason. Adding a field to
+// Analysis should require changing one function, not finding every caller.
+func ActionFromAnalysis(summary, command string, analysis shell.Analysis) Action {
 	return Action{
-		Risk: RiskExecute, Summary: "run: " + a.Command,
-		Command:         a.Command,
-		Executables:     analysis.Executables,
-		Uninspectable:   !analysis.Inspectable,
-		AnalysisReasons: analysis.Reasons,
-		HardDenyReasons: analysis.HardDenyReasons,
-		ConfirmReasons:  analysis.ConfirmReasons,
-	}, nil
+		Risk:              RiskExecute,
+		Summary:           summary,
+		Command:           command,
+		Executables:       analysis.Executables,
+		Hosts:             analysis.Hosts,
+		Network:           analysis.NetworkCommand,
+		HostsUndetermined: analysis.UndeterminedHosts,
+		HostReasons:       analysis.HostReasons,
+		Uninspectable:     !analysis.Inspectable,
+		AnalysisReasons:   analysis.Reasons,
+		HardDenyReasons:   analysis.HardDenyReasons,
+		ConfirmReasons:    analysis.ConfirmReasons,
+		CredentialTargets: analysis.CredentialTargets,
+	}
 }
 func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	return t.run(ctx, raw, nil)
@@ -163,7 +182,7 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	out := buffer.String()
 	if sandboxed && err != nil {
-		out += "\n(command ran inside the OS sandbox; it may also have failed normally. If access was denied, use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, permissions.sandbox_allow_network=true for outbound access, or permissions.command_env=full for deliberately inherited environment variables; inspect `collo doctor` and docs/SECURITY.md)"
+		out += "\n(command ran inside the OS sandbox; it may also have failed normally. If access was denied, use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, permissions.sandbox_allow_network=true for outbound access, or permissions.command_env=full for deliberately inherited environment variables. To opt out of OS containment entirely, set permissions.preset=frictionless; inspect `collo doctor` and docs/SECURITY.md)"
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)

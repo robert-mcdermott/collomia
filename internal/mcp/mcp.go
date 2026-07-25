@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/shell"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -724,6 +725,36 @@ func connect(ctx context.Context, name string, cfg appconfig.MCPServer, clientOp
 	}
 }
 
+// withServerEndpoint declares the network endpoint an HTTP-transport server
+// call reaches, so host-scoped rules match remote MCP traffic. A stdio server
+// is a local process whose own egress this layer cannot see; it declares no
+// host and remains gated by the external risk class it already carries.
+func withServerEndpoint(action tools.Action, cfg appconfig.MCPServer) tools.Action {
+	switch strings.ToLower(cfg.Transport) {
+	case "http", "streamable-http":
+	default:
+		return action
+	}
+	action.Network = true
+	host, ok := shell.HostFromURL(cfg.URL)
+	if !ok {
+		action.HostsUndetermined = true
+		action.HostReasons = appendUnique(action.HostReasons, "MCP server endpoint could not be read from configuration")
+		return action
+	}
+	action.Hosts = appendUnique(action.Hosts, host)
+	return action
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
 func (m *Manager) buildTools(ctx context.Context, server string, cfg appconfig.MCPServer, session *mcp.ClientSession) ([]tools.Tool, []string, error) {
 	listCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Timeout)*time.Second)
 	defer cancel()
@@ -789,7 +820,7 @@ func (m *Manager) buildTools(ctx context.Context, server string, cfg appconfig.M
 						compactMetadata(server), compactMetadata(remote.Name), compactMetadata(remote.Description)),
 					InputSchema: schema,
 				},
-				Action:    tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server},
+				Action:    withServerEndpoint(tools.Action{Risk: tools.RiskExternal, Summary: "call MCP tool " + server + "/" + remote.Name, Server: server}, cfg),
 				RunResult: call,
 			})
 		}

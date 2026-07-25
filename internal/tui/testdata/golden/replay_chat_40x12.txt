@@ -8,4 +8,4 @@ main.go defines an empty Go
 │❯ explain…  (/ for commands)          │
 │❯                                     │
 ╰──────────────────────────────────────╯
- ✿   ollama/qwen3-coder   ASK  ctx ▱▱▱▱▱
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▱▱▱

@@ -136,10 +136,53 @@ a new human decision—even in autopilot and even when an allow rule matches:
   AWS, Azure, Google Cloud, SQL database, and logical-storage deletions.
 - Recursive deletion whose target contains unresolved variables or other
   dynamic path syntax, plus `find`-driven dynamic deletion.
-- Commands whose complete effect the analyzer cannot inspect.
+- Commands whose complete effect the analyzer cannot inspect, including an
+  interpreter that reads its program from a pipe (`curl … | sh`): the code
+  that will run is not in the command text and does not exist yet.
 
 The approval dialog does not offer a persistent grant for this tier. In a
 headless run, the operation fails closed because no human approver is present.
+
+### Credential stores sit alongside tier 2
+
+Reaching a well-known credential store — an SSH or GPG private key, a cloud
+CLI token cache, a registry authentication file, a `.env` — is governed by
+`permissions.protect_credentials` (`off`, `prompt` by default, or `deny`).
+
+Under the default it behaves like tier 2 in the way that matters: a blanket
+allow rule, a tool-wide "always allow", and `autopilot` all decline to cover
+it. It differs from tier 2 in three respects. A rule that names the path is
+honored, so an intentional exception is expressible and stays written down;
+the setting can be raised to `deny`, which the `hardened` preset selects; and
+the approval dialog offers one narrow session grant, scoped to the exact
+credential target shown.
+
+That grant covers that target and nothing else — never the tool, never the
+directory, never a sibling file that classifies the same way, and never past
+this process. An action reaching one granted and one ungranted store still
+prompts. Under `deny` no grant is offered at all, and raising the setting to
+`deny` mid-session invalidates a grant handed out while it was `prompt`.
+
+The grant exists because a control with no durable answer is a control people
+switch off. A project whose tests read its own `.env` would otherwise face the
+same prompt on every read, and a prompt answered dozens of times is a prompt
+nobody reads. The approval dialog also shows the rule that ends the asking
+permanently, so the session grant is the convenient answer and the
+configuration rule is the durable one.
+
+The threat is specific. Redaction runs on Collomia's transcript, audit ledger,
+and events — it does not sit between a tool result and the provider, because
+an agent has to see the files it was asked to work on. A credential a command
+reads therefore reaches the model. Keeping it out is a permission decision, and
+this is that decision.
+
+Two limits follow from how it works. Recognition is by conventional location,
+not by inspecting contents, so a key stored somewhere unusual is not covered.
+And it describes what a command's text names, not what the process opens —
+confining reads at the OS level is the sandbox's job. The complete list of
+protected and deliberately exempt locations is in the
+[user guide](USER_GUIDE.md#credential-files), and a test fails if that list and
+the implementation drift apart.
 
 ### Tier 3: normal permission flow
 
@@ -165,6 +208,90 @@ collo policy check 'git reset --hard'   # prompt, source: safety
 collo --autonomy autopilot policy check 'rm -rf node_modules'  # allow
 ```
 
+## Containment presets
+
+`permissions.preset` bundles the containment switches so a coherent policy is
+one line rather than eight decisions. It is sugar over the same fields, never
+a hidden mode:
+
+| | `frictionless` | `standard` (default) | `hardened` |
+| --- | --- | --- | --- |
+| `sandbox` | `off` | `auto` | `require` |
+| `sandbox_allow_read_outside_workspace` | `true` | `true` | `false` |
+| `network` | `open` | `open` | `scoped` |
+| `commands` | `open` | `open` | `allowlist` |
+| `command_env` | `full` | `minimal` | `minimal` |
+
+- Fields you set explicitly always win over the preset in the same layer,
+  whichever is stricter.
+- **A repository can tighten containment but never weaken it.** This is one
+  rule with no exceptions, covering `sandbox`, `sandbox_allow_network`,
+  `sandbox_allow_read_outside_workspace`, `command_env`, `network`,
+  `commands`, and `allow_outside_workspace`, and applying identically to an
+  explicit field and to a preset. A project file's `frictionless` cannot undo
+  a global `hardened`, and neither can a project file's explicit
+  `"sandbox": "off"`. Refusals are listed by `collo config show` and
+  `collo config validate` rather than applied silently, so an ignored setting
+  never looks like a bug. Trust decides whether the project layer is read at
+  all; this rule decides what it may do once trusted.
+- Your own global configuration is not restricted this way — a built-in
+  default is not a choice you made, so `"sandbox": "off"` and
+  `"preset": "frictionless"` work as written there. That is where the
+  compatibility escape hatch lives.
+- No preset sets `mode`. A bundle that quietly selected autopilot would be the
+  exact surprise presets exist to avoid.
+- `frictionless` removes OS containment, not the permission engine. Prompts,
+  catastrophic-command denials, one-time confirmations, and the audit ledger
+  are unchanged. It is never a default, and only the machine owner's global
+  configuration can select it.
+
+The effective stance is always visible: the TUI's autonomy badge carries `⛨`
+when OS containment is configured, `⛉` when it is not, and `⛨!` when the
+platform applied less than was requested. The Session tab lists the full
+picture including session grants.
+
+## Declared network endpoints
+
+Collomia reads the endpoints a command's own text names — a `curl` or `wget`
+URL, an `ssh`/`scp`/`rsync` destination, a Git remote given as a URL — and the
+configured endpoint of an HTTP-transport MCP server. Those endpoints feed the
+`host` matcher in `permissions.rules` and appear in the audit ledger.
+
+**What this is not.** It is not egress enforcement and not a network boundary.
+It describes what a command *says* it will contact. Any approved program can
+open a socket to anywhere your account can reach without ever naming it on a
+command line, and this layer will not see it. Outbound access for sandboxed
+commands remains governed by the all-or-nothing
+`permissions.sandbox_allow_network`. Endpoint-scoped OS-level egress
+confinement is not implemented.
+
+Three properties keep the policy layer honest:
+
+- An endpoint the analyzer cannot read is reported as **undetermined**, never
+  as "no endpoints". `git push origin`, `npm install`, and `curl -K file` all
+  resolve their endpoints elsewhere, so they are undetermined.
+- An `allow` rule scoped to a host never matches an action with undetermined
+  endpoints, exactly as it never matches a command the analyzer could not
+  read. A `deny` or `prompt` rule still fires on the endpoints that were
+  readable.
+- A session grant can only ever cover values the user was shown, so an
+  undetermined endpoint cannot be granted at all.
+
+A `deny` rule therefore blocks only endpoints a command names. With
+`{"action":"deny","host":"*.evil.com"}` configured, `curl https://drop.evil.com/x`
+is denied, while `curl -K endpoints.txt` and `npm install` are not — their
+endpoints are undetermined and the rule has nothing to match against. Setting
+`permissions.network: "scoped"` closes that path by turning every unnamed
+endpoint into a prompt instead of an approval. Neither is a substitute for
+`sandbox_allow_network: false` when traffic must actually be prevented.
+
+`permissions.network: "scoped"` additionally withholds automatic approval from
+every network-bearing action that no rule or grant covers. It can only escalate
+to a prompt; it never allows, denies, or blocks a socket. `permissions.commands:
+"allowlist"` does the same for executables. Both default to `open`, which is
+the behavior of earlier releases, and both are monotonic across configuration
+layers: a project file can tighten them but cannot loosen them.
+
 ### Configuration denials remain additive
 
 `permissions.denied_commands` augments the classifier with organization- or
@@ -184,8 +311,11 @@ platform's containment mechanism.
 Sandboxing defaults to `auto`: Collomia uses the platform backend when it is
 available and emits a visible warning before continuing with normal user
 privileges when it is not. `require` fails closed instead, while `off` is an
-explicit compatibility escape hatch. Existing configuration files that
-explicitly contain `off` remain off and are never rewritten.
+explicit compatibility escape hatch selectable only in your global
+configuration. An existing global file containing `off` remains off and is
+never rewritten. A project file containing `off` is refused and reported, and
+the inherited mode is kept — a repository can tighten containment but never
+weaken it.
 `sandbox_allow_network` and `sandbox_allow_read_outside_workspace` both
 default to `true`, preserving the network and dependency reads used by package
 installation and developer toolchains. Write confinement can still require a
@@ -575,10 +705,22 @@ never executed. See [Live provider contract tests](LIVE_PROVIDER_CONTRACTS.md).
 ## Secrets
 
 Configured provider keys, MCP headers/env values, and common credential
-shapes (OpenAI/Anthropic/AWS/GitHub/Slack keys, JWTs, bearer tokens) are
-redacted from debug logs, JSONL events, and the audit ledger. Redaction is
-best-effort defense in depth — it reduces accidental exposure and does not
-defeat deliberate exfiltration.
+shapes are redacted from debug logs, JSONL events, and the audit ledger:
+OpenAI, Anthropic, AWS, GitHub, GitLab, Google, npm, Stripe, and Slack keys;
+JWTs; bearer tokens; `key=value` credential assignments; and PEM private key
+blocks (`RSA`, `EC`, `OPENSSH`, `ENCRYPTED`, PKCS#8, and PGP), which are
+removed whole. Public keys and certificates are deliberately left alone.
+
+Redaction is best-effort defense in depth, and two limits are worth stating
+because they decide what it can be relied on for. It does not sit between a
+tool result and the provider — an agent has to see the files it was asked to
+work on, so a secret a command legitimately reads still reaches the model, and
+keeping it out is [the permission layer's
+job](#credential-stores-sit-alongside-tier-2). And it is applied to bounded
+chunks rather than an unbounded stream, so a credential split across two chunks
+can be matched in the one carrying its recognizable prefix and missed in the
+next. Neither limit defeats deliberate exfiltration, which redaction was never
+positioned to stop.
 
 For native Amazon Bedrock, `auth: "sigv4"` delegates credential discovery to
 the AWS SDK chain (environment access/secret/session values, shared profiles,
@@ -632,10 +774,21 @@ development or production credential set.
 
 By default, agent commands (including background processes and PTY runs)
 inherit your full environment, which may include unrelated secrets from
-your shell. Set `permissions.command_env: "minimal"` to strip commands down
-to `PATH`, `HOME`, and a short list of other basics — this is the default
-automatically whenever the sandbox is enabled (`sandbox: "auto"` or
-`"require"`), and can be set explicitly without the sandbox too.
+your shell. `permissions.command_env: "minimal"` strips commands down to an
+allowlist — this is the default automatically whenever the sandbox is enabled
+(`sandbox: "auto"` or `"require"`), and can be set explicitly without the
+sandbox too.
+
+The allowlist is exactly `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+`TMPDIR`, `TEMP`, `TMP`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `COLUMNS`,
+`LINES`, `SYSTEMROOT`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `LOCALAPPDATA`,
+and `GOCACHE`, each passed only when it is set in the parent environment. No
+other variable reaches an agent command, so shell-resident credentials such
+as `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_*`, and provider API keys are not
+exposed to commands. There is no per-variable passthrough; a command that
+needs one value should set it inline in the command string. See the user
+guide's [command environment](USER_GUIDE.md) section for what this breaks and
+how to work around it.
 
 ### Durable conversation and retained tool output
 
