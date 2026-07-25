@@ -710,6 +710,86 @@ compiler plugin, a test suite — declares no endpoint here. The boundary for
 that traffic is the OS sandbox's `sandbox_allow_network`, which remains
 all-or-nothing.
 
+### Allowing and blocking specific endpoints
+
+Host rules work with or without `network: "scoped"`. A `deny` rule always
+applies; the posture only decides what happens to traffic no rule mentions.
+
+**Block a domain and everything under it.** Two patterns are needed, because
+globs match literally and `*.` requires a leading label:
+
+```json
+{
+  "permissions": {
+    "rules": [
+      { "action": "deny", "host": "evil.com", "reason": "exfiltration" },
+      { "action": "deny", "host": "*.evil.com", "reason": "exfiltration" }
+    ]
+  }
+}
+```
+
+| pattern | `api.example.com` | `example.com` | `a.b.example.com` |
+| --- | --- | --- | --- |
+| `*.example.com` | matches | **does not match** | matches |
+| `example.com` | no | matches | no |
+
+**Allow only an internal mirror, ask about everything else.** Pair `network:
+"scoped"` with the endpoints you accept:
+
+```json
+{
+  "permissions": {
+    "mode": "autopilot",
+    "network": "scoped",
+    "rules": [
+      { "action": "allow", "command": "curl", "host": "proxy.example.com" },
+      { "action": "allow", "command": "git", "host": "git.example.com" }
+    ]
+  }
+}
+```
+
+Without `network: "scoped"`, an endpoint no rule mentions follows the autonomy
+mode as usual — in autopilot that means it is allowed. The posture is what
+turns "not mentioned" into "ask me".
+
+**IP literals work; CIDR does not.** A URL's IP is normalized like any other
+host, and globs apply to its text:
+
+```json
+{ "action": "allow", "host": "10.0.*", "reason": "lab subnet" }
+```
+
+matches `http://10.0.0.5:8080/health` but not `http://10.1.0.5/health`.
+`"host": "10.0.0.0/24"` matches nothing at all — there is no netmask support,
+and a CIDR string is treated as a literal that no hostname equals. IPv6 works
+with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
+
+#### Four limits to know before relying on this
+
+1. **A deny rule cannot block an endpoint the command does not name.** With
+   `{"action":"deny","host":"*.evil.com"}` in place and autopilot on,
+   `curl https://drop.evil.com/x` is denied — but `curl -K endpoints.txt` and
+   `npm install` are *allowed*, because their endpoints are undetermined and
+   a deny rule has nothing to match. If you need undetermined endpoints to
+   stop too, set `network: "scoped"`: that turns every unnamed endpoint into a
+   prompt rather than an approval.
+2. **It is not egress enforcement.** Nothing here prevents a process from
+   opening a socket. A denied `curl` does not stop a compiled test binary from
+   reaching the same host. Use `sandbox_allow_network: false` when traffic
+   must actually be blocked, accepting that it is all-or-nothing.
+3. **A host-only allow rule does not restrict which program connects.**
+   `{"action":"allow","host":"api.example.com"}` allows `curl` *and* `wget`
+   *and* anything else whose only declared endpoint is that host — and it
+   satisfies `commands: "allowlist"` for that action as well, because a
+   matching allow rule is checked before either posture. Add a `command`
+   matcher when you mean one specific program.
+4. **An allow rule must cover every endpoint in the command.** Allow rules
+   require full coverage, so `curl https://a.example.com https://b.other.com`
+   is not allowed by a rule naming only `a.example.com`. Deny and prompt rules
+   fire when *any* endpoint matches.
+
 ### MCP server fields
 
 | Field | Meaning |

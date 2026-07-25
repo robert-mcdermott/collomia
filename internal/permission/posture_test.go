@@ -226,3 +226,84 @@ func TestUninspectableActionsGrantNothing(t *testing.T) {
 		t.Fatalf("prompts=%d, want 2", prompts)
 	}
 }
+
+// The documented limits of host rules. These lock the examples in
+// docs/USER_GUIDE.md ("Allowing and blocking specific endpoints") so the
+// guidance cannot drift from the engine.
+func TestDenyRuleOnlyBlocksNamedEndpoints(t *testing.T) {
+	rules := []appconfig.Rule{
+		{Action: "deny", Host: "evil.com"},
+		{Action: "deny", Host: "*.evil.com"},
+	}
+	m := New(appconfig.Permissions{Mode: "autopilot", Rules: rules}, nil)
+
+	named := networkAction()
+	named.Hosts = []string{"drop.evil.com"}
+	if _, outcome := m.Evaluate("run_command", named); outcome != "deny" {
+		t.Fatalf("subdomain outcome=%s, want deny", outcome)
+	}
+	apex := networkAction()
+	apex.Hosts = []string{"evil.com"}
+	if _, outcome := m.Evaluate("run_command", apex); outcome != "deny" {
+		t.Fatalf("apex outcome=%s, want deny (a `*.` pattern alone would miss it)", outcome)
+	}
+	// The documented limit: an endpoint the command never names cannot be
+	// matched, so autopilot still approves it under the open posture.
+	if _, outcome := m.Evaluate("run_command", undeterminedAction()); outcome != "allow" {
+		t.Fatalf("undetermined outcome=%s, want allow under the open posture", outcome)
+	}
+}
+
+// ...and the documented remedy: the scoped posture turns an unnamed endpoint
+// into a prompt rather than an approval.
+func TestScopedPostureCatchesWhatDenyRulesCannot(t *testing.T) {
+	m := New(appconfig.Permissions{
+		Mode: "autopilot", Network: "scoped",
+		Rules: []appconfig.Rule{{Action: "deny", Host: "*.evil.com"}},
+	}, nil)
+	if _, outcome := m.Evaluate("run_command", undeterminedAction()); outcome != "prompt" {
+		t.Fatalf("undetermined outcome=%s, want prompt under the scoped posture", outcome)
+	}
+}
+
+func TestHostGlobsMatchIPLiteralsButNotCIDR(t *testing.T) {
+	lab := New(appconfig.Permissions{
+		Mode: "autopilot", Network: "scoped",
+		Rules: []appconfig.Rule{{Action: "allow", Host: "10.0.*"}},
+	}, nil)
+	inside := networkAction()
+	inside.Hosts = []string{"10.0.0.5"}
+	if _, outcome := lab.Evaluate("run_command", inside); outcome != "allow" {
+		t.Fatalf("10.0.0.5 outcome=%s, want allow", outcome)
+	}
+	outside := networkAction()
+	outside.Hosts = []string{"10.1.0.5"}
+	if _, outcome := lab.Evaluate("run_command", outside); outcome != "prompt" {
+		t.Fatalf("10.1.0.5 outcome=%s, want prompt", outcome)
+	}
+	// A CIDR string is a literal, not a netmask, and matches nothing.
+	cidr := New(appconfig.Permissions{
+		Mode: "autopilot", Network: "scoped",
+		Rules: []appconfig.Rule{{Action: "allow", Host: "10.0.0.0/24"}},
+	}, nil)
+	if _, outcome := cidr.Evaluate("run_command", inside); outcome != "prompt" {
+		t.Fatalf("CIDR outcome=%s: a netmask must not appear to work", outcome)
+	}
+}
+
+// A host-only allow rule does not restrict which program connects, and it
+// satisfies the command allowlist as well, because a matching allow rule is
+// evaluated before either posture.
+func TestHostOnlyAllowRuleDoesNotRestrictTheExecutable(t *testing.T) {
+	m := New(appconfig.Permissions{
+		Mode: "autopilot", Network: "scoped", Commands: "allowlist",
+		Rules: []appconfig.Rule{{Action: "allow", Host: "api.example.com"}},
+	}, nil)
+	for _, executable := range []string{"curl", "wget"} {
+		action := networkAction()
+		action.Executables = []string{executable}
+		if _, outcome := m.Evaluate("run_command", action); outcome != "allow" {
+			t.Fatalf("%s outcome=%s, want allow", executable, outcome)
+		}
+	}
+}

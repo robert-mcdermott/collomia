@@ -236,6 +236,14 @@ Three properties keep the policy layer honest:
 - A session grant can only ever cover values the user was shown, so an
   undetermined endpoint cannot be granted at all.
 
+A `deny` rule therefore blocks only endpoints a command names. With
+`{"action":"deny","host":"*.evil.com"}` configured, `curl https://drop.evil.com/x`
+is denied, while `curl -K endpoints.txt` and `npm install` are not — their
+endpoints are undetermined and the rule has nothing to match against. Setting
+`permissions.network: "scoped"` closes that path by turning every unnamed
+endpoint into a prompt instead of an approval. Neither is a substitute for
+`sandbox_allow_network: false` when traffic must actually be prevented.
+
 `permissions.network: "scoped"` additionally withholds automatic approval from
 every network-bearing action that no rule or grant covers. It can only escalate
 to a prompt; it never allows, denies, or blocks a socket. `permissions.commands:
