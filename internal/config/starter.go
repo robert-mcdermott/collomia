@@ -257,6 +257,23 @@ const configReferenceJSONC = `
   },
 
   "permissions": {
+    // frictionless | standard | hardened. A preset is a starting point, not a
+    // mode: it only fills the containment fields below that you do not set
+    // yourself, and every value it chooses is visible in "collo config show".
+    // Omit it entirely and you get standard behavior.
+    //
+    //   standard      platform sandbox where available, command networking and
+    //                 broad reads on. This is what you get with no preset.
+    //   hardened      sandbox: require, reads confined to the workspace,
+    //                 network: scoped, commands: allowlist, command_env:
+    //                 minimal. Add "sandbox_allow_network": false for offline.
+    //   frictionless  no OS sandbox, inherited environment. An explicit opt-out
+    //                 for a toolchain that fights containment; policy prompts
+    //                 and command-safety denials still apply.
+    //
+    // A preset never loosens a stricter layer above it, and never sets "mode":
+    // autonomy stays a choice you make knowingly.
+    "preset": "standard",
     // ask | workspace | autopilot
     "mode": "ask",
     "allow_outside_workspace": false,
@@ -267,6 +284,10 @@ const configReferenceJSONC = `
     // An empty list adds nothing; lower layers cannot remove inherited rules.
     "denied_commands": [],
     // Rules are ordered; the first matching allow, prompt, or deny wins.
+    // A host matches the endpoints a command's text names (a URL, an ssh
+    // destination, a Git remote URL) and the endpoint of an HTTP-transport MCP
+    // server. An allow rule never covers an endpoint Collomia could not read,
+    // such as a named Git remote or a registry chosen by configuration.
     "rules": [
       {
         "action": "allow",
@@ -280,6 +301,11 @@ const configReferenceJSONC = `
         "reason": "credentials"
       },
       {
+        "action": "allow",
+        "host": "proxy.example.com",
+        "reason": "internal package mirror"
+      },
+      {
         "action": "prompt",
         "host": "*.example.com"
       },
@@ -288,6 +314,16 @@ const configReferenceJSONC = `
         "server": "docs"
       }
     ],
+    // open | scoped. open (the default) matches earlier releases. scoped never
+    // approves a network-bearing action automatically unless a rule or a
+    // session grant covers every endpoint it declares. This is Collomia's own
+    // policy posture, not OS-enforced egress confinement: a program that opens
+    // a socket without saying so in its command line is bounded by the sandbox
+    // below, not by this setting.
+    "network": "open",
+    // open | allowlist. allowlist never approves a command automatically
+    // unless a rule or session grant covers every executable it runs.
+    "commands": "open",
     // off | auto | require. auto is the default and uses the platform backend
     // when available; off is an explicit compatibility escape hatch.
     "sandbox": "auto",

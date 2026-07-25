@@ -29,8 +29,18 @@ type Action struct {
 	// Command is the original immutable command text for additive agent-profile
 	// denial regexes. It is populated only by command-bearing built-ins.
 	Command string
-	Hosts   []string
-	Server  string
+	// Hosts are the normalized network endpoints the action declares.
+	Hosts []string
+	// Network marks an action that reaches the network at all, so a scoped
+	// network posture can require an explicit grant for it.
+	Network bool
+	// HostsUndetermined is true when the action reaches an endpoint it could
+	// not name (a configured registry, a named Git remote). A host-scoped
+	// allow rule must never cover such an action.
+	HostsUndetermined bool
+	// HostReasons explains every undetermined endpoint.
+	HostReasons []string
+	Server      string
 	// Uninspectable marks actions (typically shell commands) whose full
 	// effect could not be statically determined; they always require
 	// interactive approval.

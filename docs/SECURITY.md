@@ -136,7 +136,9 @@ a new human decision—even in autopilot and even when an allow rule matches:
   AWS, Azure, Google Cloud, SQL database, and logical-storage deletions.
 - Recursive deletion whose target contains unresolved variables or other
   dynamic path syntax, plus `find`-driven dynamic deletion.
-- Commands whose complete effect the analyzer cannot inspect.
+- Commands whose complete effect the analyzer cannot inspect, including an
+  interpreter that reads its program from a pipe (`curl … | sh`): the code
+  that will run is not in the command text and does not exist yet.
 
 The approval dialog does not offer a persistent grant for this tier. In a
 headless run, the operation fails closed because no human approver is present.
@@ -164,6 +166,70 @@ collo policy check 'rm -rf /*'          # deny, source: safety
 collo policy check 'git reset --hard'   # prompt, source: safety
 collo --autonomy autopilot policy check 'rm -rf node_modules'  # allow
 ```
+
+## Containment presets
+
+`permissions.preset` bundles the containment switches so a coherent policy is
+one line rather than eight decisions. It is sugar over the same fields, never
+a hidden mode:
+
+| | `frictionless` | `standard` (default) | `hardened` |
+| --- | --- | --- | --- |
+| `sandbox` | `off` | `auto` | `require` |
+| `sandbox_allow_read_outside_workspace` | `true` | `true` | `false` |
+| `network` | `open` | `open` | `scoped` |
+| `commands` | `open` | `open` | `allowlist` |
+| `command_env` | `full` | `minimal` | `minimal` |
+
+- Fields you set explicitly always win over the preset that accompanies them.
+- A preset can tighten an inherited layer but never loosen one: a project
+  file's `frictionless` cannot undo a user-level `hardened`. An explicit
+  `"sandbox": "off"` remains the documented escape hatch.
+- No preset sets `mode`. A bundle that quietly selected autopilot would be the
+  exact surprise presets exist to avoid.
+- `frictionless` removes OS containment, not the permission engine. Prompts,
+  catastrophic-command denials, one-time confirmations, and the audit ledger
+  are unchanged. It is never a default and is never reached by inheritance —
+  a user must ask for it by name.
+
+The effective stance is always visible: the TUI's autonomy badge carries `⛨`
+when OS containment is configured, `⛉` when it is not, and `⛨!` when the
+platform applied less than was requested. The Session tab lists the full
+picture including session grants.
+
+## Declared network endpoints
+
+Collomia reads the endpoints a command's own text names — a `curl` or `wget`
+URL, an `ssh`/`scp`/`rsync` destination, a Git remote given as a URL — and the
+configured endpoint of an HTTP-transport MCP server. Those endpoints feed the
+`host` matcher in `permissions.rules` and appear in the audit ledger.
+
+**What this is not.** It is not egress enforcement and not a network boundary.
+It describes what a command *says* it will contact. Any approved program can
+open a socket to anywhere your account can reach without ever naming it on a
+command line, and this layer will not see it. Outbound access for sandboxed
+commands remains governed by the all-or-nothing
+`permissions.sandbox_allow_network`. Endpoint-scoped OS-level egress
+confinement is not implemented.
+
+Three properties keep the policy layer honest:
+
+- An endpoint the analyzer cannot read is reported as **undetermined**, never
+  as "no endpoints". `git push origin`, `npm install`, and `curl -K file` all
+  resolve their endpoints elsewhere, so they are undetermined.
+- An `allow` rule scoped to a host never matches an action with undetermined
+  endpoints, exactly as it never matches a command the analyzer could not
+  read. A `deny` or `prompt` rule still fires on the endpoints that were
+  readable.
+- A session grant can only ever cover values the user was shown, so an
+  undetermined endpoint cannot be granted at all.
+
+`permissions.network: "scoped"` additionally withholds automatic approval from
+every network-bearing action that no rule or grant covers. It can only escalate
+to a prompt; it never allows, denies, or blocks a socket. `permissions.commands:
+"allowlist"` does the same for executables. Both default to `open`, which is
+the behavior of earlier releases, and both are monotonic across configuration
+layers: a project file can tighten them but cannot loosen them.
 
 ### Configuration denials remain additive
 

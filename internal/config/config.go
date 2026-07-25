@@ -125,6 +125,13 @@ type Pricing struct {
 }
 
 type Permissions struct {
+	// Preset selects a named containment bundle so a working configuration
+	// does not require composing every switch below by hand: standard (the
+	// default behavior), hardened, or frictionless. It is sugar over the
+	// same fields — any field this layer sets explicitly wins over the
+	// preset, and a preset can never loosen a stricter inherited layer.
+	// Autonomy mode is deliberately not part of any preset.
+	Preset                string   `json:"preset,omitempty"`
 	Mode                  string   `json:"mode"`
 	AllowOutsideWorkspace bool     `json:"allow_outside_workspace"`
 	AllowedTools          []string `json:"allowed_tools,omitempty"`
@@ -135,6 +142,17 @@ type Permissions struct {
 	// Rules are ordered allow/prompt/deny decisions matched before the
 	// autonomy mode's defaults. See internal/policy.
 	Rules []Rule `json:"rules,omitempty"`
+	// Network selects the posture for actions that reach the network: open
+	// (the default, matching earlier releases) or scoped. Under scoped, a
+	// network-bearing action is never approved automatically unless a rule or
+	// a session grant covers every endpoint it declares. This is a policy
+	// posture evaluated by Collomia, not OS-enforced egress confinement.
+	Network string `json:"network,omitempty"`
+	// Commands selects the posture for command execution: open (the default)
+	// or allowlist. Under allowlist, a command is never approved
+	// automatically unless a rule or a session grant covers every executable
+	// it runs.
+	Commands string `json:"commands,omitempty"`
 	// Sandbox selects OS sandbox enforcement for commands: off, auto (the
 	// compatibility-first default), or require.
 	Sandbox string `json:"sandbox,omitempty"`
@@ -310,6 +328,8 @@ func Defaults() Config {
 		},
 		Permissions: Permissions{
 			Mode:                             "ask",
+			Network:                          "open",
+			Commands:                         "open",
 			Sandbox:                          "auto",
 			SandboxAllowNetwork:              true,
 			SandboxAllowReadOutsideWorkspace: true,
@@ -426,17 +446,184 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 		decoder.DisallowUnknownFields()
 	}
 	inheritedDeniedCommands := append([]string(nil), c.Permissions.DeniedCommands...)
+	inheritedPermissions := c.Permissions
 	if err := decoder.Decode(c); err != nil {
 		return fmt.Errorf("parse config %s: %w", path, err)
 	}
 	c.Permissions.DeniedCommands = additiveStrings(inheritedDeniedCommands, c.Permissions.DeniedCommands)
 	keys := flattenJSON(data)
+	// Whether the sandbox mode above this layer was actually chosen by
+	// someone, rather than being the built-in default, decides if a preset
+	// here may relax it.
+	sandboxWasChosen := c.Origins["permissions.sandbox"] != "" && c.Origins["permissions.sandbox"] != "defaults"
 	for _, key := range keys {
 		c.Origins[key] = layer
 	}
+	// A preset fills only what this layer did not state itself, so an explicit
+	// field always wins over the bundle that accompanies it.
+	declared := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		declared[key] = true
+	}
+	if declared["permissions.preset"] {
+		c.applyPreset(strings.ToLower(strings.TrimSpace(c.Permissions.Preset)), layer, declared, inheritedPermissions, sandboxWasChosen)
+	}
+	// Postures are monotonic like denied commands: a lower layer may tighten
+	// what it inherited, but a project file cannot hand itself open network or
+	// command access that the user's configuration scoped.
+	c.Permissions.Network = strictestPosture(inheritedPermissions.Network, c.Permissions.Network, "scoped")
+	c.Permissions.Commands = strictestPosture(inheritedPermissions.Commands, c.Permissions.Commands, "allowlist")
 	c.Layers = append(c.Layers, Layer{Name: layer, Path: path, Applied: true, Keys: keys})
 	c.Source = path
 	return nil
+}
+
+// Preset names. An empty preset means standard, so an existing configuration
+// keeps its meaning.
+const (
+	PresetStandard     = "standard"
+	PresetHardened     = "hardened"
+	PresetFrictionless = "frictionless"
+)
+
+// preset is one named containment bundle. Every field it sets is an ordinary
+// configuration field: a preset is a starting point a user can read and
+// override, never a hidden mode.
+type preset struct {
+	Summary                          string
+	Sandbox                          string
+	SandboxAllowNetwork              bool
+	SandboxAllowReadOutsideWorkspace bool
+	Network                          string
+	Commands                         string
+	CommandEnv                       string
+	AllowOutsideWorkspace            bool
+}
+
+// presets deliberately omit permissions.mode. Autonomy is the one choice a
+// user should make knowingly; a bundle that quietly selected autopilot would
+// be exactly the surprise these presets exist to avoid.
+var presets = map[string]preset{
+	PresetStandard: {
+		Summary:                          "platform sandbox where available, command networking and broad reads on",
+		Sandbox:                          "auto",
+		SandboxAllowNetwork:              true,
+		SandboxAllowReadOutsideWorkspace: true,
+		Network:                          "open",
+		Commands:                         "open",
+		CommandEnv:                       "minimal",
+	},
+	PresetHardened: {
+		// The strongest bundle an ordinary toolchain can still work under.
+		// Denying command egress outright stays a deliberate extra line
+		// (`"sandbox_allow_network": false`) because it breaks package
+		// installs, so it is not folded in here.
+		Summary:                          "fail-closed sandbox, confined reads, scoped endpoints and commands",
+		Sandbox:                          "require",
+		SandboxAllowNetwork:              true,
+		SandboxAllowReadOutsideWorkspace: false,
+		Network:                          "scoped",
+		Commands:                         "allowlist",
+		CommandEnv:                       "minimal",
+	},
+	PresetFrictionless: {
+		// An explicit opt-out for users whose toolchain fights containment.
+		// It is never a default and never reached by inheritance.
+		Summary:                          "no OS sandbox, inherited environment; policy prompts still apply",
+		Sandbox:                          "off",
+		SandboxAllowNetwork:              true,
+		SandboxAllowReadOutsideWorkspace: true,
+		Network:                          "open",
+		Commands:                         "open",
+		CommandEnv:                       "full",
+	},
+}
+
+// PresetNames lists the selectable presets in increasing strictness.
+func PresetNames() []string {
+	return []string{PresetFrictionless, PresetStandard, PresetHardened}
+}
+
+// PresetSummary describes one preset for diagnostics and error messages.
+func PresetSummary(name string) string { return presets[name].Summary }
+
+// applyPreset expands a named bundle into ordinary fields. It only fills
+// fields this layer did not declare itself, so an explicit setting always
+// wins over the preset that accompanies it. Containment is never loosened
+// below what a higher layer already established: a project preset can tighten
+// inherited policy but cannot hand itself a weaker sandbox or posture.
+func (c *Config) applyPreset(name, layer string, declared map[string]bool, inherited Permissions, sandboxWasChosen bool) {
+	bundle, ok := presets[name]
+	if !ok {
+		return
+	}
+	origin := layer + " (preset " + name + ")"
+	set := func(field string, apply func()) {
+		if declared["permissions."+field] {
+			return
+		}
+		apply()
+		c.Origins["permissions."+field] = origin
+	}
+	set("sandbox", func() {
+		// The built-in default is a starting point a preset may relax; a
+		// sandbox mode someone above actually chose is not.
+		if !sandboxWasChosen {
+			c.Permissions.Sandbox = bundle.Sandbox
+			return
+		}
+		c.Permissions.Sandbox = strictestSandbox(inherited.Sandbox, bundle.Sandbox)
+	})
+	set("sandbox_allow_network", func() {
+		c.Permissions.SandboxAllowNetwork = bundle.SandboxAllowNetwork && inherited.SandboxAllowNetwork
+	})
+	set("sandbox_allow_read_outside_workspace", func() {
+		c.Permissions.SandboxAllowReadOutsideWorkspace = bundle.SandboxAllowReadOutsideWorkspace && inherited.SandboxAllowReadOutsideWorkspace
+	})
+	set("allow_outside_workspace", func() {
+		c.Permissions.AllowOutsideWorkspace = bundle.AllowOutsideWorkspace && inherited.AllowOutsideWorkspace
+	})
+	set("network", func() { c.Permissions.Network = bundle.Network })
+	set("commands", func() { c.Permissions.Commands = bundle.Commands })
+	set("command_env", func() {
+		c.Permissions.CommandEnv = strictestCommandEnv(inherited.CommandEnv, bundle.CommandEnv)
+	})
+}
+
+// strictestSandbox ranks enforcement so a preset cannot weaken an inherited
+// choice. An explicit `"sandbox": "off"` remains the documented escape hatch;
+// a bundle silently disabling OS enforcement is not.
+func strictestSandbox(inherited, declared string) string {
+	rank := map[string]int{"off": 0, "auto": 1, "require": 2}
+	if inherited == "" {
+		return declared
+	}
+	if rank[declared] < rank[inherited] {
+		return inherited
+	}
+	return declared
+}
+
+func strictestCommandEnv(inherited, declared string) string {
+	if inherited == "minimal" {
+		return "minimal"
+	}
+	return declared
+}
+
+// strictestPosture keeps the tighter of an inherited posture and the one a
+// lower layer declared. An omitted value inherits; the strict value wins from
+// whichever layer set it.
+func strictestPosture(inherited, declared, strict string) string {
+	normalize := func(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+	inherited, declared = normalize(inherited), normalize(declared)
+	if inherited == strict || declared == strict {
+		return strict
+	}
+	if declared == "" {
+		return inherited
+	}
+	return declared
 }
 
 // additiveStrings preserves inherited safety policy while allowing a lower
@@ -496,6 +683,17 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	}
 	if c.Permissions.Sandbox == "" {
 		c.Permissions.Sandbox = "auto"
+	}
+	// An omitted posture keeps the behavior every earlier release had. Only
+	// an explicit choice tightens it, so no existing configuration changes
+	// meaning when it is loaded by this version.
+	c.Permissions.Network = strings.ToLower(strings.TrimSpace(c.Permissions.Network))
+	if c.Permissions.Network == "" {
+		c.Permissions.Network = "open"
+	}
+	c.Permissions.Commands = strings.ToLower(strings.TrimSpace(c.Permissions.Commands))
+	if c.Permissions.Commands == "" {
+		c.Permissions.Commands = "open"
 	}
 	if c.Options.MaxIterations <= 0 {
 		c.Options.MaxIterations = 24
@@ -640,6 +838,21 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "off", "auto", "require":
 	default:
 		errs = append(errs, FieldError{"permissions.sandbox", fmt.Sprintf("must be off, auto, or require (got %q)", c.Permissions.Sandbox)})
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Permissions.Preset)) {
+	case "", PresetStandard, PresetHardened, PresetFrictionless:
+	default:
+		errs = append(errs, FieldError{"permissions.preset", fmt.Sprintf("must be %s (got %q)", strings.Join(PresetNames(), ", "), c.Permissions.Preset)})
+	}
+	switch c.Permissions.Network {
+	case "", "open", "scoped":
+	default:
+		errs = append(errs, FieldError{"permissions.network", fmt.Sprintf("must be open or scoped (got %q)", c.Permissions.Network)})
+	}
+	switch c.Permissions.Commands {
+	case "", "open", "allowlist":
+	default:
+		errs = append(errs, FieldError{"permissions.commands", fmt.Sprintf("must be open or allowlist (got %q)", c.Permissions.Commands)})
 	}
 	switch c.Permissions.CommandEnv {
 	case "", "full", "minimal":
@@ -984,7 +1197,25 @@ func (c Config) LayerReport() string {
 			}
 		}
 	}
+	b.WriteString(c.presetReport())
 	return b.String()
+}
+
+// presetReport lists the fields a preset filled in, so a bundle is never a
+// value whose source the user cannot see. Fields the user set themselves are
+// attributed to their layer and do not appear here.
+func (c Config) presetReport() string {
+	var expanded []string
+	for key, origin := range c.Origins {
+		if strings.Contains(origin, "(preset ") {
+			expanded = append(expanded, fmt.Sprintf("  %-44s %s", key, origin))
+		}
+	}
+	if len(expanded) == 0 {
+		return ""
+	}
+	sort.Strings(expanded)
+	return "\nExpanded by a preset (an explicit field always wins over these):\n" + strings.Join(expanded, "\n") + "\n"
 }
 
 func expandEnv(value string) string {

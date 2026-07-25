@@ -241,12 +241,16 @@ func (t StartProcessTool) Assess(raw json.RawMessage) (Action, error) {
 	analysis := shell.AnalyzeInWorkspace(a.Command, t.Runner.Workspace)
 	return Action{
 		Risk: RiskExecute, Summary: "start background process: " + a.Command,
-		Command:         a.Command,
-		Executables:     analysis.Executables,
-		Uninspectable:   !analysis.Inspectable,
-		AnalysisReasons: analysis.Reasons,
-		HardDenyReasons: analysis.HardDenyReasons,
-		ConfirmReasons:  analysis.ConfirmReasons,
+		Command:           a.Command,
+		Executables:       analysis.Executables,
+		Hosts:             analysis.Hosts,
+		Network:           analysis.NetworkCommand,
+		HostsUndetermined: analysis.UndeterminedHosts,
+		HostReasons:       analysis.HostReasons,
+		Uninspectable:     !analysis.Inspectable,
+		AnalysisReasons:   analysis.Reasons,
+		HardDenyReasons:   analysis.HardDenyReasons,
+		ConfirmReasons:    analysis.ConfirmReasons,
 	}, nil
 }
 

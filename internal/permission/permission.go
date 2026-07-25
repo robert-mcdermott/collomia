@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -26,13 +27,46 @@ type Request struct {
 	Tool   string
 	Action tools.Action
 	// Reason explains why the prompt is being shown (matched prompt rule,
-	// uninspectable command analysis, or the autonomy mode).
+	// uninspectable command analysis, a posture gate, or the autonomy mode).
 	Reason string
+	// Capabilities describe the action's reach one dimension at a time so the
+	// prompt can show it and grant it a dimension at a time.
+	Capabilities []Capability
+	// PostureGated marks a prompt produced by the scoped-network or
+	// command-allowlist posture. A tool-wide "always" would not satisfy that
+	// posture, so the prompt offers the scoped grants instead.
+	PostureGated bool
+}
+
+// Capability kinds. They name what an action reaches, not which tool asked.
+const (
+	CapabilityFilesystem = "filesystem"
+	CapabilityExecutable = "executable"
+	CapabilityNetwork    = "network"
+	CapabilityServer     = "server"
+)
+
+// Capability is one dimension of an action's reach. Values are the normalized
+// resources in that dimension; Unknown marks a dimension the analyzer could
+// not fully determine, which is why a session grant is never offered for it.
+type Capability struct {
+	Kind    string
+	Values  []string
+	Unknown bool
+	Reasons []string
+	// Grantable is true when approving this action can also record a session
+	// grant for this dimension's values.
+	Grantable bool
+	// Granted is true when a session grant already covers every value.
+	Granted bool
 }
 
 type Decision struct {
 	Allow  bool
 	Always bool
+	// Grants lists capability kinds to remember for the rest of the session,
+	// scoped to this action's values rather than to the whole tool.
+	Grants []string
 	// Content, when set, replaces the write's proposed content before
 	// execution — used when the user approved only some hunks of a
 	// write_file diff rather than the whole file.
@@ -41,7 +75,7 @@ type Decision struct {
 
 // Grant reports how an authorization was decided, for events and audit.
 type Grant struct {
-	Source string // rule, mode, session, interactive, implicit-read, denied-tool, analysis
+	Source string // rule, mode, session, session-scope, posture, interactive, implicit-read, denied-tool, analysis
 	Rule   string
 	// ContentOverride carries a selectively-approved write, when the user
 	// picked hunks instead of accepting the whole proposed change.
@@ -51,12 +85,21 @@ type Grant struct {
 type Approver func(context.Context, Request) (Decision, error)
 
 type Manager struct {
-	mu                    sync.RWMutex
-	mode                  string
-	baseMode              string
-	profileMode           string
-	allowed               map[string]bool
-	denied                map[string]bool
+	mu          sync.RWMutex
+	mode        string
+	baseMode    string
+	profileMode string
+	allowed     map[string]bool
+	denied      map[string]bool
+	// network and commands are the posture settings. They never widen a
+	// decision: each can only turn an automatic approval into a prompt.
+	network  string
+	commands string
+	// allowedCommands and allowedHosts are session grants scoped to one
+	// executable or one endpoint, the narrow counterpart of "always allow
+	// this tool".
+	allowedCommands       map[string]bool
+	allowedHosts          map[string]bool
 	profileDenied         map[string]bool
 	profileDeniedCommands []*regexp.Regexp
 	allowOutside          bool
@@ -80,7 +123,21 @@ func New(cfg appconfig.Permissions, approver Approver) *Manager {
 	for _, name := range cfg.DeniedTools {
 		denied[name] = true
 	}
-	return &Manager{mode: cfg.Mode, baseMode: cfg.Mode, allowed: allowed, denied: denied, profileDenied: map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace, rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver}
+	network := strings.ToLower(strings.TrimSpace(cfg.Network))
+	if network == "" {
+		network = "open"
+	}
+	commands := strings.ToLower(strings.TrimSpace(cfg.Commands))
+	if commands == "" {
+		commands = "open"
+	}
+	return &Manager{
+		mode: cfg.Mode, baseMode: cfg.Mode, allowed: allowed, denied: denied,
+		network: network, commands: commands,
+		allowedCommands: map[string]bool{}, allowedHosts: map[string]bool{},
+		profileDenied: map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace,
+		rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver,
+	}
 }
 
 // SetLedger attaches the persistent audit ledger. Nil is safe.
@@ -181,7 +238,7 @@ func (m *Manager) decide(tool string, action tools.Action) (Grant, string, strin
 	if len(restrictions) == 0 {
 		return grant, outcome, reason
 	}
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	restriction := policy.Evaluate(restrictions, request)
 	if !restriction.Matched() {
 		return grant, outcome, reason
@@ -207,6 +264,9 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	profilePatterns := append([]*regexp.Regexp(nil), m.profileDeniedCommands...)
 	rules := m.rules
 	allowOutside := m.allowOutside
+	networkPosture := m.network
+	commandPosture := m.commands
+	scopes := m.scopeSnapshotLocked()
 	m.mu.RUnlock()
 
 	if denied || profileDenied {
@@ -223,7 +283,7 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 		reason := strings.Join(action.HardDenyReasons, "; ")
 		return Grant{Source: "safety", Rule: reason}, "deny", ""
 	}
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	decision := policy.Evaluate(rules, request)
 	if decision.Matched() {
 		grant := Grant{Source: "rule", Rule: decision.Describe()}
@@ -252,6 +312,18 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 		reason := strings.Join(action.ConfirmReasons, "; ")
 		return Grant{Source: "safety", Rule: reason}, "prompt", "one-time confirmation required: " + reason
 	}
+	// A grant scoped to this action's executables and endpoints is the narrow
+	// counterpart of "always allow this tool", and satisfies the postures
+	// below on its own.
+	if scopes.cover(action) {
+		return Grant{Source: "session-scope", Rule: scopes.describe(action)}, "allow", ""
+	}
+	// Postures can only turn an automatic approval into a prompt. They are
+	// evaluated before the tool-wide session grant and the autonomy mode so
+	// neither can hand out the access the posture exists to withhold.
+	if reason := posturePrompt(action, networkPosture, commandPosture); reason != "" {
+		return Grant{Source: "posture"}, "prompt", reason
+	}
 	if sessionAllowed {
 		return Grant{Source: "session"}, "allow", ""
 	}
@@ -266,9 +338,201 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	return Grant{Source: "interactive"}, "prompt", ""
 }
 
+// scopeGrants is a point-in-time copy of the session's per-capability grants.
+type scopeGrants struct {
+	commands map[string]bool
+	hosts    map[string]bool
+}
+
+func (m *Manager) scopeSnapshotLocked() scopeGrants {
+	snapshot := scopeGrants{commands: make(map[string]bool, len(m.allowedCommands)), hosts: make(map[string]bool, len(m.allowedHosts))}
+	for name := range m.allowedCommands {
+		snapshot.commands[name] = true
+	}
+	for host := range m.allowedHosts {
+		snapshot.hosts[host] = true
+	}
+	return snapshot
+}
+
+// cover reports whether the session's scoped grants account for every
+// capability this action reaches. A dimension the analyzer could not read is
+// never covered: a grant applies to the values the user saw, not to whatever
+// the action turns out to touch.
+func (g scopeGrants) cover(action tools.Action) bool {
+	if action.Uninspectable || len(action.ConfirmReasons) > 0 {
+		return false
+	}
+	if len(action.Executables) == 0 && !action.Network {
+		return false
+	}
+	if !g.coversExecutables(action) || !g.coversNetwork(action) {
+		return false
+	}
+	return true
+}
+
+func (g scopeGrants) coversExecutables(action tools.Action) bool {
+	for _, executable := range action.Executables {
+		if !g.commands[executable] {
+			return false
+		}
+	}
+	return true
+}
+
+func (g scopeGrants) coversNetwork(action tools.Action) bool {
+	if !action.Network {
+		return true
+	}
+	if action.HostsUndetermined || len(action.Hosts) == 0 {
+		return false
+	}
+	for _, host := range action.Hosts {
+		if !g.hosts[host] {
+			return false
+		}
+	}
+	return true
+}
+
+func (g scopeGrants) describe(action tools.Action) string {
+	var parts []string
+	if len(action.Executables) > 0 {
+		parts = append(parts, "session grant for command "+strings.Join(action.Executables, ", "))
+	}
+	if action.Network && len(action.Hosts) > 0 {
+		parts = append(parts, "session grant for host "+strings.Join(action.Hosts, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// posturePrompt returns the reason an otherwise automatic approval must be
+// escalated to a person under the configured postures, or "" when neither
+// posture applies. It never allows or denies.
+func posturePrompt(action tools.Action, network, commands string) string {
+	if commands == "allowlist" && action.Risk == tools.RiskExecute && len(action.Executables) > 0 {
+		return "command allowlist requires an explicit grant for: " + strings.Join(action.Executables, ", ")
+	}
+	if network == "scoped" && action.Network {
+		if action.HostsUndetermined {
+			reason := "scoped network posture requires an explicit grant, and this action's endpoints could not be read"
+			if len(action.HostReasons) > 0 {
+				reason += ": " + strings.Join(action.HostReasons, "; ")
+			}
+			return reason
+		}
+		if len(action.Hosts) == 0 {
+			return "scoped network posture requires an explicit grant, and this action named no endpoint"
+		}
+		return "scoped network posture requires an explicit grant for: " + strings.Join(action.Hosts, ", ")
+	}
+	return ""
+}
+
+// Capabilities describes an action's reach one dimension at a time, marking
+// which dimensions a session grant could cover. A dimension the analyzer
+// could not fully read is reported as unknown and is never grantable.
+func (m *Manager) Capabilities(action tools.Action) []Capability {
+	m.mu.RLock()
+	scopes := m.scopeSnapshotLocked()
+	m.mu.RUnlock()
+	oneTime := action.Uninspectable || len(action.ConfirmReasons) > 0
+	var out []Capability
+	if len(action.Paths) > 0 {
+		out = append(out, Capability{Kind: CapabilityFilesystem, Values: action.Paths})
+	}
+	if len(action.Executables) > 0 || action.Uninspectable {
+		capability := Capability{
+			Kind:      CapabilityExecutable,
+			Values:    action.Executables,
+			Unknown:   action.Uninspectable,
+			Reasons:   action.AnalysisReasons,
+			Grantable: !oneTime && len(action.Executables) > 0,
+		}
+		capability.Granted = capability.Grantable && scopes.coversExecutables(action)
+		out = append(out, capability)
+	}
+	if action.Network {
+		capability := Capability{
+			Kind:      CapabilityNetwork,
+			Values:    action.Hosts,
+			Unknown:   action.HostsUndetermined,
+			Reasons:   action.HostReasons,
+			Grantable: !oneTime && !action.HostsUndetermined && len(action.Hosts) > 0,
+		}
+		capability.Granted = capability.Grantable && scopes.coversNetwork(action)
+		out = append(out, capability)
+	}
+	if action.Server != "" {
+		out = append(out, Capability{Kind: CapabilityServer, Values: []string{action.Server}})
+	}
+	return out
+}
+
+// SessionGrants reports the per-capability grants accumulated this process,
+// sorted, so the user can see what they have handed out without reading the
+// audit ledger.
+func (m *Manager) SessionGrants() (commands, hosts []string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for name := range m.allowedCommands {
+		commands = append(commands, name)
+	}
+	for host := range m.allowedHosts {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(commands)
+	sort.Strings(hosts)
+	return commands, hosts
+}
+
+// GrantableKinds lists the dimensions an approver may hand a session grant
+// for. Anything omitted here — an unreadable dimension, a one-time
+// confirmation — cannot be remembered, so a caller cannot grant access the
+// user was never shown.
+func GrantableKinds(capabilities []Capability) []string {
+	var kinds []string
+	for _, capability := range capabilities {
+		if capability.Grantable && !capability.Granted {
+			kinds = append(kinds, capability.Kind)
+		}
+	}
+	return kinds
+}
+
+// applyGrants records the session grants the user chose alongside an
+// approval. Only fully-readable dimensions can be granted, so a grant can
+// never cover an endpoint or executable the user was not shown.
+func (m *Manager) applyGrants(action tools.Action, kinds []string) {
+	if len(kinds) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, kind := range kinds {
+		switch kind {
+		case CapabilityExecutable:
+			if action.Uninspectable || len(action.ConfirmReasons) > 0 {
+				continue
+			}
+			for _, executable := range action.Executables {
+				m.allowedCommands[executable] = true
+			}
+		case CapabilityNetwork:
+			if action.HostsUndetermined || len(action.ConfirmReasons) > 0 {
+				continue
+			}
+			for _, host := range action.Hosts {
+				m.allowedHosts[host] = true
+			}
+		}
+	}
+}
+
 func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Action) (Grant, error) {
 	grant, outcome, reason := m.decide(tool, action)
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	record := func(allowed bool) {
 		decision := "deny"
 		if allowed {
@@ -309,7 +573,10 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 		record(false)
 		return grant, fmt.Errorf("%w: %s requires interactive approval", ErrDenied, action.Summary)
 	}
-	decision, err := approver(ctx, Request{Tool: tool, Action: action, Reason: reason})
+	decision, err := approver(ctx, Request{
+		Tool: tool, Action: action, Reason: reason,
+		Capabilities: m.Capabilities(action), PostureGated: grant.Source == "posture",
+	})
 	if err != nil {
 		record(false)
 		return grant, err
@@ -320,12 +587,14 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 		return grant, fmt.Errorf("%w: %s", ErrDenied, action.Summary)
 	}
 	// "Always" never sticks for commands the analyzer could not read or that
-	// carry a mandatory confirmation; each must be approved on its own.
+	// carry a mandatory confirmation; each must be approved on its own. The
+	// same restriction applies to the narrower per-capability grants.
 	if decision.Always && !action.Uninspectable && len(action.ConfirmReasons) == 0 {
 		m.mu.Lock()
 		m.allowed[tool] = true
 		m.mu.Unlock()
 	}
+	m.applyGrants(action, decision.Grants)
 	record(true)
 	return grant, nil
 }

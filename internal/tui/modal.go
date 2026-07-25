@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
+	"github.com/robert-mcdermott/collomia/internal/permission"
 )
 
 const (
@@ -79,10 +80,16 @@ func (m Model) renderApproval() string {
 			body.WriteString(m.styles.muted.Render(fmt.Sprintf("… %d more diff lines", hidden)))
 		}
 	}
+	body.WriteString(m.renderCapabilities(req.Capabilities, inner))
 	oneTime := req.Action.Uninspectable || len(req.Action.ConfirmReasons) > 0
 	buttons := badge("Y  Approve", m.theme.Success) + "  "
-	if !oneTime {
+	// A tool-wide "always" cannot satisfy a posture gate, so it is not offered
+	// where it would look like an answer and then prompt again.
+	if !oneTime && !req.PostureGated {
 		buttons += badge("A  Always", m.theme.Warning) + "  "
+	}
+	if grantable := grantableCapabilities(req.Capabilities); len(grantable) > 0 {
+		buttons += badge("G  Allow "+describeGrant(grantable)+" this session", m.theme.Accent) + "  "
 	}
 	buttons += badge("N  Deny", m.theme.Error)
 	if req.Tool == "write_file" && req.Action.Preview != "" {
@@ -92,6 +99,82 @@ func (m Model) renderApproval() string {
 	}
 	body.WriteString("\n\n" + ansi.Wordwrap(buttons, inner, ""))
 	return m.modalFrame(body.String(), m.theme.Warning, approvalModalMaxWidth)
+}
+
+// renderCapabilities shows what the action reaches, one dimension at a time,
+// so approving is a decision about access rather than about a tool name. A
+// dimension the analyzer could not fully read says so instead of appearing
+// empty.
+func (m Model) renderCapabilities(capabilities []permission.Capability, inner int) string {
+	if len(capabilities) == 0 {
+		return ""
+	}
+	labelWidth := 7
+	var out strings.Builder
+	out.WriteString("\n\n" + m.styles.muted.Render("Reach"))
+	for _, capability := range capabilities {
+		label := capabilityLabel(capability.Kind)
+		label += strings.Repeat(" ", max(1, labelWidth-len(label)))
+		value := summarizeValues(capability.Values)
+		style := m.styles.panelBody
+		switch {
+		case capability.Unknown && value == "":
+			value = "could not be determined"
+			style = m.styles.warning
+		case capability.Unknown:
+			value += "  + endpoints that could not be determined"
+			style = m.styles.warning
+		case capability.Granted:
+			value += "  (granted this session)"
+			style = m.styles.success
+		}
+		out.WriteString("\n" + m.styles.muted.Render("  "+label) + style.Render(wrapAndLimit(value, max(1, inner-labelWidth-2), 2)))
+	}
+	return out.String()
+}
+
+func capabilityLabel(kind string) string {
+	switch kind {
+	case permission.CapabilityFilesystem:
+		return "files"
+	case permission.CapabilityExecutable:
+		return "exec"
+	case permission.CapabilityNetwork:
+		return "net"
+	case permission.CapabilityServer:
+		return "server"
+	}
+	return kind
+}
+
+// describeGrant names exactly what a session grant would cover, so the button
+// is a statement of the access being handed over rather than a yes/no.
+func describeGrant(capabilities []permission.Capability) string {
+	parts := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		parts = append(parts, capabilityLabel(capability.Kind)+" "+summarizeValues(capability.Values))
+	}
+	return strings.Join(parts, " + ")
+}
+
+func grantableCapabilities(capabilities []permission.Capability) []permission.Capability {
+	var out []permission.Capability
+	for _, capability := range capabilities {
+		if capability.Grantable && !capability.Granted {
+			out = append(out, capability)
+		}
+	}
+	return out
+}
+
+func summarizeValues(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if len(values) <= 3 {
+		return strings.Join(values, ", ")
+	}
+	return fmt.Sprintf("%s + %d more", strings.Join(values[:3], ", "), len(values)-3)
 }
 
 func (m Model) renderQuestion() string {

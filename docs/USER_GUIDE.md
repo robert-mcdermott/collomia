@@ -553,16 +553,64 @@ verified for the selected deployment. If `cached_input_per_million` is omitted,
 cached input is conservatively estimated at the ordinary input rate. Reasoning
 tokens are informational and are not added again to output tokens.
 
+### Presets: one line instead of eight
+
+`permissions.preset` selects a named containment bundle so a working, coherent
+policy does not require composing every switch below by hand. Omit it and you
+get `standard`, which is exactly what earlier releases did.
+
+```json
+{ "permissions": { "preset": "hardened" } }
+```
+
+| | `frictionless` | `standard` (default) | `hardened` |
+| --- | --- | --- | --- |
+| `sandbox` | `off` | `auto` | `require` |
+| `sandbox_allow_network` | `true` | `true` | `true` |
+| `sandbox_allow_read_outside_workspace` | `true` | `true` | `false` |
+| `network` | `open` | `open` | `scoped` |
+| `commands` | `open` | `open` | `allowlist` |
+| `command_env` | `full` | `minimal` | `minimal` |
+
+Four properties make a preset safe to adopt:
+
+- **It is sugar, not a mode.** Every value it chooses is an ordinary field,
+  and `collo config show` attributes each one to `user (preset hardened)` or
+  similar. There is no hidden behavior.
+- **Your explicit fields win.** Anything the same layer states itself
+  overrides the bundle, so `{"preset": "hardened", "sandbox": "auto"}` means
+  hardened with `auto` — you never have to abandon the preset to adjust one
+  setting.
+- **It cannot loosen a stricter layer.** A project file's `frictionless`
+  cannot undo a user-level `hardened`. An explicit `"sandbox": "off"` remains
+  the documented escape hatch; a bundle quietly disabling OS enforcement is
+  not.
+- **It never sets `mode`.** Autonomy is the one choice you should make
+  knowingly, so no preset selects `autopilot` for you.
+
+`hardened` deliberately leaves command networking on: denying it outright
+breaks package installs, so add `"sandbox_allow_network": false` when you want
+an offline command sandbox.
+
+`frictionless` is an explicit opt-out for a toolchain that fights containment
+— it removes the OS sandbox and restores the inherited environment. It is
+never a default and is never reached by inheritance. Policy prompts,
+command-safety denials, and the audit ledger still apply; you are opting out
+of OS containment, not out of the permission engine.
+
 ### Permission fields
 
 | Field | Type | Meaning |
 | --- | --- | --- |
+| `preset` | string | `frictionless`, `standard` (default), or `hardened`. Fills only the containment fields you do not set yourself. |
 | `mode` | string | `ask`, `workspace`, or `autopilot`; default `ask`. |
 | `allow_outside_workspace` | boolean | Allows built-in path tools to resolve outside the workspace; permission checks still apply. |
 | `allowed_tools` | string list | Persistent session-start allowlist by exact tool name. |
 | `denied_tools` | string list | Exact tool names that are always disabled by the permission manager. |
 | `denied_commands` | regex list | Additional hard command denials checked again at execution. Built-in, global, and project patterns accumulate and cannot be removed by a lower layer; structural catastrophic checks are separate and always active. |
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
+| `network` | string | `open` (default) or `scoped`. Under `scoped`, an action that reaches the network is never approved automatically unless a rule or a session grant covers every endpoint it declares. |
+| `commands` | string | `open` (default) or `allowlist`. Under `allowlist`, a command is never approved automatically unless a rule or a session grant covers every executable it runs. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch; `require` refuses degraded execution. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
@@ -579,7 +627,7 @@ Each rule supports:
 | `tool` | Tool-name glob, for example `run_command` or `mcp_*`. |
 | `path` | Glob matched against resolved native paths; a suffix of `/**` includes the directory and descendants. |
 | `command` | Executable-name glob such as `go`, `git`, or `npm`. |
-| `host` | Network host/domain glob for tools that declare hosts. |
+| `host` | Network host/domain glob matched against the endpoints an action declares. |
 | `server` | MCP server-name glob. |
 | `reason` | Human-readable explanation shown with the rule decision. |
 
@@ -588,6 +636,30 @@ match. For an `allow` rule, every resource in the request must be covered;
 `deny` and `prompt` match when any resource in that category matches. An allow
 rule never vouches for a shell command the static analyzer could not fully
 inspect.
+
+### Declared endpoints and host rules
+
+A `host` matcher is compared against the endpoints an action's own text names:
+a URL argument to `curl` or `wget`, an `ssh`/`scp`/`rsync` destination, a Git
+remote given as a URL, and the configured endpoint of an HTTP-transport MCP
+server. Hosts are normalized to a lowercase name without scheme, credentials,
+port, or path, so `https://User@API.Example.com:8443/v1` matches
+`api.example.com`.
+
+Many network commands do not name their endpoint at all — `git push origin`
+resolves a remote from repository configuration, `npm install` uses a
+registry from configuration, `curl -K file` reads URLs from a file. Collomia
+reports those endpoints as **undetermined** rather than as "no endpoints". An
+`allow` rule scoped to a host never covers an action with undetermined
+endpoints, exactly as it never covers a command the analyzer could not read;
+`deny` and `prompt` rules still fire on whatever endpoints were readable.
+`collo policy check` prints the endpoints a command declares.
+
+This is Collomia's own policy layer, not egress enforcement. A program that
+opens a socket without saying so on its command line — an arbitrary binary, a
+compiler plugin, a test suite — declares no endpoint here. The boundary for
+that traffic is the OS sandbox's `sandbox_allow_network`, which remains
+all-or-nothing.
 
 ### MCP server fields
 
@@ -1306,6 +1378,62 @@ An approval-dialog `a` choice grants that tool only for the current Collomia
 process. Persistent grants belong in reviewed configuration or a narrowly
 scoped rule.
 
+### Postures: scoped network and command allowlist
+
+Two optional postures narrow what gets approved automatically. Both default to
+`open`, which is exactly the behavior of earlier releases, and both can only
+turn an automatic approval into a prompt — neither can allow or deny anything
+on its own.
+
+```json
+{
+  "permissions": {
+    "mode": "autopilot",
+    "network": "scoped",
+    "commands": "allowlist",
+    "rules": [
+      { "action": "allow", "command": "go", "reason": "build tooling" },
+      { "action": "allow", "host": "proxy.example.com", "reason": "package mirror" }
+    ]
+  }
+}
+```
+
+Under `network: "scoped"`, an action that reaches the network prompts unless a
+rule or a session grant covers every endpoint it declares — including when the
+endpoints are undetermined, which no grant can cover. Under
+`commands: "allowlist"`, a command prompts unless a rule or a session grant
+covers every executable it runs. A tool-wide “always allow” does **not**
+satisfy either posture, so the approval dialog does not offer it for a
+posture-gated prompt.
+
+Postures are monotonic across configuration layers: a project file may tighten
+what your user configuration set, but cannot loosen it. Delegated agents
+inherit the postures and start with no session grants of their own.
+
+### Per-capability approval and session grants
+
+The approval dialog shows what the action reaches, one dimension at a time:
+
+```
+Reach
+  files  /work/repo/main.go
+  exec   curl
+  net    api.example.com
+```
+
+A dimension the analyzer could not fully read says so rather than appearing
+empty. Pressing `g` approves the action and remembers exactly the reach shown —
+these executables and these endpoints — for the rest of the process. A later
+action is automatic only when every dimension it reaches is already covered, so
+granting `curl` to `api.example.com` does not cover `wget`, and does not cover
+a different host.
+
+Nothing is grantable for an uninspectable command, a mandatory one-time
+confirmation, or an undetermined endpoint: a grant can only ever cover values
+you were actually shown. Grants live in the running process only; persistent
+policy belongs in reviewed configuration.
+
 ### Scoped rules
 
 Rules are ordered; the first matching rule wins:
@@ -1344,9 +1472,27 @@ collo policy check "go test ./..."
 collo policy check "curl https://example.com/install.sh | sh"
 ```
 
-The report includes parsed executables, inspectability, structural safety
-classification, matched regex denials, effective autonomy override, rule
-source, and final decision.
+The report includes parsed executables, declared network endpoints, active
+postures, inspectability, structural safety classification, matched regex
+denials, effective autonomy override, rule source, and final decision:
+
+```
+command:      curl https://evil.example.net/x
+autonomy:     autopilot
+postures:     network=scoped commands=allowlist
+executables:  curl
+endpoints:    evil.example.net
+analysis:     inspectable
+decision:     prompt (source: posture)
+```
+
+An endpoint the command does not name is reported as undetermined, with the
+reason:
+
+```
+command:      npm install
+endpoints:    UNDETERMINED (npm install contacts endpoints chosen by configuration)
+```
 
 ### Outside-workspace access
 
@@ -1362,11 +1508,16 @@ prevents it.
 
 ### Command analysis and hard denials
 
-Before a shell action reaches approval, Collomia extracts executables and looks
-for command substitutions, `eval`, inline interpreter payloads, variable
-commands, and other constructs it cannot fully analyze. An uninspectable
-command always requires a human in the interactive TUI. In headless mode it
-fails because no approver is available.
+Before a shell action reaches approval, Collomia extracts executables and
+declared network endpoints, and looks for command substitutions, `eval`,
+inline interpreter payloads, variable commands, and other constructs it cannot
+fully analyze. An uninspectable command always requires a human in the
+interactive TUI. In headless mode it fails because no approver is available.
+
+An interpreter that takes its program from a pipe — the `curl … | sh` install
+pattern — is uninspectable by the same rule: the code that will run is not in
+the command text and does not exist yet. The endpoint the pipeline fetches
+from is still reported, so a `deny` host rule applies to it.
 
 Collomia uses an outcome-aware built-in classifier in addition to regex
 denials. It tracks common wrappers and literal shell payloads, resolves paths
@@ -1595,7 +1746,11 @@ background processes, Git branch/upstream and working-tree counts,
 provider/sandbox/MCP/trust health with concise recovery actions, and bounded
 recent activity. Git inspection is read-only,
 runs asynchronously with a short timeout, and reports non-Git workspaces
-normally; press `r` in the Session tab to refresh it. `/agents` provides a
+normally; press `r` in the Session tab to refresh it. The Session tab's
+**Security** block is the complete containment picture in one place — stance,
+autonomy, sandbox backend and what it actually applied, command environment,
+network and command postures, rule counts, and any session grants handed out
+so far — placed high enough to read without scrolling. `/agents` provides a
 searchable view of each retained delegated outcome, and `alt+a` opens explicit
 inspect, steer, and stop actions for one active child while its parent turn is
 still running. Help lists commands,
@@ -1759,6 +1914,22 @@ may be quoted or use backslash-escaped spaces. Images must resolve to regular
 files inside the active workspace; symlink escapes and outside paths are
 refused.
 
+### The containment mark in the status bar
+
+The autonomy badge always carries a containment mark, so the answer to "what
+is protecting me right now?" is on screen rather than several commands away:
+
+| Mark | Meaning |
+| --- | --- |
+| `ASK ⛨` | OS containment is configured for commands. |
+| `ASK ⛉` | No OS sandbox — `sandbox: off` or the `frictionless` preset. |
+| `ASK ⛨!` | Containment was requested but the platform applied less than was asked for. Run `collo doctor`. |
+
+When the stance is not the ordinary one — `hardened`, `frictionless`, a
+degraded sandbox — a second badge spells it out, but only when the terminal is
+wide enough that it does not push the run controls off the bar. The mark
+itself is never dropped, and the Session tab always carries the full detail.
+
 The status bar shows an `images N` badge while a prompt has pending images.
 Run `/attachments` to review their names, types, and sizes, `/detach 2` to
 remove one, or `/detach all` to remove them all. Pending images follow the
@@ -1799,7 +1970,8 @@ summary, reason, normalized resources, and a colored diff when available.
 | Key | Approval action |
 | --- | --- |
 | `y` or `enter` | Allow once. |
-| `a` | Allow and auto-approve this exact tool for the remainder of the process. |
+| `a` | Allow and auto-approve this exact tool for the remainder of the process. Not offered for a posture-gated prompt, where it would not satisfy the posture. |
+| `g` | Allow and remember exactly the reach shown — these executables, these endpoints — for the remainder of the process. Offered only when something is safely grantable. |
 | `n` or `esc` | Deny. |
 | `h` | For a `write_file` proposal with at least two hunks, enter hunk review. |
 
@@ -1949,7 +2121,7 @@ Global navigation keys can be remapped by action. Each omitted action inherits
 its earlier/default binding, so a project may override just one user binding.
 Supported values are `ctrl+letter`, `alt+letter`, `f1` through `f12`, `pgup`,
 `pgdown`, `home`, and `end`. Duplicate global bindings fail configuration
-validation. Approval `y`/`a`/`n`, question `enter`/`esc`, and keys shown inside
+validation. Approval `y`/`a`/`g`/`n`, question `enter`/`esc`, and keys shown inside
 transcript/diff modes remain fixed so safety decisions and modal help stay
 unambiguous.
 

@@ -17,7 +17,7 @@ For current priorities, remaining deliverables, and sequencing, see
 
 *Updated 2026-07-23:* Phases 0–3 are P0-complete and substantial slices of phases 4, 5, 6, 7, and 8 have shipped. Collomia now has a schema-versioned event model; layered, validated configuration with repository trust; a scoped permission-rules engine with conservative command analysis, an audit ledger, and OS sandbox enforcement on macOS (Seatbelt), Linux (Landlock), and Windows 11 (AppContainer/Job Object); durable crash-safe sessions with resume/fork/non-destructive completed-turn rewind, automatic compaction, complete visible transcript/tool restoration, dynamically pinned plan state, bounded referenced oversized results, exact recent-failure retention, session-scoped prompt history and drafts, visible fail-stop handling for short/disk writes that blocks later provider/tool boundaries, and explicitly versioned backward-compatible session records; an atomic patch tool, diff tracking with checkpointed undo, git inspection tools, a structured plan artifact, and a user-question primitive; live-streamed command output, fuzzy pickers (including delegated agents), `@` file/folder mentions, bounded prompt-from-file input, model discovery, a review workflow, provider retry/error/timeout/circuit health, normalized provider streaming, MCP live-catalog refresh/conformance fixtures, a concurrent worktree-isolated delegate scheduler with manual and opt-in primary-reviewed guarded integration, a loopback-only browser terminal (`collo --web`), desktop notifications, a colorless `plain`/`NO_COLOR` mode, optional reduced motion, a searchable/copyable transcript browser, a bounded searchable event-derived activity center, responsive interactive diff review with safe external-editor handoff, an asynchronous workspace/health dashboard with recovery hints, validated keybindings/shell completion, machine-readable `run.result` output for automation, offline deterministic trace validation/replay, a complete representative credential-free agent evaluation matrix, diagnostic performance baselines, parser fuzz smoke tests, privacy-conscious local support bundles with opaque failure correlation, and platform-neutral TUI golden screens exercised on all CI operating systems. The remaining large gaps, roughly in dependency order:
 
-1. **Domain-scoped network policy and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; endpoint-scoped egress remains open).
+1. **Enforced endpoint-scoped egress and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; declared endpoints, host-scoped rules, scoped/allowlist postures, and per-capability grants shipped 2026-07-24, but OS-level endpoint-scoped egress confinement remains open).
 2. **Provider platform hardening**: keychain credential storage plus Azure deployment/project discovery (Phase 4 — capability declarations/discovery/preflight, normalized cross-adapter streaming including Bedrock `ConverseStream`, resilience, recorded/live protocol contracts, and refreshable Azure Entra authentication shipped 2026-07-19).
 3. **MCP ecosystem remainder**: OAuth authentication, experimental tasks, resource subscriptions, audio/annotation passthrough, and argument-level permission scoping (Phase 5 — skills, hooks, lifecycle/resources/prompts/elicitation/progress/pinning, bounded image passthrough, external-data provenance framing, safe list-change refresh, and conformance fixtures have shipped).
 4. **Multi-agent orchestration polish**: automatic plan-graph execution,
@@ -34,6 +34,74 @@ For current priorities, remaining deliverables, and sequencing, see
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-07-24 — Phase 1 host-scoped policy and per-capability grants
+
+- **A documented control became a real one:** `permissions.rules` has always
+  accepted a `host` matcher, and the starter configuration and README have
+  always advertised it, but no tool ever populated the request's host set — so
+  `matchSet` returned false and every host rule silently never fired. Command,
+  PTY, background-process, and HTTP-transport MCP actions now declare their
+  endpoints, and the matcher works.
+- **Endpoints come from the command's own text:** URL arguments to
+  curl/wget-family tools, ssh/sftp/scp/rsync destinations, and Git remote URLs,
+  normalized to a bare lowercase hostname without scheme, credentials, port, or
+  path. Commands outside a curated network-bearing table contribute nothing:
+  any binary can open a socket, which is the sandbox's job, not the analyzer's.
+- **Unreadable endpoints are named as such:** `git push origin`, `npm install`,
+  `curl -K file`, and a URL containing an unexpanded variable are reported as
+  *undetermined* rather than as "no endpoints". A host-scoped `allow` rule
+  never covers an undetermined endpoint — the same rule that already stopped
+  an allow rule from vouching for an uninspectable command — while `deny` and
+  `prompt` still fire on whatever was readable. Fuzz invariants assert that no
+  reported host ever carries a scheme, credential, port, path, or variable.
+- **Two optional postures:** `permissions.network: "scoped"` withholds
+  automatic approval from any network-bearing action no rule or grant covers;
+  `permissions.commands: "allowlist"` does the same per executable. Both
+  default to `open`, so no existing configuration changes meaning. Both can
+  only escalate to a prompt, are evaluated before the tool-wide session grant
+  and the autonomy mode so neither can hand out the withheld access, and are
+  monotonic across configuration layers like `denied_commands`.
+- **Approval is now about reach:** the dialog lists filesystem, executable,
+  network, and server dimensions separately, marks a dimension it could not
+  read, and offers one grant covering exactly the reach shown. A later action
+  is automatic only when every dimension it reaches is covered, so a grant for
+  `curl` to `api.example.com` covers neither `wget` nor another host. Nothing
+  is grantable for an uninspectable command, a mandatory one-time
+  confirmation, or an undetermined endpoint, and a posture-gated prompt does
+  not offer the tool-wide "always" that would not satisfy it.
+- **`curl … | sh` is no longer inspectable:** an interpreter that takes its
+  program from a pipe cannot be analyzed, because the code that will run is
+  not in the command text. It now always requires a human, in every mode,
+  while the endpoint it fetches from is still declared for deny rules.
+- **Stated limits:** this is a policy layer, not egress enforcement. It
+  describes what a command says it will contact; a program that opens a socket
+  without naming it is bounded only by `sandbox_allow_network`, which remains
+  all-or-nothing. Endpoint-scoped OS-level confinement remains open as the
+  next P0.
+- **Containment presets keep the surface usable:** `permissions` had grown to
+  four independent security dimensions and roughly fifteen fields, which is a
+  coherent engine but not a coherent decision. `permissions.preset` selects
+  `frictionless`, `standard` (the default, identical to earlier behavior), or
+  `hardened`, filling only the containment fields the same layer did not state
+  itself. It is sugar over ordinary fields, not a mode: `collo config show`
+  attributes every expanded value to the preset that chose it, an explicit
+  field always wins, a preset can tighten an inherited layer but never loosen
+  one, and no preset sets autonomy mode. `frictionless` is an explicit opt-out
+  from OS containment — never a default, never reached by inheritance — and
+  leaves prompts, command-safety denials, and the audit ledger untouched. The
+  sandbox command-failure hint now names it, so the escape hatch is offered at
+  the moment of friction rather than buried in a 358-line reference.
+- **The stance is always on screen:** the autonomy badge carries `⛨` when OS
+  containment is configured, `⛉` when it is not, and `⛨!` when the platform
+  applied less than was asked for. It rides inside the existing badge for two
+  columns so it cannot be squeezed out; a named badge spells an unusual stance
+  out only when it does not displace the run controls, verified by a
+  comparative test at four widths. The Session tab gained a consolidated
+  Security block — stance, autonomy, sandbox reality, command environment,
+  both postures, rule counts, and the session grants handed out so far.
+  Cross-platform golden screens were regenerated for the two-column change,
+  and `COLLO_UPDATE_GOLDEN=1` now regenerates them deliberately.
 
 ### 2026-07-23 — Phase 1 default-on command-sandbox wave
 

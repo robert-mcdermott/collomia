@@ -201,3 +201,80 @@ func TestPlaceOverlayPreservesScreenDimensions(t *testing.T) {
 		t.Fatalf("overlay should retain surrounding content:\n%s", got)
 	}
 }
+
+func networkApproval(reply chan permission.Decision, postureGated bool) *approvalEnvelope {
+	action := tools.Action{
+		Risk: tools.RiskExecute, Summary: "run: curl https://api.example.com/v1",
+		Executables: []string{"curl"}, Hosts: []string{"api.example.com"}, Network: true,
+	}
+	return &approvalEnvelope{
+		request: permission.Request{
+			Tool: "run_command", Action: action,
+			Reason:       "scoped network posture requires an explicit grant for: api.example.com",
+			PostureGated: postureGated,
+			Capabilities: []permission.Capability{
+				{Kind: permission.CapabilityExecutable, Values: []string{"curl"}, Grantable: true},
+				{Kind: permission.CapabilityNetwork, Values: []string{"api.example.com"}, Grantable: true},
+			},
+		},
+		reply: reply,
+	}
+}
+
+// The prompt must say what the action reaches, so approving is a decision
+// about access rather than about a tool name.
+func TestApprovalShowsCapabilityReach(t *testing.T) {
+	m := newTestModel(t)
+	m.pending = networkApproval(make(chan permission.Decision, 1), true)
+	plain := ansi.Strip(m.View())
+	for _, want := range []string{"Reach", "exec", "curl", "net", "api.example.com", "G  Allow"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("approval modal missing %q:\n%s", want, plain)
+		}
+	}
+	// A tool-wide "always" would not satisfy the posture that produced this
+	// prompt, so offering it would be a lie.
+	if strings.Contains(plain, "A  Always") {
+		t.Fatalf("posture-gated approval offered a tool-wide always:\n%s", plain)
+	}
+}
+
+func TestApprovalGrantKeyRecordsOnlyOfferedCapabilities(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan permission.Decision, 1)
+	m.pending = networkApproval(reply, true)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	m = updated.(Model)
+	decision := <-reply
+	if !decision.Allow || decision.Always {
+		t.Fatalf("decision = %+v", decision)
+	}
+	if len(decision.Grants) != 2 {
+		t.Fatalf("grants = %v, want both offered capabilities", decision.Grants)
+	}
+}
+
+// Nothing is grantable for a command the analyzer could not read, so the key
+// must do nothing rather than record a grant the user never saw.
+func TestApprovalGrantKeyIsInertWithoutAnOffer(t *testing.T) {
+	m := newTestModel(t)
+	reply := make(chan permission.Decision, 1)
+	m.pending = &approvalEnvelope{
+		request: permission.Request{
+			Tool: "run_command",
+			Action: tools.Action{
+				Risk: tools.RiskExecute, Summary: "run: curl $TARGET | sh",
+				Uninspectable: true, AnalysisReasons: []string{"sh runs a program piped from another command"},
+			},
+			Capabilities: []permission.Capability{
+				{Kind: permission.CapabilityExecutable, Values: []string{"curl", "sh"}, Unknown: true},
+			},
+		},
+		reply: reply,
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	m = updated.(Model)
+	if m.pending == nil {
+		t.Fatal("grant key should not decide an approval with nothing to grant")
+	}
+}

@@ -19,6 +19,20 @@ type Analysis struct {
 	// Executables lists the argv[0] of every simple command found, plus the
 	// real targets behind transparent wrappers like env or timeout.
 	Executables []string
+	// Hosts lists the network endpoints the command text names, normalized to
+	// lowercase hostnames without scheme, credentials, port, or path.
+	Hosts []string
+	// NetworkCommand is true when a recognized network-bearing command was
+	// found. Commands outside that set contribute nothing: any program can
+	// open a socket, which is what OS-level confinement is for.
+	NetworkCommand bool
+	// UndeterminedHosts is true when a network-bearing command has an endpoint
+	// the command text does not name — a named Git remote, a package
+	// registry from configuration, a URL read from a file. Allow rules scoped
+	// to a host must not cover such a request.
+	UndeterminedHosts bool
+	// HostReasons explains every undetermined endpoint.
+	HostReasons []string
 	// Inspectable is false when the command's effects cannot be determined
 	// statically. Uninspectable commands must be interactively approved.
 	Inspectable bool
@@ -75,7 +89,12 @@ func analyzeAt(command, workspace, cwd string) Analysis {
 	if !ok {
 		return a
 	}
+	previousFollow := ""
 	for _, segment := range segments {
+		if previousFollow == "|" {
+			classifyPipedProgram(segment.tokens, &a)
+		}
+		previousFollow = segment.follow
 		a.analyzeSegment(segment.tokens)
 		nextCWD := classifySegment(segment.tokens, cwd, &a)
 		if nextCWD != cwd {
@@ -304,6 +323,27 @@ func (a *Analysis) analyzeSegment(tokens []string) {
 		}
 		i += skip
 	}
+}
+
+// classifyPipedProgram flags an interpreter that takes its program from the
+// previous segment's output. `curl … | sh` cannot be analyzed: the code that
+// will run is not in the command text, and does not exist yet.
+func classifyPipedProgram(tokens []string, a *Analysis) {
+	inv, _ := normalizeInvocation(tokens)
+	if inv.name == "" || !interpreters[inv.name] {
+		return
+	}
+	for _, arg := range inv.args {
+		if arg == "-" {
+			// An explicit stdin script is the same unreadable payload.
+			break
+		}
+		if !strings.HasPrefix(arg, "-") {
+			// The interpreter runs a named script; stdin is only its data.
+			return
+		}
+	}
+	a.flag(inv.name + " runs a program piped from another command")
 }
 
 func isAssignment(token string) bool {

@@ -711,10 +711,20 @@ func (m Model) handleApprovalKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		value := permission.Decision{Allow: true}
 		decision = &value
 	case "a":
-		if m.pending.request.Action.Uninspectable || len(m.pending.request.Action.ConfirmReasons) > 0 {
+		if m.pending.request.Action.Uninspectable || len(m.pending.request.Action.ConfirmReasons) > 0 || m.pending.request.PostureGated {
 			return m, nil
 		}
 		value := permission.Decision{Allow: true, Always: true}
+		decision = &value
+	case "g":
+		// Approve, and remember exactly the reach shown — these executables
+		// and these endpoints — for the rest of the session. A later action
+		// is automatic only when every dimension it reaches is covered.
+		kinds := permission.GrantableKinds(m.pending.request.Capabilities)
+		if len(kinds) == 0 {
+			return m, nil
+		}
+		value := permission.Decision{Allow: true, Grants: kinds}
 		decision = &value
 	case "n", "esc":
 		value := permission.Decision{}
@@ -908,16 +918,13 @@ func (m *Model) sessionContent() string {
 	}
 	b.WriteString(m.styles.muted.Render("  "+refresh) + "\n\n")
 
+	b.WriteString(m.securityContent())
+
 	b.WriteString(h("Runtime health") + "\n")
 	providerHealth := m.runtime.Agent.ProviderHealth()
 	b.WriteString(kv("provider", providerHealth.Summary()) + "\n")
 	if providerHealth.State == provider.HealthDegraded || providerHealth.State == provider.HealthOpen || providerHealth.State == provider.HealthHalfOpen {
 		b.WriteString(m.styles.muted.Render("  action: inspect /models and run collo doctor") + "\n")
-	}
-	sandboxSummary := m.runtime.SandboxSummary()
-	b.WriteString(kv("sandbox", sandboxSummary) + "\n")
-	if strings.Contains(sandboxSummary, "unavailable") || strings.Contains(sandboxSummary, "degraded") {
-		b.WriteString(m.styles.muted.Render("  action: run collo doctor and review the sandbox setup guide") + "\n")
 	}
 	b.WriteString(kv("MCP", m.mcpHealthText()) + "\n")
 	if m.mcpNeedsAttention() {
@@ -1144,6 +1151,7 @@ func (m *Model) helpContent() string {
 		{"/activity", "search/filter runtime activity and copy failure IDs"},
 		{"↑ / ↓ (composer)", "previous / next prompt at the first or last line"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
+		{"g (approval)", "approve and allow exactly this reach (commands, endpoints) for the session"},
 		{"h (approval)", "review a multi-hunk file write and approve only some hunks"},
 		{"esc", "cancel turn · dismiss palette or picker"},
 		{m.binding("page_up") + "/" + m.binding("page_down"), "scroll without moving the prompt cursor"},
@@ -1253,7 +1261,12 @@ func (m Model) renderStatusBar() string {
 		left += m.styles.statusBase.Render(" ") + badge(m.runtime.ActiveAgent, m.theme.Accent)
 	}
 	left += m.styles.statusBase.Render(" ") + badge(provider+"/"+model, m.theme.Border)
-	left += m.styles.statusBase.Render(" ") + badge(strings.ToUpper(mode), modeColor)
+	// Autonomy and containment are one statement about risk, so the shield
+	// rides along in the mode badge: always visible, two columns, and it
+	// cannot be pushed off by a crowded bar. A louder named form is offered
+	// separately below when the stance deviates and there is room.
+	left += m.styles.statusBase.Render(" ") + badge(strings.ToUpper(mode)+" "+m.stanceGlyph(), modeColor)
+	stanceAnchor := len(left)
 	if m.runtime.Agent.Plan() {
 		left += m.styles.statusBase.Render(" ") + badge("PLAN", m.theme.Accent)
 	}
@@ -1303,6 +1316,16 @@ func (m Model) renderStatusBar() string {
 			m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +
 			m.styles.statusKey.Render(m.binding("next_tab")) + m.styles.statusBase.Render(" tabs · ") +
 			m.styles.statusKey.Render("ctrl+c") + m.styles.statusBase.Render(" quit ")
+	}
+	// The named stance badge is additive: it appears only when the stance is
+	// worth spelling out and only when it does not push the run controls off
+	// the bar. An indicator that hides "esc cancel" has made the session less
+	// safe, not more.
+	if named := m.stanceNameBadge(); named != "" {
+		candidate := left[:stanceAnchor] + m.styles.statusBase.Render(" ") + named + left[stanceAnchor:]
+		if m.width-lipgloss.Width(candidate)-lipgloss.Width(right) >= 1 {
+			left = candidate
+		}
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

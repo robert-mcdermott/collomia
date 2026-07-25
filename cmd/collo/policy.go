@@ -31,6 +31,8 @@ func runPolicyCommand(opts options) error {
 	action := tools.Action{
 		Risk: tools.RiskExecute, Summary: "run: " + command,
 		Executables: analysis.Executables, Uninspectable: !analysis.Inspectable, AnalysisReasons: analysis.Reasons,
+		Hosts: analysis.Hosts, Network: analysis.NetworkCommand,
+		HostsUndetermined: analysis.UndeterminedHosts, HostReasons: analysis.HostReasons,
 		HardDenyReasons: analysis.HardDenyReasons, ConfirmReasons: analysis.ConfirmReasons,
 	}
 	manager := permission.New(cfg.Permissions, nil)
@@ -43,8 +45,19 @@ func runPolicyCommand(opts options) error {
 
 	fmt.Printf("command:      %s\n", command)
 	fmt.Printf("autonomy:     %s\n", manager.Mode())
+	fmt.Printf("postures:     network=%s commands=%s\n", cfg.Permissions.Network, cfg.Permissions.Commands)
 	if len(analysis.Executables) > 0 {
 		fmt.Printf("executables:  %s\n", strings.Join(analysis.Executables, ", "))
+	}
+	if analysis.NetworkCommand {
+		endpoints := strings.Join(analysis.Hosts, ", ")
+		if analysis.UndeterminedHosts {
+			if endpoints != "" {
+				endpoints += ", "
+			}
+			endpoints += "UNDETERMINED (" + strings.Join(analysis.HostReasons, "; ") + ")"
+		}
+		fmt.Printf("endpoints:    %s\n", endpoints)
 	}
 	if analysis.Inspectable {
 		fmt.Println("analysis:     inspectable")

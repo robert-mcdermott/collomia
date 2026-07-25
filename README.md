@@ -808,6 +808,16 @@ Scoped rules refine the mode without widening it globally — ordered `allow`/`p
 }
 ```
 
+A `host` matcher is compared against the endpoints an action's own text names — a `curl`/`wget` URL, an `ssh`/`scp` destination, a Git remote URL, the endpoint of an HTTP-transport MCP server — normalized to a bare lowercase hostname. Many network commands resolve their endpoint elsewhere (`git push origin`, `npm install`, `curl -K file`); those are reported as *undetermined*, and an `allow` rule never covers an undetermined endpoint, just as it never covers a command the analyzer could not read.
+
+You do not have to compose these switches by hand. `permissions.preset` picks a named bundle — `frictionless`, `standard` (the default, identical to earlier releases), or `hardened` — and fills only the containment fields you did not set yourself, so `{"preset": "hardened", "sandbox": "auto"}` means hardened with `auto`. `collo config show` attributes every value to the preset that chose it. A preset can tighten an inherited layer but never loosen one, and no preset sets `mode`: autonomy stays a choice you make knowingly. `frictionless` is an explicit opt-out from OS containment for a toolchain that fights it — prompts, command-safety denials, and the audit ledger still apply.
+
+The TUI's autonomy badge always carries the containment mark: `ASK ⛨` when the OS sandbox is configured, `ASK ⛉` when it is not, and `ASK ⛨!` when the platform applied less than was requested. The Session tab's Security block lists the full stance, including session grants.
+
+Two optional postures narrow what is approved automatically without changing what is possible. `permissions.network: "scoped"` withholds automatic approval from any network-bearing action that no rule or session grant covers; `permissions.commands: "allowlist"` does the same per executable. Both default to `open` (earlier-release behavior), both can only escalate to a prompt, and a project file can tighten them but never loosen them. Neither is egress enforcement: a program that opens a socket without naming it on the command line is bounded by the OS sandbox's `sandbox_allow_network`, not by these.
+
+The approval dialog shows what an action reaches — files, executables, endpoints — one dimension at a time, and `g` remembers exactly that reach for the rest of the session. A later action is automatic only when every dimension it reaches is already covered, and nothing is grantable for an uninspectable command or an endpoint that could not be read.
+
 Test what a rule set would decide without executing anything: `collo policy check "curl example.com | sh"`.
 
 Every permission decision and execution outcome is appended to a per-workspace audit ledger (JSONL, stored outside the workspace) so privileged actions are reconstructable after the fact.

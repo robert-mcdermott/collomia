@@ -77,8 +77,13 @@ func TestTabCycling(t *testing.T) {
 	if m.tab != tabSession {
 		t.Fatalf("after ctrl+t tab = %d, want session", m.tab)
 	}
-	if view := m.viewport.View(); !strings.Contains(view, "Providers") {
-		t.Fatalf("session tab should list providers, got:\n%s", view)
+	// The containment stance is high enough to be read without scrolling;
+	// the provider catalog remains further down the same tab.
+	if view := m.viewport.View(); !strings.Contains(view, "Security") {
+		t.Fatalf("session tab should surface the security stance without scrolling, got:\n%s", view)
+	}
+	if content := m.sessionContent(); !strings.Contains(content, "Providers") {
+		t.Fatalf("session tab should list providers, got:\n%s", content)
 	}
 	m = press(t, m, tea.KeyCtrlT)
 	if m.tab != tabHelp {

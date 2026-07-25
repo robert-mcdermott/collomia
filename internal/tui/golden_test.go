@@ -117,6 +117,16 @@ func assertGoldenScreen(t *testing.T, name, got string) {
 	t.Helper()
 	got = normalizeGoldenScreen(got)
 	path := filepath.Join("testdata", "golden", name)
+	// Regenerating is deliberate and never automatic: run
+	// COLLO_UPDATE_GOLDEN=1 go test ./internal/tui/ and review the diff, so a
+	// screen change is always something a person chose.
+	if os.Getenv("COLLO_UPDATE_GOLDEN") != "" {
+		if err := os.WriteFile(path, []byte(got), 0o600); err != nil {
+			t.Fatalf("update golden %s: %v", path, err)
+		}
+		t.Logf("updated golden %s", path)
+		return
+	}
 	want, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read golden %s: %v\n--- actual ---\n%s--- end actual ---", path, err, got)

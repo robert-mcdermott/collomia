@@ -21,6 +21,12 @@ type Request struct {
 	Executables []string
 	Hosts       []string
 	Server      string
+	// Network marks a request that reaches the network at all.
+	Network bool
+	// HostsUndetermined is true when the request reaches an endpoint it could
+	// not name. Like Inspectable, it blocks host-scoped allow rules: an
+	// endpoint nobody could read must not be vouched for.
+	HostsUndetermined bool
 	// Inspectable is false when the request's resources could not be fully
 	// determined (e.g. a shell command with substitutions).
 	Inspectable bool
@@ -37,6 +43,9 @@ func (r Request) Resources() []string {
 	}
 	for _, h := range r.Hosts {
 		out = append(out, "host:"+h)
+	}
+	if r.HostsUndetermined {
+		out = append(out, "host:undetermined")
 	}
 	if r.Server != "" {
 		out = append(out, "server:"+r.Server)
@@ -108,6 +117,11 @@ func matches(rule appconfig.Rule, req Request) bool {
 		}
 	}
 	if rule.Host != "" {
+		// An allow rule cannot vouch for an endpoint the analyzer could not
+		// read, exactly as it cannot vouch for an uninspectable command.
+		if requireAll && req.HostsUndetermined {
+			return false
+		}
 		if !matchSet(rule.Host, req.Hosts, requireAll, glob) {
 			return false
 		}

@@ -209,6 +209,30 @@ func (m *Manager) GetPrompt(ctx context.Context, server, name string, args map[s
 	return frameExternalMCPData("prompt template", server, name, text), nil
 }
 
+// endpointAction declares the network endpoint a resource operation reaches.
+// A named server contributes its own configured endpoint; the catalog-wide
+// form contributes every connected HTTP server's endpoint, because it
+// contacts all of them.
+func (m *Manager) endpointAction(action tools.Action, server string) tools.Action {
+	m.mu.Lock()
+	states := make([]*serverState, 0, len(m.servers))
+	if server != "" {
+		if state, ok := m.servers[server]; ok {
+			states = append(states, state)
+		}
+	} else {
+		for _, state := range m.servers {
+			states = append(states, state)
+		}
+	}
+	m.mu.Unlock()
+	for _, state := range states {
+		action = withServerEndpoint(action, state.cfg)
+	}
+	sort.Strings(action.Hosts)
+	return action
+}
+
 // registerResourceTools adds the model-facing resource tools once MCP is in
 // play. Both are external calls scoped to the server named in the arguments
 // so permission rules on a server keep matching.
@@ -222,7 +246,7 @@ func (m *Manager) registerResourceTools() {
 		AssessFn: func(raw json.RawMessage) (tools.Action, error) {
 			var a listArgs
 			_ = json.Unmarshal(raw, &a)
-			return tools.Action{Risk: tools.RiskExternal, Summary: "list MCP resources on " + orAll(a.Server), Server: a.Server}, nil
+			return m.endpointAction(tools.Action{Risk: tools.RiskExternal, Summary: "list MCP resources on " + orAll(a.Server), Server: a.Server}, a.Server), nil
 		},
 		Run: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var a listArgs
@@ -276,7 +300,7 @@ func (m *Manager) registerResourceTools() {
 		AssessFn: func(raw json.RawMessage) (tools.Action, error) {
 			var a readArgs
 			_ = json.Unmarshal(raw, &a)
-			return tools.Action{Risk: tools.RiskExternal, Summary: "read MCP resource " + a.URI + " from " + a.Server, Server: a.Server}, nil
+			return m.endpointAction(tools.Action{Risk: tools.RiskExternal, Summary: "read MCP resource " + a.URI + " from " + a.Server, Server: a.Server}, a.Server), nil
 		},
 		Run: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var a readArgs
