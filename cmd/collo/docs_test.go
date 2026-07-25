@@ -191,3 +191,64 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// The exact contents of the minimal environment and the read-confinement
+// roots decide whether a user's build works, so the guide lists them
+// verbatim. These guards read the source as text rather than calling the
+// functions, because the sandbox roots live in build-tagged platform files
+// that do not compile on every host.
+
+func literalsAfter(t *testing.T, relPath, declaration string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), relPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, declaration)
+	if start < 0 {
+		t.Fatalf("%s no longer contains %q; this guard needs updating", relPath, declaration)
+	}
+	body := text[start:]
+	// Read only to the end of the slice literal, so surrounding code (a
+	// key+"="+value concatenation, a comment) contributes no false entries.
+	if end := strings.Index(body, "}"); end > 0 {
+		body = body[:end]
+	}
+	var out []string
+	for _, m := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(body, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+func TestGuideListsEveryMinimalEnvironmentVariable(t *testing.T) {
+	kept := literalsAfter(t, filepath.Join("internal", "tools", "command.go"), "keep := []string{")
+	if len(kept) < 15 {
+		t.Fatalf("found only %d kept variables; minimalEnv's shape changed and this guard needs updating", len(kept))
+	}
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	for _, name := range kept {
+		if !strings.Contains(guide, "`"+name+"`") {
+			t.Errorf("minimal environment keeps %s but the user guide does not list it", name)
+		}
+	}
+}
+
+func TestGuideListsEveryReadableSystemRoot(t *testing.T) {
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	for _, source := range []struct{ path, decl string }{
+		{filepath.Join("internal", "sandbox", "sandbox_darwin.go"), "func darwinSystemReadableRoots() []string {\n\t// These roots"},
+		{filepath.Join("internal", "sandbox", "sandbox_linux.go"), "func linuxSystemReadableRoots() []string {\n\t// Keep system"},
+	} {
+		roots := literalsAfter(t, source.path, source.decl)
+		if len(roots) < 8 {
+			t.Fatalf("%s yielded only %d roots; its shape changed and this guard needs updating", source.decl, len(roots))
+		}
+		for _, root := range roots {
+			if !strings.Contains(guide, "`"+root+"`") {
+				t.Errorf("%s permits reads under %s but the user guide does not list it", source.decl, root)
+			}
+		}
+	}
+}

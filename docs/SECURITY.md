@@ -721,10 +721,21 @@ development or production credential set.
 
 By default, agent commands (including background processes and PTY runs)
 inherit your full environment, which may include unrelated secrets from
-your shell. Set `permissions.command_env: "minimal"` to strip commands down
-to `PATH`, `HOME`, and a short list of other basics — this is the default
-automatically whenever the sandbox is enabled (`sandbox: "auto"` or
-`"require"`), and can be set explicitly without the sandbox too.
+your shell. `permissions.command_env: "minimal"` strips commands down to an
+allowlist — this is the default automatically whenever the sandbox is enabled
+(`sandbox: "auto"` or `"require"`), and can be set explicitly without the
+sandbox too.
+
+The allowlist is exactly `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+`TMPDIR`, `TEMP`, `TMP`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `COLUMNS`,
+`LINES`, `SYSTEMROOT`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `LOCALAPPDATA`,
+and `GOCACHE`, each passed only when it is set in the parent environment. No
+other variable reaches an agent command, so shell-resident credentials such
+as `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_*`, and provider API keys are not
+exposed to commands. There is no per-variable passthrough; a command that
+needs one value should set it inline in the command string. See the user
+guide's [command environment](USER_GUIDE.md) section for what this breaks and
+how to work around it.
 
 ### Durable conversation and retained tool output
 

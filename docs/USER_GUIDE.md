@@ -1763,6 +1763,38 @@ Platform behavior:
   explicit `sandbox: "off"` exception for a workflow that must own the Windows
   debugging relationship itself.
 
+#### Exactly what read confinement denies
+
+`sandbox_allow_read_outside_workspace: false` targets *your data*, not the
+operating system. The workspace, temporary directories, writable roots, every
+`PATH` entry, and your `sandbox_readable_roots` stay readable on every
+platform. Beyond those:
+
+- **macOS** denies file *contents* under `/Users`, `/Volumes`, and your home
+  directory, then re-permits these system roots: `/System`, `/usr`, `/bin`,
+  `/sbin`, `/Library`, `/Applications`, `/opt/homebrew`, `/opt/local`, `/nix`,
+  `/private/etc`, `/private/var/db`, `/private/var/select`, `/dev`. File
+  *metadata* stays visible, so `ls ~` still works while reading a file there
+  fails — path lookups fail cleanly instead of crashing tools that expect a
+  directory to exist.
+- **Linux** works the other way around: Landlock permits only these roots and
+  denies everything else — `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc`,
+  `/opt`, `/nix`, `/snap`, `/dev`, `/proc/self`, `/proc/thread-self`.
+- **Windows** confines user-data reads under AppContainer *always*, whether or
+  not this switch is set.
+
+In practice `~/.ssh`, `~/.aws`, `~/.config`, browser profiles, your documents,
+other repositories, and mounted volumes become unreadable, while system
+libraries and public OS configuration such as `/etc/passwd` stay readable.
+This is deliberate: the boundary is ungranted user data, not a claim that
+public operating-system configuration becomes invisible. Because `PATH`
+entries remain readable, a user-installed binary in `~/.local/bin` still
+launches without opening the rest of your home directory.
+
+When a build legitimately needs something outside the workspace, add a narrow
+`sandbox_readable_roots` entry for it rather than returning the switch to
+`true`.
+
 The network setting is deliberately command-specific. It does not block model
 providers, remote MCP servers, hooks, or LSP processes. On Windows, allowing
 network adds Internet and private-network AppContainer capabilities, but
@@ -1797,14 +1829,38 @@ instructions.
 ### Command environment
 
 `command_env: "full"` passes the parent environment to shell and background
-commands. `"minimal"` keeps only basics such as `PATH`, `HOME`, user/shell/temp,
-locale, terminal, and essential Windows command variables. When `command_env`
-is omitted and sandboxing is `auto` or `require`, Collomia automatically uses
-the minimal environment.
+commands. When `command_env` is omitted and sandboxing is `auto` or `require`,
+Collomia automatically uses the minimal environment.
 
-Minimal mode can cause builds that require proxy variables, package-registry
-tokens, compiler flags, or cloud credentials to fail. Prefer adding a narrow
-purpose-built wrapper or explicitly opting into `full` only when needed.
+`"minimal"` is an allowlist, not a filter. Exactly these variables are passed
+through, and only when they are set in the parent environment:
+
+| Purpose | Variables |
+| --- | --- |
+| Identity and paths | `PATH` `HOME` `USER` `LOGNAME` `SHELL` |
+| Temporary directories | `TMPDIR` `TEMP` `TMP` |
+| Terminal | `TERM` `COLUMNS` `LINES` |
+| Locale | `LANG` `LC_ALL` `LC_CTYPE` |
+| Windows essentials | `SYSTEMROOT` `COMSPEC` `PATHEXT` `USERPROFILE` `LOCALAPPDATA` |
+| Build cache | `GOCACHE` |
+
+Everything else is dropped, which is the point: `GITHUB_TOKEN`, `NPM_TOKEN`,
+`AWS_*`, `ANTHROPIC_API_KEY`, and any other credential in your shell never
+reach an agent command.
+
+What predictably stops working: proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`,
+`NO_PROXY`), registry credentials (`NPM_TOKEN`, `PIP_INDEX_URL`), cloud SDK
+configuration (`AWS_PROFILE`, `AWS_REGION`,
+`GOOGLE_APPLICATION_CREDENTIALS`), toolchain overrides (`GOPATH`, `GOPROXY`,
+`CARGO_HOME`, `JAVA_HOME`, `NODE_OPTIONS`), and anything injected by direnv,
+asdf, or nvm shims. Note that `GOCACHE` is kept while `GOPATH` and `GOPROXY`
+are not — a deliberate narrow carve-out for Go builds, not general toolchain
+support.
+
+There is no per-variable passthrough: `command_env` is `full` or `minimal`. A
+command that needs one value can set it inline, because the command string is
+yours — `HTTPS_PROXY=http://proxy.example.com:3128 npm ci`. Prefer that, or a
+narrow purpose-built wrapper, over opting the whole session into `full`.
 
 ### External reviewer
 
