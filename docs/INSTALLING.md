@@ -51,7 +51,7 @@ Pin a stable or prerelease version:
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh |
-  COLLO_VERSION=v0.1.6 sh
+  COLLO_VERSION=v0.1.7 sh
 ```
 
 Choose a different user-writable installation directory:
@@ -65,7 +65,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 A downloaded installer accepts the equivalent options:
 
 ```sh
-sh install-collo.sh --version v0.1.6 --install-dir "$HOME/bin"
+sh install-collo.sh --version v0.1.7 --install-dir "$HOME/bin"
 ```
 
 `COLLO_REPOSITORY=owner/repository` selects a fork. For a system-wide install,
@@ -103,7 +103,7 @@ upgrade.
 Install a particular version or choose another directory:
 
 ```powershell
-& $Installer -Version v0.1.6 -InstallDir "$HOME\bin" -AddToPath
+& $Installer -Version v0.1.7 -InstallDir "$HOME\bin" -AddToPath
 ```
 
 The environment variables `COLLO_VERSION`, `COLLO_INSTALL_DIR`, and
@@ -175,14 +175,17 @@ sessions, logs, skills, and other state under `~/.collomia` or
 `%USERPROFILE%\.collomia` are not modified. A failed download, checksum,
 version check, or final replacement leaves the existing binary in place.
 
-For a deliberate rollback, install a known compatible earlier tag:
+For a deliberate rollback, replace `vX.Y.Z` with a known compatible earlier
+release tag:
 
 ```sh
-COLLO_VERSION=v0.1.4 sh install-collo.sh
+ROLLBACK_VERSION=vX.Y.Z
+COLLO_VERSION="$ROLLBACK_VERSION" sh install-collo.sh
 ```
 
 ```powershell
-& $Installer -Version v0.1.4 -AddToPath
+$RollbackVersion = 'vX.Y.Z'
+& $Installer -Version $RollbackVersion -AddToPath
 ```
 
 Read the intervening release notes first. A binary downgrade never rewinds

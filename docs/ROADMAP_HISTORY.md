@@ -9,7 +9,9 @@ For current priorities, remaining deliverables, and sequencing, see
 
 **Assessment date:** 2026-07-17 · **History split:** 2026-07-23
 
-**Scope:** Current repository compared with [`PRD.md`](../PRD.md), plus a feature and architecture benchmark against current terminal coding agents, provider platforms, and the Model Context Protocol specification.
+**Scope:** Current repository compared with the original product requirements,
+plus a feature and architecture benchmark against current terminal coding
+agents, provider platforms, and the Model Context Protocol specification.
 
 ## Executive summary
 
