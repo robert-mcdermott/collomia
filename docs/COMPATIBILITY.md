@@ -77,7 +77,9 @@ The current runtime default for an omitted `permissions.sandbox` field is
 `auto`, replacing the earlier `off` default. This is an intentional security
 behavior change within schema version 1:
 
-- an existing file that explicitly says `"sandbox": "off"` remains off;
+- an existing *global* file that explicitly says `"sandbox": "off"` remains off;
+- a *project* file that says `"sandbox": "off"` is refused and reported (see
+  the containment-precedence change below), keeping the inherited mode;
 - an existing file that omitted the field begins using `auto` after upgrade;
 - new global starter files write `"sandbox": "auto"`;
 - project starter files continue to omit the field and inherit the user or
@@ -91,6 +93,27 @@ minimal environment when `command_env` is omitted. Before or after upgrading,
 run `collo config show` and `collo doctor`; add narrow readable/writable roots
 for SDKs and caches where needed. Add an explicit `"sandbox": "off"` only when
 the prior unsandboxed behavior is deliberately required.
+
+### Containment-precedence change
+
+A repository can now tighten any containment setting but never weaken one.
+This is an intentional security behavior change within schema version 1, and
+it can change the effective policy of an unmodified project file:
+
+- affected settings are `sandbox`, `sandbox_allow_network`,
+  `sandbox_allow_read_outside_workspace`, `command_env`, `network`,
+  `commands`, and `allow_outside_workspace`;
+- it applies identically to an explicit field and to `permissions.preset`;
+- a project file that weakens one of these is refused, not applied, and the
+  refusal is printed by `collo config show` and `collo config validate`;
+- your global configuration is unaffected — it may still select
+  `"sandbox": "off"` or `"preset": "frictionless"`;
+- no file is rewritten.
+
+A project that relied on `.collomia.json` setting `"sandbox": "off"` (or
+`"command_env": "full"`) must move that setting to the global configuration,
+or select `"preset": "frictionless"` there. Run `collo config show` after
+upgrading to see whether anything was refused.
 
 A newer configuration is rejected with an instruction to upgrade the binary.
 Normal loading's unknown-field tolerance supports forward-compatible optional

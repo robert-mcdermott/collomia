@@ -27,7 +27,10 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   environment by default, and Windows AppContainer always confines user-data
   reads and blocks ordinary unpackaged localhost services. `auto` warns and
   continues when a backend is unavailable; use `require` for fail-closed
-  operation. Domain-scoped egress grants are not implemented.
+  operation. Endpoint-scoped policy exists — host rules, the
+  `network: "scoped"` posture, and per-capability session grants — but it
+  describes only the endpoints a command names, and OS-level endpoint-scoped
+  egress enforcement is not implemented.
 - `autopilot` is not a promise that arbitrary commands are safe. Built-in
   catastrophic denials, policy, and OS sandboxing reduce risk but do not replace
   review, backups, source control, or host isolation.

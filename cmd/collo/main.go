@@ -755,6 +755,7 @@ Flags:
   --agent <name>                       named primary agent profile
   --autonomy ask|workspace|autopilot   permission policy
   --autopilot                          shorthand for --autonomy autopilot
+  --workspace                          shorthand for --autonomy workspace
   --plan                               start in read-only planning mode
   --resume <id>                        resume a saved session
   --continue                           resume the most recent session
@@ -775,6 +776,8 @@ Flags:
   --header KEY=VALUE                   (mcp add) add an HTTP header; repeatable
   --timeout <seconds>                  (mcp add) connection and catalog timeout (default: 30)
   --with-reference                     (init) also write the non-loaded annotated JSONC reference
+  --strict                             (config validate, doctor) reject unknown fields and treat warnings as errors
+  --yes                                (sessions delete, skills remove, mcp add) confirm a destructive or replacing action
   -h, --help                           show help
   -v, --version                        show version
 

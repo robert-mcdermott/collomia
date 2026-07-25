@@ -1991,7 +1991,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/undo` | Revert the most recent tracked agent file change when the file has not diverged externally. |
 | `/ps` | List background processes. |
 | `/ps stop <id>` | Stop one background process and its descendants. |
-| `/sessions` | Fuzzy-pick and switch to another durable session in place. |
+| `/sessions` (alias `/resume`) | Fuzzy-pick and switch to another durable session in place. |
 | `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
