@@ -58,6 +58,9 @@ type Config struct {
 	ProjectTrusted bool `json:"-"`
 	// Quarantined lists project-provided capabilities that were ignored.
 	Quarantined []string `json:"-"`
+	// Clamped lists containment settings a trusted project asked to weaken
+	// and did not get. They are reported rather than applied silently.
+	Clamped []ClampedField `json:"-"`
 	// EnvProvider/EnvModel hold COLLO_PROVIDER / COLLO_MODEL overrides.
 	EnvProvider string `json:"-"`
 	EnvModel    string `json:"-"`
@@ -452,10 +455,6 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 	}
 	c.Permissions.DeniedCommands = additiveStrings(inheritedDeniedCommands, c.Permissions.DeniedCommands)
 	keys := flattenJSON(data)
-	// Whether the sandbox mode above this layer was actually chosen by
-	// someone, rather than being the built-in default, decides if a preset
-	// here may relax it.
-	sandboxWasChosen := c.Origins["permissions.sandbox"] != "" && c.Origins["permissions.sandbox"] != "defaults"
 	for _, key := range keys {
 		c.Origins[key] = layer
 	}
@@ -466,13 +465,22 @@ func (c *Config) applyFile(path, layer string, strict bool) error {
 		declared[key] = true
 	}
 	if declared["permissions.preset"] {
-		c.applyPreset(strings.ToLower(strings.TrimSpace(c.Permissions.Preset)), layer, declared, inheritedPermissions, sandboxWasChosen)
+		c.applyPreset(strings.ToLower(strings.TrimSpace(c.Permissions.Preset)), layer, declared)
 	}
-	// Postures are monotonic like denied commands: a lower layer may tighten
-	// what it inherited, but a project file cannot hand itself open network or
-	// command access that the user's configuration scoped.
-	c.Permissions.Network = strictestPosture(inheritedPermissions.Network, c.Permissions.Network, "scoped")
-	c.Permissions.Commands = strictestPosture(inheritedPermissions.Commands, c.Permissions.Commands, "allowlist")
+	// A repository can tighten containment but never weaken it, by any means:
+	// an explicit field, a preset, or both. The machine owner's own
+	// configuration is not restricted this way — a built-in default is not a
+	// choice they made, so the global layer remains free to select `off` or
+	// the frictionless preset.
+	if layer == "project" {
+		tightened, clamped := tightenContainment(inheritedPermissions, c.Permissions)
+		c.Permissions = tightened
+		for _, note := range clamped {
+			// Ignoring a setting silently would read as a bug. Say so.
+			c.Clamped = append(c.Clamped, note)
+			c.Origins["permissions."+note.Field] = "user (project request refused)"
+		}
+	}
 	c.Layers = append(c.Layers, Layer{Name: layer, Path: path, Applied: true, Keys: keys})
 	c.Source = path
 	return nil
@@ -549,10 +557,10 @@ func PresetSummary(name string) string { return presets[name].Summary }
 
 // applyPreset expands a named bundle into ordinary fields. It only fills
 // fields this layer did not declare itself, so an explicit setting always
-// wins over the preset that accompanies it. Containment is never loosened
-// below what a higher layer already established: a project preset can tighten
-// inherited policy but cannot hand itself a weaker sandbox or posture.
-func (c *Config) applyPreset(name, layer string, declared map[string]bool, inherited Permissions, sandboxWasChosen bool) {
+// wins over the preset that accompanies it. Monotonicity is not this
+// function's job: tightenContainment clamps the project layer afterwards,
+// whether a value came from a preset or was written out by hand.
+func (c *Config) applyPreset(name, layer string, declared map[string]bool) {
 	bundle, ok := presets[name]
 	if !ok {
 		return
@@ -565,65 +573,73 @@ func (c *Config) applyPreset(name, layer string, declared map[string]bool, inher
 		apply()
 		c.Origins["permissions."+field] = origin
 	}
-	set("sandbox", func() {
-		// The built-in default is a starting point a preset may relax; a
-		// sandbox mode someone above actually chose is not.
-		if !sandboxWasChosen {
-			c.Permissions.Sandbox = bundle.Sandbox
-			return
-		}
-		c.Permissions.Sandbox = strictestSandbox(inherited.Sandbox, bundle.Sandbox)
-	})
-	set("sandbox_allow_network", func() {
-		c.Permissions.SandboxAllowNetwork = bundle.SandboxAllowNetwork && inherited.SandboxAllowNetwork
-	})
+	set("sandbox", func() { c.Permissions.Sandbox = bundle.Sandbox })
+	set("sandbox_allow_network", func() { c.Permissions.SandboxAllowNetwork = bundle.SandboxAllowNetwork })
 	set("sandbox_allow_read_outside_workspace", func() {
-		c.Permissions.SandboxAllowReadOutsideWorkspace = bundle.SandboxAllowReadOutsideWorkspace && inherited.SandboxAllowReadOutsideWorkspace
+		c.Permissions.SandboxAllowReadOutsideWorkspace = bundle.SandboxAllowReadOutsideWorkspace
 	})
-	set("allow_outside_workspace", func() {
-		c.Permissions.AllowOutsideWorkspace = bundle.AllowOutsideWorkspace && inherited.AllowOutsideWorkspace
-	})
+	set("allow_outside_workspace", func() { c.Permissions.AllowOutsideWorkspace = bundle.AllowOutsideWorkspace })
 	set("network", func() { c.Permissions.Network = bundle.Network })
 	set("commands", func() { c.Permissions.Commands = bundle.Commands })
-	set("command_env", func() {
-		c.Permissions.CommandEnv = strictestCommandEnv(inherited.CommandEnv, bundle.CommandEnv)
+	set("command_env", func() { c.Permissions.CommandEnv = bundle.CommandEnv })
+}
+
+// ClampedField records a containment setting a repository asked for and did
+// not get, so the refusal is visible instead of looking like a bug.
+type ClampedField struct {
+	Field     string
+	Requested string
+	Effective string
+}
+
+func (c ClampedField) String() string {
+	return fmt.Sprintf("permissions.%s: project asked for %s; kept %s (a repository can tighten containment but never weaken it)", c.Field, c.Requested, c.Effective)
+}
+
+// containmentRank orders each containment setting from weakest to strongest.
+// Only these fields are clamped: they decide what an approved action can
+// reach. Autonomy mode, rules, and denied commands have their own rules.
+var containmentRank = map[string]map[string]int{
+	"sandbox":     {"off": 0, "auto": 1, "require": 2},
+	"command_env": {"full": 0, "": 1, "minimal": 2},
+	"network":     {"open": 0, "scoped": 1},
+	"commands":    {"open": 0, "allowlist": 1},
+}
+
+// tightenContainment keeps the stronger of what was inherited and what this
+// layer asked for, field by field, and reports every setting it refused.
+func tightenContainment(inherited, declared Permissions) (Permissions, []ClampedField) {
+	result := declared
+	var clamped []ClampedField
+	enum := func(field, inheritedValue, declaredValue string, assign func(string)) {
+		ranks := containmentRank[field]
+		normalize := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+		inheritedValue, declaredValue = normalize(inheritedValue), normalize(declaredValue)
+		if ranks[declaredValue] >= ranks[inheritedValue] {
+			return
+		}
+		assign(inheritedValue)
+		clamped = append(clamped, ClampedField{Field: field, Requested: declaredValue, Effective: inheritedValue})
+	}
+	boolean := func(field string, inheritedValue, declaredValue bool, assign func(bool)) {
+		// For these switches false is the stronger setting.
+		if !declaredValue || !inheritedValue {
+			assign(inheritedValue && declaredValue)
+		}
+		if declaredValue && !inheritedValue {
+			clamped = append(clamped, ClampedField{Field: field, Requested: "true", Effective: "false"})
+		}
+	}
+	enum("sandbox", inherited.Sandbox, declared.Sandbox, func(v string) { result.Sandbox = v })
+	enum("command_env", inherited.CommandEnv, declared.CommandEnv, func(v string) { result.CommandEnv = v })
+	enum("network", inherited.Network, declared.Network, func(v string) { result.Network = v })
+	enum("commands", inherited.Commands, declared.Commands, func(v string) { result.Commands = v })
+	boolean("sandbox_allow_network", inherited.SandboxAllowNetwork, declared.SandboxAllowNetwork, func(v bool) { result.SandboxAllowNetwork = v })
+	boolean("sandbox_allow_read_outside_workspace", inherited.SandboxAllowReadOutsideWorkspace, declared.SandboxAllowReadOutsideWorkspace, func(v bool) {
+		result.SandboxAllowReadOutsideWorkspace = v
 	})
-}
-
-// strictestSandbox ranks enforcement so a preset cannot weaken an inherited
-// choice. An explicit `"sandbox": "off"` remains the documented escape hatch;
-// a bundle silently disabling OS enforcement is not.
-func strictestSandbox(inherited, declared string) string {
-	rank := map[string]int{"off": 0, "auto": 1, "require": 2}
-	if inherited == "" {
-		return declared
-	}
-	if rank[declared] < rank[inherited] {
-		return inherited
-	}
-	return declared
-}
-
-func strictestCommandEnv(inherited, declared string) string {
-	if inherited == "minimal" {
-		return "minimal"
-	}
-	return declared
-}
-
-// strictestPosture keeps the tighter of an inherited posture and the one a
-// lower layer declared. An omitted value inherits; the strict value wins from
-// whichever layer set it.
-func strictestPosture(inherited, declared, strict string) string {
-	normalize := func(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
-	inherited, declared = normalize(inherited), normalize(declared)
-	if inherited == strict || declared == strict {
-		return strict
-	}
-	if declared == "" {
-		return inherited
-	}
-	return declared
+	boolean("allow_outside_workspace", inherited.AllowOutsideWorkspace, declared.AllowOutsideWorkspace, func(v bool) { result.AllowOutsideWorkspace = v })
+	return result, clamped
 }
 
 // additiveStrings preserves inherited safety policy while allowing a lower
@@ -1198,6 +1214,12 @@ func (c Config) LayerReport() string {
 		}
 	}
 	b.WriteString(c.presetReport())
+	if len(c.Clamped) > 0 {
+		b.WriteString("\nRefused project containment changes:\n")
+		for _, clamped := range c.Clamped {
+			fmt.Fprintf(&b, "  %s\n", clamped)
+		}
+	}
 	return b.String()
 }
 

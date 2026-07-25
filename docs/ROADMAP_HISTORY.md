@@ -92,6 +92,26 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
   leaves prompts, command-safety denials, and the audit ledger untouched. The
   sandbox command-failure hint now names it, so the escape hatch is offered at
   the moment of friction rather than buried in a 358-line reference.
+- **One precedence rule instead of five (behavior change):** containment
+  precedence had become per-field folklore — presets could not weaken an
+  inherited layer, the `network`/`commands` postures could not be weakened by
+  any means, but an explicit project-level `"sandbox": "off"` still won,
+  because wave 20 had documented it as an escape hatch preserved at every
+  layer. That asymmetry was defensible field by field and impossible to
+  predict as a whole. It is now one rule: **a repository can tighten any
+  containment setting but never weaken one**, applied identically to
+  `sandbox`, `sandbox_allow_network`,
+  `sandbox_allow_read_outside_workspace`, `command_env`, `network`,
+  `commands`, and `allow_outside_workspace`, and identically to explicit
+  fields and presets. The machine owner's global configuration is unrestricted,
+  because a built-in default is not a choice they made — that is where the
+  escape hatch now lives. Refusals are recorded and printed by
+  `collo config show`/`validate` rather than applied silently, so an ignored
+  project setting never reads as a bug. A project file that relied on
+  `"sandbox": "off"` must move that setting to the global configuration or use
+  `"preset": "frictionless"` there. The complete precedence matrix is now
+  documented in the user guide instead of being derivable only from three
+  separated paragraphs.
 - **The stance is always on screen:** the autonomy badge carries `⛨` when OS
   containment is configured, `⛉` when it is not, and `⛨!` when the platform
   applied less than was asked for. It rides inside the existing badge for two

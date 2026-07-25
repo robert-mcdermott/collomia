@@ -247,18 +247,68 @@ func TestProjectCanOptIntoSandboxReadConfinement(t *testing.T) {
 	}
 }
 
-func TestProjectCanExplicitlyDisableDefaultSandbox(t *testing.T) {
+// A repository cannot disable the sandbox, even by writing the field out
+// explicitly and even once the workspace is trusted. Turning containment off
+// is the machine owner's decision, made in their own configuration.
+func TestProjectCannotDisableTheInheritedSandbox(t *testing.T) {
 	dir := t.TempDir()
 	writeProject(t, dir, `{"permissions":{"sandbox":"off"}}`)
 	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Permissions.Sandbox != "off" {
-		t.Fatalf("explicit sandbox setting=%q, want off", cfg.Permissions.Sandbox)
+	if cfg.Permissions.Sandbox != "auto" {
+		t.Fatalf("project weakened the sandbox to %q", cfg.Permissions.Sandbox)
 	}
-	if cfg.Origins["permissions.sandbox"] != "project" {
-		t.Fatalf("sandbox origin=%q, want project", cfg.Origins["permissions.sandbox"])
+	// Ignoring the setting silently would read as a bug, so the refusal is
+	// reported.
+	if len(cfg.Clamped) != 1 || cfg.Clamped[0].Field != "sandbox" {
+		t.Fatalf("refusal not reported: %+v", cfg.Clamped)
+	}
+	if !strings.Contains(cfg.LayerReport(), "Refused project containment changes") {
+		t.Fatalf("layer report does not explain the refusal:\n%s", cfg.LayerReport())
+	}
+}
+
+// The global layer remains free to opt out: a built-in default is not a
+// choice the user made, so it does not clamp their own configuration.
+func TestGlobalLayerCanStillDisableTheSandbox(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"sandbox":"off"}}`, "")
+	if cfg.Permissions.Sandbox != "off" {
+		t.Fatalf("global sandbox=%q, want off", cfg.Permissions.Sandbox)
+	}
+	if len(cfg.Clamped) != 0 {
+		t.Fatalf("global choice should not be clamped: %+v", cfg.Clamped)
+	}
+}
+
+// Every containment switch follows the same rule, so the model is one
+// sentence rather than a table of exceptions.
+func TestProjectCannotWeakenAnyContainmentSetting(t *testing.T) {
+	cfg := loadWithGlobal(t,
+		`{"permissions":{"preset":"hardened","command_env":"minimal"}}`,
+		`{"permissions":{"sandbox":"auto","command_env":"full","network":"open","commands":"open","sandbox_allow_read_outside_workspace":true,"allow_outside_workspace":true}}`)
+	p := cfg.Permissions
+	if p.Sandbox != "require" || p.CommandEnv != "minimal" || p.Network != "scoped" || p.Commands != "allowlist" {
+		t.Fatalf("project weakened containment: %+v", p)
+	}
+	if p.SandboxAllowReadOutsideWorkspace || p.AllowOutsideWorkspace {
+		t.Fatalf("project widened reads: %+v", p)
+	}
+	if len(cfg.Clamped) != 6 {
+		t.Fatalf("expected every refusal reported, got %d: %+v", len(cfg.Clamped), cfg.Clamped)
+	}
+}
+
+// Tightening from a project file stays available and is not reported as a
+// refusal.
+func TestProjectCanStillTightenContainment(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"sandbox":"auto"}}`, `{"permissions":{"sandbox":"require","network":"scoped"}}`)
+	if cfg.Permissions.Sandbox != "require" || cfg.Permissions.Network != "scoped" {
+		t.Fatalf("project could not tighten: %+v", cfg.Permissions)
+	}
+	if len(cfg.Clamped) != 0 {
+		t.Fatalf("tightening should not be reported as refused: %+v", cfg.Clamped)
 	}
 }
 

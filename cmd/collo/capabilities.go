@@ -22,7 +22,7 @@ func capabilityMatrix() []capabilityRow {
 	backend := sandbox.ForPlatform()
 	if backend.Available() == nil {
 		sandboxStatus = "experimental"
-		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; auto is the compatibility-first default; optional workspace-scoped command user-data reads use sandbox_allow_read_outside_workspace=false; set permissions.sandbox=off only as an explicit compatibility escape hatch"
+		sandboxNote = "built-in backends: macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; active platform: " + backend.Name() + "; " + backend.Capabilities().Summary() + "; auto is the compatibility-first default; optional workspace-scoped command user-data reads use sandbox_allow_read_outside_workspace=false; set permissions.sandbox=off only as an explicit compatibility escape hatch, and only in the global configuration"
 	}
 	return []capabilityRow{
 		{"provider", "openai / openai-compatible (Ollama, vLLM, LM Studio)", "implemented", "streaming chat completions + function tools; typed user-image content where the selected model/endpoint supports it"},
@@ -50,7 +50,8 @@ func capabilityMatrix() []capabilityRow {
 		{"permissions", "scoped allow/prompt/deny rules", "implemented", "ordered rules on tool, path, command, host, server; host matches endpoints a command's text names and HTTP-transport MCP endpoints"},
 		{"permissions", "declared network endpoints", "implemented", "policy-layer only, not egress enforcement; unreadable endpoints are reported undetermined and never covered by an allow rule or a session grant"},
 		{"permissions", "scoped-network / command-allowlist postures", "implemented", "permissions.network and permissions.commands; default open, prompt-only escalation, monotonic across configuration layers"},
-		{"permissions", "containment presets", "implemented", "permissions.preset frictionless/standard/hardened expands to ordinary fields; explicit fields win, a preset never loosens a stricter layer and never sets mode; origins attribute each expanded value"},
+		{"permissions", "containment presets", "implemented", "permissions.preset frictionless/standard/hardened expands to ordinary fields; explicit fields win within a layer, no preset sets mode, origins attribute each expanded value"},
+		{"permissions", "containment precedence", "implemented", "a repository can tighten any containment setting but never weaken one, by explicit field or preset alike; refusals are reported by collo config show/validate; the global configuration is unrestricted"},
 		{"tui", "always-visible containment mark", "implemented", "the autonomy badge carries ⛨ (contained), ⛉ (no OS sandbox), or ⛨! (applied less than requested); the Session tab lists the full stance and session grants"},
 		{"permissions", "per-capability approval grants", "implemented", "the approval dialog shows files/executables/endpoints separately; 'g' grants exactly the reach shown for the session, and every dimension must be covered before a later action is automatic"},
 		{"permissions", "catastrophic command protection", "implemented", "non-overridable outcome denials plus mandatory one-time confirmation for destructive but legitimate commands; same checks for foreground, PTY, and background execution"},

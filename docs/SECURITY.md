@@ -181,16 +181,28 @@ a hidden mode:
 | `commands` | `open` | `open` | `allowlist` |
 | `command_env` | `full` | `minimal` | `minimal` |
 
-- Fields you set explicitly always win over the preset that accompanies them.
-- A preset can tighten an inherited layer but never loosen one: a project
-  file's `frictionless` cannot undo a user-level `hardened`. An explicit
-  `"sandbox": "off"` remains the documented escape hatch.
+- Fields you set explicitly always win over the preset in the same layer,
+  whichever is stricter.
+- **A repository can tighten containment but never weaken it.** This is one
+  rule with no exceptions, covering `sandbox`, `sandbox_allow_network`,
+  `sandbox_allow_read_outside_workspace`, `command_env`, `network`,
+  `commands`, and `allow_outside_workspace`, and applying identically to an
+  explicit field and to a preset. A project file's `frictionless` cannot undo
+  a global `hardened`, and neither can a project file's explicit
+  `"sandbox": "off"`. Refusals are listed by `collo config show` and
+  `collo config validate` rather than applied silently, so an ignored setting
+  never looks like a bug. Trust decides whether the project layer is read at
+  all; this rule decides what it may do once trusted.
+- Your own global configuration is not restricted this way — a built-in
+  default is not a choice you made, so `"sandbox": "off"` and
+  `"preset": "frictionless"` work as written there. That is where the
+  compatibility escape hatch lives.
 - No preset sets `mode`. A bundle that quietly selected autopilot would be the
   exact surprise presets exist to avoid.
 - `frictionless` removes OS containment, not the permission engine. Prompts,
   catastrophic-command denials, one-time confirmations, and the audit ledger
-  are unchanged. It is never a default and is never reached by inheritance —
-  a user must ask for it by name.
+  are unchanged. It is never a default, and only the machine owner's global
+  configuration can select it.
 
 The effective stance is always visible: the TUI's autonomy badge carries `⛨`
 when OS containment is configured, `⛉` when it is not, and `⛨!` when the
@@ -250,8 +262,11 @@ platform's containment mechanism.
 Sandboxing defaults to `auto`: Collomia uses the platform backend when it is
 available and emits a visible warning before continuing with normal user
 privileges when it is not. `require` fails closed instead, while `off` is an
-explicit compatibility escape hatch. Existing configuration files that
-explicitly contain `off` remain off and are never rewritten.
+explicit compatibility escape hatch selectable only in your global
+configuration. An existing global file containing `off` remains off and is
+never rewritten. A project file containing `off` is refused and reported, and
+the inherited mode is kept — a repository can tighten containment but never
+weaken it.
 `sandbox_allow_network` and `sandbox_allow_read_outside_workspace` both
 default to `true`, preserving the network and dependency reads used by package
 installation and developer toolchains. Write confinement can still require a

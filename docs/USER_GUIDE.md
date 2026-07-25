@@ -581,10 +581,9 @@ Four properties make a preset safe to adopt:
   overrides the bundle, so `{"preset": "hardened", "sandbox": "auto"}` means
   hardened with `auto` — you never have to abandon the preset to adjust one
   setting.
-- **It cannot loosen a stricter layer.** A project file's `frictionless`
-  cannot undo a user-level `hardened`. An explicit `"sandbox": "off"` remains
-  the documented escape hatch; a bundle quietly disabling OS enforcement is
-  not.
+- **A repository cannot weaken it.** A project file can tighten containment
+  but never relax it, whether it uses a preset or writes the field out by
+  hand. See the precedence rules below.
 - **It never sets `mode`.** Autonomy is the one choice you should make
   knowingly, so no preset selects `autopilot` for you.
 
@@ -594,9 +593,59 @@ an offline command sandbox.
 
 `frictionless` is an explicit opt-out for a toolchain that fights containment
 — it removes the OS sandbox and restores the inherited environment. It is
-never a default and is never reached by inheritance. Policy prompts,
-command-safety denials, and the audit ledger still apply; you are opting out
-of OS containment, not out of the permission engine.
+never a default and can only be selected in your own global configuration.
+Policy prompts, command-safety denials, and the audit ledger still apply; you
+are opting out of OS containment, not out of the permission engine.
+
+### Precedence: presets, explicit fields, and layers
+
+Two rules decide every case.
+
+**Rule 1 — within one layer, your explicit field wins.** A preset only fills
+fields that layer did not state itself. It does not matter which is stricter:
+
+| you write | result |
+| --- | --- |
+| `{"preset": "hardened", "sandbox": "auto"}` | `auto` |
+| `{"preset": "frictionless", "sandbox": "require"}` | `require` |
+
+`collo config show` attributes the value to `user` when you set it and to
+`user (preset hardened)` when the bundle supplied it, so the source is never
+ambiguous.
+
+**Rule 2 — a project file can tighten containment, never weaken it.** This
+applies to `sandbox`, `sandbox_allow_network`,
+`sandbox_allow_read_outside_workspace`, `command_env`, `network`, `commands`,
+and `allow_outside_workspace`, and it applies the same way to an explicit
+field and to a preset:
+
+| global (`~/.collomia/config.json`) | project (`.collomia.json`) | effective |
+| --- | --- | --- |
+| `sandbox: auto` | `preset: hardened` | `require` — tightened |
+| `preset: hardened` | `sandbox: auto` | `require` — **refused** |
+| `preset: hardened` | `sandbox: off` | `require` — **refused** |
+| `preset: hardened` | `preset: frictionless` | `require` — **refused** |
+| `sandbox: off` | `sandbox: require` | `require` — tightened |
+| *(nothing)* | `sandbox: off` | `auto` — **refused** |
+
+A refusal is never silent. `collo config show` and `collo config validate`
+list them:
+
+```
+Refused project containment changes:
+  permissions.sandbox: project asked for off; kept auto (a repository can
+  tighten containment but never weaken it)
+```
+
+**Your own global configuration is not restricted this way.** A built-in
+default is not a choice you made, so `{"preset": "frictionless"}` or
+`{"sandbox": "off"}` in your global file works exactly as written — that is
+where the compatibility escape hatch lives. If a repository needs less
+containment than you run by default, that is a decision you make in your
+configuration, not one the repository makes for you.
+
+This is separate from repository trust. Trust decides whether the project
+layer is read at all; these rules decide what it may do once it is trusted.
 
 ### Permission fields
 
@@ -611,7 +660,7 @@ of OS containment, not out of the permission engine.
 | `rules` | rule list | Ordered scoped policy rules; first match wins. |
 | `network` | string | `open` (default) or `scoped`. Under `scoped`, an action that reaches the network is never approved automatically unless a rule or a session grant covers every endpoint it declares. |
 | `commands` | string | `open` (default) or `allowlist`. Under `allowlist`, a command is never approved automatically unless a rule or a session grant covers every executable it runs. |
-| `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch; `require` refuses degraded execution. |
+| `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch available in your global configuration; a project file cannot select it. `require` refuses degraded execution. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
@@ -1407,9 +1456,10 @@ covers every executable it runs. A tool-wide “always allow” does **not**
 satisfy either posture, so the approval dialog does not offer it for a
 posture-gated prompt.
 
-Postures are monotonic across configuration layers: a project file may tighten
-what your user configuration set, but cannot loosen it. Delegated agents
-inherit the postures and start with no session grants of their own.
+Both postures follow the containment precedence rules above: a project file
+may tighten what your global configuration set, but cannot loosen it, and a
+refusal is reported rather than applied silently. Delegated agents inherit the
+postures and start with no session grants of their own.
 
 ### Per-capability approval and session grants
 
@@ -1571,10 +1621,14 @@ dependency reads. Package managers can still require a readable dependency
 store, writable cache, or environment-provided credentials; the examples
 below cover all three cases. Set either switch to `false` to deliberately
 request network denial or user-data read confinement. Set `sandbox` to `off`
-only as an explicit compatibility escape hatch.
+only as an explicit compatibility escape hatch, and only in your global
+configuration.
 
-Existing global or project files containing `"sandbox": "off"` remain off:
-Collomia does not rewrite configuration or reinterpret an explicit choice.
+An existing global file containing `"sandbox": "off"` remains off: Collomia
+does not rewrite configuration or reinterpret an explicit choice. A project
+file containing `"sandbox": "off"` is refused and reported, keeping the
+inherited mode; move the setting to your global configuration (or use
+`"preset": "frictionless"` there) if you want it.
 New global starter files use `auto`, and project starters omit the field so
 they inherit the user or built-in value.
 

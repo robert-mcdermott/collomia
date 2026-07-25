@@ -325,7 +325,9 @@ const configReferenceJSONC = `
     // unless a rule or session grant covers every executable it runs.
     "commands": "open",
     // off | auto | require. auto is the default and uses the platform backend
-    // when available; off is an explicit compatibility escape hatch.
+    // when available; off is an explicit compatibility escape hatch that only
+    // the global configuration may select. A project file can tighten any
+    // containment setting but never weaken one.
     "sandbox": "auto",
     // The compatibility default is true. This reference shows the explicit
     // offline override: false denies sandboxed command network access. It does

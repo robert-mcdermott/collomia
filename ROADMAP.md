@@ -95,10 +95,15 @@ claiming enforcement the policy layer does not provide.
   reported as a plain host.
 - [x] Keep the growing security surface usable: add `permissions.preset`
   (`frictionless`/`standard`/`hardened`) as sugar over the existing fields —
-  explicit fields win, a preset never loosens a stricter layer and never sets
-  autonomy mode — and make the effective stance always visible through a
-  containment mark on the autonomy badge plus a consolidated Security block in
-  the Session tab.
+  explicit fields win within a layer, and no preset sets autonomy mode — and
+  make the effective stance always visible through a containment mark on the
+  autonomy badge plus a consolidated Security block in the Session tab.
+- [x] Replace the per-field precedence exceptions with one rule: a repository
+  can tighten any containment setting but never weaken one, by explicit field
+  or preset alike, with every refusal reported rather than applied silently.
+  Document the complete precedence matrix. **Behavior change:** a project
+  `"sandbox": "off"` (or any other project-level weakening) is now refused;
+  the escape hatch lives in the global configuration only.
 
 ## Remaining work by phase
 
