@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/credstore"
 	"github.com/robert-mcdermott/collomia/internal/logging"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
@@ -72,6 +73,11 @@ func runDoctorCommand(opts options) error {
 		}
 		add("git", "ok", detail)
 	}
+
+	// Credential store. Reported before providers because it explains where a
+	// provider credential below came from.
+	storeStatus, storeDetail := credentialStoreDiagnostic()
+	add("credential store", storeStatus, storeDetail)
 
 	// Providers.
 	if err == nil {
@@ -189,6 +195,42 @@ func runDoctorCommand(opts options) error {
 	return nil
 }
 
+// credentialStoreDiagnostic reports the optional OS credential store. An
+// unavailable store is not a problem to fix — environment variables are a
+// fully supported way to hold a key — so it is reported as ok with the reason.
+func credentialStoreDiagnostic() (status, detail string) {
+	names, err := credstore.List()
+	if err != nil {
+		return "warn", "credential index unreadable: " + err.Error()
+	}
+	if !credstore.Available() {
+		if len(names) > 0 {
+			return "warn", fmt.Sprintf("unavailable on this platform; %d recorded entr%s cannot be read here — providers use api_key_env", len(names), plural(len(names), "y", "ies"))
+		}
+		return "ok", "unavailable on this platform; providers use api_key, api_key_env, or their own environment variable"
+	}
+	if len(names) == 0 {
+		return "ok", credstore.Backend() + "; no stored credentials (nothing is read from it)"
+	}
+	missing := 0
+	for _, name := range names {
+		if present, verifyErr := credstore.Verify(name); verifyErr == nil && !present {
+			missing++
+		}
+	}
+	if missing > 0 {
+		return "warn", fmt.Sprintf("%s; %d of %d entries are recorded but no longer present — run `collo auth list`", credstore.Backend(), missing, len(names))
+	}
+	return "ok", fmt.Sprintf("%s; %d stored credential%s", credstore.Backend(), len(names), plural(len(names), "", "s"))
+}
+
+func plural(count int, one, many string) string {
+	if count == 1 {
+		return one
+	}
+	return many
+}
+
 func providerDiagnostic(p appconfig.Provider) (status, detail string) {
 	status, detail = "ok", p.Type+providerTimeoutDiagnostic(p)
 	if isAzureProvider(p.Type) && p.Auth == "entra" {
@@ -232,10 +274,11 @@ func providerDiagnostic(p appconfig.Provider) (status, detail string) {
 		}
 		if auth == "bearer" || (auth == "auto" && (bearerAvailable || p.APIKeyEnv != "")) {
 			source := provider.BedrockBearerTokenEnv
-			if p.APIKeyEnv != "" {
+			switch {
+			case p.CredentialSource != "":
+				source = p.CredentialSource
+			case p.APIKeyEnv != "":
 				source = p.APIKeyEnv
-			} else if p.APIKey != "" {
-				source = "configured api_key"
 			}
 			if !bearerAvailable {
 				return "warn", fmt.Sprintf("%s; bearer auth selected but %s is not set", detail, source)
@@ -250,7 +293,7 @@ func providerDiagnostic(p appconfig.Provider) (status, detail string) {
 	}
 	switch {
 	case p.APIKey != "":
-		detail += "; credential resolved"
+		detail += "; credential resolved from " + p.CredentialSource
 	case p.APIKeyEnv != "":
 		status = "warn"
 		detail += fmt.Sprintf("; credential env %s is not set", p.APIKeyEnv)

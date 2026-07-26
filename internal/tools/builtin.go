@@ -42,6 +42,9 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		ProcessOutputTool{Manager: procs}, StopProcessTool{Manager: procs},
 		SearchSymbolsTool{Index: index.New(guard.Workspace)},
 		DiagnosticsTool{Guard: guard, Servers: cfg.LSP},
+		FindDefinitionTool{Guard: guard, Servers: cfg.LSP},
+		FindReferencesTool{Guard: guard, Servers: cfg.LSP},
+		FormatFileTool{Guard: guard, Servers: cfg.LSP, Tracker: tracker},
 	)
 	return registry, tracker, procs, nil
 }

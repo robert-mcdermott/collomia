@@ -445,6 +445,71 @@ in depth, not protection against a malicious command or model-directed
 exfiltration. Prefer `permissions.command_env: "minimal"`, an OS sandbox, and
 short-lived credentials for higher-risk work.
 
+### Optional: keep API keys in the OS credential manager
+
+On macOS and Windows, `collo auth` can hold a provider's API key in the
+operating system's own credential manager instead of a shell profile. It is
+entirely optional, and adding it never changes how an existing configuration
+resolves.
+
+```sh
+collo auth set my-provider     # prompts; the value is never an argument
+collo auth list                # names and state, never values
+collo auth status              # where each provider's credential came from
+collo auth import              # move keys that already resolve into the store
+collo auth rm my-provider
+```
+
+There is no Collomia account and nothing to log into — this is local storage
+only. `collo auth set` prompts on the terminal without echoing; if standard
+input is not a terminal it reads one line, so scripted setup never puts a
+secret in a command-line argument or shell history. Nothing prints a stored
+value back: use Keychain Access or Credential Manager if you need to see one.
+
+**Resolution order**, most explicit first:
+
+1. `api_key` in configuration (including `${VAR}` expansion)
+2. `api_key_env`
+3. the provider family's own variable, such as `AWS_BEARER_TOKEN_BEDROCK`
+4. the credential store
+5. nothing — the provider reports a missing credential
+
+An environment variable therefore always wins over a stored credential. A
+stored key cannot silently shadow the variable you just exported, and a machine
+that has never run `collo auth set` never consults the credential manager at
+all: the name index is checked first, and no index means no keychain call and
+no keychain dialog. `collo auth status` prints which source won for each
+provider, and `collo doctor` reports the store alongside each provider.
+
+Two authentication modes take no stored key, because there is no static secret
+to store: Azure `auth: entra` (DefaultAzureCredential issues short-lived
+tokens) and Bedrock `auth: sigv4` (the AWS credential chain owns profiles, SSO,
+roles, and instance identity). Bedrock *bearer* keys and Azure `auth: api_key`
+are ordinary API keys and can be stored.
+
+| Platform | Backend | Notes |
+| --- | --- | --- |
+| macOS | Keychain, through `/usr/bin/security` | Entries are generic passwords with service `collomia`. Collomia drives Apple's signed tool rather than linking Security.framework: that keeps the binary cgo-free, and keychain access is granted per application identity, so an unsigned build would otherwise ask again after every upgrade. macOS accepts the secret only as a command-line argument — another user cannot read this process's arguments, but root can, and it is briefly visible to your own session. |
+| Windows | Credential Manager (`CredWriteW`) | Generic credentials named `collomia:<provider>`, persisted per machine for the current user. |
+| Linux | none | Use `api_key_env`. |
+
+Linux has no backend on purpose. Its Secret Service API needs a D-Bus session
+with gnome-keyring or kwallet, which is normal on a desktop and absent on the
+headless servers and cluster nodes where an agent most often runs. A store that
+worked on some Linux hosts and silently degraded on others would be worse than
+none, and there is deliberately no encrypted-file fallback: the passphrase
+would have to live somewhere, and an unencrypted file would be worse than the
+environment variable it replaced.
+
+Over SSH or in CI on macOS the keychain cannot prompt for access and the
+command fails with that reason named. Use `api_key_env` there.
+
+The store keeps one small file of its own, `~/.collomia/credentials.json`. It
+records provider *names* so entries can be listed and lookups skipped; it holds
+no credential material and is not a fallback store. If an entry is deleted
+through Keychain Access or Credential Manager, `collo auth list` and
+`collo doctor` report it as missing rather than implying a working credential.
+
 ### One global directory
 
 Collomia uses one global root for every persistent user-level file:
@@ -2794,6 +2859,7 @@ collo doctor [--strict]
 collo capabilities [--markdown]
 collo support bundle [--output path] [--include-logs]
 collo policy check <command...>
+collo auth list|status|set|rm|import
 collo review [ref] [instructions...]
 collo verify [focus]
 collo sessions list|show|fork|rewind|rename|archive|unarchive|delete
@@ -2865,6 +2931,9 @@ question broker can make the model-visible subset smaller.
 | `stop_process` | Stop one background process and its process group. |
 | `search_symbols` | Incremental definition search for Go, Python, JS/TS, and Rust. |
 | `diagnostics` | Run a configured/auto-detected language server over up to 20 same-language files. |
+| `find_definition` | Resolve where a symbol is defined, using the language server's own type information. |
+| `find_references` | List where a symbol is used, excluding same-named symbols in other scopes. |
+| `format_file` | Format one file with the project's language server; an ordinary tracked, undoable write. |
 | `update_plan` | Maintain a structured plan persisted with the session. |
 | `load_skill` | Load a relevant skill's full manifest and bundle map on demand. |
 | `delegate` | Run bounded parallel sub-agent tasks; omitted inside sub-agents. |
@@ -2956,8 +3025,10 @@ outcomes returned by `run_command` and does not edit files.
 
 ## Language-server support
 
-The `diagnostics` tool provides editor-quality diagnostics after an edit.
-Collomia auto-detects these commands on `PATH`:
+Four tools share one language-server client: `diagnostics` reports problems
+after an edit, `find_definition` and `find_references` navigate using the
+server's own type information, and `format_file` applies the project's real
+formatter. Collomia auto-detects these commands on `PATH`:
 
 | Files | Language ID | Default command |
 | --- | --- | --- |
@@ -2968,6 +3039,37 @@ Collomia auto-detects these commands on `PATH`:
 | `.js` | `javascript` | `typescript-language-server --stdio` |
 | `.jsx` | `javascriptreact` | `typescript-language-server --stdio` |
 | `.rs` | `rust` | `rust-analyzer` |
+
+**Not every server implements every request.** The auto-detected default is
+whichever server is best known for a language, which is not always the one that
+can do all four jobs. Most importantly, **pyright provides no formatter**: it
+answers `textDocument/formatting` with "unhandled method", so `format_file`
+reports that the configured server does not implement formatting and names the
+setting to change. For Python that can do navigation *and* formatting in one
+server, use `python-lsp-server` with a formatting plugin:
+
+```sh
+uv tool install "python-lsp-server[rope]" --with python-lsp-black
+```
+
+```json
+{
+  "lsp": {
+    "python": ["pylsp"]
+  }
+}
+```
+
+The trade-off is real in both directions: `pylsp` handles definitions,
+references, and formatting, while `pyright` is the stronger type checker and
+reports problems — an unresolved import, for instance — that `pylsp` does not.
+Choose per project according to which matters more, or install a `pylsp`
+diagnostics plugin.
+
+A project `.collomia.json` carrying an `lsp` map takes effect only after
+`collo trust`. Until then the project layer is quarantined and Collomia falls
+back to the auto-detected default, which looks like the configuration being
+ignored. `collo doctor` reports the workspace as untrusted when this happens.
 
 Install the relevant language server separately and confirm its executable is
 on `PATH`. Examples (installation mechanisms vary by platform):
@@ -2998,6 +3100,52 @@ All paths in one `diagnostics` call must map to the same exact language ID;
 split TypeScript and TSX, for example. Files must be inside the workspace. The
 client opens the requested current text, waits up to 25 seconds for published
 diagnostics, sorts error/warning/info/hint findings, and closes the server.
+
+### Navigation and formatting
+
+`find_definition` and `find_references` take a file, a **1-based line**, and
+the **symbol text as it appears on that line**. The column is located for you:
+the agent has just read the file with line numbers, so the name and the line
+are what it actually knows, and counting columns — which the protocol measures
+in UTF-16 code units, not characters — is a reliable source of confident
+answers about the wrong token. A symbol that is not on the named line is
+reported as an error rather than guessed at.
+
+These differ from `search_symbols` and `search_files` in what they understand.
+The symbol index finds definitions by name; `find_definition` follows imports,
+aliases, and types to the definition actually referenced at that position.
+`search_files` matches text; `find_references` knows scope, so it excludes an
+unrelated `Close` in another type. Use them before renaming or deleting
+anything.
+
+`format_file` replaces one file with the language server's own formatting
+(`gofmt` through `gopls`, and whatever each other server implements). It is an
+ordinary write: it needs the same approval, is recorded by the diff tracker,
+appears in `/diff`, and is reversed by `/undo`. Unlike `write_file`, the
+approval prompt shows no diff — producing one would mean running the language
+server twice for every approval, and the result could still be stale by the
+time it is applied. If the file changes between the format request and the
+write, nothing is written and the tool says so.
+
+Each call starts a server, asks its question, and closes it, so the first call
+in a fresh workspace pays for indexing. Requests wait up to 60 seconds — longer
+than the diagnostics path — because a cold `gopls` or `rust-analyzer` indexing
+a large repository would otherwise time out and look to the agent like a symbol
+that does not exist.
+
+Because that wait is otherwise unaccountable, these tools and `diagnostics`
+report their startup live in the transcript:
+
+```text
+starting pylsp…
+pylsp ready in 200ms — resolving definition…
+```
+
+The two lines separate "the server is still coming up" from "the server is
+thinking about the answer", which is what tells a slow index from a hang. They
+are display-only — never part of what the model reads — and the transcript
+replaces them with the real result when it arrives, so nothing lingers. A server that reports nothing is reported as "no results"
+with that possibility named, never as a definitive absence.
 
 Configured language servers are trusted subprocesses started directly by
 Collomia. They do not pass through `run_command` permission, command

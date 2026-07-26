@@ -32,7 +32,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - MCP `stdio` and Streamable HTTP clients using the official Go SDK, with explicit external-data provenance framing for model-visible server output.
 - **Governed multi-agent delegation**: the `delegate` tool queues up to six sub-agent tasks through one session-wide scheduler (four active by default, with optional provider limits). Read-only tasks share the workspace; write-capable tasks get isolated Git worktrees and declare repository-relative write scopes so disjoint writers can run concurrently while overlapping or unspecified writers serialize. Named profiles restrict tools, skills, permissions, tokens, iterations, and time; structured outcomes carry evidence, usage, changes, scope violations, verification, and conflicts. `alt+a` inspects, steers, or stops one child without cancelling its siblings or parent. Manual integration remains the default; freshness-bound three-way review preserves clean parent edits and delegated edits while overlapping hunks stay explicitly unresolved. Opt-in `options.agent_integration: "reviewed"` exposes the same guarded decisions to the primary.
 - **Background processes**: `start_process`/`list_processes`/`process_output`/`stop_process` run dev servers, watchers, and long test runs without blocking the turn, with the same safety analysis as `run_command`; `/ps` manages them from the TUI, and everything is stopped at session exit.
-- **Code intelligence**: `search_symbols` queries an incremental, ignore-aware definition index (Go, Python, JS/TS, Rust); `diagnostics` runs a real language server (gopls, pyright, typescript-language-server, rust-analyzer) and returns exact-position findings.
+- **Code intelligence**: `search_symbols` queries an incremental, ignore-aware definition index (Go, Python, JS/TS, Rust); `diagnostics`, `find_definition`, `find_references`, and `format_file` drive a real language server (gopls, pyright, typescript-language-server, rust-analyzer) for exact-position findings, type-aware navigation, and the project's own formatting.
 - **Verification loop**: `detect_verification` finds the project's real build/lint/test commands from its own files (`go.mod`, `package.json`, `Cargo.toml`, …); `collo verify`/`/verify` runs them and ties outcomes to the plan.
 - Read-only planning mode with a structured, persisted plan artifact (`update_plan`, `/tasks`).
 - Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, non-destructive turn rewind, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, pinned plan state, referenced oversized results, and automatic context compaction.
@@ -188,6 +188,7 @@ collo doctor [--strict]             diagnose config, terminal, git, providers, M
 collo capabilities [--markdown]     print the product capability matrix
 collo support bundle [--output path] [--include-logs]  create a privacy-conscious diagnostic ZIP
 collo policy check <command…>       evaluate a command against permission rules, without running it
+collo auth [list|status|set|rm|import]  optionally keep provider API keys in the OS credential manager (macOS/Windows)
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
 collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions
@@ -446,6 +447,8 @@ Terminal compatibility notes:
 ## Providers
 
 Every provider has a local name and a protocol `type`. Secrets should normally be referenced with `api_key_env` instead of stored in the file.
+
+On macOS and Windows, `collo auth set <provider>` can instead keep an API key in the OS credential manager (Keychain or Credential Manager), prompting for it without echo and never placing it in an argument or shell history. `collo auth list|status|rm|import` manage the entries, and nothing prints a stored value back. It is optional and additive: the store is consulted only after `api_key`, `api_key_env`, and a provider's own variable such as `AWS_BEARER_TOKEN_BEDROCK`, so an exported environment variable always wins and a machine that has never run `collo auth set` never touches the credential manager. Linux has no backend — headless hosts use `api_key_env` — and there is no encrypted-file fallback by design. Azure `auth: entra` and Bedrock `auth: sigv4` store nothing, because their credentials are short-lived tokens and the AWS chain respectively. See the [user guide](docs/USER_GUIDE.md#optional-keep-api-keys-in-the-os-credential-manager) for the full precedence table and platform caveats.
 
 Collomia keeps an effective capability declaration for every provider/model selection. It distinguishes `supported`, `partial`, `unsupported`, and `unknown` for tool calling, streaming, reasoning, images, structured output, token usage, prompt caching, parallel tool calls, and model discovery; it also carries the configured context window and adapter-specific constraints. `/status`, `/model`, and `/models` expose this information. `/models` probes supported catalog endpoints concurrently and reports providers without a catalog as **unverified**, not incorrectly **unavailable**. Catalogs such as OpenAI-compatible `GET /models` often return names without feature metadata, so Collomia reports model-dependent facts as unknown instead of inferring capabilities from a model name.
 
@@ -1109,7 +1112,7 @@ From the TUI: `/ps` lists them, `/ps stop <id>` stops one, the Session tab shows
 
 ## Code intelligence
 
-Two tools give the agent real understanding of the codebase instead of guessing from text search:
+These tools give the agent real understanding of the codebase instead of guessing from text search:
 
 - **`search_symbols`** queries an incremental, ignore-aware definition index (`.git`, `node_modules`, `vendor`, and similar build/dependency directories are skipped). It covers functions, methods, types, classes, interfaces, constants, and enums for **Go, Python, JavaScript/TypeScript, and Rust**, ranked exact-match first, then prefix, then substring. Only files that changed since the last query are re-parsed. Use `search_files` for references and arbitrary text.
 - **`diagnostics`** runs the project's real language server against requested files (a minimal stdio JSON-RPC LSP client) and returns severity-ordered findings with exact files and lines — the same errors and warnings your editor would show, not a guess. `gopls`, `pyright-langserver`, `typescript-language-server`, and `rust-analyzer` are auto-detected on `PATH`; override or add servers per language:
@@ -1124,6 +1127,11 @@ Two tools give the agent real understanding of the codebase instead of guessing 
   ```
 
   All files in one `diagnostics` call must share a language; the language server must be installed for the tool to do anything (it reports clearly when one isn't found).
+
+- **`find_definition`** and **`find_references`** ask the same language servers where a symbol is defined and where it is used. They take a file, a 1-based line, and the symbol text as it appears on that line — the column is located for you, because the protocol measures columns in UTF-16 code units and asking a model to count them produces confident answers about the wrong token. Unlike the symbol index they follow imports, aliases, and types; unlike `search_files` they understand scope, so an unrelated same-named method in another type is not a match.
+- **`format_file`** replaces one file with the language server's own formatting (`gofmt` through `gopls`). It is an ordinary write: same approval, tracked in `/diff`, reversible with `/undo`. If the file changes while the server is formatting it, nothing is written.
+
+  The first call in a fresh workspace pays for the server's indexing; requests wait up to 60 seconds so a cold `gopls` or `rust-analyzer` is not mistaken for a missing symbol.
 
 ## Verification loop
 

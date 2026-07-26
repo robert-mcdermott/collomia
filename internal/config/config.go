@@ -110,6 +110,10 @@ type Provider struct {
 	ConnectTimeoutSeconds    int      `json:"connect_timeout_seconds,omitempty"`
 	RequestTimeoutSeconds    int      `json:"request_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds int      `json:"stream_idle_timeout_seconds,omitempty"`
+	// CredentialSource names where APIKey came from, for diagnostics only. It
+	// is never serialized: it is derived on load, and writing it to a file
+	// would turn a description of the environment into configuration.
+	CredentialSource string `json:"-"`
 }
 
 // Reasoning is the provider-neutral subset of model reasoning controls.
@@ -806,8 +810,19 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 		} else {
 			p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
 			p.APIKey = expandEnv(p.APIKey)
+			if p.APIKey != "" {
+				p.CredentialSource = "api_key"
+			}
 			if p.APIKey == "" && p.APIKeyEnv != "" {
-				p.APIKey = os.Getenv(p.APIKeyEnv)
+				if p.APIKey = os.Getenv(p.APIKeyEnv); p.APIKey != "" {
+					p.CredentialSource = "environment " + p.APIKeyEnv
+				}
+			}
+			if p.APIKey == "" && usesStoredCredential(p) {
+				if secret, ok, err := lookupStoredCredential(name); err == nil && ok {
+					p.APIKey = secret
+					p.CredentialSource = "credential store"
+				}
 			}
 			for key, value := range p.Headers {
 				p.Headers[key] = expandEnv(value)

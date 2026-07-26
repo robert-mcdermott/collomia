@@ -7,7 +7,7 @@ import (
 
 var completionCommands = []string{
 	"tui", "run", "init", "config", "trust", "doctor", "capabilities",
-	"support", "policy", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "replay", "version",
+	"support", "policy", "auth", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "replay", "version",
 }
 
 var completionFlags = []string{

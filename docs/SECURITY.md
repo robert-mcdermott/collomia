@@ -739,6 +739,48 @@ not mint or refresh short-term bearer keys; replace an expiring token and
 restart the process. AWS SDK-managed temporary SigV4 credentials retain the
 SDK's normal refresh behavior.
 
+### Optional OS credential storage
+
+`collo auth` stores a provider API key in the macOS Keychain or the Windows
+Credential Manager. It is optional and additive: the store is consulted only
+after `api_key`, `api_key_env`, and a provider family's own variable, so an
+exported environment variable always wins and no existing configuration changes
+meaning. A machine that has never run `collo auth set` performs no credential
+manager call at all — a local name index is checked first, and its absence ends
+the lookup.
+
+What the store is not: it is not a Collomia account, not a network service, and
+not a file-backed secret store. The only file it keeps,
+`~/.collomia/credentials.json` (mode 0600), records provider names so entries
+can be listed and lookups skipped. It holds no credential material and is not
+consulted as a fallback when the operating system has no entry. Linux has no
+backend, and no encrypted-file substitute is offered: the passphrase would have
+to be stored somewhere, and an unencrypted file would be weaker than the
+environment variable it replaced.
+
+Nothing reads a stored value back to a user, a log, or a tool result. Values
+are read only to authenticate a provider request, and are registered with the
+redactor exactly like a configured key.
+
+Two platform properties are worth stating plainly:
+
+- **macOS** entries are written through `/usr/bin/security`, which accepts the
+  secret only as a command-line argument; the tool has no option to read one
+  from standard input. macOS restricts reading another process's arguments to
+  its owner and root, so the exposure is to root and to the user's own session,
+  which already holds the unlocked keychain — for the lifetime of one
+  short-lived process. Apple's signed tool is used rather than linking
+  Security.framework so the binary stays cgo-free and keychain authorization is
+  not re-requested for every unsigned build. In a session with no graphical
+  login the keychain cannot prompt, and the command fails saying so rather than
+  falling back to anything weaker.
+- **Windows** entries are generic credentials named `collomia:<provider>`,
+  protected by DPAPI under the current user account.
+
+Collomia's own credential locations, including this index, remain subject to
+[credential-store protection](#credential-stores-sit-alongside-tier-2): an
+agent action that reaches them is its own permission decision.
+
 ### Microsoft Entra credentials
 
 Azure OpenAI and Microsoft Foundry providers use Microsoft Entra only when the
