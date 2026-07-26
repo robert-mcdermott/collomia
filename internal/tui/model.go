@@ -92,6 +92,11 @@ type Model struct {
 	expandTools bool
 	streaming   bool
 
+	// mouseOn tracks whether Collomia is currently capturing mouse reports.
+	// While it is on the terminal cannot run its own drag-selection, so the
+	// state is toggleable at runtime rather than fixed at startup.
+	mouseOn bool
+
 	// railManual records that the user chose a rail state explicitly, so a
 	// later resize does not silently overrule them.
 	railOn     bool
@@ -142,6 +147,7 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 		runtime: runtime, broker: broker, input: in, spinner: spin,
 		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{}, sessionAttachments: map[string][]pendingAttachment{},
 		workspaceLoading: true, workspaceGeneration: 1,
+		mouseOn: runtime.Config.Options.Mouse,
 	}
 	m.applyTheme(theme)
 	m.rebuildTranscript()
@@ -335,6 +341,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
+		}
+		// Checked ahead of the full-screen views: releasing the mouse is most
+		// often wanted while reading the transcript or a diff, which is
+		// exactly where those views would otherwise swallow the key.
+		if m.keyIs("toggle_mouse", key) {
+			return m.toggleMouse()
 		}
 		if m.transcript != nil {
 			return m.handleTranscriptKey(msg)
@@ -873,7 +885,7 @@ func (m *Model) chatContent() string {
 	for i, block := range m.blocks {
 		switch block.role {
 		case "user":
-			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + block.content + "\n\n")
+			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + m.wrapProse(block.content, 0) + "\n\n")
 		case "assistant":
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
 		case "tool":
@@ -881,14 +893,35 @@ func (m *Model) chatContent() string {
 		case "tool-result":
 			b.WriteString(m.renderToolResult(i) + "\n\n")
 		case "error":
-			b.WriteString(m.styles.errText.Render("✖ "+block.content) + "\n\n")
+			b.WriteString(m.styles.errText.Render(m.wrapProse("✖ "+block.content, 0)) + "\n\n")
 		case "panel":
 			b.WriteString(m.renderPanel(block.title, block.content) + "\n\n")
 		default:
-			b.WriteString(m.styles.system.Render("· "+block.content) + "\n\n")
+			b.WriteString(m.styles.system.Render(m.wrapProse("· "+block.content, 0)) + "\n\n")
 		}
 	}
 	return b.String()
+}
+
+// wrapProse folds a transcript line to the width the transcript actually has.
+// Nothing downstream reflows: the rail takes its columns out of the body and
+// the composited row is cut where the rail begins, so an unwrapped line does
+// not merely run off-screen — its tail is gone. reserve is any decoration the
+// caller adds afterwards. ansi.Wrap breaks a word longer than the measure
+// rather than letting it overrun, which matters for pasted paths and URLs.
+func (m *Model) wrapProse(text string, reserve int) string {
+	return ansi.Wrap(text, m.transcriptMeasure(reserve), "")
+}
+
+// wrapOutput folds tool output. It is not prose — it is command output, file
+// contents, and diffs, where a reflowed column is more misleading than a break
+// at the right margin — so it is hard-wrapped at the same measure.
+func (m *Model) wrapOutput(text string, reserve int) string {
+	return ansi.Hardwrap(text, m.transcriptMeasure(reserve), true)
+}
+
+func (m *Model) transcriptMeasure(reserve int) int {
+	return max(8, m.bodyWidth()-reserve)
 }
 
 // Tool results at or below this line count are always shown in full;
@@ -904,19 +937,17 @@ func (m *Model) renderToolResult(i int) string {
 	lines := strings.Count(content, "\n") + 1
 	current := m.busy && i == len(m.blocks)-1
 	if m.expandTools || current || lines <= toolCollapseThreshold {
+		// The gutter costs four columns, so the output is folded to what is
+		// left rather than to the full body.
 		if highlighted, ok := m.highlightToolResult(entry); ok {
-			return indent(highlighted, "  │ ")
+			return indent(m.wrapOutput(highlighted, 4), "  │ ")
 		}
-		return m.styles.toolResult.Render(indent(content, "  │ "))
+		return m.styles.toolResult.Render(indent(m.wrapOutput(content, 4), "  │ "))
 	}
 	return m.styles.toolResult.Render("  ▸ ") +
 		m.styles.tool.Render(fmt.Sprintf("%d lines hidden · ", lines)) +
 		m.styles.toolName.Render("ctrl+o") + m.styles.tool.Render(" to expand")
 }
-
-const asciiBanner = `╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
-║  ║ ║║  ║  ║ ║║║║║╠═╣
-╚═╝╚═╝╩═╝╩═╝╚═╝╩ ╩╩╩ ╩`
 
 func (m *Model) banner() string {
 	if m.width < 30 {
@@ -926,17 +957,21 @@ func (m *Model) banner() string {
 	return m.bannerArt() + "\n" + tips
 }
 
-// bannerArt is the logo and the one-line identity beneath it, without the
-// keyboard tips. The empty state carries its own, longer set of openers and
-// would otherwise say much the same thing twice, two lines apart.
+// bannerArt is the compact logo and a one-line identity beneath it, without
+// the keyboard tips. It heads the transcript once a session has started, so it
+// carries only what is not on screen anywhere else: which build is running and
+// which model is answering. The build hash, the build date, and the theme name
+// used to ride on the same line, which pushed it past a hundred columns in a
+// header nobody reads twice; the first screen, the Session tab, and
+// `collo version` still have them.
 func (m *Model) bannerArt() string {
 	if m.width < 30 {
 		return m.styles.brand.Render("✿ Collomia")
 	}
-	art := gradient(asciiBanner, m.theme.Primary, m.theme.Secondary)
+	art := gradient(compactLogoArt, m.theme.Primary, m.theme.Secondary)
 	providerName, model := m.runtime.Agent.Selection()
-	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), providerName, model, m.theme.Name))
-	return art + "\n" + sub
+	sub := fmt.Sprintf("✿ %s · %s/%s", version.Short(), providerName, model)
+	return art + "\n" + m.styles.muted.Render(ansi.Truncate(sub, max(10, m.bodyWidth()), "…"))
 }
 
 // sessionTwoColumnWidth is where the Session tab splits in two. Below it a
@@ -1040,6 +1075,9 @@ func (m *Model) sessionSections(width int) string {
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
 	b.WriteString(kv("theme", m.theme.Name) + "\n")
+	// The transcript header no longer carries the build, so a bug report needs
+	// somewhere to read it from without quitting the session.
+	b.WriteString(kv("build", version.Short()+" · "+version.Build()) + "\n")
 	b.WriteString(kv("uptime", time.Since(m.started).Round(time.Second).String()) + "\n\n")
 
 	b.WriteString(h("Workspace") + "\n")
@@ -1292,6 +1330,8 @@ func (m *Model) helpContent() string {
 		{m.binding("diff_view"), "open the interactive diff viewer"},
 		{m.binding("context_rail"), "show / hide the context rail (automatic above " + fmt.Sprintf("%d", railAutoWidth) + " columns)"},
 		{"wheel · click", "scroll the transcript · select a tab (set options.mouse false to disable)"},
+		{m.binding("toggle_mouse"), "release the mouse so the terminal can drag-select and copy, and take it back"},
+		{"shift · option drag", "select text without releasing the mouse (shift in most terminals, option on macOS)"},
 		{"/activity", "search/filter runtime activity and copy failure IDs"},
 		{"↑ / ↓ (composer)", "previous / next prompt at the first or last line"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
@@ -1312,7 +1352,11 @@ func (m *Model) renderMarkdown(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return ""
 	}
-	width := max(20, m.width-6)
+	// Glamour wraps to whatever it is given, so it has to be given the body's
+	// width and not the terminal's: wrapping at the terminal width and then
+	// compositing the rail over the result is what cut the right-hand end off
+	// every long line of an answer.
+	width := max(20, m.bodyWidth()-6)
 	if m.renderer == nil || m.rendererWidth != width {
 		renderer, err := glamour.NewTermRenderer(
 			glamour.WithStyles(m.theme.markdownStyle()),
@@ -1354,15 +1398,16 @@ func (m Model) View() string {
 	sections = append(sections, m.renderComposer())
 	sections = append(sections, m.renderStatusBar())
 	base := strings.Join(sections, "\n")
+	dim := m.runtime.Config.Options.DimBackground
 	switch {
 	case m.agentIntegration != nil:
-		return placeOverlay(base, m.renderAgentIntegration(), m.width, m.height)
+		return placeOverlay(base, m.renderAgentIntegration(), m.width, m.height, dim)
 	case m.hunkReview != nil:
-		return placeOverlay(base, m.renderHunkReview(), m.width, m.height)
+		return placeOverlay(base, m.renderHunkReview(), m.width, m.height, dim)
 	case m.pending != nil:
-		return placeOverlay(base, m.renderApproval(), m.width, m.height)
+		return placeOverlay(base, m.renderApproval(), m.width, m.height, dim)
 	case m.question != nil:
-		return placeOverlay(base, m.renderQuestion(), m.width, m.height)
+		return placeOverlay(base, m.renderQuestion(), m.width, m.height, dim)
 	default:
 		return base
 	}
@@ -1457,6 +1502,16 @@ func (m Model) renderStatusBar() string {
 	}
 	if len(m.pendingAttachments) > 0 {
 		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("images %d", len(m.pendingAttachments)), m.theme.Accent)
+	}
+	// Only shown once the session departs from its configured mouse setting:
+	// the toggle changes what a drag does, which is invisible until the user
+	// tries one, but a permanent badge for the configured state is noise.
+	if m.mouseOn != m.runtime.Config.Options.Mouse {
+		label := "SELECT"
+		if m.mouseOn {
+			label = "MOUSE"
+		}
+		left += m.styles.statusBase.Render(" ") + badge(label, m.theme.Secondary)
 	}
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 

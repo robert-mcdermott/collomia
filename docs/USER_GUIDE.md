@@ -89,7 +89,7 @@ Installer overrides:
 # Install a particular release tag.
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh |
-  COLLO_VERSION=v0.1.3 sh
+  COLLO_VERSION=v0.1.8 sh
 
 # Install somewhere else.
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -445,6 +445,71 @@ in depth, not protection against a malicious command or model-directed
 exfiltration. Prefer `permissions.command_env: "minimal"`, an OS sandbox, and
 short-lived credentials for higher-risk work.
 
+### Optional: keep API keys in the OS credential manager
+
+On macOS and Windows, `collo auth` can hold a provider's API key in the
+operating system's own credential manager instead of a shell profile. It is
+entirely optional, and adding it never changes how an existing configuration
+resolves.
+
+```sh
+collo auth set my-provider     # prompts; the value is never an argument
+collo auth list                # names and state, never values
+collo auth status              # where each provider's credential came from
+collo auth import              # move keys that already resolve into the store
+collo auth rm my-provider
+```
+
+There is no Collomia account and nothing to log into — this is local storage
+only. `collo auth set` prompts on the terminal without echoing; if standard
+input is not a terminal it reads one line, so scripted setup never puts a
+secret in a command-line argument or shell history. Nothing prints a stored
+value back: use Keychain Access or Credential Manager if you need to see one.
+
+**Resolution order**, most explicit first:
+
+1. `api_key` in configuration (including `${VAR}` expansion)
+2. `api_key_env`
+3. the provider family's own variable, such as `AWS_BEARER_TOKEN_BEDROCK`
+4. the credential store
+5. nothing — the provider reports a missing credential
+
+An environment variable therefore always wins over a stored credential. A
+stored key cannot silently shadow the variable you just exported, and a machine
+that has never run `collo auth set` never consults the credential manager at
+all: the name index is checked first, and no index means no keychain call and
+no keychain dialog. `collo auth status` prints which source won for each
+provider, and `collo doctor` reports the store alongside each provider.
+
+Two authentication modes take no stored key, because there is no static secret
+to store: Azure `auth: entra` (DefaultAzureCredential issues short-lived
+tokens) and Bedrock `auth: sigv4` (the AWS credential chain owns profiles, SSO,
+roles, and instance identity). Bedrock *bearer* keys and Azure `auth: api_key`
+are ordinary API keys and can be stored.
+
+| Platform | Backend | Notes |
+| --- | --- | --- |
+| macOS | Keychain, through `/usr/bin/security` | Entries are generic passwords with service `collomia`. Collomia drives Apple's signed tool rather than linking Security.framework: that keeps the binary cgo-free, and keychain access is granted per application identity, so an unsigned build would otherwise ask again after every upgrade. macOS accepts the secret only as a command-line argument — another user cannot read this process's arguments, but root can, and it is briefly visible to your own session. |
+| Windows | Credential Manager (`CredWriteW`) | Generic credentials named `collomia:<provider>`, persisted per machine for the current user. |
+| Linux | none | Use `api_key_env`. |
+
+Linux has no backend on purpose. Its Secret Service API needs a D-Bus session
+with gnome-keyring or kwallet, which is normal on a desktop and absent on the
+headless servers and cluster nodes where an agent most often runs. A store that
+worked on some Linux hosts and silently degraded on others would be worse than
+none, and there is deliberately no encrypted-file fallback: the passphrase
+would have to live somewhere, and an unencrypted file would be worse than the
+environment variable it replaced.
+
+Over SSH or in CI on macOS the keychain cannot prompt for access and the
+command fails with that reason named. Use `api_key_env` there.
+
+The store keeps one small file of its own, `~/.collomia/credentials.json`. It
+records provider *names* so entries can be listed and lookups skipped; it holds
+no credential material and is not a fallback store. If an entry is deleted
+through Keychain Access or Credential Manager, `collo auth list` and
+`collo doctor` report it as missing rather than implying a working credential.
+
 ### One global directory
 
 Collomia uses one global root for every persistent user-level file:
@@ -572,6 +637,11 @@ get `standard`, which is exactly what earlier releases did.
 | `commands` | `open` | `open` | `allowlist` |
 | `command_env` | `full` | `minimal` | `minimal` |
 
+No preset sets `sandbox_egress`. Scoped egress is enforceable on macOS only,
+so folding it into a cross-platform bundle would make one preset name mean
+genuinely different containment on different machines. It stays a line you
+write yourself — see [Scoped egress](#scoped-egress-macos-only).
+
 Four properties make a preset safe to adopt:
 
 - **It is sugar, not a mode.** Every value it chooses is an ordinary field,
@@ -614,7 +684,7 @@ fields that layer did not state itself. It does not matter which is stricter:
 ambiguous.
 
 **Rule 2 — a project file can tighten containment, never weaken it.** This
-applies to `sandbox`, `sandbox_allow_network`,
+applies to `sandbox`, `sandbox_allow_network`, `sandbox_egress`,
 `sandbox_allow_read_outside_workspace`, `command_env`, `network`, `commands`,
 and `allow_outside_workspace`, and it applies the same way to an explicit
 field and to a preset:
@@ -662,6 +732,7 @@ layer is read at all; these rules decide what it may do once it is trusted.
 | `commands` | string | `open` (default) or `allowlist`. Under `allowlist`, a command is never approved automatically unless a rule or a session grant covers every executable it runs. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch available in your global configuration; a project file cannot select it. `require` refuses degraded execution. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
+| `sandbox_egress` | `off` \| `scoped` | Narrows the switch above from all-or-nothing to per-host. Under `scoped`, the OS sandbox denies direct remote traffic and commands are routed through a Collomia-owned loopback broker that dials only the hosts named by `allow` rules. macOS only; refused under `sandbox: "require"` elsewhere and visibly degraded under `auto`. See [Scoped egress](#scoped-egress-macos-only). |
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
 | `sandbox_writable_roots` | string list | Additional narrowly scoped read/write roots for sandboxed commands, resolved from the workspace when relative. Every writable root is implicitly readable. |
@@ -707,8 +778,67 @@ endpoints, exactly as it never covers a command the analyzer could not read;
 This is Collomia's own policy layer, not egress enforcement. A program that
 opens a socket without saying so on its command line — an arbitrary binary, a
 compiler plugin, a test suite — declares no endpoint here. The boundary for
-that traffic is the OS sandbox's `sandbox_allow_network`, which remains
-all-or-nothing.
+that traffic is the OS sandbox: `sandbox_allow_network` by default, or the
+per-host broker described next.
+
+### Scoped egress (macOS only)
+
+`sandbox_allow_network` is all-or-nothing, which makes it the first thing
+people turn off when a build needs a package registry. `sandbox_egress:
+"scoped"` is the narrower alternative:
+
+```json
+{
+  "permissions": {
+    "sandbox": "auto",
+    "sandbox_egress": "scoped",
+    "rules": [
+      { "action": "allow", "host": "proxy.golang.org",  "reason": "Go module proxy" },
+      { "action": "allow", "host": "sum.golang.org",    "reason": "Go checksum database" },
+      { "action": "allow", "host": "example.com",       "reason": "smoke-test target" },
+      { "action": "allow", "host": "*.githubusercontent.com", "reason": "raw file fetches" }
+    ]
+  }
+}
+```
+
+`reason` is optional but worth writing: it appears in the approval prompt when
+a rule fires and in the audit ledger, so a rule explains itself months later
+rather than reading as an unexplained exception.
+
+Under `scoped`, the OS sandbox denies direct remote traffic while leaving
+loopback reachable, and the command is pointed at a Collomia-owned proxy on
+loopback that dials only the hosts named by `allow` rules with a `host`. It is
+the same rule list the policy layer already matches, so there is no second
+allowlist to keep in step. A refused connection fails with a message naming
+the host and the rule that would permit it, and `collo policy check` will tell
+you in advance which of a command's endpoints the broker would allow.
+
+The broker never inspects or terminates TLS. An approved tunnel is spliced
+byte for byte, so no certificate is substituted and nothing decrypts your
+traffic.
+
+**Why macOS only.** This is enforcement only where the sandbox can deny remote
+traffic while keeping loopback reachable, and the three backends genuinely
+differ:
+
+| platform | scoped egress | why |
+| --- | --- | --- |
+| **macOS** (Seatbelt) | enforced | Seatbelt denies remote egress and keeps loopback, so the broker is the only way out |
+| **Linux** (Landlock) | unavailable | Landlock filters TCP by port and never by address, so allowing the broker's port also allows every remote host on that port — an allowlist the attacker it targets can simply step around |
+| **Windows** (AppContainer) | unavailable | AppContainer blocks loopback to unpackaged local services, so a sandboxed command cannot reach the broker at all |
+
+On Linux and Windows the setting is refused under `"sandbox": "require"` and
+degrades visibly under `"auto"`, leaving `sandbox_allow_network` in charge.
+Neither is left less contained than before: Windows AppContainer enforces
+all-or-nothing denial more completely than either Unix backend, covering UDP
+and DNS.
+
+Two further limits are worth stating plainly. With `"sandbox": "off"` no
+broker is started at all — without OS-level denial a proxy is a convention any
+program can ignore, and presenting that as a boundary would be worse than the
+coarse control. And an endpoint the analyzer could not read in advance is
+still checked, just at connection time rather than at approval time.
 
 ### Allowing and blocking specific endpoints
 
@@ -817,8 +947,9 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
-| `mouse` | Whether the TUI requests mouse reporting for wheel scrolling and tab clicks; defaults to `true`. While it is on, the terminal routes drags to Collomia rather than to its own selection, so set it to `false` if you copy text with the mouse more than you scroll. Most terminals still offer native selection under shift-drag. |
+| `mouse` | Whether the TUI requests mouse reporting for wheel scrolling and tab clicks; defaults to `true`. While it is on, the terminal routes drags to Collomia rather than to its own selection, so set it to `false` if you copy text with the mouse more than you scroll. This is only the starting state: `alt+m` releases and reclaims the mouse at any point in a session. Most terminals also offer native selection under shift-drag (option-drag on macOS Terminal.app and iTerm2). |
 | `reduced_motion` | Optional static working indicator. Defaults to `false`, so animations remain enabled; it never changes input, commands, cancellation, or other controls. |
+| `dim_background` | Whether the screen behind an approval, question, or other modal drops its colour so the dialog is plainly the focused element; defaults to `true`. Set `false` to keep the transcript at full saturation — useful for documentation screenshots. The cleared gutter around a dialog is kept either way, so the modal is still separated from what it covers. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
 | `editor` | Optional direct external-editor command and argument list used by `e` in `/diff`. Arguments support `{file}`, `{line}`, and `{column}`. |
@@ -2058,6 +2189,15 @@ collo --cwd /path/to/repository
 
 ### Main interface
 
+The first screen centres the mark and wordmark over the build line, an
+orientation card (workspace, branch, model, autonomy), and a few openers. It is
+replaced by the transcript as soon as you send a prompt; from then on a compact
+wordmark with the version and the answering model heads the conversation. Build
+detail — the commit and the build date — is on the first screen, on the Session
+tab's `build` row, and in `collo version`, so the transcript header stays one
+short line. A terminal too narrow for the full wordmark falls back to the
+compact one, and below 56 columns to the wordmark and a single hint.
+
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
 files, a parent/child delegated-agent tree with bounded recent output,
@@ -2091,6 +2231,13 @@ record. Press `f` to cycle only categories present, `/` to search, `n`/`N` to
 move between matches, arrow/page keys to navigate, and `y` to copy the selected
 failure ID (or the selected activity text when no failure ID exists).
 
+The context rail appears beside the Chat transcript on its own at 146 columns,
+is available under `alt+r` down to 116, and is unavailable below that. It takes
+its columns out of the transcript, so replies, prompts, tool output, and
+informational panels all wrap to the width that is left rather than running
+underneath it. Hiding the rail with `alt+r` gives those columns back and the
+transcript reflows to the full width.
+
 The layout adapts to narrow terminals: below 44 columns the header shows only
 the active tab, status content is truncated rather than wrapping into the
 composer, and full-screen transcript/activity/diff views use the available
@@ -2117,6 +2264,8 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+d` | Open the interactive session diff viewer. |
 | `alt+r` | Show or hide the context rail. It appears on its own at 146 columns and is unavailable below 116. |
 | Mouse wheel / click | Scroll the transcript; click a tab to select it. Set `options.mouse` to `false` to hand mouse handling back to the terminal. |
+| `alt+m` | Release the mouse so the terminal can drag-select and copy, and press again to take it back. The status bar shows `SELECT` while the mouse is released and `MOUSE` when it is captured against your configured default. |
+| `shift`-drag / `option`-drag | Select text without releasing the mouse at all. Most terminals bypass mouse reporting while `shift` is held; macOS Terminal.app and iTerm2 use `option`. |
 | `f` in Activity | Cycle the activity categories present in this session. |
 | `/`, then `n` / `N` in Activity | Search activity and move between matches. |
 | `y` in Activity | Copy the selected failure ID, or the activity text when no ID is present. |
@@ -2439,6 +2588,24 @@ editable, the busy-safe slash-command lane remains available, and cancellation,
 approvals, questions, and agent controls behave exactly as they do with the
 animated indicator.
 
+An approval, a question, or another dialog dims the screen behind it — colour
+is dropped rather than blended, so syntax highlighting, diff greens and reds,
+and status accents stop competing with the decision in front of them. To keep
+the background at full colour instead, which is usually what a documentation
+screenshot wants:
+
+```json
+{
+  "options": {
+    "dim_background": false
+  }
+}
+```
+
+The cleared gutter around a dialog is unaffected, so the modal is still
+separated from the content it covers rather than sitting against mid-word
+transcript fragments.
+
 Global navigation keys can be remapped by action. Each omitted action inherits
 its earlier/default binding, so a project may override just one user binding.
 Supported values are `ctrl+letter`, `alt+letter`, `f1` through `f12`, `pgup`,
@@ -2453,6 +2620,7 @@ unambiguous.
     "keybindings": {
       "agent_control": "alt+a",
       "next_tab": "alt+t",
+      "toggle_mouse": "alt+m",
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
@@ -2791,6 +2959,7 @@ collo doctor [--strict]
 collo capabilities [--markdown]
 collo support bundle [--output path] [--include-logs]
 collo policy check <command...>
+collo auth list|status|set|rm|import
 collo review [ref] [instructions...]
 collo verify [focus]
 collo sessions list|show|fork|rewind|rename|archive|unarchive|delete
@@ -2862,6 +3031,9 @@ question broker can make the model-visible subset smaller.
 | `stop_process` | Stop one background process and its process group. |
 | `search_symbols` | Incremental definition search for Go, Python, JS/TS, and Rust. |
 | `diagnostics` | Run a configured/auto-detected language server over up to 20 same-language files. |
+| `find_definition` | Resolve where a symbol is defined, using the language server's own type information. |
+| `find_references` | List where a symbol is used, excluding same-named symbols in other scopes. |
+| `format_file` | Format one file with the project's language server; an ordinary tracked, undoable write. |
 | `update_plan` | Maintain a structured plan persisted with the session. |
 | `load_skill` | Load a relevant skill's full manifest and bundle map on demand. |
 | `delegate` | Run bounded parallel sub-agent tasks; omitted inside sub-agents. |
@@ -2953,8 +3125,10 @@ outcomes returned by `run_command` and does not edit files.
 
 ## Language-server support
 
-The `diagnostics` tool provides editor-quality diagnostics after an edit.
-Collomia auto-detects these commands on `PATH`:
+Four tools share one language-server client: `diagnostics` reports problems
+after an edit, `find_definition` and `find_references` navigate using the
+server's own type information, and `format_file` applies the project's real
+formatter. Collomia auto-detects these commands on `PATH`:
 
 | Files | Language ID | Default command |
 | --- | --- | --- |
@@ -2965,6 +3139,37 @@ Collomia auto-detects these commands on `PATH`:
 | `.js` | `javascript` | `typescript-language-server --stdio` |
 | `.jsx` | `javascriptreact` | `typescript-language-server --stdio` |
 | `.rs` | `rust` | `rust-analyzer` |
+
+**Not every server implements every request.** The auto-detected default is
+whichever server is best known for a language, which is not always the one that
+can do all four jobs. Most importantly, **pyright provides no formatter**: it
+answers `textDocument/formatting` with "unhandled method", so `format_file`
+reports that the configured server does not implement formatting and names the
+setting to change. For Python that can do navigation *and* formatting in one
+server, use `python-lsp-server` with a formatting plugin:
+
+```sh
+uv tool install "python-lsp-server[rope]" --with python-lsp-black
+```
+
+```json
+{
+  "lsp": {
+    "python": ["pylsp"]
+  }
+}
+```
+
+The trade-off is real in both directions: `pylsp` handles definitions,
+references, and formatting, while `pyright` is the stronger type checker and
+reports problems — an unresolved import, for instance — that `pylsp` does not.
+Choose per project according to which matters more, or install a `pylsp`
+diagnostics plugin.
+
+A project `.collomia.json` carrying an `lsp` map takes effect only after
+`collo trust`. Until then the project layer is quarantined and Collomia falls
+back to the auto-detected default, which looks like the configuration being
+ignored. `collo doctor` reports the workspace as untrusted when this happens.
 
 Install the relevant language server separately and confirm its executable is
 on `PATH`. Examples (installation mechanisms vary by platform):
@@ -2995,6 +3200,52 @@ All paths in one `diagnostics` call must map to the same exact language ID;
 split TypeScript and TSX, for example. Files must be inside the workspace. The
 client opens the requested current text, waits up to 25 seconds for published
 diagnostics, sorts error/warning/info/hint findings, and closes the server.
+
+### Navigation and formatting
+
+`find_definition` and `find_references` take a file, a **1-based line**, and
+the **symbol text as it appears on that line**. The column is located for you:
+the agent has just read the file with line numbers, so the name and the line
+are what it actually knows, and counting columns — which the protocol measures
+in UTF-16 code units, not characters — is a reliable source of confident
+answers about the wrong token. A symbol that is not on the named line is
+reported as an error rather than guessed at.
+
+These differ from `search_symbols` and `search_files` in what they understand.
+The symbol index finds definitions by name; `find_definition` follows imports,
+aliases, and types to the definition actually referenced at that position.
+`search_files` matches text; `find_references` knows scope, so it excludes an
+unrelated `Close` in another type. Use them before renaming or deleting
+anything.
+
+`format_file` replaces one file with the language server's own formatting
+(`gofmt` through `gopls`, and whatever each other server implements). It is an
+ordinary write: it needs the same approval, is recorded by the diff tracker,
+appears in `/diff`, and is reversed by `/undo`. Unlike `write_file`, the
+approval prompt shows no diff — producing one would mean running the language
+server twice for every approval, and the result could still be stale by the
+time it is applied. If the file changes between the format request and the
+write, nothing is written and the tool says so.
+
+Each call starts a server, asks its question, and closes it, so the first call
+in a fresh workspace pays for indexing. Requests wait up to 60 seconds — longer
+than the diagnostics path — because a cold `gopls` or `rust-analyzer` indexing
+a large repository would otherwise time out and look to the agent like a symbol
+that does not exist.
+
+Because that wait is otherwise unaccountable, these tools and `diagnostics`
+report their startup live in the transcript:
+
+```text
+starting pylsp…
+pylsp ready in 200ms — resolving definition…
+```
+
+The two lines separate "the server is still coming up" from "the server is
+thinking about the answer", which is what tells a slow index from a hang. They
+are display-only — never part of what the model reads — and the transcript
+replaces them with the real result when it arrives, so nothing lingers. A server that reports nothing is reported as "no results"
+with that possibility named, never as a definitive absence.
 
 Configured language servers are trusted subprocesses started directly by
 Collomia. They do not pass through `run_command` permission, command

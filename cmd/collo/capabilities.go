@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 )
 
@@ -19,6 +20,18 @@ type capabilityRow struct {
 func capabilityMatrix() []capabilityRow {
 	sandboxStatus := "unsupported"
 	sandboxNote := "macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; no OS backend active on " + runtime.GOOS + "; default auto mode visibly degrades, while require refuses command execution"
+	// Scoped egress is reported by what this platform can actually enforce,
+	// not by what the setting can be set to. A matrix that showed the same
+	// capability everywhere would be exactly the over-claim the feature's
+	// per-platform design exists to avoid.
+	egressStatus := "unsupported"
+	egressNote := "permissions.sandbox_egress=scoped brokers command egress to hosts named by host-scoped allow rules; not enforceable on " + runtime.GOOS
+	if supported, why := egress.Supported(); supported {
+		egressStatus = "experimental"
+		egressNote = "permissions.sandbox_egress=scoped denies direct remote egress in the sandbox and routes commands through a loopback CONNECT broker that dials only hosts named by host-scoped allow rules; no TLS interception; macOS only; refused under sandbox=require elsewhere and visibly degraded under auto; no preset sets it"
+	} else {
+		egressNote += " (" + why + "); refused under sandbox=require and visibly degraded under auto, leaving all-or-nothing sandbox_allow_network in charge"
+	}
 	backend := sandbox.ForPlatform()
 	if backend.Available() == nil {
 		sandboxStatus = "experimental"
@@ -34,12 +47,14 @@ func capabilityMatrix() []capabilityRow {
 		{"provider", "retry/resilience", "implemented", "classified failures; replay-safe 3-attempt backoff+jitter with Retry-After across all HTTP adapters; configurable connect/request/idle timeouts; circuit health in /status"},
 		{"provider", "normalized streaming events", "implemented", "text, reasoning, tool-argument fragments, usage, warnings, and classified errors; tool execution waits for complete valid JSON"},
 		{"provider", "capability registry + preflight", "implemented", "four-state adapter/model declarations cover tools, streaming, reasoning, images, structured output, usage, caching, parallel tools, discovery, context, and endpoint constraints; known contradictions fail before network I/O"},
+		{"provider", "OS credential storage", "implemented", "`collo auth set|list|status|rm|import` keeps provider API keys in the macOS Keychain or Windows Credential Manager; optional and consulted only after api_key, api_key_env, and a provider's own environment variable, so an exported variable always wins; no Linux backend and no file fallback — headless hosts use the environment"},
 		{"provider", "protocol contract suite", "implemented", "credential-free CI fixtures plus a secret-safe, double-opt-in live tool/stream/usage round trip for OpenAI, Anthropic, Responses/Mantle, and Bedrock; cancellation covered across every family"},
 		{"tools", "read_file / list_files / search_files", "implemented", "workspace-contained, symlink-aware path guard"},
 		{"tools", "write_file / edit_file", "implemented", "race-resistant rooted same-directory atomic replacement; hard-link isolation; mode-preserving /undo where supported; unique-match edits and approval diff"},
 		{"tools", "run_command", "implemented", "live streamed output, process-group termination on Unix and Job Object ownership on sandboxed Windows, timeout, output caps, outcome-aware command safety; pty=true on Unix; sandbox degradation is never silent"},
 		{"tools", "search_symbols", "implemented", "incremental ignore-aware definition index for Go/Python/JS/TS/Rust; exact/prefix ranked"},
 		{"tools", "diagnostics (LSP)", "implemented", "real language-server client (gopls, pyright, typescript-language-server, rust-analyzer auto-detected; lsp config map overrides); per-file severities and lines"},
+		{"tools", "find_definition / find_references / format_file", "implemented", "type-aware navigation and project formatting through the same language servers; located by file, line, and symbol text rather than a column; formatting is an ordinary tracked, undoable write"},
 		{"tools", "background processes", "implemented", "start_process/list_processes/process_output/stop_process with the same safety analysis and sandbox as run_command; /ps in the TUI; all stopped at session exit"},
 		{"workflow", "code review (collo review, /review)", "implemented", "read-only review of uncommitted changes or vs a ref; trailing words become custom reviewer instructions"},
 		{"workflow", "verification loop (collo verify, /verify)", "implemented", "detect_verification finds real build/lint/test commands from project files; run_command executes them; outcomes tied to update_plan evidence"},
@@ -57,6 +72,7 @@ func capabilityMatrix() []capabilityRow {
 		{"permissions", "catastrophic command protection", "implemented", "non-overridable outcome denials plus mandatory one-time confirmation for destructive but legitimate commands; same checks for foreground, PTY, and background execution"},
 		{"permissions", "credential-store protection", "implemented", "permissions.protect_credentials off/prompt/deny, default prompt; recognized by conventional path, not content inspection; a blanket allow rule, tool-wide always, and autopilot never cover one, while a rule naming the path and a session grant scoped to the exact file do"},
 		{"permissions", "audit ledger", "implemented", "JSONL ledger outside the workspace"},
+		{"permissions", "scoped egress broker", egressStatus, egressNote},
 		{"permissions", "OS sandbox", sandboxStatus, sandboxNote},
 		{"config", "layering defaults→user→project→env", "implemented", "inspect with `collo config show`"},
 		{"config", "schema versioning + validation", "implemented", "`collo config validate [--strict]`; documented config/session/event compatibility and migration policy"},
@@ -96,7 +112,7 @@ func capabilityMatrix() []capabilityRow {
 		{"interface", "workspace status dashboard", "implemented", "Session tab shows async Git branch/upstream/dirty state, provider/sandbox/MCP/trust health with actionable recovery hints, and bounded recent activity; r refreshes Git state"},
 		{"interface", "interactive diff review", "implemented", "full-screen changed-file browser; responsive unified/side-by-side layouts, folding, file/hunk navigation, line numbers, theme-aware changes, and safe external-editor handoff"},
 		{"interface", "session continuity and prompt history", "implemented", "full transcript/tool restoration on resume; boundary-aware up/down history; in-process per-session drafts via the alt+s picker; /retry loads but never submits"},
-		{"interface", "terminal ergonomics", "implemented", "80x24/narrow responsive layouts, explicit color-independent states, optional `options.reduced_motion` (animations remain the default), alternate-screen overrides, validated keybindings, and generated shell completion"},
+		{"interface", "terminal ergonomics", "implemented", "80x24/narrow responsive layouts, explicit color-independent states, optional `options.reduced_motion` and `options.dim_background` (animations and modal dimming remain the defaults), alternate-screen overrides, validated keybindings, and generated shell completion"},
 		{"interface", "notifications", "implemented", "terminal bell + OSC 9 desktop notification for approvals, questions, and long turns; options.notifications on|bell|off"},
 		{"interface", "PTY-backed browser terminal", "implemented", "`collo --web`; loopback-only, token-authenticated, embedded xterm.js; macOS/Linux (Windows ConPTY pending)"},
 		{"interface", "headless run + JSONL events", "implemented", "`collo run --jsonl`; embedded/published schema v1; exactly one final `run.result` with stable failure/refusal/partial metadata, opaque cross-surface failure IDs, and exit codes; durable resume or session-free `--ephemeral`"},

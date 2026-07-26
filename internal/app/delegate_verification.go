@@ -15,7 +15,6 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
-	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -300,19 +299,10 @@ func (r *Runtime) refreshDelegateVerification(id, currentToken string) {
 }
 
 func (r *Runtime) delegateCommandRunner(worktree string) (*tools.RunCommandTool, error) {
-	command, err := tools.NewRunCommandTool(worktree, r.Config.Permissions.DeniedCommands, r.Config.Options.MaxToolOutputBytes)
+	command, err := tools.ConfiguredRunCommandTool(worktree, r.Config, r.Config.Options.MaxToolOutputBytes)
 	if err != nil {
 		return nil, fmt.Errorf("delegated verification command policy: %w", err)
 	}
-	if r.Config.Permissions.Sandbox != "" {
-		command.SandboxMode = sandbox.Mode(r.Config.Permissions.Sandbox)
-	}
-	command.AllowNetwork = r.Config.Permissions.SandboxAllowNetwork
-	command.AllowReadOutsideWorkspace = r.Config.Permissions.SandboxAllowReadOutsideWorkspace
-	command.ExtraReadableRoots = append([]string(nil), r.Config.Permissions.SandboxReadableRoots...)
-	command.ExtraWritableRoots = append([]string(nil), r.Config.Permissions.SandboxWritableRoots...)
-	sandboxed := command.SandboxMode == sandbox.ModeAuto || command.SandboxMode == sandbox.ModeRequire
-	command.MinimalEnv = r.Config.Permissions.CommandEnv == "minimal" || (r.Config.Permissions.CommandEnv == "" && sandboxed)
 	return command, nil
 }
 

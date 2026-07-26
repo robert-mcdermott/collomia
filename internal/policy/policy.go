@@ -153,6 +153,13 @@ func glob(pattern, value string) bool {
 	return err == nil && ok
 }
 
+// HostMatches reports whether a host-scoped rule pattern covers a normalized
+// hostname. The egress broker builds its allowlist from the same rules this
+// package evaluates, so it matches through this function rather than
+// reimplementing the glob: a destination the policy layer would allow and a
+// destination the broker will dial must never disagree.
+func HostMatches(pattern, host string) bool { return glob(pattern, host) }
+
 // pathGlob matches resolved paths after normalizing native separators to
 // slashes. A pattern ending in "/**" matches the directory and everything
 // beneath it; otherwise path.Match semantics apply to the whole path.

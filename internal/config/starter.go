@@ -37,6 +37,7 @@ func WriteStarter(path string, global bool) error {
 		AlternateScreen             bool              `json:"alternate_screen"`
 		Mouse                       bool              `json:"mouse"`
 		ReducedMotion               bool              `json:"reduced_motion"`
+		DimBackground               bool              `json:"dim_background"`
 		Keybindings                 map[string]string `json:"keybindings"`
 	}
 	type starterConfig struct {
@@ -86,6 +87,7 @@ func WriteStarter(path string, global bool) error {
 			AlternateScreen:             true,
 			Mouse:                       true,
 			ReducedMotion:               false,
+			DimBackground:               true,
 			Keybindings:                 DefaultKeybindings(),
 		}
 	} else {
@@ -335,6 +337,23 @@ const configReferenceJSONC = `
     // offline override: false denies sandboxed command network access. It does
     // not affect providers or remote MCP, which run in the Collomia process.
     "sandbox_allow_network": false,
+    // off | scoped. off (the default) leaves sandbox_allow_network above as the
+    // all-or-nothing egress control. scoped is the narrower alternative: the OS
+    // sandbox denies direct remote traffic, and the command is pointed at a
+    // loopback broker that dials only the hosts named by "allow" rules with a
+    // "host" — the same rules the policy layer already matches, so there is no
+    // second list to keep in step. A refused destination fails with a message
+    // naming the host and this setting.
+    //
+    // macOS only, and deliberately so. Seatbelt can deny remote egress while
+    // leaving loopback reachable, which is what makes this enforcement rather
+    // than a convention. Linux Landlock filters TCP by port and never by
+    // address, so an allowlist would be bypassable on the broker's own port;
+    // Windows AppContainer blocks loopback to unpackaged services, so a
+    // sandboxed command cannot reach the broker at all. On both, "scoped" is
+    // refused under "sandbox": "require" and degrades visibly under "auto",
+    // leaving sandbox_allow_network in charge. No preset sets this.
+    "sandbox_egress": "off",
     // The compatibility default is true (broad command reads). Set false to
     // deny ordinary user-data reads outside the workspace while retaining the
     // runtime roots needed to launch normal system tools. Add only required
@@ -416,16 +435,24 @@ const configReferenceJSONC = `
     "alternate_screen": true,
     // true lets the wheel scroll the transcript and a click select a tab.
     // While it is on the terminal routes drags here rather than to its own
-    // selection; set false to keep native mouse selection everywhere.
+    // selection; set false to keep native mouse selection everywhere. This is
+    // only the starting state: alt+m releases and reclaims the mouse during a
+    // session, so text stays selectable without giving up wheel scrolling.
     "mouse": true,
     // Optional. false preserves the animated working indicator. true uses a
     // static marker without changing input, cancellation, or other controls.
     "reduced_motion": false,
+    // true drops colour from the screen behind an approval or a question so
+    // the dialog is plainly the focused element. false leaves the transcript
+    // at full saturation, which is what you want for a screenshot. The
+    // cleared gutter around the dialog is kept either way.
+    "dim_background": true,
     // Global TUI actions are remappable. Approval/question decision keys stay
     // fixed and are always shown in their dialog.
     "keybindings": {
       "agent_control": "alt+a",
       "next_tab": "ctrl+t",
+      "toggle_mouse": "alt+m",
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",

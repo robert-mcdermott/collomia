@@ -46,12 +46,15 @@ less install-collo.sh
 sh install-collo.sh
 ```
 
-Pin a stable or prerelease version:
+Pin a stable or prerelease version by replacing `vX.Y.Z` with the release tag
+you want — the [releases page](https://github.com/robert-mcdermott/collomia/releases)
+lists them:
 
 ```sh
+COLLO_PIN=vX.Y.Z
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh |
-  COLLO_VERSION=v0.1.7 sh
+  COLLO_VERSION="$COLLO_PIN" sh
 ```
 
 Choose a different user-writable installation directory:
@@ -65,7 +68,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 A downloaded installer accepts the equivalent options:
 
 ```sh
-sh install-collo.sh --version v0.1.7 --install-dir "$HOME/bin"
+sh install-collo.sh --version vX.Y.Z --install-dir "$HOME/bin"
 ```
 
 `COLLO_REPOSITORY=owner/repository` selects a fork. For a system-wide install,
@@ -100,10 +103,11 @@ configuration or start Collomia. Windows may refuse to replace an executable
 that is currently running, so close active Collomia processes before an
 upgrade.
 
-Install a particular version or choose another directory:
+Install a particular version or choose another directory, replacing `vX.Y.Z`
+with the release tag you want:
 
 ```powershell
-& $Installer -Version v0.1.7 -InstallDir "$HOME\bin" -AddToPath
+& $Installer -Version vX.Y.Z -InstallDir "$HOME\bin" -AddToPath
 ```
 
 The environment variables `COLLO_VERSION`, `COLLO_INSTALL_DIR`, and

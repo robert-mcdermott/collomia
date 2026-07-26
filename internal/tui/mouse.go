@@ -44,6 +44,36 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// toggleMouse hands the mouse back and forth between Collomia and the
+// terminal. Mouse reporting and the terminal's own drag-selection are
+// mutually exclusive by protocol, so a session that needs to select and copy
+// arbitrary text has to be able to give the mouse up without restarting.
+func (m Model) toggleMouse() (tea.Model, tea.Cmd) {
+	m.mouseOn = !m.mouseOn
+	var cmd tea.Cmd
+	notice := ""
+	if m.mouseOn {
+		cmd = tea.EnableMouseCellMotion
+		notice = "mouse on: wheel scrolls, click selects a tab"
+	} else {
+		cmd = tea.DisableMouse
+		notice = "mouse off: drag to select and copy with your terminal"
+	}
+	notice += " · " + m.binding("toggle_mouse") + " toggles"
+	switch {
+	case m.transcript != nil:
+		m.transcript.notice = notice
+	case m.diffView != nil:
+		m.diffView.notice = notice
+	case m.activityView != nil:
+		m.activityView.notice = notice
+	default:
+		m.addSystem(notice)
+		m.refresh()
+	}
+	return m, cmd
+}
+
 // clickTab selects a tab from the header row. Anywhere else on screen is
 // ignored: the transcript is not a set of controls, and treating a stray
 // click as one would be worse than doing nothing.

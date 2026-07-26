@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/shell"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -39,7 +40,7 @@ func runPolicyCommand(opts options) error {
 
 	fmt.Printf("command:      %s\n", command)
 	fmt.Printf("autonomy:     %s\n", manager.Mode())
-	fmt.Printf("postures:     network=%s commands=%s protect_credentials=%s\n", cfg.Permissions.Network, cfg.Permissions.Commands, cfg.Permissions.ProtectCredentials)
+	fmt.Printf("postures:     network=%s commands=%s protect_credentials=%s sandbox_egress=%s\n", cfg.Permissions.Network, cfg.Permissions.Commands, cfg.Permissions.ProtectCredentials, orDefaultString(cfg.Permissions.SandboxEgress, appconfig.SandboxEgressOff))
 	if len(analysis.Executables) > 0 {
 		fmt.Printf("executables:  %s\n", strings.Join(analysis.Executables, ", "))
 	}
@@ -52,6 +53,12 @@ func runPolicyCommand(opts options) error {
 			endpoints += "UNDETERMINED (" + strings.Join(analysis.HostReasons, "; ") + ")"
 		}
 		fmt.Printf("endpoints:    %s\n", endpoints)
+		// The permission decision below and the broker's decision are separate
+		// gates: an approved command still reaches only what the allowlist
+		// covers, so both answers belong here.
+		if strings.EqualFold(strings.TrimSpace(cfg.Permissions.SandboxEgress), appconfig.SandboxEgressScoped) {
+			fmt.Printf("egress:       %s\n", egressForecast(cfg, analysis))
+		}
 	}
 	if analysis.Inspectable {
 		fmt.Println("analysis:     inspectable")
@@ -86,4 +93,40 @@ func regexpMatch(pattern, value string) (bool, error) {
 		return false, err
 	}
 	return re.MatchString(value), nil
+}
+
+// egressForecast answers what the broker would do with this command's declared
+// endpoints. It is deliberately separate from the permission decision: a
+// command can be approved and still reach nothing, because the allowlist is a
+// second gate applied at connection time rather than at approval time.
+func egressForecast(cfg appconfig.Config, analysis shell.Analysis) string {
+	if supported, why := egress.Supported(); !supported {
+		return "not enforceable on this platform (" + why + ")"
+	}
+	allowlist := egress.FromRules(cfg.Permissions.Rules)
+	var allowed, refused []string
+	for _, host := range analysis.Hosts {
+		if allowlist.Permits(host) {
+			allowed = append(allowed, host)
+		} else {
+			refused = append(refused, host)
+		}
+	}
+	var parts []string
+	if len(allowed) > 0 {
+		parts = append(parts, "brokered: "+strings.Join(allowed, ", "))
+	}
+	if len(refused) > 0 {
+		parts = append(parts, "REFUSED: "+strings.Join(refused, ", ")+" (no host-scoped allow rule)")
+	}
+	if analysis.UndeterminedHosts {
+		// An endpoint the analyzer could not read is still checked, just at
+		// connection time rather than here, so this is not a gap in the
+		// control — only a limit on what can be predicted.
+		parts = append(parts, "undetermined endpoints are checked against the allowlist when dialed")
+	}
+	if len(parts) == 0 {
+		return "no declared endpoints"
+	}
+	return strings.Join(parts, "; ")
 }

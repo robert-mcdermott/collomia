@@ -201,6 +201,8 @@ func run(args []string) error {
 		return runSupportCommand(opts)
 	case "policy":
 		return runPolicyCommand(opts)
+	case "auth":
+		return runAuthCommand(opts)
 	case "sessions":
 		return runSessionsCommand(opts)
 	case "skills":
@@ -497,7 +499,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "support" || arg == "policy" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "support" || arg == "policy" || arg == "auth" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
 			opts.command = arg
 			continue
 		}
@@ -744,6 +746,7 @@ Usage:
   collo capabilities [--markdown]     print the product capability matrix
   collo support bundle [--output path] [--include-logs]  create a privacy-conscious diagnostic archive
   collo policy check <command…>       evaluate a command against permission rules without running it
+  collo auth [list|status|set|rm|import]  store provider API keys in the OS credential manager (macOS/Windows; optional)
   collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
   collo verify [focus]                detect and run this project's build/lint/test commands headlessly
   collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions

@@ -24,7 +24,9 @@ func (m *Model) addPanel(title, content string) {
 //	│ [1] npm run dev — running        │
 //	╰──────────────────────────────────╯
 func (m *Model) renderPanel(title, content string) string {
-	width := m.width - 4
+	// The body, not the terminal: a panel measured against the full width
+	// disappears under the context rail from its right edge inwards.
+	width := m.bodyWidth() - 4
 	if width > panelMaxWidth {
 		width = panelMaxWidth
 	}

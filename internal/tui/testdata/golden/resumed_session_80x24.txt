@@ -3,7 +3,7 @@
 ╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
 ║  ║ ║║  ║  ║ ║║║║║╠═╣
 ╚═╝╚═╝╩═╝╩═╝╚═╝╩ ╩╩╩ ╩
-✿ collo dev (unknown, unknown) · ollama/qwen3-coder · theme plain
+✿ collo dev · ollama/qwen3-coder
 type a prompt · / commands · ctrl+t tabs · ctrl+o tool output
 
  YOU

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/shell"
@@ -46,6 +47,52 @@ type RunCommandTool struct {
 	// secrets are not inherited by agent commands.
 	MinimalEnv bool
 	Backend    sandbox.Backend
+	// EgressScoped requests brokered per-host egress instead of the
+	// all-or-nothing AllowNetwork switch. It is honored only where the sandbox
+	// backend can deny direct remote traffic while leaving loopback reachable;
+	// elsewhere it fails closed under require and degrades visibly under auto.
+	EgressScoped bool
+	// EgressAllowlist names the destinations the broker may dial. It is built
+	// from the same host-scoped allow rules the policy layer matches.
+	EgressAllowlist egress.Allowlist
+	// EgressObserve receives each brokered decision for the audit ledger.
+	EgressObserve func(egress.Decision)
+}
+
+// egressPlan is the resolved decision about brokering one command: whether to
+// start a broker, and what to tell the user when the answer is no.
+type egressPlan struct {
+	broker   bool
+	degraded string
+	err      error
+}
+
+// planEgress decides whether scoped egress applies to this command.
+//
+// Scoped egress is only ever enforcement in combination with a sandbox that
+// denies direct remote traffic. Every path that cannot provide that half
+// refuses to start a broker rather than injecting proxy variables anyway: a
+// proxy the user believes is a boundary, which any program that ignores
+// HTTP_PROXY walks straight past, is worse than an honest coarse control.
+func (t RunCommandTool) planEgress() egressPlan {
+	if !t.EgressScoped {
+		return egressPlan{}
+	}
+	if t.SandboxMode == sandbox.ModeOff {
+		return egressPlan{degraded: "permissions.sandbox_egress is \"scoped\" but the OS sandbox is off, so nothing stops a command from bypassing the broker; command networking followed sandbox_allow_network instead"}
+	}
+	if supported, why := egress.Supported(); !supported {
+		if t.SandboxMode == sandbox.ModeRequire {
+			return egressPlan{err: fmt.Errorf("permissions.sandbox_egress is \"scoped\" and permissions.sandbox is \"require\", but this platform cannot enforce it: %s", why)}
+		}
+		return egressPlan{degraded: "permissions.sandbox_egress is \"scoped\" but this platform cannot enforce it, so command networking followed sandbox_allow_network instead: " + why}
+	}
+	if t.EgressAllowlist.Empty() {
+		// Strictly correct and almost always a mistake, so it is stated up
+		// front rather than surfacing as a wall of refused connections.
+		return egressPlan{broker: true, degraded: "permissions.sandbox_egress is \"scoped\" but no allow rule names a host, so every outbound connection will be refused; add {\"action\":\"allow\",\"host\":\"…\"} to permissions.rules"}
+	}
+	return egressPlan{broker: true}
 }
 
 func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*RunCommandTool, error) {
@@ -140,14 +187,35 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	argv := shellArgv(a.Command)
 	sandboxed := false
 	sandboxWarning := ""
+	plan := t.planEgress()
+	if plan.err != nil {
+		return "", plan.err
+	}
+	var broker *egress.Broker
+	if plan.broker {
+		started, err := egress.Start(t.EgressAllowlist, t.EgressObserve)
+		if err != nil {
+			if t.SandboxMode == sandbox.ModeRequire {
+				return "", fmt.Errorf("scoped egress required but the broker could not start: %w", err)
+			}
+			plan.broker = false
+			plan.degraded = "scoped egress broker could not start, so command networking followed sandbox_allow_network instead: " + err.Error()
+		} else {
+			broker = started
+			defer broker.Close()
+		}
+	}
 	if t.SandboxMode == sandbox.ModeAuto || t.SandboxMode == sandbox.ModeRequire {
-		prepared, err := sandbox.Prepare(t.Backend, t.SandboxMode, argv, t.sandboxPolicy())
+		prepared, err := sandbox.Prepare(t.Backend, t.SandboxMode, argv, t.sandboxPolicy(broker != nil))
 		if err != nil {
 			return "", err
 		}
 		argv = prepared.Argv
 		sandboxed = prepared.Active
 		sandboxWarning = prepared.Degraded
+	}
+	if plan.degraded != "" {
+		sandboxWarning = strings.TrimSpace(plan.degraded + "\n" + sandboxWarning)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
 	defer cancel()
@@ -161,17 +229,15 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 	}
 	var err error
 	if a.PTY {
-		var env []string
+		var extra []string
 		if t.MinimalEnv {
-			env = append(minimalEnv(), "TERM=xterm-256color")
+			extra = append(extra, "TERM=xterm-256color")
 		}
-		err = runUnderPTY(runCtx, argv, t.Workspace, env, buffer)
+		err = runUnderPTY(runCtx, argv, t.Workspace, t.commandEnv(broker, extra...), buffer)
 	} else {
 		cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 		cmd.Dir = t.Workspace
-		if t.MinimalEnv {
-			cmd.Env = minimalEnv()
-		}
+		cmd.Env = t.commandEnv(broker)
 		// The command runs in its own process group so cancellation and
 		// timeout target the group, not only the shell.
 		setProcessGroup(cmd)
@@ -181,8 +247,22 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		err = cmd.Run()
 	}
 	out := buffer.String()
-	if sandboxed && err != nil {
-		out += "\n(command ran inside the OS sandbox; it may also have failed normally. If access was denied, use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, permissions.sandbox_allow_network=true for outbound access, or permissions.command_env=full for deliberately inherited environment variables. To opt out of OS containment entirely, set permissions.preset=frictionless; inspect `collo doctor` and docs/SECURITY.md)"
+	refusedEgress := false
+	if broker != nil {
+		// A refusal is reported whether or not the command failed: a build that
+		// quietly skipped an optional download still needs to say which host it
+		// could not reach.
+		if refused := broker.Refused(); len(refused) > 0 {
+			refusedEgress = true
+			out += "\n(scoped egress refused " + strings.Join(refused, ", ") + "; permissions.sandbox_egress is \"scoped\" and no allow rule names " + plural(len(refused), "that host", "those hosts") + ". Add {\"action\":\"allow\",\"host\":\"" + refused[0] + "\"} to permissions.rules)"
+		}
+	}
+	if sandboxed && err != nil && !refusedEgress {
+		// The generic hint is suppressed after an egress refusal: that message
+		// already names the host and the rule to add, and pointing at
+		// sandbox_allow_network would send the user to the switch scoped egress
+		// exists to replace.
+		out += "\n(command ran inside the OS sandbox; it may also have failed normally. If access was denied, use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, " + networkHint(broker != nil) + ", or permissions.command_env=full for deliberately inherited environment variables. To opt out of OS containment entirely, set permissions.preset=frictionless; inspect `collo doctor` and docs/SECURITY.md)"
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
@@ -241,14 +321,86 @@ func (t RunCommandTool) resolvedRoots(configured []string) []string {
 	return roots
 }
 
-func (t RunCommandTool) sandboxPolicy() sandbox.Policy {
+// sandboxPolicy builds the OS policy for one command. When a broker is in
+// play, network is denied at the OS level regardless of AllowNetwork: that
+// denial is what turns the broker from a convention into a boundary, because
+// a backend that denies remote traffic while leaving loopback reachable leaves
+// the broker as the only way out.
+func (t RunCommandTool) sandboxPolicy(brokered bool) sandbox.Policy {
+	allowNetwork := t.AllowNetwork
+	if brokered {
+		allowNetwork = false
+	}
 	return sandbox.Policy{
 		WorkspaceRoot:      t.Workspace,
 		ExtraReadableRoots: t.resolvedReadableRoots(),
 		ExtraWritableRoots: t.resolvedWritableRoots(),
-		AllowNetwork:       t.AllowNetwork,
+		AllowNetwork:       allowNetwork,
 		ConstrainReads:     !t.AllowReadOutsideWorkspace,
 	}
+}
+
+// commandEnv builds the child environment, returning nil when the child should
+// simply inherit the parent's — the common case, kept free of a snapshot that
+// could drift from os.Environ.
+//
+// Any inherited proxy variable is dropped before the broker's are added. That
+// is deliberate rather than relying on os/exec resolving duplicate keys in the
+// caller's favor: routing a sandboxed command's traffic is not a detail to
+// leave to a library's de-duplication order.
+func (t RunCommandTool) commandEnv(broker *egress.Broker, extra ...string) []string {
+	if !t.MinimalEnv && broker == nil && len(extra) == 0 {
+		return nil
+	}
+	var env []string
+	if t.MinimalEnv {
+		env = minimalEnv()
+	} else {
+		env = os.Environ()
+	}
+	env = append(env, extra...)
+	if broker != nil {
+		kept := env[:0]
+		for _, entry := range env {
+			if !proxyVariable(entry) {
+				kept = append(kept, entry)
+			}
+		}
+		env = append(kept, broker.Environ()...)
+	}
+	return env
+}
+
+// proxyVariable reports an environment entry that configures an HTTP proxy.
+func proxyVariable(entry string) bool {
+	name, _, ok := strings.Cut(entry, "=")
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(name) {
+	case "http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy":
+		return true
+	}
+	return false
+}
+
+// networkHint names the setting that actually governs this command's egress.
+// Under scoped egress sandbox_allow_network is not the relevant switch, and
+// sending a user to it would suggest turning off the narrower control rather
+// than naming the host it needs.
+func networkHint(brokered bool) string {
+	if brokered {
+		return "a host-scoped allow rule in permissions.rules for outbound access (permissions.sandbox_egress is \"scoped\")"
+	}
+	return "permissions.sandbox_allow_network=true for outbound access"
+}
+
+// plural picks the singular or plural phrasing for a count.
+func plural(n int, singular, many string) string {
+	if n == 1 {
+		return singular
+	}
+	return many
 }
 
 // minimalEnv keeps only the variables a build needs, so credentials in the

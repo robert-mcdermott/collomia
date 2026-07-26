@@ -140,6 +140,29 @@ The protected and exempt locations are listed in the
 environment or add a rule naming the file, and verify with `collo policy check`
 before relying on the run.
 
+### Scoped egress
+
+`permissions.sandbox_egress` is new and defaults to `off`, so no existing
+configuration changes meaning: command networking continues to follow the
+all-or-nothing `sandbox_allow_network`, and no preset selects the new value.
+
+Adopting `"scoped"` is a deliberate behavior change worth planning:
+
+- a sandboxed command reaches only the hosts named by `allow` rules carrying a
+  `host`, so a build that fetches from a registry no rule names will fail until
+  a rule is added — `collo policy check` reports which endpoints would be
+  refused before you rely on a run;
+- `sandbox_allow_network` no longer decides command egress while `scoped` is
+  active; the OS-level denial is what makes the broker a boundary;
+- on Linux and Windows the setting is refused under `"sandbox": "require"` and
+  degrades visibly under `"auto"`, because neither platform can enforce it —
+  see [SECURITY.md](SECURITY.md#scoped-egress-macos-only). A configuration
+  shared across platforms should expect that asymmetry rather than assume
+  uniform behavior;
+- with `"sandbox": "off"` no broker starts at all;
+- the setting is clamped like every other containment field: a project may
+  raise it but never lower it.
+
 A newer configuration is rejected with an instruction to upgrade the binary.
 Normal loading's unknown-field tolerance supports forward-compatible optional
 settings; use strict validation in CI and after manual edits to catch typos.

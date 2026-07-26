@@ -63,6 +63,18 @@ func (t DiagnosticsTool) Assess(raw json.RawMessage) (Action, error) {
 }
 
 func (t DiagnosticsTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	return t.execute(ctx, raw, nil)
+}
+
+// ExecuteStream reports server startup while diagnostics are collected. The
+// wait is the same one the navigation tools have: a cold server indexing a
+// large repository accounts for nearly all of it, and saying so is the
+// difference between a slow answer and an apparent hang.
+func (t DiagnosticsTool) ExecuteStream(ctx context.Context, raw json.RawMessage, onOutput func(string)) (string, error) {
+	return t.execute(ctx, raw, onOutput)
+}
+
+func (t DiagnosticsTool) execute(ctx context.Context, raw json.RawMessage, onOutput func(string)) (string, error) {
 	var a struct {
 		Paths []string `json:"paths"`
 	}
@@ -105,11 +117,19 @@ func (t DiagnosticsTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 	if _, err := exec.LookPath(argv[0]); err != nil {
 		return "", fmt.Errorf("language server %q is not installed (configure lsp.%s in the config or install it)", argv[0], language)
 	}
+	progress := func(format string, args ...any) {
+		if onOutput != nil {
+			onOutput(fmt.Sprintf(format, args...))
+		}
+	}
+	progress("starting %s…\n", argv[0])
+	began := time.Now()
 	client, err := lsp.Start(ctx, t.Guard.Workspace, argv)
 	if err != nil {
 		return "", fmt.Errorf("start %s: %w", argv[0], err)
 	}
 	defer client.Close()
+	progress("%s ready in %s — collecting diagnostics…\n", argv[0], time.Since(began).Round(100*time.Millisecond))
 	diags, err := client.DiagnoseFiles(ctx, files, language, 25*time.Second)
 	if err != nil {
 		return "", err

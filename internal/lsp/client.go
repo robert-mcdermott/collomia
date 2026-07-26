@@ -37,9 +37,21 @@ type Client struct {
 	incoming chan readResult // fed by a single reader goroutine
 	root     string
 
+	// callTimeout bounds one request. It is a field rather than a constant
+	// because a cold gopls or rust-analyzer can take far longer to answer the
+	// first cross-file question than to publish diagnostics for an open file.
+	callTimeout time.Duration
+
 	mu     sync.Mutex
 	nextID int
 	diags  map[string][]Diagnostic // keyed by relative path
+}
+
+// SetCallTimeout bounds each subsequent request.
+func (c *Client) SetCallTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		c.callTimeout = timeout
+	}
 }
 
 type readResult struct {
@@ -66,13 +78,24 @@ func Start(ctx context.Context, workspace string, argv []string) (*Client, error
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	c := &Client{cmd: cmd, stdin: stdin, incoming: make(chan readResult, 16), root: workspace, diags: map[string][]Diagnostic{}}
+	c := &Client{cmd: cmd, stdin: stdin, incoming: make(chan readResult, 16), root: workspace,
+		callTimeout: 15 * time.Second, diags: map[string][]Diagnostic{}}
 	go c.readLoop(bufio.NewReader(stdout))
 	initParams := map[string]any{
 		"processId": nil,
 		"rootUri":   pathToURI(workspace),
 		"capabilities": map[string]any{
-			"textDocument": map[string]any{"publishDiagnostics": map[string]any{}},
+			// linkSupport is deliberately not declared: without it servers
+			// answer with plain Location values, which is the one shape every
+			// server produces. decodeLocations still reads LocationLink for
+			// servers that send it regardless.
+			"textDocument": map[string]any{
+				"publishDiagnostics": map[string]any{},
+				"synchronization":    map[string]any{},
+				"definition":         map[string]any{},
+				"references":         map[string]any{},
+				"formatting":         map[string]any{},
+			},
 		},
 	}
 	if _, err := c.call(ctx, "initialize", initParams); err != nil {
@@ -165,6 +188,24 @@ func (c *Client) DiagnoseFiles(ctx context.Context, files map[string]string, lan
 	return out, nil
 }
 
+// MethodNotFound is the JSON-RPC code a server returns for a request it does
+// not implement. It is worth distinguishing: a server that cannot format is a
+// configuration answer ("use a different server"), not a failure of the file.
+const MethodNotFound = -32601
+
+// ProtocolError is an error the language server returned for a request.
+type ProtocolError struct {
+	Method  string
+	Code    int
+	Message string
+}
+
+func (e *ProtocolError) Error() string { return e.Method + ": " + e.Message }
+
+// Unsupported reports whether the server answered that it does not implement
+// the request at all.
+func (e *ProtocolError) Unsupported() bool { return e.Code == MethodNotFound }
+
 type message struct {
 	ID     json.RawMessage `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
@@ -186,7 +227,11 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	if err := c.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(15 * time.Second)
+	timeout := c.callTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		msg, err := c.read(ctx, time.Until(deadline))
 		if err != nil {
@@ -194,7 +239,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 		}
 		if len(msg.ID) > 0 && strings.TrimSpace(string(msg.ID)) == strconv.Itoa(id) && msg.Method == "" {
 			if msg.Error != nil {
-				return nil, fmt.Errorf("%s: %s", method, msg.Error.Message)
+				return nil, &ProtocolError{Method: method, Code: msg.Error.Code, Message: msg.Error.Message}
 			}
 			return msg.Result, nil
 		}

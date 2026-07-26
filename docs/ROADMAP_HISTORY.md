@@ -19,8 +19,8 @@ agents, provider platforms, and the Model Context Protocol specification.
 
 *Updated 2026-07-23:* Phases 0–3 are P0-complete and substantial slices of phases 4, 5, 6, 7, and 8 have shipped. Collomia now has a schema-versioned event model; layered, validated configuration with repository trust; a scoped permission-rules engine with conservative command analysis, an audit ledger, and OS sandbox enforcement on macOS (Seatbelt), Linux (Landlock), and Windows 11 (AppContainer/Job Object); durable crash-safe sessions with resume/fork/non-destructive completed-turn rewind, automatic compaction, complete visible transcript/tool restoration, dynamically pinned plan state, bounded referenced oversized results, exact recent-failure retention, session-scoped prompt history and drafts, visible fail-stop handling for short/disk writes that blocks later provider/tool boundaries, and explicitly versioned backward-compatible session records; an atomic patch tool, diff tracking with checkpointed undo, git inspection tools, a structured plan artifact, and a user-question primitive; live-streamed command output, fuzzy pickers (including delegated agents), `@` file/folder mentions, bounded prompt-from-file input, model discovery, a review workflow, provider retry/error/timeout/circuit health, normalized provider streaming, MCP live-catalog refresh/conformance fixtures, a concurrent worktree-isolated delegate scheduler with manual and opt-in primary-reviewed guarded integration, a loopback-only browser terminal (`collo --web`), desktop notifications, a colorless `plain`/`NO_COLOR` mode, optional reduced motion, a searchable/copyable transcript browser, a bounded searchable event-derived activity center, responsive interactive diff review with safe external-editor handoff, an asynchronous workspace/health dashboard with recovery hints, validated keybindings/shell completion, machine-readable `run.result` output for automation, offline deterministic trace validation/replay, a complete representative credential-free agent evaluation matrix, diagnostic performance baselines, parser fuzz smoke tests, privacy-conscious local support bundles with opaque failure correlation, and platform-neutral TUI golden screens exercised on all CI operating systems. The remaining large gaps, roughly in dependency order:
 
-1. **Enforced endpoint-scoped egress and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; declared endpoints, host-scoped rules, scoped/allowlist postures, and per-capability grants shipped 2026-07-24, but OS-level endpoint-scoped egress confinement remains open).
-2. **Provider platform hardening**: keychain credential storage plus Azure deployment/project discovery (Phase 4 — capability declarations/discovery/preflight, normalized cross-adapter streaming including Bedrock `ConverseStream`, resilience, recorded/live protocol contracts, and refreshable Azure Entra authentication shipped 2026-07-19).
+1. **Enforced endpoint-scoped egress and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; declared endpoints, host-scoped rules, scoped/allowlist postures, and per-capability grants shipped 2026-07-24, and credential-store protection shipped 2026-07-25, but OS-level endpoint-scoped egress confinement remains open).
+2. **Provider platform hardening**: Azure deployment/project discovery, general Responses routing, and explicit routing/fallback (Phase 4 — optional macOS/Windows keychain credential storage shipped 2026-07-25 — capability declarations/discovery/preflight, normalized cross-adapter streaming including Bedrock `ConverseStream`, resilience, recorded/live protocol contracts, and refreshable Azure Entra authentication shipped 2026-07-19).
 3. **MCP ecosystem remainder**: OAuth authentication, experimental tasks, resource subscriptions, audio/annotation passthrough, and argument-level permission scoping (Phase 5 — skills, hooks, lifecycle/resources/prompts/elicitation/progress/pinning, bounded image passthrough, external-data provenance framing, safe list-change refresh, and conformance fixtures have shipped).
 4. **Multi-agent orchestration polish**: automatic plan-graph execution,
    combined-parent verification/ranking, safe pending-work recovery, and fuller
@@ -30,12 +30,290 @@ agents, provider platforms, and the Model Context Protocol specification.
    plan-step association, durable outcomes, a live parent/child tree,
    boundary-safe steering, machine-observed child verification, and
    freshness-bound three-way text integration have shipped).
-5. **Deep coding-loop tooling**: Phase 3 is now functionally complete (diagnostics, indexing, PTY, background jobs, hunk approval); remaining refinements are LSP definitions/references/formatting, line-level approval, and Windows ConPTY.
+5. **Deep coding-loop tooling**: Phase 3 is now functionally complete (diagnostics, definitions, references, formatting, indexing, PTY, background jobs, hunk approval); remaining refinements are safe LSP code actions, line-level approval, and Windows ConPTY.
 6. **Release and QA engineering**: native platform signing/notarization, package-manager distribution, deeper native-terminal/accessibility coverage, independent review, and sustained security/reliability campaigns (Phase 8 now includes deterministic replay, cross-platform TUI goldens, a complete representative offline evaluation matrix, diagnostic startup/index/session/TUI performance baselines, explicit persisted-format compatibility rules, bounded fuzz CI, session short-write handling, support bundles, checksum-verifying atomic installers, reachable-dependency scanning, CycloneDX SBOMs, GitHub/Sigstore attestations, and gated draft releases).
+
+*Updated 2026-07-25:* three further waves shipped. Reaching a conventional credential location is now its own permission decision that no blanket rule, tool-wide grant, or autonomy mode can absorb; the approval surface around it was made livable rather than dismissible, and the effective stance is reportable through `collo doctor` and grouped in the Session tab. The terminal surface gained a draft-sized composer with an external-editor handoff, an optional context rail, per-tool-call outcome and timing, an opening orientation card, mouse wheel/tab-click support that can be handed back to the terminal mid-session, and readability fixes to modals, approval diffs, and the context gauge. None of this changes the standing gaps below.
 
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-07-26 — Phase 7 first screen, modal dimming, and rail-aware wrapping
+
+- **The logo was never centred, and the reason was one long line:** the identity
+  under the wordmark was a single string — version, commit, build timestamp,
+  provider, model, theme — that ran past a hundred columns. `centerBlock`
+  centres a block by its widest line, so that line set the indent for the whole
+  header and the twenty-two-column wordmark sat flush against its left edge.
+  The first prompt then replaced the screen with the compact left-aligned
+  banner, which is why the logo appeared to jump. It is now two short lines,
+  each centred against the other, and nothing on the first screen is wide enough
+  to drag the art off centre.
+- **The first screen has a title rather than a caption:** a five-row wordmark in
+  the same double rule as the compact banner, with a four-petal blossom set two
+  columns to its left — a mark before the name, the way `✿ collo` and
+  `✿ COLLOMIA` are already written elsewhere in the interface, and without the
+  six extra rows that stacking it above would have pushed onto the card and the
+  openers. The gradient is raked across the assembled block rather than restarted
+  for each piece, which is why the art is padded to a rectangle first: `gradient`
+  blends per line, so ragged lines finish the blend at different columns and the
+  block comes out striped. Below 59 columns the blossom drops, below 47 the
+  compact wordmark stands in, and below 56 the whole card gives way to the
+  banner and one hint as before.
+- **The openers hang off the card:** they took the card's indent instead of
+  being centred on their own narrower width, which had them floating a few
+  columns to its right.
+- **The transcript header is one short line again:** the compact wordmark, left
+  and top as before, over `✿ collo <version> · <provider>/<model>`. The commit,
+  the build date, and the theme name left it — a header read at a glance should
+  not be the widest thing on screen — and are now on the first screen, on the
+  Session tab's new `build` row, and in `collo version`. Two golden screens moved
+  by exactly that one line.
+- **Regression tests, not screenshots:** one asserts the wordmark and the
+  identity line carry equal margins on both sides, which is the defect itself;
+  another asserts no banner line exceeds the body width and that build detail
+  stays out of it.
+- **Modal dimming is now a preference:** a dialog drops colour from everything
+  behind it so the decision in front of the user is plainly the focused element,
+  which is right for using the tool and wrong for photographing it — the
+  screenshots that go into product documentation are exactly the frames where
+  the interface should be at full saturation. `options.dim_background` defaults
+  to true and turns the scrim off when set false. The cleared gutter around a
+  dialog is deliberately not part of the option: it is what keeps the border
+  from sitting against mid-word transcript fragments, so nothing about reading
+  a modal depends on the dimming being on. Tested at both settings.
+- **The transcript now wraps to the transcript, not to the terminal:** the
+  context rail is composited over the body row by row, so a line wider than the
+  body was not scrolled off — it was cut at the rail's left edge and the tail
+  was gone. Glamour was being told to wrap answers at the terminal width, and
+  prompts, system lines, error lines, tool output, and `/status`-style panels
+  were not folded at all. All of them now measure against `bodyWidth()`, which
+  the tool-call header already used: prose is word-wrapped with a hard break for
+  a word longer than the measure (a pasted path or URL), tool output is
+  hard-wrapped inside its four-column gutter, because a reflowed column of
+  command output misleads in a way a break at the right margin does not. This
+  was never only a rail defect — a long single-line prompt was cut at the
+  terminal's edge with no rail in sight — but the rail is what made it constant.
+  The regression test renders one long line as all six block kinds, asserts no
+  line exceeds the body, and asserts every word survives the fold in all six.
+
+### 2026-07-26 — Phase 3 language-server capability reporting
+
+- **A missing capability is a configuration answer, not a protocol string:**
+  language servers differ in what they implement, and pyright — the
+  auto-detected Python default — deliberately ships no formatter. `format_file`
+  against it failed with the server's own words, `Unhandled method
+  textDocument/formatting`, which tells a user nothing about what to do. The
+  client now returns a typed `lsp.ProtocolError` carrying the JSON-RPC code, and
+  a method-not-found answer becomes a sentence naming the server, the capability
+  it lacks, and the `lsp.<language>` setting to change. A test pins both halves:
+  the explanation, and that every other protocol error passes through unrewritten
+  — a server that is merely broken is not a server that lacks the capability.
+- **Verified against real Python servers, not from memory:** `pylsp` answers
+  definition, references, and formatting; `pyright` answers definition, and
+  reported an unresolved import that `pylsp` did not. Neither is strictly
+  better, so the default is unchanged and the trade-off is documented instead.
+- **The wait is now accounted for:** `find_definition`, `find_references`,
+  `format_file`, and `diagnostics` stream `starting <server>…` followed by
+  `<server> ready in <time> — <what it is doing>…`. Reporting server startup
+  separately from the request is the point: a warm server answers in a second,
+  while a cold gopls or rust-analyzer indexing a large repository can consume
+  most of the 60-second budget, and a motionless spinner is indistinguishable
+  from a hang. The lines go through the existing streaming path used for live
+  command output, so they are display-only and never enter the string returned
+  to the model — a regression test asserts both halves — and the transcript
+  replaces the streamed view with the real result, leaving nothing behind.
+- **Two first-test traps are now written down:** a project `.collomia.json`
+  carrying an `lsp` map does nothing until `collo trust`, because the
+  quarantined layer falls back to the auto-detected default and looks like a
+  configuration being ignored; and the `uv` recipe for a Python server that can
+  do all three (`python-lsp-server` with a formatting plugin) is spelled out.
+
+### 2026-07-25 — Phase 4/3 first-run and code-intelligence wave
+
+- **A key no longer has to live in a dotfile:** `collo auth set|list|status|rm|
+  import` keeps a provider API key in the macOS Keychain or the Windows
+  Credential Manager. The value is prompted for without echo, or read from
+  standard input when that is not a terminal, so it never becomes a
+  command-line argument or a shell-history entry, and nothing prints a stored
+  value back to a user, a log, or a tool result.
+- **Nothing about an existing setup changes:** the store is consulted only
+  after `api_key`, `api_key_env`, and a provider family's own variable such as
+  `AWS_BEARER_TOKEN_BEDROCK`, so an exported environment variable always wins
+  and a stored key cannot silently shadow one. Delegated authentication modes
+  are excluded outright — Entra issues short-lived tokens and SigV4 draws on
+  the AWS chain, so there is nothing static to store — while Bedrock bearer
+  keys and Azure `api_key` are ordinary keys and can be. A configuration test
+  pins the whole precedence table, and a cross-package test fails if the
+  Bedrock variable name drifts between the two packages that both name it.
+- **A user who does not use the feature never pays for it:** a local name index
+  is checked before any platform call, so a machine that has never run
+  `collo auth set` performs no credential-manager call at all. On macOS that is
+  the difference between silence and a keychain dialog. The index records names
+  only, is written 0600, and is explicitly not a fallback store.
+- **No Linux backend, and no encrypted-file substitute:** Secret Service needs
+  a D-Bus session with gnome-keyring or kwallet, normal on a desktop and absent
+  on the headless hosts an agent most often runs on. A passphrase-protected
+  file would only move the secret; an unencrypted one would be weaker than the
+  environment variable it replaced. `collo auth` and `collo doctor` state the
+  absence and point at `api_key_env` instead of degrading quietly. macOS uses
+  Apple's signed `/usr/bin/security` rather than linking Security.framework, so
+  the binary stays cgo-free and keychain authorization is not re-requested for
+  every unsigned build; Windows uses `CredWriteW` through the already-present
+  `golang.org/x/sys`. No dependency was added for any of it.
+- **Where a credential came from is now answerable:** `collo auth status` names
+  the winning source per provider, `collo doctor` reports the store and repeats
+  the source on each provider line, and an entry the operating system no longer
+  holds is marked missing rather than listed as if it worked.
+- **Type-aware navigation:** `find_definition` and `find_references` join
+  `diagnostics` on the existing language-server client. They take a file, a
+  1-based line, and the symbol text as it appears on that line; the column is
+  derived. That is the ergonomic difference between this and a raw LSP call —
+  the protocol counts columns in UTF-16 code units, and a model asked to count
+  them returns a confident answer about the wrong token. A symbol absent from
+  the named line is an error, not a guess.
+- **The project's own formatter:** `format_file` applies the language server's
+  formatting as an ordinary write — same approval, recorded by the diff
+  tracker, visible in `/diff`, reversed by `/undo` — and refuses to write if
+  the file changed while the server was formatting it. The approval carries no
+  diff preview, deliberately: producing one means running the server twice per
+  approval and the second result can still differ.
+- **Position arithmetic is tested where it breaks:** UTF-16/byte conversion
+  round-trips through non-ASCII and astral-plane characters, edits apply from
+  the end backwards, overlapping edits are rejected rather than mangling a
+  file, end-of-document appends are legal, and CRLF line counting survives. A
+  scripted fake server asserts the client sends the position it meant to;
+  `gopls`, when installed, exercises definition, references, and formatting end
+  to end.
+- **Code actions were left out on purpose.** Organize-imports and quick fixes
+  need `codeAction/resolve` round trips and workspace edits that can span
+  files. A half-working mutation path is worse than an absent one, so the
+  Phase 3 item stays open rather than being marked complete.
+
+### 2026-07-25 — Phase 7 terminal experience wave
+
+- **The composer grows with the draft:** a single-line prompt still occupies a
+  single line, and the editor expands only once there is something to show,
+  with the transcript's height re-derived on every keystroke that adds a row.
+  A draft that is visibly unfinished — one ending in a backslash, or sitting
+  inside an unclosed fence — extends on Enter instead of sending, because most
+  users never discover a newline chord and the common way to write a
+  multi-line prompt has to be the obvious key. `alt+enter` and `ctrl+j` insert
+  a newline everywhere (`ctrl+j` is a literal line feed and survives terminals
+  that swallow `alt`); terminals speaking the Kitty keyboard protocol or
+  xterm's `modifyOtherKeys` additionally get `shift+enter`/`ctrl+enter`, which
+  arrive as CSI sequences Bubble Tea 1.x does not decode into a `KeyMsg` and
+  are therefore intercepted ahead of the type switch. `alt+e` hands the draft
+  to `$EDITOR` and takes it back.
+- **An optional context rail:** `alt+r` draws a persistent panel carrying the
+  workspace and branch, the plan with per-step status, delegated agents,
+  changed files, and background processes — everything the runtime already
+  tracks, placed where reading it does not mean leaving the transcript. It
+  appears on its own at 146 columns, is unavailable below 116, and borrows its
+  columns from the transcript only: narrowing the composer would punish the
+  user for opening a reference panel by shrinking the thing they type into. A
+  deliberate toggle is remembered so a later resize does not overrule it, the
+  workspace block is always present so an idle rail does not read as a panel
+  that failed to load, and content is trimmed rather than allowed to push the
+  composer off screen — the Session tab remains the complete record.
+- **An opening screen instead of a blank one:** an orientation card replaces
+  the empty transcript, degrading to the banner and one honest hint below the
+  width at which its label and value columns stop reading as pairs.
+- **Tool calls carry their outcome:** transcript tool headers gained status and
+  elapsed time as the turn runs. A session replayed from disk leaves both zero
+  — the transcript records what a tool did but not how long it took, and
+  inventing a duration there would be worse than omitting one.
+- **Mouse reporting, and a way to give it back:** `options.mouse` (default
+  `true`) requests wheel scrolling and click-to-select tabs, consuming only the
+  wheel and a plain left click so drag, motion, and every modifier are left to
+  the terminal's own selection. Because mouse reporting and terminal
+  drag-selection are mutually exclusive by protocol, `alt+m` releases and
+  reclaims the mouse mid-session with a status notice and a `SELECT`/`MOUSE`
+  badge, so copying arbitrary text never requires editing configuration or
+  restarting. Documented alongside the shift-drag and macOS option-drag
+  escapes.
+- **Modals stop looking like a corrupted redraw:** the base layer is dimmed by
+  dropping color entirely rather than blending — syntax highlighting, diff
+  greens and reds, and status accents at full saturation kept pulling the eye
+  back to content that was not actionable — and a gutter of blanked cells is
+  cleared around the dialog, with a narrow leftover strip cleared as well
+  rather than left as one orphaned character per row.
+- **Approval diffs are tinted by the highlighter itself:** Chroma paints the
+  added/removed wash as part of the style, because a background emitted
+  separately does not survive the SGR resets Chroma writes between tokens and
+  the tint used to stop at the first keyword. Only previews containing a hunk
+  header are treated as diffs, so a command preview whose line happens to start
+  with a hyphen is not tinted.
+- **Gauge resolution:** partial block glyphs give the context bar eight times
+  the resolution of its width, which matters at the ten cells the status bar
+  can spare — without them the gauge sat at zero for the first five percent of
+  the window and then jumped a whole cell.
+- **Configuration, keys, and goldens:** `options.mouse` joins the starter and
+  reference configuration; `compose_editor`, `context_rail`, and `toggle_mouse`
+  join the validated named keybindings, deliberately bound to `alt+e`/`alt+r`/
+  `alt+m` because the mnemonic `ctrl` letters are emacs motions the composer's
+  textarea already binds and a global handler would shadow them. The user guide
+  documents every new key and the selection trade-off, and the cross-platform
+  golden screens were regenerated for the new chrome.
+
+### 2026-07-25 — Phase 1 credential-file protection wave
+
+- **A blanket approval no longer quietly includes a private key:**
+  conventional credential locations — SSH and GPG private keys, cloud CLI token
+  caches, registry authentication files, environment files — are recognized by
+  path, with public keys, `known_hosts`, and example environment files excluded
+  explicitly rather than by luck. Recognition is by convention, not secret
+  detection, which makes it a usable default; enforcing what a running process
+  may read remains sandbox read confinement's job.
+- **Detection is keyed on the argument, not the program:** shell analysis
+  reports the credential stores a command's arguments name, so it does not
+  depend on a table of known reading programs, and any tool that declares its
+  paths derives the same.
+- **Its own decision:** `permissions.protect_credentials`
+  (`off`/`prompt`/`deny`, default `prompt`) is evaluated where a blanket allow
+  rule, a tool-wide session grant, the implicit in-workspace read path, and
+  autopilot cannot cover it, while a rule naming the path still can. It rides
+  the preset ladder (frictionless off, standard prompt, hardened deny) and
+  clamps monotonically like every other containment field, and it is reported
+  in the Session tab's Security block and in `collo policy check`.
+- **Redaction caught up:** PEM private key blocks and the remaining common
+  provider token shapes are redacted, and the package documentation and
+  SECURITY.md now state plainly that redaction does not sit between a tool
+  result and the provider.
+- **One constructor for command-shaped actions, with a test that fails on a
+  second construction site.** This was not cosmetic: `collo policy check` was
+  reporting the wrong decision for a credential-reaching command because it
+  assembled its own action and missed the new field — the same defect shape
+  that let the `host` matcher ship inert for as long as it did.
+- **Behavior change:** an action reaching a credential store prompts by
+  default, including under `autopilot`, where a headless run fails closed. See
+  the [compatibility note](COMPATIBILITY.md#credential-file-protection).
+
+### 2026-07-25 — Phase 1 approval-comfort wave
+
+- **An offer that did nothing:** the approval dialog advertised a tool-wide
+  "always" for a credential-reaching action, the permission layer declined to
+  record it, and the next identical action prompted again. Whether an "always"
+  is available is now one field the permission layer owns, the two stale copies
+  in the TUI are gone, and a test fails on a third.
+- **One narrow grant instead of none:** a credential prompt offers a session
+  grant scoped to the exact target shown — never the tool, the directory, a
+  sibling file, or anything past this process, and never under `deny`. A
+  control whose only answer is "approve again" is a control people switch off.
+- **A credential approval looks like one:** its own header and accent, the file
+  named first with the kind of secret after it, and a grant button short enough
+  not to wrap the row.
+- **The way out is on screen:** the prompt shows the configuration rule that
+  would end a recurring approval with the path or endpoint already filled in —
+  and deliberately does not for an uninspectable command, where no rule would
+  help.
+- **Stance is reportable and grouped:** `collo doctor` reports preset,
+  autonomy, postures, credential setting, and rule count, and warns when a
+  project's containment weakening was refused. The Session tab's Security block
+  is grouped into policy, enforcement, and session, with degraded sandboxing
+  and refused project settings marked visibly rather than rendered as ordinary
+  rows.
 
 ### 2026-07-24 — Phase 1 host-scoped policy and per-capability grants
 
@@ -713,7 +991,7 @@ Feature count alone is not the target. A best-in-class terminal agent should mee
 - [x] **P0 — Structured planning:** The `update_plan` tool maintains a validated plan artifact (goal, steps with status/dependencies/evidence) shown via `/tasks` and persisted/restored with the session; planning mode still enforces read-only tools while allowing plan updates. *(2026-07-18)*
 - [x] **P0 — User-question primitive:** The `ask_user` tool pauses the run for a typed answer or option choice in the TUI (esc declines explicitly); headless runs simply don't expose the tool. *(2026-07-18)*
 - [x] **P1 — Live command execution:** Stream stdout/stderr, support PTY programs where safe, manage background jobs, show process status, and allow targeted stop/restart. *(2026-07-18: stdout/stderr stream live into the TUI transcript and headless stderr via `tool.output` events — this also fixed an io.Copy/ReadFrom bypass of the output cap. Background jobs: `start_process` launches a detached command (dev server, watcher, long test run) under the same denied-pattern/shell-analysis/sandbox/minimal-env policy as `run_command`, with `list_processes`, `process_output` (bounded 64 KiB retention, optional tail), and `stop_process` (kills the whole process group); the TUI shows them in the Session tab and a `procs N` status badge, `/ps` lists and `/ps stop <id>` stops one, and every background process is killed at session exit — including those started by delegated sub-agents in worktrees. PTY: `run_command` accepts `pty: true` on Unix (creack/pty; setsid session, group kill on timeout, isatty-faithful), verified by test; Windows ConPTY remains future work and reports a clear error.)*
-- [ ] **P1 — Diagnostics and LSP:** Expose project diagnostics, definitions/references, symbols, formatting, and code actions through available language servers with bounded context output. *(Partial 2026-07-18: the `diagnostics` tool runs a real language server over requested files via a minimal stdio JSON-RPC LSP client (`internal/lsp`: initialize, didOpen, publishDiagnostics) and returns severity-ordered findings with exact files/lines; gopls, pyright, typescript-language-server, and rust-analyzer are auto-detected on PATH, overridable per language via the `lsp` config map; verified against a scripted fake server and live gopls. Definitions/references, formatting, and code actions through LSP remain — `search_symbols` covers definition lookup lexically today.)*
+- [ ] **P1 — Diagnostics and LSP:** Expose project diagnostics, definitions/references, symbols, formatting, and code actions through available language servers with bounded context output. *(Partial 2026-07-18: the `diagnostics` tool runs a real language server over requested files via a minimal stdio JSON-RPC LSP client (`internal/lsp`: initialize, didOpen, publishDiagnostics) and returns severity-ordered findings with exact files/lines; gopls, pyright, typescript-language-server, and rust-analyzer are auto-detected on PATH, overridable per language via the `lsp` config map; verified against a scripted fake server and live gopls. Extended 2026-07-25: `find_definition`, `find_references`, and `format_file` share the same client, locating a position from a file, a 1-based line, and the symbol's own text rather than a UTF-16 column; formatting is an ordinary tracked, undoable write that refuses to publish if the file changed while the server was formatting it, and the client's position arithmetic, edit application, overlap rejection, and CRLF handling are covered by platform-independent tests plus a live gopls round trip. Extended 2026-07-26: a server that does not implement a request is reported as a named configuration answer rather than the raw protocol string, verified against pyright (no formatter) and python-lsp-server (all three). Safe code actions remain: they need `codeAction/resolve` round trips and workspace edits that can span files.)*
 - [x] **P1 — Verification loop:** Detect relevant build/test/lint commands, propose them, show live progress, summarize failures, and associate evidence with plan steps. *(2026-07-18: `detect_verification` inspects go.mod/package.json/Cargo.toml/pyproject.toml or requirements.txt/Makefile and reports the real build/lint/test commands for that project — no guessing; `collo verify [focus]` and `/verify [focus]` run a canned loop that records each command as a plan step with `update_plan`, executes it with the existing live-streamed `run_command`, and marks the step done or blocked with the exact command outcome as evidence.)*
 - [x] **P1 — Review workflow:** Add `collo review` and `/review` for uncommitted changes, a commit, a branch comparison, or custom instructions, with findings linked to exact files/lines. *(2026-07-18: `collo review [ref] [instructions…]` and `/review [ref] [instructions…]` run a read-only review of uncommitted changes (`-` or empty ref) or changes vs any ref, findings ordered by severity and tied to files/lines; trailing words become custom reviewer instructions layered onto the standard checks.)*
 - [x] **P1 — Repository indexing:** Introduce ignore-aware, incremental symbol/text indexing for large repositories while retaining fast `rg`-style direct search. *(2026-07-18: `internal/index` maintains an mtime/size-cached definition index — only changed files re-parse on refresh, deletions drop out, and `.git`/`node_modules`/`vendor`/build dirs are skipped; line-regex extraction covers Go, Python, JS/TS(X), and Rust functions, methods, types, classes, interfaces, constants, and enums. The `search_symbols` tool queries it with exact-then-prefix-then-substring ranking and optional kind filters, while `search_files` remains for references and arbitrary text. Semantic (parser-accurate) extraction and reference indexing are future refinements.)*
@@ -736,7 +1014,7 @@ Feature count alone is not the target. A best-in-class terminal agent should mee
 - [x] **P0 — Consistent streaming events:** OpenAI Chat Completions, Anthropic Messages, Responses/Mantle, and native Bedrock `ConverseStream` normalize text, provider-supplied reasoning, incremental tool-call arguments, usage snapshots, warnings, and classified errors. JSONL exposes `tool.call.delta` without ever executing incomplete JSON; Bedrock decodes CRC-checked event frames and requires `messageStop`, while Responses requires a terminal event and retains synchronous JSON compatibility. In-stream failures are not replayed after deltas may have escaped. *(2026-07-19)*
 - [x] **P0 — Resilience:** Built-in HTTP adapters return a shared classified error with retryability/status/`Retry-After`/request-ID metadata (also structured on JSONL error events), retry replayable network and 408/429/5xx/529 failures up to three attempts with bounded backoff+jitter while leaving ordinary 4xx alone, and enforce configurable connect/whole-request/stream-idle timeouts. Responses/Mantle and Bedrock have retry parity with OpenAI/Anthropic. Three complete transient failures open a credential-safe 30-second health circuit shown in `/status`; a single half-open probe restores it, and the breaker never wraps tool execution. *(2026-07-19)*
 - [x] **P0 — Provider contract suite:** Credential-free CI fixtures cover tool definitions/calls, normalized streaming signals, synchronous Responses fallback, usage, HTTP/in-stream failures, retry/truncation, and post-delta cancellation for OpenAI Chat Completions, Anthropic Messages, Responses/Mantle, and Bedrock ConverseStream. A strict, double-opt-in live harness exercises a synthetic streamed tool call, tool-result round trip, text, and usage against configured real endpoints without executing the tool or storing credentials; release manifests can require all four families. *(2026-07-19)*
-- [ ] **P1 — Secure credential lifecycle:** Use the operating-system keychain where practical; support login/logout/status flows; never require long-lived secrets in project files.
+- [x] **P1 — Secure credential lifecycle:** Use the operating-system keychain where practical; support login/logout/status flows; never require long-lived secrets in project files. *(Completed for provider credentials 2026-07-25: `collo auth set|list|status|rm|import` stores keys in the macOS Keychain (via Apple's signed `/usr/bin/security`, keeping the binary cgo-free) or the Windows Credential Manager (`CredWriteW` through the already-present `golang.org/x/sys`), with no new dependency. The store is optional and is consulted only after `api_key`, `api_key_env`, and a provider family's own variable, so an environment variable always wins; a name index is checked before any platform call, so a machine that has stored nothing never raises a keychain dialog; Entra and SigV4 are excluded because they hold no static secret; and no value is ever printed back. Linux has no backend and no encrypted-file fallback by design — the absence is reported by `collo auth` and `collo doctor` rather than degraded around. MCP server credentials remain Phase 5 OAuth work.)*
 - [ ] **P1 — Azure identity:** Support `DefaultAzureCredential`-style Microsoft Entra authentication and token refresh, the documented Azure OpenAI/Foundry scopes, deployment discovery, resource/project endpoint variants, private/sovereign endpoints, and actionable RBAC diagnostics. *(Partial 2026-07-19: explicit Entra mode now covers Azure OpenAI, Foundry OpenAI/v1, and Foundry Claude with SDK credential chaining, in-memory proactive refresh, documented provider-family scopes, tenant/custom-authority overrides, private `base_url` support, credential-safe doctor output, RBAC hints, and validation/redaction safeguards. Deployment/project discovery, project endpoint routing, and tested sovereign-cloud presets remain.)*
 - [ ] **P1 — AWS identity diagnostics:** Report the selected profile/region/credential source safely, support SSO refresh behavior through the SDK, and surface model access/capability errors clearly. *(Partial 2026-07-19: `collo doctor` reports native Bedrock's selected SigV4/bearer family and configured profile or bearer environment without values; SigV4 uses the SDK chain and its normal temporary-credential/SSO refresh behavior. Exact resolved SDK credential-source reporting, API-key generation/refresh, model-access diagnostics, and live validation remain.)*
 - [ ] **P1 — Modern API features:** Add OpenAI/Azure Responses API support, richer Anthropic content/thinking blocks, provider-native caching, structured output, and multimodal input where capabilities permit. *(Partial 2026-07-21: the provider-neutral message model and existing OpenAI Chat Completions, Azure OpenAI/Foundry OpenAI, Anthropic/Foundry Claude, Bedrock ConverseStream, and Responses/Mantle adapters now carry bounded typed user images. General OpenAI/Azure Responses routing, non-image media, structured output, caching, and richer thinking round-trip remain.)*
@@ -810,9 +1088,9 @@ Feature count alone is not the target. A best-in-class terminal agent should mee
 
 - [x] **P1 — Command palette:** Add fuzzy slash-command selection, argument completion, searchable models/sessions/agents/skills/MCP servers, and contextual help. *(Completed 2026-07-21: scored fuzzy selection and contextual descriptions cover slash commands plus model, theme, session, skill, MCP, workspace-path, prompt-file, and delegated-agent surfaces. `/agents` searches retained current-session delegates and opens detailed status/outcome panels.)*
 - [ ] **P1 — File and artifact input:** Support `@` file/folder mentions, quoted paths, pasted/dragged images, prompt-from-file, and capability-aware attachment previews. *(Mostly complete 2026-07-21: text reference/prompt flows are complete; `/attach` fuzzy-picks or accepts quoted/escaped/file-URL/terminal-dropped workspace PNG/JPEG/GIF/WebP paths, shows pending name/type/size and a status badge, supports list/detach, checks adapter capability, and persists submitted bytes by safe session reference. Raw clipboard image protocols and inline pixel previews remain.)*
-- [ ] **P1 — Workspace UI:** Add persistent plan/tasks, file changes, Git state, diagnostics, token/cost/budget, active agents, background processes, and pending approvals without overwhelming the transcript. *(Substantially complete 2026-07-22: the Session tab shows the live plan, changed files, session identity, token/cache usage, a live agent tree/current action/recent output, background processes, asynchronous Git branch/upstream/ahead-behind/dirty state, and provider/sandbox/MCP/trust/persistence health with actionable recovery hints. `/activity` moves the bounded searchable/filterable event timeline and copyable failure IDs into an on-demand full-screen view; child approvals remain labeled floating dialogs. `r` refreshes Git state and status-bar badges cover tasks/agents/procs. Automatically surfaced diagnostics and provider pricing/budgets remain.)*
+- [ ] **P1 — Workspace UI:** Add persistent plan/tasks, file changes, Git state, diagnostics, token/cost/budget, active agents, background processes, and pending approvals without overwhelming the transcript. *(Substantially complete 2026-07-22: the Session tab shows the live plan, changed files, session identity, token/cache usage, a live agent tree/current action/recent output, background processes, asynchronous Git branch/upstream/ahead-behind/dirty state, and provider/sandbox/MCP/trust/persistence health with actionable recovery hints. `/activity` moves the bounded searchable/filterable event timeline and copyable failure IDs into an on-demand full-screen view; child approvals remain labeled floating dialogs. `r` refreshes Git state and status-bar badges cover tasks/agents/procs. An optional context rail (`alt+r`, automatic at 146 columns and unavailable below 116) carries workspace/branch, plan, delegated agents, changed files, and background processes beside the transcript, trimming rather than displacing the composer, and tool calls in the transcript carry outcome and elapsed time for live turns. Automatically surfaced diagnostics and provider pricing/budgets remain.)*
 - [x] **P1 — Diff and review ergonomics:** Provide syntax-highlighted side-by-side/unified views, folding, hunk actions, keyboard navigation, and links to external editors. *(Completed 2026-07-21: approval prompts retain colorized previews and selective multi-hunk `write_file` apply/reject; `/diff`/`ctrl+d` provides responsive unified/side-by-side layouts, unchanged-region folding, old/new line numbers, counts, and file/hunk/line/page navigation. `e` safely suspends the TUI and opens the current workspace-contained file at the selected hunk through a direct configured argv, then refreshes the diff on return. Line-level pending-write selection remains a deeper optional refinement rather than part of this deliverable.)*
-- [ ] **P1 — Terminal fundamentals:** Raw scrollback/copy mode, robust resize behavior, no-color/plain mode, alternate-screen toggle, shell completion, configurable keybindings/themes, and screen-reader-conscious status output. *(Mostly complete 2026-07-22: in addition to selectable themes and `plain`/`NO_COLOR`, `ctrl+y`/`/transcript` provides raw transcript navigation/search and bounded OSC 52 copy; manual chat scroll survives streaming/resize until `end` resumes follow; complete session transcripts/tools restore without replay; boundary-aware up/down history and per-session drafts improve composer continuity; 80x24/narrow layouts and the activity view are bounded by cross-platform plain goldens; `options.alternate_screen` and CLI overrides control native scrollback; named global keys are validated/collision-checked and reflected in Help; animations remain default while opt-in `options.reduced_motion` retains textual working state and every control; and Bash/Zsh/Fish/PowerShell completion is generated by the binary. Remaining: a deeper native screen-reader/accessibility audit and broader terminal-emulator coverage.)*
+- [ ] **P1 — Terminal fundamentals:** Raw scrollback/copy mode, robust resize behavior, no-color/plain mode, alternate-screen toggle, shell completion, configurable keybindings/themes, and screen-reader-conscious status output. *(Mostly complete 2026-07-22: in addition to selectable themes and `plain`/`NO_COLOR`, `ctrl+y`/`/transcript` provides raw transcript navigation/search and bounded OSC 52 copy; manual chat scroll survives streaming/resize until `end` resumes follow; complete session transcripts/tools restore without replay; boundary-aware up/down history and per-session drafts improve composer continuity; 80x24/narrow layouts and the activity view are bounded by cross-platform plain goldens; `options.alternate_screen` and CLI overrides control native scrollback; named global keys are validated/collision-checked and reflected in Help; animations remain default while opt-in `options.reduced_motion` retains textual working state and every control; and Bash/Zsh/Fish/PowerShell completion is generated by the binary. Extended 2026-07-25: the composer grows with the draft, extends instead of sending an unfinished one, accepts `alt+enter`/`ctrl+j` everywhere plus Kitty/`modifyOtherKeys` `shift+enter`/`ctrl+enter`, and hands the draft to `$EDITOR` under `alt+e`; `options.mouse` requests wheel scrolling and tab clicks while `alt+m` releases and reclaims the mouse mid-session so terminal drag-selection stays available without a restart; modals dim by dropping color and clear a gutter; approval diffs are tinted by the highlighter itself; and the context gauge gained eighth-block resolution. Remaining: a deeper native screen-reader/accessibility audit and broader terminal-emulator coverage.)*
 - [x] **P1 — Machine-readable execution:** Add stable JSONL events, structured final output via JSON Schema, meaningful exit codes, stdout/stderr separation, ephemeral mode, and resume by session ID. *(Completed 2026-07-21: schema-v1 events and the exactly-once terminal `run.result` have an embedded/published draft 2020-12 schema printed by `collo schema events`; structured failure/provider, partial-completion, and refusal metadata preserve the existing ok/error/cancelled statuses; exit codes are stable; stdout/stderr are separated; durable resume/continue and session-free `collo run --ephemeral` are documented and tested.)*
 - [x] **P1 — Notifications:** Cross-platform notification hooks for permission, question, failure, and completion events. *(2026-07-18: pending approvals, agent questions, failed turns, and long-turn completion ring the terminal bell and post an OSC 9 desktop notification through the hosting terminal (tmux passthrough handled; unsupported terminals ignore it); `options.notifications` selects on/bell/off. Direct native notifier integration (notify-send, osascript) is deliberately not used — the terminal owns focus-awareness and user preferences.)*
 - [ ] **P2 — Local service API:** Expose the same event/session/permission contracts through an authenticated local stdio/socket/WebSocket service so IDEs and other frontends do not reimplement the agent. *(Related 2026-07-18: `collo --web` serves the full TUI over an authenticated loopback WebSocket-to-PTY bridge — a terminal transport, not the structured service API, which remains open.)*

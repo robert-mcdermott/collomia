@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-25
+**Status updated:** 2026-07-26
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -37,22 +37,26 @@ also shipped:
   sandbox backends with compatibility-first `auto` enforcement by default,
   visible degradation, and capability-aware fail-closed `require` behavior;
 - scoped permissions, conservative shell analysis, catastrophic-command
-  denials, credential-store protection, secret redaction, and an audit ledger;
+  denials, credential-store protection, macOS per-host brokered command egress,
+  secret redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
   artifacts, rewind/fork, and fail-stop persistence handling;
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
-  verification, LSP diagnostics, repository indexing, PTY commands, and
-  background processes;
+  verification, LSP diagnostics/definitions/references/formatting, repository
+  indexing, PTY commands, and background processes;
 - normalized provider capabilities, streaming, retries, health, contracts,
-  Azure Entra refresh, Bedrock SigV4/bearer authentication, opt-in
-  provider-safe reasoning controls, user-priced cost estimates, and image input;
+  Azure Entra refresh, Bedrock SigV4/bearer authentication, optional macOS/
+  Windows keychain credential storage, opt-in provider-safe reasoning controls,
+  user-priced cost estimates, and image input;
 - MCP lifecycle/resources/prompts/progress/elicitation, safe live catalogs,
   external-data framing, skills, and hooks;
 - concurrent governed delegated agents with isolated Git worktrees, durable
   status, steering/cancellation, overlap-aware write-scope scheduling,
   freshness-bound three-way integration, and opt-in primary-reviewed
   publication;
-- a responsive themed TUI, transcript/activity/diff views, a loopback browser
+- a responsive themed TUI with a growing composer, an optional context rail,
+  per-tool-call status, transcript/activity/diff views, optional mouse control
+  that can be handed back to the terminal mid-session, a loopback browser
   terminal, shell completion, notifications, and stable headless JSONL;
 - deterministic replay/evaluations, cross-platform golden screens, bounded
   fuzzing, support bundles, verified installers, SBOMs, provenance, and gated
@@ -60,9 +64,192 @@ also shipped:
 
 Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
-and reliability gates are complete.
+and reliability gates are complete. Those now live entirely in Phase 8 —
+independent review, sustained adversarial campaigns, and the reliability
+campaigns — since the last P0 outside it was reclassified on the evidence that
+the enforced all-or-nothing network boundary it was meant to add already
+existed on all three platforms.
 
-## Active wave — approval comfort
+No wave is currently active. The completed waves below are the most recent
+work; see [Recommended next sequence](#recommended-next-sequence) for what the
+dependency order argues for next.
+
+## Completed wave — scoped egress on macOS
+
+**Goal:** Make the sandbox's network boundary something a user will leave
+switched on, by replacing an all-or-nothing switch with a per-host one — and
+be exact about the two platforms where that is not possible.
+
+- [x] Add `permissions.sandbox_egress` (`off`/`scoped`, default `off`). Under
+  `scoped` the sandbox denies direct remote egress while keeping loopback
+  reachable, and the command is routed through a Collomia-owned loopback
+  CONNECT broker that dials only the hosts named by host-scoped `allow` rules.
+  The allowlist is built from those rules rather than configured separately,
+  so there is no second list to keep in step.
+- [x] Take the destination from the proxy request itself and dial exactly that
+  host, with no TLS interception — an approved tunnel is spliced byte for byte.
+  This also removes any need for SNI inspection: a client cannot name one
+  destination and reach another.
+- [x] Ship no Linux backend, and say why. Landlock filters TCP by destination
+  port and never by address, so reaching a loopback broker means allowing that
+  port outright — which also allows every remote host on it, and the adversary
+  this control targets chooses its own port. A control defeated by the thing it
+  guards against is worse than an honest coarse one, exactly as with the
+  credential store's rejected encrypted-file fallback.
+- [x] Ship no Windows backend, and say why. AppContainer blocks loopback to
+  unpackaged local services regardless of network capability SIDs, so a
+  sandboxed command cannot reach the broker at all — no route rather than a
+  weaker one. The documented escape needs administrator rights and persistent
+  machine state, which the inbox-API-only Windows backend does not take.
+- [x] Never inject proxy variables where they cannot work: under `require` the
+  unsupported platforms fail closed, under `auto` they degrade visibly to
+  `sandbox_allow_network`, and with `sandbox: "off"` no broker starts anywhere.
+  A proxy the user believes is a boundary, which any program ignoring
+  `HTTP_PROXY` walks past, is worse than no claim at all.
+- [x] Drop inherited proxy variables before setting the broker's, so an
+  ambient `NO_PROXY` cannot route a command around it and the result does not
+  depend on how a library resolves duplicate environment keys.
+- [x] Broker background processes on the same terms, with the broker's lifetime
+  following the process rather than the tool call — otherwise `start_process`
+  would have been a documented way around the control.
+- [x] Collapse command-runner construction into one site. Delegated
+  verification built its own runner, which is how a containment field ends up
+  applied in the primary session and silently absent for delegated agents; a
+  source-scraping test now fails on a second construction site.
+- [x] Report the stance where people look: the effective posture and allowlist
+  size in `collo doctor` and the Session tab, a per-endpoint forecast in
+  `collo policy check`, and a refusal that names the host and the rule that
+  would permit it. The generic sandbox hint is suppressed after an egress
+  refusal, because pointing at `sandbox_allow_network` would send the user to
+  the switch this feature exists to replace.
+- [x] Keep no preset setting it. Scoped egress is enforceable on macOS only, so
+  a cross-platform bundle selecting it would make one preset name mean
+  different containment on different machines.
+
+**Behavior change:** none by default — `sandbox_egress` defaults to `off` and
+no preset selects it. Adopting `scoped` is a deliberate change; see the
+[compatibility note](docs/COMPATIBILITY.md#scoped-egress).
+
+## Completed wave — first run and code intelligence
+
+**Goal:** Remove the two things that most often make a first session go badly —
+a credential that has to live in a dotfile, and an agent that reads code by
+grepping for names.
+
+- [x] Store a provider API key in the macOS Keychain or Windows Credential
+  Manager through `collo auth set|list|status|rm|import`, prompting without
+  echo and never placing a secret in an argument or shell history. Nothing
+  prints a stored value back.
+- [x] Consult the store only after `api_key`, `api_key_env`, and a provider
+  family's own variable, so an exported environment variable always wins and no
+  existing configuration changes meaning. A machine that has never stored a
+  credential makes no credential-manager call at all: a local name index is
+  checked first, and its absence ends the lookup — which also means no keychain
+  dialog for a user who does not use the feature.
+- [x] Ship no Linux backend and no encrypted-file fallback, and say why:
+  Secret Service needs a desktop session that headless hosts do not have, and a
+  passphrase-protected file would only move the problem. `collo auth` and
+  `collo doctor` state the absence rather than degrading quietly.
+- [x] Report where each provider's credential came from in `collo auth status`
+  and `collo doctor`, and mark an entry the operating system no longer holds as
+  missing rather than implying it works.
+- [x] Add `find_definition` and `find_references` on the existing
+  language-server client, located by file, line, and the symbol's own text —
+  the protocol counts columns in UTF-16 code units, and asking a model to count
+  them buys confident answers about the wrong token.
+- [x] Add `format_file`, applying the language server's own formatting as an
+  ordinary tracked, undoable write, and refusing to write if the file changed
+  while the server was formatting it.
+- [x] Deliberately leave code actions unimplemented for now. Organize-imports
+  and quick fixes need `codeAction/resolve` round trips and workspace edits
+  that can span files, and a half-working mutation path is worse than an absent
+  one. Phase 3 keeps the item open.
+- [x] Say which capability a server lacks instead of relaying the protocol.
+  Servers differ in what they implement — pyright, the auto-detected Python
+  default, ships no formatter — so `format_file` used to fail with the raw
+  string `Unhandled method textDocument/formatting`. A method-not-found answer
+  is now a configuration answer that names the server, the missing capability,
+  and the setting to change; every other protocol error passes through
+  untouched.
+- [x] Document the two Python facts a first test runs into: pyright navigates
+  but cannot format, while `pylsp` does all three and type-checks less well;
+  and a project `lsp` map does nothing until `collo trust`, because the
+  quarantined layer silently falls back to the auto-detected default.
+- [x] Account for the wait. A cold server indexing a large repository consumes
+  most of a slow call, and a motionless spinner cannot be told from a hang, so
+  the four language-server tools now stream `starting <server>…` and
+  `<server> ready in <time> — <what it is doing>…`. Separating startup from
+  the request is what distinguishes a slow index from a stall. The lines are
+  display-only, never part of what the model reads, and the transcript
+  replaces them with the result.
+- [x] Make the first screen look composed. The identity line under the logo ran
+  past a hundred columns on one line — version, commit, build timestamp,
+  provider, model, theme — and because a centred block is centred by its widest
+  line, that one line decided the whole header's offset and left the wordmark
+  hanging to its left until the first prompt replaced the screen. The line is
+  now two short centred ones, the wordmark is a five-row rendering with the
+  blossom beside it, and the openers take the orientation card's indent rather
+  than their own. The transcript header keeps the compact wordmark, left and
+  top, over one line that carries only the version and the answering model;
+  build detail moved to the Session tab and `collo version`.
+- [x] Make modal dimming a preference. Dropping colour behind a dialog is right
+  for using the tool and wrong for photographing it, and product documentation
+  is made of screenshots, so `options.dim_background` turns the scrim off while
+  defaulting to on. The cleared gutter is deliberately not part of the option:
+  reading a modal must not depend on the dimming.
+- [x] Wrap the transcript to the transcript. The context rail is composited
+  over the body row by row, so a line wider than the body was cut at the rail's
+  left edge rather than scrolled — answers, prompts, system and error lines,
+  tool output, and panels all measured against the terminal instead. They now
+  measure against the body width the tool-call header already used, prose
+  word-wrapped and tool output hard-wrapped inside its gutter.
+
+## Completed wave — terminal experience
+
+**Goal:** Make the session's own surface — writing a prompt, seeing what the
+agent is doing, and getting text back out — hold up under real use rather than
+only in a screenshot.
+
+- [x] Grow the composer with the draft instead of scrolling a one-line field,
+  and extend rather than send a draft that is visibly unfinished — one ending
+  in a backslash, or sitting inside an unclosed fence. Most users never
+  discover a newline chord, so plain Enter has to be the common way to write a
+  multi-line prompt. `alt+enter`/`ctrl+j` insert a newline everywhere;
+  terminals speaking the Kitty protocol or `modifyOtherKeys` also get
+  `shift+enter`/`ctrl+enter`, which arrive as CSI sequences Bubble Tea does not
+  recognize and are intercepted ahead of the key switch.
+- [x] Hand the draft to `$EDITOR` and take it back (`alt+e`), for the prompt
+  that turned out to be three paragraphs.
+- [x] Add an optional context rail (`alt+r`): workspace and branch, the plan,
+  delegated agents, changed files, and background processes, beside the
+  transcript rather than inside it. It appears on its own at 146 columns, is
+  unavailable below 116, borrows columns from the transcript and never from the
+  composer, and remembers a deliberate choice across a resize.
+- [x] Replace the blank opening transcript with an orientation card, degrading
+  to the banner and a single honest hint when the terminal is too narrow to
+  show pairs that still read as pairs.
+- [x] Mark each tool call in the transcript with its outcome and elapsed time,
+  and leave both blank for a replayed session — the transcript records what a
+  tool did, not how long it took, and inventing a duration is worse than
+  omitting one.
+- [x] Request mouse reporting by default (`options.mouse`) for wheel scrolling
+  and click-to-select tabs, consuming only the wheel and a plain left click so
+  drag, motion, and every modifier stay with the terminal — and add `alt+m` to
+  release and reclaim the mouse mid-session, because mouse reporting and the
+  terminal's own drag-selection are mutually exclusive by protocol and copying
+  text should not require a restart.
+- [x] Composite modals over a dimmed scrim with color dropped rather than
+  blended, and clear a gutter around the dialog, so the frame is blank instead
+  of mid-word transcript fragments that read as a corrupted redraw.
+- [x] Let Chroma paint an approval diff's added/removed tint itself: emitting
+  the background separately does not survive the SGR resets written between
+  tokens, so the wash used to stop at the first keyword. Only previews that are
+  actually diffs are tinted.
+- [x] Give the context gauge eighth-block resolution, so ten cells no longer
+  sit at zero for the first five percent of the window and then jump a whole
+  cell.
+
+## Completed wave — approval comfort
 
 **Goal:** Make the controls added above livable, so they are read rather than
 dismissed.
@@ -179,15 +366,38 @@ claiming enforcement the policy layer does not provide.
   autopilot. Recognition is by conventional path, so it is a usable default
   rather than secret detection; enforcing what a running process may read
   remains sandbox read confinement's job.
-- [ ] **P0 — Enforced endpoint-scoped egress:** the policy surface, declared
-  endpoints, and scoped grants ship; OS-level enforcement does not. Add a
-  Collomia-owned loopback egress broker that allows only policy-matched
-  destinations by CONNECT/SNI host without TLS interception, deny direct
-  remote egress in the sandbox where the backend supports it (macOS Seatbelt,
-  Linux Landlock ABI ≥ 4), degrade visibly on Windows AppContainer given its
-  unpackaged-loopback limitation, and keep `require` fail-closed. Preserve
-  command networking by default until this can replace the all-or-nothing
-  switch without breaking common tooling.
+- [x] **P1 — Scoped egress on macOS:** `permissions.sandbox_egress: "scoped"`
+  denies direct remote egress in the sandbox and routes commands through a
+  Collomia-owned loopback CONNECT broker that dials only the hosts named by
+  host-scoped `allow` rules, without TLS interception. Foreground commands,
+  background processes, and delegated verification are brokered on the same
+  terms through one configuration site.
+
+  **This was reclassified from P0 during implementation.** The all-or-nothing
+  `sandbox_allow_network` is enforced on all three platforms already, so the
+  safety floor never depended on this; what was missing was a version of that
+  floor people would leave switched on. It is a usability-of-security feature
+  over an existing enforced control, not a hole — and with it landing, no P0
+  remains outside Phase 8.
+- [x] **P1 — State the per-platform egress limits rather than degrade
+  vaguely:** the three backends do not sit on a gradient, so they are
+  documented as three distinct claims. macOS Seatbelt denies remote traffic
+  while keeping loopback, which is what makes the broker a boundary. Linux
+  Landlock filters TCP by port and never by address, so allowing the broker's
+  port would allow every remote host on it — an allowlist the adversary it
+  targets picks its own port around, which is why no Linux backend is shipped
+  rather than a weaker one. Windows AppContainer blocks loopback to unpackaged
+  local services, so the design has no route at all there, and its
+  all-or-nothing denial is the most complete of the three. Both refuse under
+  `require` and degrade visibly under `auto`; with `sandbox: "off"` no broker
+  starts anywhere, because a cooperative proxy is not presented as a boundary.
+- [ ] **P2 — Windows scoped egress:** only reachable through a
+  `CheckNetIsolation` loopback exemption (administrator, persistent machine
+  state, documented by Microsoft as a debugging aid) or WFP/firewall filters
+  keyed on the AppContainer SID (administrator, address-based rather than
+  host-based). Both conflict with the Windows backend's no-administrator,
+  inbox-API-only commitment, so this stays deliberately unbuilt rather than
+  half-built.
 - [ ] **P0 — Independent review:** sustain the adversarial suite and obtain an
   independent security assessment before 1.0.
 
@@ -201,8 +411,11 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 3 — Coding loop
 
-- [ ] **P1 — Complete LSP operations:** definitions, references, formatting,
-  and safe code actions. Diagnostics and lexical symbol search already ship.
+- [ ] **P1 — Complete LSP operations:** definitions, references, and
+  formatting ship alongside diagnostics and lexical symbol search. Safe code
+  actions remain: they need `codeAction/resolve` round trips and workspace
+  edits that can span files, which is a mutation path worth doing properly or
+  not at all.
 - [ ] **P1 — Optional deeper review:** line-level pending-write selection and
   broader selective application for multi-file patches.
 - [ ] **P1 — Windows ConPTY:** add native PTY execution without weakening the
@@ -210,8 +423,12 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 4 — Provider platform
 
-- [ ] **P1 — Secure credential lifecycle:** operating-system keychain storage
-  where practical, with login/logout/status flows and no project-file secrets.
+- [x] **P1 — Secure credential lifecycle:** `collo auth` keeps provider API
+  keys in the macOS Keychain or Windows Credential Manager, with set/list/
+  status/rm/import flows, no project-file secrets, and no value ever printed
+  back. Environment variables keep precedence and remain fully supported;
+  Linux has no backend by design, so headless hosts use `api_key_env`. MCP
+  server credentials are covered separately by Phase 5's OAuth item.
 - [ ] **P1 — Provider discovery refinements:** Azure deployment/project
   discovery and routing, tested sovereign presets, and clearer resolved AWS
   identity/model-access diagnostics.
@@ -261,8 +478,10 @@ claiming enforcement the policy layer does not provide.
 
 - [ ] **P1 — Finish artifact input:** raw clipboard image protocols and
   optional inline pixel previews where the terminal supports them.
-- [ ] **P1 — Workspace UI refinements:** automatically surfaced diagnostics
-  plus provider price/budget visibility without crowding the transcript.
+- [ ] **P1 — Workspace UI refinements:** the context rail now carries
+  workspace, plan, agents, changed files, and background processes beside the
+  transcript; automatically surfaced diagnostics and provider price/budget
+  visibility remain.
 - [ ] **P1 — Accessibility validation:** native screen-reader, colored theme,
   resize, and broader terminal-emulator coverage.
 - [ ] **P2 — Structured local service API:** authenticated stdio/socket or
@@ -291,18 +510,15 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-1. Build the enforced egress broker on top of the shipped policy surface: a
-   loopback CONNECT/SNI allowlist, sandbox-level denial of direct remote
-   egress where the backend supports it, and honest per-platform degradation.
-   This is the last P0 outside Phase 8.
-2. Gather real beta feedback on named primary profiles, cost estimates,
+1. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
-   new postures.
-3. Add opt-in plan-graph execution using verified results, write scopes,
+   new postures — including scoped egress, whose allowlist ergonomics are best
+   judged against real toolchains rather than predicted.
+2. Add opt-in plan-graph execution using verified results, write scopes,
    dependency readiness, and stale-state invalidation.
-4. Add explicit combined-parent verification and conservative result-ranking
+3. Add explicit combined-parent verification and conservative result-ranking
    criteria without turning a score into permission.
-5. Continue Phase 8 security/reliability campaigns in parallel with every
+4. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 
 ## Exit gates

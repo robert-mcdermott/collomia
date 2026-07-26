@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ import (
 func TestOverlayClearsAGutterAroundTheModal(t *testing.T) {
 	base := strings.Repeat(strings.Repeat("x", 40)+"\n", 9) + strings.Repeat("x", 40)
 	overlay := "╭────╮\n│ hi │\n╰────╯"
-	got := placeOverlay(base, overlay, 40, 10)
+	got := placeOverlay(base, overlay, 40, 10, true)
 	lines := strings.Split(got, "\n")
 
 	overlayWidth, overlayHeight := 6, 3
@@ -39,12 +40,44 @@ func TestOverlayDimsTheBaseLayer(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(prior) })
 
 	colored := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3864")).Render(strings.Repeat("transcript ", 4))
-	got := placeOverlay(colored+"\n"+colored, "╭──╮\n╰──╯", 40, 6)
+	got := placeOverlay(colored+"\n"+colored, "╭──╮\n╰──╯", 40, 6, true)
 	if strings.Contains(got, "38;2;255;56;100") {
 		t.Fatalf("the base layer kept its foreground colour under a modal:\n%q", got)
 	}
 	if !strings.Contains(ansi.Strip(got), "transcript") {
 		t.Fatal("the base layer should still be readable, just dimmed")
+	}
+}
+
+// options.dim_background=false exists for a screenshot, and for anyone who
+// simply prefers the colour: the gutter still separates the dialog from what
+// it covers, so nothing about reading the modal depends on the dimming.
+func TestOverlayKeepsColourWhenDimmingIsOff(t *testing.T) {
+	prior := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prior) })
+
+	colored := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3864")).Render(strings.Repeat("transcript ", 4))
+	got := placeOverlay(colored+"\n"+colored, "╭──╮\n╰──╯", 40, 6, false)
+	if !strings.Contains(got, "38;2;255;56;100") {
+		t.Fatalf("the base layer should have kept its foreground colour:\n%q", got)
+	}
+	if !strings.Contains(ansi.Strip(got), "╭──╮") {
+		t.Fatal("the modal should still be composited over the base layer")
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if width := ansi.StringWidth(line); width != 40 {
+			t.Fatalf("undimmed line width = %d, want 40: %q", width, line)
+		}
+	}
+}
+
+// The default is on. A model built from the shipped defaults must dim, or the
+// option would be a setting nobody chose.
+func TestDimBackgroundDefaultsOn(t *testing.T) {
+	m := newTestModel(t)
+	if !m.runtime.Config.Options.DimBackground {
+		t.Fatal("dim_background should default to true")
 	}
 }
 
@@ -71,6 +104,49 @@ func TestRailAppearsOnlyWhenThereIsRoomForIt(t *testing.T) {
 		m = updated.(Model)
 		if got := m.railVisible(); got != tc.want {
 			t.Fatalf("width %d: railVisible = %t, want %t", tc.width, got, tc.want)
+		}
+	}
+}
+
+// The rail is composited over the transcript row by row, so a line wider than
+// the body is not scrolled off — it is cut where the rail begins and the tail
+// is gone. Every kind of block has to be folded to the body's own width, not
+// the terminal's.
+func TestTranscriptWrapsInsideTheRail(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = updated.(Model)
+	if !m.railVisible() {
+		t.Fatal("this test needs the rail visible")
+	}
+
+	// Distinct words, so a truncated line loses a word that can be named.
+	words := make([]string, 60)
+	for i := range words {
+		words[i] = "word" + strconv.Itoa(i)
+	}
+	long := strings.Join(words, " ")
+	m.blocks = append(m.blocks,
+		block{role: "user", content: long},
+		block{role: "assistant", content: long},
+		block{role: "tool-result", content: long},
+		block{role: "error", content: long},
+		block{role: "system", content: long},
+		block{role: "panel", title: "Panel", content: long},
+	)
+
+	content := m.chatContent()
+	for _, line := range strings.Split(content, "\n") {
+		if width := ansi.StringWidth(line); width > m.bodyWidth() {
+			t.Errorf("transcript line is %d columns wide in a %d column body: %q", width, m.bodyWidth(), ansi.Strip(line))
+		}
+	}
+	// Nothing may be dropped on the way: each block is rendered six times over,
+	// so every word must survive somewhere in the folded transcript.
+	plain := ansi.Strip(content)
+	for _, word := range []string{words[0], words[len(words)/2], words[len(words)-1]} {
+		if got := strings.Count(plain, word+" ") + strings.Count(plain, word+"\n"); got < 6 {
+			t.Errorf("%q survived in %d of 6 blocks; long lines are still being cut", word, got)
 		}
 	}
 }
@@ -185,6 +261,60 @@ func TestClickSelectsATab(t *testing.T) {
 	m = updated.(Model)
 	if m.tab != tabSession {
 		t.Fatalf("tab = %d after clicking Session, want %d", m.tab, tabSession)
+	}
+}
+
+// Mouse reporting and the terminal's own drag-selection cannot both be on, so
+// a user who needs to copy arbitrary text must be able to release the mouse
+// mid-session instead of restarting with options.mouse false.
+func TestToggleMouseReleasesAndReclaimsTheMouse(t *testing.T) {
+	m := newTestModel(t)
+	if !m.mouseOn {
+		t.Fatal("the default configuration should start with the mouse captured")
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	m = updated.(Model)
+	if m.mouseOn {
+		t.Fatal("alt+m did not release the mouse")
+	}
+	if cmd == nil {
+		t.Fatal("releasing the mouse issued no terminal command")
+	}
+	if !strings.Contains(ansi.Strip(m.renderStatusBar()), "SELECT") {
+		t.Fatalf("the status bar does not show that drags now select:\n%s", ansi.Strip(m.renderStatusBar()))
+	}
+
+	before := m.viewport.YOffset
+	updated, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	if updated.(Model).viewport.YOffset != before {
+		t.Fatal("a stray wheel report scrolled the transcript after the mouse was released")
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	m = updated.(Model)
+	if !m.mouseOn || cmd == nil {
+		t.Fatal("alt+m did not take the mouse back")
+	}
+	if strings.Contains(ansi.Strip(m.renderStatusBar()), "SELECT") {
+		t.Fatal("the status bar still claims drags select after the mouse was reclaimed")
+	}
+}
+
+// The full-screen views own every key they see, so the toggle has to be
+// reachable from the place users most often want to copy from.
+func TestToggleMouseWorksInsideTheTranscriptView(t *testing.T) {
+	m := newTestModel(t)
+	m.blocks = append(m.blocks, block{role: "user", content: "hello"})
+	m.openTranscriptView()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	m = updated.(Model)
+	if m.mouseOn {
+		t.Fatal("alt+m inside the transcript view did not release the mouse")
+	}
+	if !strings.Contains(m.transcript.notice, "drag") {
+		t.Fatalf("transcript notice = %q, want it to explain that dragging now selects", m.transcript.notice)
 	}
 }
 

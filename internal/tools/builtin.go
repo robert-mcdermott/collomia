@@ -2,26 +2,38 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
+	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/index"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 )
 
-func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tracker, *ProcessManager, error) {
-	guard, err := NewPathGuard(workspace, cfg.Permissions.AllowOutsideWorkspace)
+// ConfiguredRunCommandTool builds the command runner for a workspace from the
+// effective configuration.
+//
+// Every caller that needs a command runner must come through here rather than
+// setting the containment fields by hand. Delegated verification once built
+// its own copy, and a copy is how a containment field ends up applied in the
+// primary session and silently absent everywhere else — the same defect shape
+// that let the host matcher ship inert. Adding a field to RunCommandTool
+// should require changing one function, not finding every caller.
+func ConfiguredRunCommandTool(workspace string, cfg appconfig.Config, maxOutput int) (*RunCommandTool, error) {
+	command, err := NewRunCommandTool(workspace, cfg.Permissions.DeniedCommands, maxOutput)
 	if err != nil {
-		return nil, nil, nil, err
-	}
-	command, err := NewRunCommandTool(guard.Workspace, cfg.Permissions.DeniedCommands, cfg.Options.MaxToolOutputBytes)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("command policy: %w", err)
+		return nil, err
 	}
 	if cfg.Permissions.Sandbox != "" {
 		command.SandboxMode = sandbox.Mode(cfg.Permissions.Sandbox)
 	}
 	command.AllowNetwork = cfg.Permissions.SandboxAllowNetwork
+	// The broker's allowlist is derived from the permission rules rather than
+	// configured separately, so the hosts a rule allows and the hosts a
+	// sandboxed command can reach are the same list by construction.
+	command.EgressScoped = strings.EqualFold(strings.TrimSpace(cfg.Permissions.SandboxEgress), appconfig.SandboxEgressScoped)
+	command.EgressAllowlist = egress.FromRules(cfg.Permissions.Rules)
 	command.AllowReadOutsideWorkspace = cfg.Permissions.SandboxAllowReadOutsideWorkspace
 	command.ExtraReadableRoots = append([]string(nil), cfg.Permissions.SandboxReadableRoots...)
 	command.ExtraWritableRoots = append([]string(nil), cfg.Permissions.SandboxWritableRoots...)
@@ -29,6 +41,18 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 	// explicit command_env setting always wins.
 	sandboxed := command.SandboxMode == sandbox.ModeAuto || command.SandboxMode == sandbox.ModeRequire
 	command.MinimalEnv = cfg.Permissions.CommandEnv == "minimal" || (cfg.Permissions.CommandEnv == "" && sandboxed)
+	return command, nil
+}
+
+func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tracker, *ProcessManager, error) {
+	guard, err := NewPathGuard(workspace, cfg.Permissions.AllowOutsideWorkspace)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	command, err := ConfiguredRunCommandTool(guard.Workspace, cfg, cfg.Options.MaxToolOutputBytes)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("command policy: %w", err)
+	}
 	tracker := diffmodel.NewTracker(guard.Workspace)
 	procs := NewProcessManager()
 	registry := NewRegistry(
@@ -42,6 +66,9 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		ProcessOutputTool{Manager: procs}, StopProcessTool{Manager: procs},
 		SearchSymbolsTool{Index: index.New(guard.Workspace)},
 		DiagnosticsTool{Guard: guard, Servers: cfg.LSP},
+		FindDefinitionTool{Guard: guard, Servers: cfg.LSP},
+		FindReferencesTool{Guard: guard, Servers: cfg.LSP},
+		FormatFileTool{Guard: guard, Servers: cfg.LSP, Tracker: tracker},
 	)
 	return registry, tracker, procs, nil
 }

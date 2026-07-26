@@ -110,6 +110,10 @@ type Provider struct {
 	ConnectTimeoutSeconds    int      `json:"connect_timeout_seconds,omitempty"`
 	RequestTimeoutSeconds    int      `json:"request_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds int      `json:"stream_idle_timeout_seconds,omitempty"`
+	// CredentialSource names where APIKey came from, for diagnostics only. It
+	// is never serialized: it is derived on load, and writing it to a file
+	// would turn a description of the environment into configuration.
+	CredentialSource string `json:"-"`
 }
 
 // Reasoning is the provider-neutral subset of model reasoning controls.
@@ -161,6 +165,19 @@ type Permissions struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxAllowNetwork permits network egress inside the sandbox.
 	SandboxAllowNetwork bool `json:"sandbox_allow_network,omitempty"`
+	// SandboxEgress selects how a sandboxed command reaches the network:
+	// "off" (the default) leaves SandboxAllowNetwork as the all-or-nothing
+	// control, while "scoped" denies direct remote egress at the OS level and
+	// routes the command through a loopback broker that dials only the hosts
+	// named by host-scoped allow rules.
+	//
+	// This is enforcement only where the sandbox backend can deny direct
+	// remote traffic while leaving loopback reachable, which today means macOS
+	// alone. Linux Landlock filters TCP by port and never by address, and
+	// Windows AppContainer blocks loopback to unpackaged services outright, so
+	// on those platforms "scoped" is refused under sandbox=require and
+	// visibly degrades to SandboxAllowNetwork under auto. See internal/egress.
+	SandboxEgress string `json:"sandbox_egress,omitempty"`
 	// SandboxAllowReadOutsideWorkspace keeps the compatibility default of
 	// broad filesystem reads inside the command sandbox. Set it to false to
 	// confine reads to the workspace, system runtime paths, temporary
@@ -325,6 +342,13 @@ type Options struct {
 	// ReducedMotion replaces decorative progress animation with a static
 	// marker. It is opt-in and never changes input, cancellation, or controls.
 	ReducedMotion bool `json:"reduced_motion,omitempty"`
+	// DimBackground drops colour from the screen behind an approval, a
+	// question, or another modal so the dialog is plainly the focused element.
+	// It defaults to true. Setting it false keeps the transcript at full
+	// saturation — for a documentation screenshot, or simply for taste. The
+	// cleared gutter around the dialog stays either way; it is what keeps the
+	// border from sitting against mid-word transcript fragments.
+	DimBackground bool `json:"dim_background"`
 	// Editor configures the user-initiated external-editor action in diff
 	// review. Command and Args are executed directly without a shell. Args may
 	// use {file}, {line}, and {column} placeholders.
@@ -369,6 +393,7 @@ func Defaults() Config {
 			AgentIntegration:   "manual",
 			AlternateScreen:    true,
 			Mouse:              true,
+			DimBackground:      true,
 			Keybindings:        DefaultKeybindings(),
 		},
 	}
@@ -522,6 +547,14 @@ const (
 	ProtectCredentialsDeny   = "deny"
 )
 
+// Sandbox egress postures.
+const (
+	// SandboxEgressOff keeps sandbox_allow_network as the only egress control.
+	SandboxEgressOff = "off"
+	// SandboxEgressScoped denies direct remote egress and brokers the rest.
+	SandboxEgressScoped = "scoped"
+)
+
 // ProtectCredentialsSettings lists the selectable settings in increasing
 // strictness.
 func ProtectCredentialsSettings() []string {
@@ -546,6 +579,13 @@ type preset struct {
 // presets deliberately omit permissions.mode. Autonomy is the one choice a
 // user should make knowingly; a bundle that quietly selected autopilot would
 // be exactly the surprise these presets exist to avoid.
+//
+// They also omit permissions.sandbox_egress, for the same reason hardened does
+// not fold in "sandbox_allow_network": false. Scoped egress is enforceable on
+// macOS only, so putting it in a cross-platform bundle would make one preset
+// name mean genuinely different containment on different machines — and it
+// would break any build whose registries are not yet named by an allow rule.
+// It stays a deliberate extra line the user writes and can read back.
 var presets = map[string]preset{
 	PresetStandard: {
 		Summary:                          "platform sandbox where available, command networking and broad reads on",
@@ -643,6 +683,7 @@ var containmentRank = map[string]map[string]int{
 	"command_env":         {"full": 0, "": 1, "minimal": 2},
 	"network":             {"open": 0, "scoped": 1},
 	"commands":            {"open": 0, "allowlist": 1},
+	"sandbox_egress":      {"": 0, SandboxEgressOff: 0, SandboxEgressScoped: 1},
 	"protect_credentials": {"off": 0, "": 1, ProtectCredentialsPrompt: 1, ProtectCredentialsDeny: 2},
 }
 
@@ -689,6 +730,7 @@ func tightenContainment(inherited, declared Permissions) (Permissions, []Clamped
 	enum("command_env", inherited.CommandEnv, declared.CommandEnv, func(v string) { result.CommandEnv = v })
 	enum("network", inherited.Network, declared.Network, func(v string) { result.Network = v })
 	enum("commands", inherited.Commands, declared.Commands, func(v string) { result.Commands = v })
+	enum("sandbox_egress", inherited.SandboxEgress, declared.SandboxEgress, func(v string) { result.SandboxEgress = v })
 	enum("protect_credentials", inherited.ProtectCredentials, declared.ProtectCredentials, func(v string) {
 		result.ProtectCredentials = v
 	})
@@ -806,8 +848,19 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 		} else {
 			p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
 			p.APIKey = expandEnv(p.APIKey)
+			if p.APIKey != "" {
+				p.CredentialSource = "api_key"
+			}
 			if p.APIKey == "" && p.APIKeyEnv != "" {
-				p.APIKey = os.Getenv(p.APIKeyEnv)
+				if p.APIKey = os.Getenv(p.APIKeyEnv); p.APIKey != "" {
+					p.CredentialSource = "environment " + p.APIKeyEnv
+				}
+			}
+			if p.APIKey == "" && usesStoredCredential(p) {
+				if secret, ok, err := lookupStoredCredential(name); err == nil && ok {
+					p.APIKey = secret
+					p.CredentialSource = "credential store"
+				}
 			}
 			for key, value := range p.Headers {
 				p.Headers[key] = expandEnv(value)
@@ -927,6 +980,11 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "open", "allowlist":
 	default:
 		errs = append(errs, FieldError{"permissions.commands", fmt.Sprintf("must be open or allowlist (got %q)", c.Permissions.Commands)})
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Permissions.SandboxEgress)) {
+	case "", SandboxEgressOff, SandboxEgressScoped:
+	default:
+		errs = append(errs, FieldError{"permissions.sandbox_egress", fmt.Sprintf("must be off or scoped (got %q)", c.Permissions.SandboxEgress)})
 	}
 	switch c.Permissions.CommandEnv {
 	case "", "full", "minimal":
