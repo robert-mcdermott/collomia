@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/robert-mcdermott/collomia/internal/version"
 )
 
 const (
@@ -29,10 +31,16 @@ func (m *Model) renderEmptyState() string {
 		return m.banner()
 	}
 	width := min(emptyStateCardWidth, max(20, m.bodyWidth()-8))
+	card := m.emptyStateCard(width)
+	// The openers take the card's indent rather than their own, so they hang
+	// off the card's label column instead of floating a few columns to its
+	// right — which is what centring each block on its own width did.
+	indent := blockPad(card, m.bodyWidth())
 	var b strings.Builder
-	b.WriteString(m.centerBlock(m.bannerArt(), m.bodyWidth()) + "\n\n")
-	b.WriteString(m.centerBlock(m.emptyStateCard(width), m.bodyWidth()) + "\n\n")
-	b.WriteString(m.centerBlock(m.emptyStateSuggestions(width), m.bodyWidth()))
+	b.WriteString(m.centerBlock(m.splashArt(), m.bodyWidth()) + "\n\n")
+	b.WriteString(m.centerBlock(m.splashIdentity(), m.bodyWidth()) + "\n\n")
+	b.WriteString(indentBlock(card, indent) + "\n\n")
+	b.WriteString(indentBlock(m.emptyStateSuggestions(width), indent+2))
 
 	// Centre what is left of the viewport too, so the card sits in the middle
 	// of the screen rather than pinned under the tab bar with a void below.
@@ -41,6 +49,49 @@ func (m *Model) renderEmptyState() string {
 		content = strings.Repeat("\n", pad) + content
 	}
 	return content
+}
+
+// splashArt is the title of the first screen: the blossom beside the tall
+// wordmark, raked with the theme gradient. It falls back to the compact
+// wordmark when the body is too narrow to hold both.
+func (m *Model) splashArt() string {
+	art := wordmarkArt
+	if m.bodyWidth() >= splashLogoWidth {
+		art = joinBlocks(splashLogoGap, blossomArt, wordmarkArt)
+	} else if m.bodyWidth() < blockWidth(wordmarkArt) {
+		art = compactLogoArt
+	}
+	return gradient(art, m.theme.Primary, m.theme.Secondary)
+}
+
+// splashIdentity is the build line under the wordmark, broken in two and
+// centred on itself. It was one line of a hundred-odd columns, which wrapped
+// on a narrow terminal and, because centerBlock centres a block by its widest
+// line, dragged the wordmark off to the left of everything below it — the
+// logo only looked centred once the first prompt replaced this screen.
+//
+// The provider and model are not repeated here; they are two rows down in the
+// card, which is where a reader looks for them.
+func (m *Model) splashIdentity() string {
+	return m.centerLines(
+		m.styles.muted.Render(version.Short()+" · theme "+m.theme.Name),
+		m.styles.system.Render(version.Build()),
+	)
+}
+
+// centerLines centres each line against the widest of them, so a stack of
+// short lines reads as one centred block instead of a left-aligned column that
+// happens to sit near the middle.
+func (m *Model) centerLines(lines ...string) string {
+	widest := 0
+	for _, line := range lines {
+		widest = max(widest, ansi.StringWidth(line))
+	}
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = strings.Repeat(" ", (widest-ansi.StringWidth(line))/2) + line
+	}
+	return strings.Join(out, "\n")
 }
 
 func (m *Model) emptyStateCard(width int) string {
@@ -114,16 +165,25 @@ func (m *Model) emptyStateSuggestions(width int) string {
 // centerBlock indents a multi-line block so the whole block is centred as a
 // unit. Centring each line on its own would ragged the card's border.
 func (m *Model) centerBlock(block string, width int) string {
-	lines := strings.Split(block, "\n")
-	blockWidth := 0
-	for _, line := range lines {
-		blockWidth = max(blockWidth, ansi.StringWidth(line))
+	return indentBlock(block, blockPad(block, width))
+}
+
+// blockPad is the indent that centres a block in width, measured from its
+// widest line.
+func blockPad(block string, width int) int {
+	widest := 0
+	for _, line := range strings.Split(block, "\n") {
+		widest = max(widest, ansi.StringWidth(line))
 	}
-	pad := max(0, (width-blockWidth)/2)
-	if pad == 0 {
+	return max(0, (width-widest)/2)
+}
+
+func indentBlock(block string, pad int) string {
+	if pad <= 0 {
 		return block
 	}
 	prefix := strings.Repeat(" ", pad)
+	lines := strings.Split(block, "\n")
 	for i := range lines {
 		lines[i] = prefix + lines[i]
 	}

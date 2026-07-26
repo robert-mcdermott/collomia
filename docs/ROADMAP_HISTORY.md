@@ -39,6 +39,42 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-26 — Phase 7 first screen
+
+- **The logo was never centred, and the reason was one long line:** the identity
+  under the wordmark was a single string — version, commit, build timestamp,
+  provider, model, theme — that ran past a hundred columns. `centerBlock`
+  centres a block by its widest line, so that line set the indent for the whole
+  header and the twenty-two-column wordmark sat flush against its left edge.
+  The first prompt then replaced the screen with the compact left-aligned
+  banner, which is why the logo appeared to jump. It is now two short lines,
+  each centred against the other, and nothing on the first screen is wide enough
+  to drag the art off centre.
+- **The first screen has a title rather than a caption:** a five-row wordmark in
+  the same double rule as the compact banner, with a four-petal blossom set two
+  columns to its left — a mark before the name, the way `✿ collo` and
+  `✿ COLLOMIA` are already written elsewhere in the interface, and without the
+  six extra rows that stacking it above would have pushed onto the card and the
+  openers. The gradient is raked across the assembled block rather than restarted
+  for each piece, which is why the art is padded to a rectangle first: `gradient`
+  blends per line, so ragged lines finish the blend at different columns and the
+  block comes out striped. Below 59 columns the blossom drops, below 47 the
+  compact wordmark stands in, and below 56 the whole card gives way to the
+  banner and one hint as before.
+- **The openers hang off the card:** they took the card's indent instead of
+  being centred on their own narrower width, which had them floating a few
+  columns to its right.
+- **The transcript header is one short line again:** the compact wordmark, left
+  and top as before, over `✿ collo <version> · <provider>/<model>`. The commit,
+  the build date, and the theme name left it — a header read at a glance should
+  not be the widest thing on screen — and are now on the first screen, on the
+  Session tab's new `build` row, and in `collo version`. Two golden screens moved
+  by exactly that one line.
+- **Regression tests, not screenshots:** one asserts the wordmark and the
+  identity line carry equal margins on both sides, which is the defect itself;
+  another asserts no banner line exceeds the body width and that build detail
+  stays out of it.
+
 ### 2026-07-26 — Phase 3 language-server capability reporting
 
 - **A missing capability is a configuration answer, not a protocol string:**

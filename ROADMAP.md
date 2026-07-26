@@ -121,6 +121,16 @@ grepping for names.
   the request is what distinguishes a slow index from a stall. The lines are
   display-only, never part of what the model reads, and the transcript
   replaces them with the result.
+- [x] Make the first screen look composed. The identity line under the logo ran
+  past a hundred columns on one line — version, commit, build timestamp,
+  provider, model, theme — and because a centred block is centred by its widest
+  line, that one line decided the whole header's offset and left the wordmark
+  hanging to its left until the first prompt replaced the screen. The line is
+  now two short centred ones, the wordmark is a five-row rendering with the
+  blossom beside it, and the openers take the orientation card's indent rather
+  than their own. The transcript header keeps the compact wordmark, left and
+  top, over one line that carries only the version and the answering model;
+  build detail moved to the Session tab and `collo version`.
 
 ## Completed wave — terminal experience
 

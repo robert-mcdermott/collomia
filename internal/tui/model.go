@@ -926,10 +926,6 @@ func (m *Model) renderToolResult(i int) string {
 		m.styles.toolName.Render("ctrl+o") + m.styles.tool.Render(" to expand")
 }
 
-const asciiBanner = `╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
-║  ║ ║║  ║  ║ ║║║║║╠═╣
-╚═╝╚═╝╩═╝╩═╝╚═╝╩ ╩╩╩ ╩`
-
 func (m *Model) banner() string {
 	if m.width < 30 {
 		return m.styles.brand.Render("✿ Collomia")
@@ -938,17 +934,21 @@ func (m *Model) banner() string {
 	return m.bannerArt() + "\n" + tips
 }
 
-// bannerArt is the logo and the one-line identity beneath it, without the
-// keyboard tips. The empty state carries its own, longer set of openers and
-// would otherwise say much the same thing twice, two lines apart.
+// bannerArt is the compact logo and a one-line identity beneath it, without
+// the keyboard tips. It heads the transcript once a session has started, so it
+// carries only what is not on screen anywhere else: which build is running and
+// which model is answering. The build hash, the build date, and the theme name
+// used to ride on the same line, which pushed it past a hundred columns in a
+// header nobody reads twice; the first screen, the Session tab, and
+// `collo version` still have them.
 func (m *Model) bannerArt() string {
 	if m.width < 30 {
 		return m.styles.brand.Render("✿ Collomia")
 	}
-	art := gradient(asciiBanner, m.theme.Primary, m.theme.Secondary)
+	art := gradient(compactLogoArt, m.theme.Primary, m.theme.Secondary)
 	providerName, model := m.runtime.Agent.Selection()
-	sub := m.styles.muted.Render(fmt.Sprintf("✿ %s · %s/%s · theme %s", version.String(), providerName, model, m.theme.Name))
-	return art + "\n" + sub
+	sub := fmt.Sprintf("✿ %s · %s/%s", version.Short(), providerName, model)
+	return art + "\n" + m.styles.muted.Render(ansi.Truncate(sub, max(10, m.bodyWidth()), "…"))
 }
 
 // sessionTwoColumnWidth is where the Session tab splits in two. Below it a
@@ -1052,6 +1052,9 @@ func (m *Model) sessionSections(width int) string {
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
 	b.WriteString(kv("theme", m.theme.Name) + "\n")
+	// The transcript header no longer carries the build, so a bug report needs
+	// somewhere to read it from without quitting the session.
+	b.WriteString(kv("build", version.Short()+" · "+version.Build()) + "\n")
 	b.WriteString(kv("uptime", time.Since(m.started).Round(time.Second).String()) + "\n\n")
 
 	b.WriteString(h("Workspace") + "\n")

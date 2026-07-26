@@ -12,11 +12,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/failureid"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/version"
 	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
 )
 
@@ -768,6 +770,56 @@ func TestBannerVisibleAtStartup(t *testing.T) {
 	}
 	if !strings.Contains(view, "theme") {
 		t.Fatalf("banner subtitle should render on the first frame, got:\n%s", view)
+	}
+}
+
+// The identity line under the wordmark used to be a single hundred-column
+// string. centerBlock centres a block by its widest line, so that one line
+// decided the whole header's offset and left the logo hanging off to its left
+// until the first prompt replaced the screen with the compact banner.
+func TestSplashLogoIsCentred(t *testing.T) {
+	m := newTestModel(t)
+	body := m.bodyWidth()
+	if body < splashLogoWidth {
+		t.Fatalf("test terminal is %d columns, too narrow for the full logo", body)
+	}
+	var art, identity string
+	for _, line := range strings.Split(m.renderEmptyState(), "\n") {
+		switch {
+		case art == "" && strings.Contains(line, "╔══╗"):
+			art = line
+		case identity == "" && strings.Contains(line, "theme"):
+			identity = line
+		}
+	}
+	if art == "" || identity == "" {
+		t.Fatalf("expected the wordmark and the identity line, got:\n%s", m.renderEmptyState())
+	}
+	for _, tc := range []struct {
+		name string
+		line string
+	}{{"wordmark", art}, {"identity", identity}} {
+		lead := ansi.StringWidth(tc.line) - ansi.StringWidth(strings.TrimLeft(tc.line, " "))
+		trail := body - ansi.StringWidth(tc.line)
+		if diff := lead - trail; diff > 2 || diff < -2 {
+			t.Errorf("%s is off centre: %d columns of margin on the left, %d on the right", tc.name, lead, trail)
+		}
+	}
+}
+
+// The transcript header is read at a glance, so it is held to one screen-safe
+// line. The build hash, build date, and theme name that used to share it moved
+// to `collo version` and the Session tab.
+func TestTranscriptBannerStaysShort(t *testing.T) {
+	m := newTestModel(t)
+	m.blocks = append(m.blocks, block{role: "user", content: "hello"})
+	for _, line := range strings.Split(m.banner(), "\n") {
+		if width := ansi.StringWidth(line); width > m.bodyWidth() {
+			t.Errorf("banner line is %d columns wide in a %d column body: %q", width, m.bodyWidth(), line)
+		}
+	}
+	if strings.Contains(m.banner(), version.Build()) {
+		t.Error("the transcript banner should not carry build detail")
 	}
 }
 

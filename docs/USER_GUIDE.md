@@ -2123,6 +2123,15 @@ collo --cwd /path/to/repository
 
 ### Main interface
 
+The first screen centres the mark and wordmark over the build line, an
+orientation card (workspace, branch, model, autonomy), and a few openers. It is
+replaced by the transcript as soon as you send a prompt; from then on a compact
+wordmark with the version and the answering model heads the conversation. Build
+detail — the commit and the build date — is on the first screen, on the Session
+tab's `build` row, and in `collo version`, so the transcript header stays one
+short line. A terminal too narrow for the full wordmark falls back to the
+compact one, and below 56 columns to the wordmark and a single hint.
+
 The interactive UI has Chat, Session, and Help tabs. Chat contains the streamed
 conversation and tool results. Session shows the structured plan, changed
 files, a parent/child delegated-agent tree with bounded recent output,
