@@ -885,7 +885,7 @@ func (m *Model) chatContent() string {
 	for i, block := range m.blocks {
 		switch block.role {
 		case "user":
-			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + block.content + "\n\n")
+			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + m.wrapProse(block.content, 0) + "\n\n")
 		case "assistant":
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
 		case "tool":
@@ -893,14 +893,35 @@ func (m *Model) chatContent() string {
 		case "tool-result":
 			b.WriteString(m.renderToolResult(i) + "\n\n")
 		case "error":
-			b.WriteString(m.styles.errText.Render("✖ "+block.content) + "\n\n")
+			b.WriteString(m.styles.errText.Render(m.wrapProse("✖ "+block.content, 0)) + "\n\n")
 		case "panel":
 			b.WriteString(m.renderPanel(block.title, block.content) + "\n\n")
 		default:
-			b.WriteString(m.styles.system.Render("· "+block.content) + "\n\n")
+			b.WriteString(m.styles.system.Render(m.wrapProse("· "+block.content, 0)) + "\n\n")
 		}
 	}
 	return b.String()
+}
+
+// wrapProse folds a transcript line to the width the transcript actually has.
+// Nothing downstream reflows: the rail takes its columns out of the body and
+// the composited row is cut where the rail begins, so an unwrapped line does
+// not merely run off-screen — its tail is gone. reserve is any decoration the
+// caller adds afterwards. ansi.Wrap breaks a word longer than the measure
+// rather than letting it overrun, which matters for pasted paths and URLs.
+func (m *Model) wrapProse(text string, reserve int) string {
+	return ansi.Wrap(text, m.transcriptMeasure(reserve), "")
+}
+
+// wrapOutput folds tool output. It is not prose — it is command output, file
+// contents, and diffs, where a reflowed column is more misleading than a break
+// at the right margin — so it is hard-wrapped at the same measure.
+func (m *Model) wrapOutput(text string, reserve int) string {
+	return ansi.Hardwrap(text, m.transcriptMeasure(reserve), true)
+}
+
+func (m *Model) transcriptMeasure(reserve int) int {
+	return max(8, m.bodyWidth()-reserve)
 }
 
 // Tool results at or below this line count are always shown in full;
@@ -916,10 +937,12 @@ func (m *Model) renderToolResult(i int) string {
 	lines := strings.Count(content, "\n") + 1
 	current := m.busy && i == len(m.blocks)-1
 	if m.expandTools || current || lines <= toolCollapseThreshold {
+		// The gutter costs four columns, so the output is folded to what is
+		// left rather than to the full body.
 		if highlighted, ok := m.highlightToolResult(entry); ok {
-			return indent(highlighted, "  │ ")
+			return indent(m.wrapOutput(highlighted, 4), "  │ ")
 		}
-		return m.styles.toolResult.Render(indent(content, "  │ "))
+		return m.styles.toolResult.Render(indent(m.wrapOutput(content, 4), "  │ "))
 	}
 	return m.styles.toolResult.Render("  ▸ ") +
 		m.styles.tool.Render(fmt.Sprintf("%d lines hidden · ", lines)) +
@@ -1329,7 +1352,11 @@ func (m *Model) renderMarkdown(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return ""
 	}
-	width := max(20, m.width-6)
+	// Glamour wraps to whatever it is given, so it has to be given the body's
+	// width and not the terminal's: wrapping at the terminal width and then
+	// compositing the rail over the result is what cut the right-hand end off
+	// every long line of an answer.
+	width := max(20, m.bodyWidth()-6)
 	if m.renderer == nil || m.rendererWidth != width {
 		renderer, err := glamour.NewTermRenderer(
 			glamour.WithStyles(m.theme.markdownStyle()),

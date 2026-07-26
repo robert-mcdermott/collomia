@@ -39,7 +39,7 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
-### 2026-07-26 — Phase 7 first screen and modal dimming
+### 2026-07-26 — Phase 7 first screen, modal dimming, and rail-aware wrapping
 
 - **The logo was never centred, and the reason was one long line:** the identity
   under the wordmark was a single string — version, commit, build timestamp,
@@ -83,6 +83,20 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
   dialog is deliberately not part of the option: it is what keeps the border
   from sitting against mid-word transcript fragments, so nothing about reading
   a modal depends on the dimming being on. Tested at both settings.
+- **The transcript now wraps to the transcript, not to the terminal:** the
+  context rail is composited over the body row by row, so a line wider than the
+  body was not scrolled off — it was cut at the rail's left edge and the tail
+  was gone. Glamour was being told to wrap answers at the terminal width, and
+  prompts, system lines, error lines, tool output, and `/status`-style panels
+  were not folded at all. All of them now measure against `bodyWidth()`, which
+  the tool-call header already used: prose is word-wrapped with a hard break for
+  a word longer than the measure (a pasted path or URL), tool output is
+  hard-wrapped inside its four-column gutter, because a reflowed column of
+  command output misleads in a way a break at the right margin does not. This
+  was never only a rail defect — a long single-line prompt was cut at the
+  terminal's edge with no rail in sight — but the rail is what made it constant.
+  The regression test renders one long line as all six block kinds, asserts no
+  line exceeds the body, and asserts every word survives the fold in all six.
 
 ### 2026-07-26 — Phase 3 language-server capability reporting
 

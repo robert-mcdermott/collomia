@@ -2166,6 +2166,13 @@ record. Press `f` to cycle only categories present, `/` to search, `n`/`N` to
 move between matches, arrow/page keys to navigate, and `y` to copy the selected
 failure ID (or the selected activity text when no failure ID exists).
 
+The context rail appears beside the Chat transcript on its own at 146 columns,
+is available under `alt+r` down to 116, and is unavailable below that. It takes
+its columns out of the transcript, so replies, prompts, tool output, and
+informational panels all wrap to the width that is left rather than running
+underneath it. Hiding the rail with `alt+r` gives those columns back and the
+transcript reflows to the full width.
+
 The layout adapts to narrow terminals: below 44 columns the header shows only
 the active tab, status content is truncated rather than wrapping into the
 composer, and full-screen transcript/activity/diff views use the available

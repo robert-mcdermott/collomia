@@ -136,6 +136,12 @@ grepping for names.
   is made of screenshots, so `options.dim_background` turns the scrim off while
   defaulting to on. The cleared gutter is deliberately not part of the option:
   reading a modal must not depend on the dimming.
+- [x] Wrap the transcript to the transcript. The context rail is composited
+  over the body row by row, so a line wider than the body was cut at the rail's
+  left edge rather than scrolled — answers, prompts, system and error lines,
+  tool output, and panels all measured against the terminal instead. They now
+  measure against the body width the tool-call header already used, prose
+  word-wrapped and tool output hard-wrapped inside its gutter.
 
 ## Completed wave — terminal experience
 

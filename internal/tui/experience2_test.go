@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,49 @@ func TestRailAppearsOnlyWhenThereIsRoomForIt(t *testing.T) {
 		m = updated.(Model)
 		if got := m.railVisible(); got != tc.want {
 			t.Fatalf("width %d: railVisible = %t, want %t", tc.width, got, tc.want)
+		}
+	}
+}
+
+// The rail is composited over the transcript row by row, so a line wider than
+// the body is not scrolled off — it is cut where the rail begins and the tail
+// is gone. Every kind of block has to be folded to the body's own width, not
+// the terminal's.
+func TestTranscriptWrapsInsideTheRail(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = updated.(Model)
+	if !m.railVisible() {
+		t.Fatal("this test needs the rail visible")
+	}
+
+	// Distinct words, so a truncated line loses a word that can be named.
+	words := make([]string, 60)
+	for i := range words {
+		words[i] = "word" + strconv.Itoa(i)
+	}
+	long := strings.Join(words, " ")
+	m.blocks = append(m.blocks,
+		block{role: "user", content: long},
+		block{role: "assistant", content: long},
+		block{role: "tool-result", content: long},
+		block{role: "error", content: long},
+		block{role: "system", content: long},
+		block{role: "panel", title: "Panel", content: long},
+	)
+
+	content := m.chatContent()
+	for _, line := range strings.Split(content, "\n") {
+		if width := ansi.StringWidth(line); width > m.bodyWidth() {
+			t.Errorf("transcript line is %d columns wide in a %d column body: %q", width, m.bodyWidth(), ansi.Strip(line))
+		}
+	}
+	// Nothing may be dropped on the way: each block is rendered six times over,
+	// so every word must survive somewhere in the folded transcript.
+	plain := ansi.Strip(content)
+	for _, word := range []string{words[0], words[len(words)/2], words[len(words)-1]} {
+		if got := strings.Count(plain, word+" ") + strings.Count(plain, word+"\n"); got < 6 {
+			t.Errorf("%q survived in %d of 6 blocks; long lines are still being cut", word, got)
 		}
 	}
 }
