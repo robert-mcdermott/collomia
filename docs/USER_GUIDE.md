@@ -817,7 +817,7 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
-| `mouse` | Whether the TUI requests mouse reporting for wheel scrolling and tab clicks; defaults to `true`. While it is on, the terminal routes drags to Collomia rather than to its own selection, so set it to `false` if you copy text with the mouse more than you scroll. Most terminals still offer native selection under shift-drag. |
+| `mouse` | Whether the TUI requests mouse reporting for wheel scrolling and tab clicks; defaults to `true`. While it is on, the terminal routes drags to Collomia rather than to its own selection, so set it to `false` if you copy text with the mouse more than you scroll. This is only the starting state: `alt+m` releases and reclaims the mouse at any point in a session. Most terminals also offer native selection under shift-drag (option-drag on macOS Terminal.app and iTerm2). |
 | `reduced_motion` | Optional static working indicator. Defaults to `false`, so animations remain enabled; it never changes input, commands, cancellation, or other controls. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
@@ -2117,6 +2117,8 @@ chat position; new streaming output no longer pulls you to the bottom. Press
 | `ctrl+d` | Open the interactive session diff viewer. |
 | `alt+r` | Show or hide the context rail. It appears on its own at 146 columns and is unavailable below 116. |
 | Mouse wheel / click | Scroll the transcript; click a tab to select it. Set `options.mouse` to `false` to hand mouse handling back to the terminal. |
+| `alt+m` | Release the mouse so the terminal can drag-select and copy, and press again to take it back. The status bar shows `SELECT` while the mouse is released and `MOUSE` when it is captured against your configured default. |
+| `shift`-drag / `option`-drag | Select text without releasing the mouse at all. Most terminals bypass mouse reporting while `shift` is held; macOS Terminal.app and iTerm2 use `option`. |
 | `f` in Activity | Cycle the activity categories present in this session. |
 | `/`, then `n` / `N` in Activity | Search activity and move between matches. |
 | `y` in Activity | Copy the selected failure ID, or the activity text when no ID is present. |
@@ -2453,6 +2455,7 @@ unambiguous.
     "keybindings": {
       "agent_control": "alt+a",
       "next_tab": "alt+t",
+      "toggle_mouse": "alt+m",
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",

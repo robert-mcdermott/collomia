@@ -188,6 +188,60 @@ func TestClickSelectsATab(t *testing.T) {
 	}
 }
 
+// Mouse reporting and the terminal's own drag-selection cannot both be on, so
+// a user who needs to copy arbitrary text must be able to release the mouse
+// mid-session instead of restarting with options.mouse false.
+func TestToggleMouseReleasesAndReclaimsTheMouse(t *testing.T) {
+	m := newTestModel(t)
+	if !m.mouseOn {
+		t.Fatal("the default configuration should start with the mouse captured")
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	m = updated.(Model)
+	if m.mouseOn {
+		t.Fatal("alt+m did not release the mouse")
+	}
+	if cmd == nil {
+		t.Fatal("releasing the mouse issued no terminal command")
+	}
+	if !strings.Contains(ansi.Strip(m.renderStatusBar()), "SELECT") {
+		t.Fatalf("the status bar does not show that drags now select:\n%s", ansi.Strip(m.renderStatusBar()))
+	}
+
+	before := m.viewport.YOffset
+	updated, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	if updated.(Model).viewport.YOffset != before {
+		t.Fatal("a stray wheel report scrolled the transcript after the mouse was released")
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	m = updated.(Model)
+	if !m.mouseOn || cmd == nil {
+		t.Fatal("alt+m did not take the mouse back")
+	}
+	if strings.Contains(ansi.Strip(m.renderStatusBar()), "SELECT") {
+		t.Fatal("the status bar still claims drags select after the mouse was reclaimed")
+	}
+}
+
+// The full-screen views own every key they see, so the toggle has to be
+// reachable from the place users most often want to copy from.
+func TestToggleMouseWorksInsideTheTranscriptView(t *testing.T) {
+	m := newTestModel(t)
+	m.blocks = append(m.blocks, block{role: "user", content: "hello"})
+	m.openTranscriptView()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: true})
+	m = updated.(Model)
+	if m.mouseOn {
+		t.Fatal("alt+m inside the transcript view did not release the mouse")
+	}
+	if !strings.Contains(m.transcript.notice, "drag") {
+		t.Fatalf("transcript notice = %q, want it to explain that dragging now selects", m.transcript.notice)
+	}
+}
+
 func TestClickInTheTranscriptDoesNothing(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.Update(tea.MouseMsg{X: 10, Y: 12, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})

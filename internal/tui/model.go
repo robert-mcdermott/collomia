@@ -92,6 +92,11 @@ type Model struct {
 	expandTools bool
 	streaming   bool
 
+	// mouseOn tracks whether Collomia is currently capturing mouse reports.
+	// While it is on the terminal cannot run its own drag-selection, so the
+	// state is toggleable at runtime rather than fixed at startup.
+	mouseOn bool
+
 	// railManual records that the user chose a rail state explicitly, so a
 	// later resize does not silently overrule them.
 	railOn     bool
@@ -142,6 +147,7 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 		runtime: runtime, broker: broker, input: in, spinner: spin,
 		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{}, sessionAttachments: map[string][]pendingAttachment{},
 		workspaceLoading: true, workspaceGeneration: 1,
+		mouseOn: runtime.Config.Options.Mouse,
 	}
 	m.applyTheme(theme)
 	m.rebuildTranscript()
@@ -335,6 +341,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
+		}
+		// Checked ahead of the full-screen views: releasing the mouse is most
+		// often wanted while reading the transcript or a diff, which is
+		// exactly where those views would otherwise swallow the key.
+		if m.keyIs("toggle_mouse", key) {
+			return m.toggleMouse()
 		}
 		if m.transcript != nil {
 			return m.handleTranscriptKey(msg)
@@ -1292,6 +1304,8 @@ func (m *Model) helpContent() string {
 		{m.binding("diff_view"), "open the interactive diff viewer"},
 		{m.binding("context_rail"), "show / hide the context rail (automatic above " + fmt.Sprintf("%d", railAutoWidth) + " columns)"},
 		{"wheel · click", "scroll the transcript · select a tab (set options.mouse false to disable)"},
+		{m.binding("toggle_mouse"), "release the mouse so the terminal can drag-select and copy, and take it back"},
+		{"shift · option drag", "select text without releasing the mouse (shift in most terminals, option on macOS)"},
 		{"/activity", "search/filter runtime activity and copy failure IDs"},
 		{"↑ / ↓ (composer)", "previous / next prompt at the first or last line"},
 		{"y / a / n (approval)", "approve once / always for this tool / deny"},
@@ -1457,6 +1471,16 @@ func (m Model) renderStatusBar() string {
 	}
 	if len(m.pendingAttachments) > 0 {
 		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("images %d", len(m.pendingAttachments)), m.theme.Accent)
+	}
+	// Only shown once the session departs from its configured mouse setting:
+	// the toggle changes what a drag does, which is invisible until the user
+	// tries one, but a permanent badge for the configured state is noise.
+	if m.mouseOn != m.runtime.Config.Options.Mouse {
+		label := "SELECT"
+		if m.mouseOn {
+			label = "MOUSE"
+		}
+		left += m.styles.statusBase.Render(" ") + badge(label, m.theme.Secondary)
 	}
 	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
 

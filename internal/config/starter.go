@@ -416,7 +416,9 @@ const configReferenceJSONC = `
     "alternate_screen": true,
     // true lets the wheel scroll the transcript and a click select a tab.
     // While it is on the terminal routes drags here rather than to its own
-    // selection; set false to keep native mouse selection everywhere.
+    // selection; set false to keep native mouse selection everywhere. This is
+    // only the starting state: alt+m releases and reclaims the mouse during a
+    // session, so text stays selectable without giving up wheel scrolling.
     "mouse": true,
     // Optional. false preserves the animated working indicator. true uses a
     // static marker without changing input, cancellation, or other controls.
@@ -426,6 +428,7 @@ const configReferenceJSONC = `
     "keybindings": {
       "agent_control": "alt+a",
       "next_tab": "ctrl+t",
+      "toggle_mouse": "alt+m",
       "toggle_tool_output": "ctrl+o",
       "transcript_view": "ctrl+y",
       "diff_view": "ctrl+d",
