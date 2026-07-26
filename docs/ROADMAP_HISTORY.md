@@ -39,7 +39,7 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
-### 2026-07-26 — Phase 7 first screen
+### 2026-07-26 — Phase 7 first screen and modal dimming
 
 - **The logo was never centred, and the reason was one long line:** the identity
   under the wordmark was a single string — version, commit, build timestamp,
@@ -74,6 +74,15 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
   identity line carry equal margins on both sides, which is the defect itself;
   another asserts no banner line exceeds the body width and that build detail
   stays out of it.
+- **Modal dimming is now a preference:** a dialog drops colour from everything
+  behind it so the decision in front of the user is plainly the focused element,
+  which is right for using the tool and wrong for photographing it — the
+  screenshots that go into product documentation are exactly the frames where
+  the interface should be at full saturation. `options.dim_background` defaults
+  to true and turns the scrim off when set false. The cleared gutter around a
+  dialog is deliberately not part of the option: it is what keeps the border
+  from sitting against mid-word transcript fragments, so nothing about reading
+  a modal depends on the dimming being on. Tested at both settings.
 
 ### 2026-07-26 — Phase 3 language-server capability reporting
 

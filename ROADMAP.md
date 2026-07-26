@@ -131,6 +131,11 @@ grepping for names.
   than their own. The transcript header keeps the compact wordmark, left and
   top, over one line that carries only the version and the answering model;
   build detail moved to the Session tab and `collo version`.
+- [x] Make modal dimming a preference. Dropping colour behind a dialog is right
+  for using the tool and wrong for photographing it, and product documentation
+  is made of screenshots, so `options.dim_background` turns the scrim off while
+  defaulting to on. The cleared gutter is deliberately not part of the option:
+  reading a modal must not depend on the dimming.
 
 ## Completed wave — terminal experience
 

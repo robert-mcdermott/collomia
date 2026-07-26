@@ -884,6 +884,7 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 | `alternate_screen` | Whether the TUI uses the terminal's clean alternate buffer; defaults to `true`. Set `false` to keep the final frame in native terminal scrollback. |
 | `mouse` | Whether the TUI requests mouse reporting for wheel scrolling and tab clicks; defaults to `true`. While it is on, the terminal routes drags to Collomia rather than to its own selection, so set it to `false` if you copy text with the mouse more than you scroll. This is only the starting state: `alt+m` releases and reclaims the mouse at any point in a session. Most terminals also offer native selection under shift-drag (option-drag on macOS Terminal.app and iTerm2). |
 | `reduced_motion` | Optional static working indicator. Defaults to `false`, so animations remain enabled; it never changes input, commands, cancellation, or other controls. |
+| `dim_background` | Whether the screen behind an approval, question, or other modal drops its colour so the dialog is plainly the focused element; defaults to `true`. Set `false` to keep the transcript at full saturation — useful for documentation screenshots. The cleared gutter around a dialog is kept either way, so the modal is still separated from what it covers. |
 | `keybindings` | Named global TUI action-to-key overrides. Omitted actions inherit defaults; approval and question decision keys are intentionally fixed. |
 | `notifications` | `on` (bell + OSC 9), `bell`, or `off`; empty behaves as `on`. |
 | `editor` | Optional direct external-editor command and argument list used by `e` in `/diff`. Arguments support `{file}`, `{line}`, and `{column}`. |
@@ -2514,6 +2515,24 @@ This setting affects only decorative progress motion. The composer remains
 editable, the busy-safe slash-command lane remains available, and cancellation,
 approvals, questions, and agent controls behave exactly as they do with the
 animated indicator.
+
+An approval, a question, or another dialog dims the screen behind it — colour
+is dropped rather than blended, so syntax highlighting, diff greens and reds,
+and status accents stop competing with the decision in front of them. To keep
+the background at full colour instead, which is usually what a documentation
+screenshot wants:
+
+```json
+{
+  "options": {
+    "dim_background": false
+  }
+}
+```
+
+The cleared gutter around a dialog is unaffected, so the modal is still
+separated from the content it covers rather than sitting against mid-word
+transcript fragments.
 
 Global navigation keys can be remapped by action. Each omitted action inherits
 its earlier/default binding, so a project may override just one user binding.

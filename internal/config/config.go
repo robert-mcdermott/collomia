@@ -329,6 +329,13 @@ type Options struct {
 	// ReducedMotion replaces decorative progress animation with a static
 	// marker. It is opt-in and never changes input, cancellation, or controls.
 	ReducedMotion bool `json:"reduced_motion,omitempty"`
+	// DimBackground drops colour from the screen behind an approval, a
+	// question, or another modal so the dialog is plainly the focused element.
+	// It defaults to true. Setting it false keeps the transcript at full
+	// saturation — for a documentation screenshot, or simply for taste. The
+	// cleared gutter around the dialog stays either way; it is what keeps the
+	// border from sitting against mid-word transcript fragments.
+	DimBackground bool `json:"dim_background"`
 	// Editor configures the user-initiated external-editor action in diff
 	// review. Command and Args are executed directly without a shell. Args may
 	// use {file}, {line}, and {column} placeholders.
@@ -373,6 +380,7 @@ func Defaults() Config {
 			AgentIntegration:   "manual",
 			AlternateScreen:    true,
 			Mouse:              true,
+			DimBackground:      true,
 			Keybindings:        DefaultKeybindings(),
 		},
 	}

@@ -1371,15 +1371,16 @@ func (m Model) View() string {
 	sections = append(sections, m.renderComposer())
 	sections = append(sections, m.renderStatusBar())
 	base := strings.Join(sections, "\n")
+	dim := m.runtime.Config.Options.DimBackground
 	switch {
 	case m.agentIntegration != nil:
-		return placeOverlay(base, m.renderAgentIntegration(), m.width, m.height)
+		return placeOverlay(base, m.renderAgentIntegration(), m.width, m.height, dim)
 	case m.hunkReview != nil:
-		return placeOverlay(base, m.renderHunkReview(), m.width, m.height)
+		return placeOverlay(base, m.renderHunkReview(), m.width, m.height, dim)
 	case m.pending != nil:
-		return placeOverlay(base, m.renderApproval(), m.width, m.height)
+		return placeOverlay(base, m.renderApproval(), m.width, m.height, dim)
 	case m.question != nil:
-		return placeOverlay(base, m.renderQuestion(), m.width, m.height)
+		return placeOverlay(base, m.renderQuestion(), m.width, m.height, dim)
 	default:
 		return base
 	}

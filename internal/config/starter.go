@@ -37,6 +37,7 @@ func WriteStarter(path string, global bool) error {
 		AlternateScreen             bool              `json:"alternate_screen"`
 		Mouse                       bool              `json:"mouse"`
 		ReducedMotion               bool              `json:"reduced_motion"`
+		DimBackground               bool              `json:"dim_background"`
 		Keybindings                 map[string]string `json:"keybindings"`
 	}
 	type starterConfig struct {
@@ -86,6 +87,7 @@ func WriteStarter(path string, global bool) error {
 			AlternateScreen:             true,
 			Mouse:                       true,
 			ReducedMotion:               false,
+			DimBackground:               true,
 			Keybindings:                 DefaultKeybindings(),
 		}
 	} else {
@@ -423,6 +425,11 @@ const configReferenceJSONC = `
     // Optional. false preserves the animated working indicator. true uses a
     // static marker without changing input, cancellation, or other controls.
     "reduced_motion": false,
+    // true drops colour from the screen behind an approval or a question so
+    // the dialog is plainly the focused element. false leaves the transcript
+    // at full saturation, which is what you want for a screenshot. The
+    // cleared gutter around the dialog is kept either way.
+    "dim_background": true,
     // Global TUI actions are remappable. Approval/question decision keys stay
     // fixed and are always shown in their dialog.
     "keybindings": {

@@ -17,7 +17,7 @@ import (
 func TestOverlayClearsAGutterAroundTheModal(t *testing.T) {
 	base := strings.Repeat(strings.Repeat("x", 40)+"\n", 9) + strings.Repeat("x", 40)
 	overlay := "╭────╮\n│ hi │\n╰────╯"
-	got := placeOverlay(base, overlay, 40, 10)
+	got := placeOverlay(base, overlay, 40, 10, true)
 	lines := strings.Split(got, "\n")
 
 	overlayWidth, overlayHeight := 6, 3
@@ -39,12 +39,44 @@ func TestOverlayDimsTheBaseLayer(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(prior) })
 
 	colored := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3864")).Render(strings.Repeat("transcript ", 4))
-	got := placeOverlay(colored+"\n"+colored, "╭──╮\n╰──╯", 40, 6)
+	got := placeOverlay(colored+"\n"+colored, "╭──╮\n╰──╯", 40, 6, true)
 	if strings.Contains(got, "38;2;255;56;100") {
 		t.Fatalf("the base layer kept its foreground colour under a modal:\n%q", got)
 	}
 	if !strings.Contains(ansi.Strip(got), "transcript") {
 		t.Fatal("the base layer should still be readable, just dimmed")
+	}
+}
+
+// options.dim_background=false exists for a screenshot, and for anyone who
+// simply prefers the colour: the gutter still separates the dialog from what
+// it covers, so nothing about reading the modal depends on the dimming.
+func TestOverlayKeepsColourWhenDimmingIsOff(t *testing.T) {
+	prior := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prior) })
+
+	colored := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3864")).Render(strings.Repeat("transcript ", 4))
+	got := placeOverlay(colored+"\n"+colored, "╭──╮\n╰──╯", 40, 6, false)
+	if !strings.Contains(got, "38;2;255;56;100") {
+		t.Fatalf("the base layer should have kept its foreground colour:\n%q", got)
+	}
+	if !strings.Contains(ansi.Strip(got), "╭──╮") {
+		t.Fatal("the modal should still be composited over the base layer")
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if width := ansi.StringWidth(line); width != 40 {
+			t.Fatalf("undimmed line width = %d, want 40: %q", width, line)
+		}
+	}
+}
+
+// The default is on. A model built from the shipped defaults must dim, or the
+// option would be a setting nobody chose.
+func TestDimBackgroundDefaultsOn(t *testing.T) {
+	m := newTestModel(t)
+	if !m.runtime.Config.Options.DimBackground {
+		t.Fatal("dim_background should default to true")
 	}
 }
 

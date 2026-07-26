@@ -187,7 +187,7 @@ func TestModalUsesActiveThemeBorder(t *testing.T) {
 func TestPlaceOverlayPreservesScreenDimensions(t *testing.T) {
 	base := strings.Repeat("underlying transcript line\n", 9) + "status"
 	overlay := "╭────╮\n│ hi │\n╰────╯"
-	got := placeOverlay(base, overlay, 40, 10)
+	got := placeOverlay(base, overlay, 40, 10, true)
 	lines := strings.Split(got, "\n")
 	if len(lines) != 10 {
 		t.Fatalf("height = %d, want 10", len(lines))

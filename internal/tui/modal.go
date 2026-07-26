@@ -410,11 +410,11 @@ func scrim(line string) string {
 
 var scrimStyle = lipgloss.NewStyle().Faint(true)
 
-// placeOverlay composites a centered modal over the existing screen. The base
-// layer is dimmed and a gutter is cleared around the dialog, so the columns
-// framing it are blank instead of mid-word transcript fragments that read as
-// a corrupted redraw.
-func placeOverlay(base, overlay string, width, height int) string {
+// placeOverlay composites a centered modal over the existing screen. A gutter
+// is cleared around the dialog so the columns framing it are blank instead of
+// mid-word transcript fragments that read as a corrupted redraw. The base
+// layer is dimmed as well unless dim is false — see options.dim_background.
+func placeOverlay(base, overlay string, width, height int, dim bool) string {
 	if width <= 0 || height <= 0 || overlay == "" {
 		return base
 	}
@@ -426,7 +426,11 @@ func placeOverlay(base, overlay string, width, height int) string {
 		baseLines = append(baseLines, "")
 	}
 	for i := range baseLines {
-		baseLines[i] = fitLine(scrim(baseLines[i]), width)
+		line := baseLines[i]
+		if dim {
+			line = scrim(line)
+		}
+		baseLines[i] = fitLine(line, width)
 	}
 
 	overlayLines := strings.Split(overlay, "\n")
