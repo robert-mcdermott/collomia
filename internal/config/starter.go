@@ -337,6 +337,23 @@ const configReferenceJSONC = `
     // offline override: false denies sandboxed command network access. It does
     // not affect providers or remote MCP, which run in the Collomia process.
     "sandbox_allow_network": false,
+    // off | scoped. off (the default) leaves sandbox_allow_network above as the
+    // all-or-nothing egress control. scoped is the narrower alternative: the OS
+    // sandbox denies direct remote traffic, and the command is pointed at a
+    // loopback broker that dials only the hosts named by "allow" rules with a
+    // "host" — the same rules the policy layer already matches, so there is no
+    // second list to keep in step. A refused destination fails with a message
+    // naming the host and this setting.
+    //
+    // macOS only, and deliberately so. Seatbelt can deny remote egress while
+    // leaving loopback reachable, which is what makes this enforcement rather
+    // than a convention. Linux Landlock filters TCP by port and never by
+    // address, so an allowlist would be bypassable on the broker's own port;
+    // Windows AppContainer blocks loopback to unpackaged services, so a
+    // sandboxed command cannot reach the broker at all. On both, "scoped" is
+    // refused under "sandbox": "require" and degrades visibly under "auto",
+    // leaving sandbox_allow_network in charge. No preset sets this.
+    "sandbox_egress": "off",
     // The compatibility default is true (broad command reads). Set false to
     // deny ordinary user-data reads outside the workspace while retaining the
     // runtime roots needed to launch normal system tools. Add only required

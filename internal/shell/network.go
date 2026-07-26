@@ -314,6 +314,12 @@ func networkPositionals(name string, args []string) []string {
 // MCP server and a command that contacts it identically.
 func HostFromURL(raw string) (string, bool) { return normalizeURLHost(raw) }
 
+// NormalizeHost reduces an authority — `host`, `host:port`, or a bracketed
+// IPv6 literal — to the comparable bare hostname recorded on an Analysis. The
+// egress broker normalizes proxy destinations through this same function so a
+// host a rule names and a host the broker dials cannot drift apart.
+func NormalizeHost(authority string) (string, bool) { return normalizeHost(authority) }
+
 // normalizeURLHost reads the host of a scheme-qualified URL argument.
 func normalizeURLHost(arg string) (string, bool) {
 	scheme := strings.Index(arg, "://")

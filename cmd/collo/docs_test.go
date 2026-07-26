@@ -162,42 +162,46 @@ func TestEverySlashCommandIsDiscoverable(t *testing.T) {
 	}
 }
 
-// Install instructions are copy-pasted. A version that was never released
-// fails with a confusing download error, so every version literal in the
-// install guide must be a tag this repository actually has.
-func TestInstallGuideCitesReleasedVersionsOnly(t *testing.T) {
+// Install instructions are copy-pasted, so a version literal in them is a
+// maintenance obligation: it names a real download that has to keep existing,
+// and it goes stale the moment VERSION moves.
+//
+// This guard used to accept any literal that matched a tag in the checkout.
+// That made it pass on a developer machine, where every tag is present, and
+// fail only in the release pipeline, whose `qualify` job checks out a single
+// tag shallowly — so the allowed set collapsed to VERSION alone and a
+// correct-looking guide failed the release. It was a release-time surprise
+// twice.
+//
+// The rule is therefore the stronger and tag-independent one: the install
+// guide carries no concrete versions at all, only `vX.Y.Z` placeholders the
+// reader substitutes. Nothing can go stale, and this fails on an ordinary
+// branch push rather than during a release.
+func TestInstallGuideCitesNoConcreteVersions(t *testing.T) {
 	root := repoRoot(t)
 	guide, err := os.ReadFile(filepath.Join(root, "docs", "INSTALLING.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, err := os.ReadFile(filepath.Join(root, "VERSION"))
-	if err != nil {
-		t.Fatal(err)
+	found := regexp.MustCompile(`v\d+\.\d+\.\d+(?:-[a-z0-9.]+)?`).FindAllString(string(guide), -1)
+	if len(found) > 0 {
+		t.Errorf("docs/INSTALLING.md cites concrete version(s) %v; use the vX.Y.Z placeholder instead so install examples cannot go stale when VERSION moves", unique(found))
 	}
-	released := map[string]bool{strings.TrimSpace(string(current)): true}
-	// Tags are not available in every checkout (shallow clones, archives), so
-	// treat the VERSION file as authoritative and accept anything at or below
-	// it that the guide cites as an explicit older-version example.
-	tags, err := os.ReadDir(filepath.Join(root, ".git", "refs", "tags"))
-	if err == nil {
-		for _, tag := range tags {
-			released[tag.Name()] = true
-		}
-	} else {
-		t.Skip("no tag information in this checkout")
-	}
-	for _, m := range regexp.MustCompile(`v\d+\.\d+\.\d+(?:-[a-z0-9.]+)?`).FindAllString(string(guide), -1) {
-		if !released[m] {
-			t.Errorf("docs/INSTALLING.md cites %s, which is not a released version (have: %v)", m, keys(released))
-		}
+	// A guide with neither a literal nor a placeholder would satisfy the check
+	// above by having lost its pinning instructions entirely.
+	if !strings.Contains(string(guide), "vX.Y.Z") {
+		t.Error("docs/INSTALLING.md no longer shows how to pin a version; the vX.Y.Z placeholder examples are missing")
 	}
 }
 
-func keys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+func unique(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
 	}
 	return out
 }

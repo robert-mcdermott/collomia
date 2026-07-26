@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/egress"
 )
 
 // stance is the compact, always-visible summary of how contained this session
@@ -134,6 +135,7 @@ func (m Model) securityContent(width int) string {
 	if strings.Contains(sandboxSummary, "unavailable") || strings.Contains(sandboxSummary, "degraded") {
 		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ commands are running with less containment than requested; run collo doctor", max(1, width))) + "\n")
 	}
+	b.WriteString(kv("egress", egressSummary(permissions)) + "\n")
 	b.WriteString(kv("command env", orDefault(permissions.CommandEnv, "minimal when sandboxed")) + "\n")
 	b.WriteString(kv("outside reads", fmt.Sprintf("%t (built-in file tools)", permissions.AllowOutsideWorkspace)) + "\n")
 
@@ -145,6 +147,28 @@ func (m Model) securityContent(width int) string {
 	}
 	b.WriteString(m.styles.muted.Render("  full reference: collo config reference · docs/SECURITY.md") + "\n\n")
 	return b.String()
+}
+
+// egressSummary reports what a sandboxed command can actually reach, which is
+// not always what the setting asks for: scoped egress is enforceable only
+// where the backend can deny remote traffic while keeping loopback reachable.
+// A platform that cannot do that says so here rather than showing "scoped" and
+// quietly behaving like the coarse switch.
+func egressSummary(permissions appconfig.Permissions) string {
+	if !strings.EqualFold(strings.TrimSpace(permissions.SandboxEgress), appconfig.SandboxEgressScoped) {
+		if permissions.SandboxAllowNetwork {
+			return "all-or-nothing — command networking allowed"
+		}
+		return "all-or-nothing — command networking denied"
+	}
+	allowlist := egress.FromRules(permissions.Rules)
+	if supported, why := egress.Supported(); !supported {
+		return "scoped requested but unavailable — " + why
+	}
+	if allowlist.Empty() {
+		return "scoped — no host rule set, so every outbound connection is refused"
+	}
+	return fmt.Sprintf("scoped — brokered to %d allowed host pattern(s)", len(allowlist.Patterns()))
 }
 
 // credentialSummary states what reaching a key or token store actually does,

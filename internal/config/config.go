@@ -165,6 +165,19 @@ type Permissions struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// SandboxAllowNetwork permits network egress inside the sandbox.
 	SandboxAllowNetwork bool `json:"sandbox_allow_network,omitempty"`
+	// SandboxEgress selects how a sandboxed command reaches the network:
+	// "off" (the default) leaves SandboxAllowNetwork as the all-or-nothing
+	// control, while "scoped" denies direct remote egress at the OS level and
+	// routes the command through a loopback broker that dials only the hosts
+	// named by host-scoped allow rules.
+	//
+	// This is enforcement only where the sandbox backend can deny direct
+	// remote traffic while leaving loopback reachable, which today means macOS
+	// alone. Linux Landlock filters TCP by port and never by address, and
+	// Windows AppContainer blocks loopback to unpackaged services outright, so
+	// on those platforms "scoped" is refused under sandbox=require and
+	// visibly degrades to SandboxAllowNetwork under auto. See internal/egress.
+	SandboxEgress string `json:"sandbox_egress,omitempty"`
 	// SandboxAllowReadOutsideWorkspace keeps the compatibility default of
 	// broad filesystem reads inside the command sandbox. Set it to false to
 	// confine reads to the workspace, system runtime paths, temporary
@@ -534,6 +547,14 @@ const (
 	ProtectCredentialsDeny   = "deny"
 )
 
+// Sandbox egress postures.
+const (
+	// SandboxEgressOff keeps sandbox_allow_network as the only egress control.
+	SandboxEgressOff = "off"
+	// SandboxEgressScoped denies direct remote egress and brokers the rest.
+	SandboxEgressScoped = "scoped"
+)
+
 // ProtectCredentialsSettings lists the selectable settings in increasing
 // strictness.
 func ProtectCredentialsSettings() []string {
@@ -558,6 +579,13 @@ type preset struct {
 // presets deliberately omit permissions.mode. Autonomy is the one choice a
 // user should make knowingly; a bundle that quietly selected autopilot would
 // be exactly the surprise these presets exist to avoid.
+//
+// They also omit permissions.sandbox_egress, for the same reason hardened does
+// not fold in "sandbox_allow_network": false. Scoped egress is enforceable on
+// macOS only, so putting it in a cross-platform bundle would make one preset
+// name mean genuinely different containment on different machines — and it
+// would break any build whose registries are not yet named by an allow rule.
+// It stays a deliberate extra line the user writes and can read back.
 var presets = map[string]preset{
 	PresetStandard: {
 		Summary:                          "platform sandbox where available, command networking and broad reads on",
@@ -655,6 +683,7 @@ var containmentRank = map[string]map[string]int{
 	"command_env":         {"full": 0, "": 1, "minimal": 2},
 	"network":             {"open": 0, "scoped": 1},
 	"commands":            {"open": 0, "allowlist": 1},
+	"sandbox_egress":      {"": 0, SandboxEgressOff: 0, SandboxEgressScoped: 1},
 	"protect_credentials": {"off": 0, "": 1, ProtectCredentialsPrompt: 1, ProtectCredentialsDeny: 2},
 }
 
@@ -701,6 +730,7 @@ func tightenContainment(inherited, declared Permissions) (Permissions, []Clamped
 	enum("command_env", inherited.CommandEnv, declared.CommandEnv, func(v string) { result.CommandEnv = v })
 	enum("network", inherited.Network, declared.Network, func(v string) { result.Network = v })
 	enum("commands", inherited.Commands, declared.Commands, func(v string) { result.Commands = v })
+	enum("sandbox_egress", inherited.SandboxEgress, declared.SandboxEgress, func(v string) { result.SandboxEgress = v })
 	enum("protect_credentials", inherited.ProtectCredentials, declared.ProtectCredentials, func(v string) {
 		result.ProtectCredentials = v
 	})
@@ -950,6 +980,11 @@ func (c Config) ValidateFields() []FieldError {
 	case "", "open", "allowlist":
 	default:
 		errs = append(errs, FieldError{"permissions.commands", fmt.Sprintf("must be open or allowlist (got %q)", c.Permissions.Commands)})
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Permissions.SandboxEgress)) {
+	case "", SandboxEgressOff, SandboxEgressScoped:
+	default:
+		errs = append(errs, FieldError{"permissions.sandbox_egress", fmt.Sprintf("must be off or scoped (got %q)", c.Permissions.SandboxEgress)})
 	}
 	switch c.Permissions.CommandEnv {
 	case "", "full", "minimal":

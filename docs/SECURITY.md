@@ -226,8 +226,8 @@ a hidden mode:
   whichever is stricter.
 - **A repository can tighten containment but never weaken it.** This is one
   rule with no exceptions, covering `sandbox`, `sandbox_allow_network`,
-  `sandbox_allow_read_outside_workspace`, `command_env`, `network`,
-  `commands`, and `allow_outside_workspace`, and applying identically to an
+  `sandbox_egress`, `sandbox_allow_read_outside_workspace`, `command_env`,
+  `network`, `commands`, and `allow_outside_workspace`, and applying identically to an
   explicit field and to a preset. A project file's `frictionless` cannot undo
   a global `hardened`, and neither can a project file's explicit
   `"sandbox": "off"`. Refusals are listed by `collo config show` and
@@ -261,9 +261,10 @@ configured endpoint of an HTTP-transport MCP server. Those endpoints feed the
 It describes what a command *says* it will contact. Any approved program can
 open a socket to anywhere your account can reach without ever naming it on a
 command line, and this layer will not see it. Outbound access for sandboxed
-commands remains governed by the all-or-nothing
-`permissions.sandbox_allow_network`. Endpoint-scoped OS-level egress
-confinement is not implemented.
+commands is governed by the OS sandbox: the all-or-nothing
+`permissions.sandbox_allow_network` by default, or the per-host broker
+described under [Scoped egress](#scoped-egress-macos-only), which is
+enforcement on macOS only.
 
 Three properties keep the policy layer honest:
 
@@ -345,6 +346,48 @@ process and are not blocked by command-sandbox read/network policy.
   matching a local ephemeral address cannot accidentally reopen remote egress.
 - `sandbox-exec` is deprecated by Apple but functional; treated as
   best-effort OS enforcement, tested in `internal/tools/command_test.go`.
+
+#### Scoped egress (macOS only)
+
+`permissions.sandbox_egress: "scoped"` narrows the all-or-nothing switch to a
+per-host allowlist. Under it, the sandbox denies direct remote egress while
+leaving loopback reachable, and the command is pointed at a Collomia-owned
+proxy on `127.0.0.1` that dials only the hosts named by `allow` rules carrying
+a `host`. The allowlist is the same rule list the policy layer evaluates, so
+there is no second place to describe reachable hosts.
+
+Exact properties:
+
+- **The destination comes from the proxy request itself** — the CONNECT
+  authority or an absolute-form request URI — and the broker dials exactly that
+  host. A client cannot name one destination and reach another, which is why no
+  SNI inspection is involved.
+- **No TLS interception.** An approved tunnel is spliced byte for byte. No
+  certificate is substituted and nothing decrypts the traffic.
+- **An unreadable destination is refused, not guessed.** The broker normalizes
+  authorities through the same function the policy layer uses, and refuses
+  anything it cannot read exactly.
+- **Background processes are brokered on the same terms**, with the broker's
+  lifetime following the process rather than the tool call that started it.
+- **Inherited proxy variables are dropped** before the broker's are set, so a
+  `NO_PROXY` in the parent environment cannot route a command around it.
+- **Refusals are reported**, naming the host and the rule that would permit it,
+  in the command's output and the audit ledger.
+
+This is enforcement only in combination with a sandbox that denies direct
+remote traffic, and that combination exists on macOS alone:
+
+| platform | scoped egress | reason |
+| --- | --- | --- |
+| macOS (Seatbelt) | enforced | remote egress denied, loopback kept, so the broker is the only route out |
+| Linux (Landlock) | unavailable | Landlock filters TCP by port and never by address; allowing the broker's port allows every remote host on that port, and the adversary this targets chooses its own port |
+| Windows (AppContainer) | unavailable | AppContainer blocks loopback to unpackaged local services, so a sandboxed command cannot reach the broker at all |
+
+On Linux and Windows the setting is refused under `sandbox: "require"` and
+degrades visibly under `auto`, leaving `sandbox_allow_network` in charge.
+With `sandbox: "off"` no broker starts anywhere: without OS-level denial a
+proxy is a convention any program can ignore, and Collomia does not present a
+cooperative control as a boundary. No preset sets `sandbox_egress`.
 
 **Linux: Landlock** (kernel 5.13+, via a hidden `collo __landlock`
 re-exec shim — Landlock restricts the calling process, so the command is

@@ -37,7 +37,8 @@ also shipped:
   sandbox backends with compatibility-first `auto` enforcement by default,
   visible degradation, and capability-aware fail-closed `require` behavior;
 - scoped permissions, conservative shell analysis, catastrophic-command
-  denials, credential-store protection, secret redaction, and an audit ledger;
+  denials, credential-store protection, macOS per-host brokered command egress,
+  secret redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
   artifacts, rewind/fork, and fail-stop persistence handling;
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
@@ -63,11 +64,71 @@ also shipped:
 
 Collomia is suitable for beta use with the documented limits. It should not
 claim 1.0 or fully safe unattended execution until the remaining P0 security
-and reliability gates are complete.
+and reliability gates are complete. Those now live entirely in Phase 8 —
+independent review, sustained adversarial campaigns, and the reliability
+campaigns — since the last P0 outside it was reclassified on the evidence that
+the enforced all-or-nothing network boundary it was meant to add already
+existed on all three platforms.
 
 No wave is currently active. The completed waves below are the most recent
 work; see [Recommended next sequence](#recommended-next-sequence) for what the
 dependency order argues for next.
+
+## Completed wave — scoped egress on macOS
+
+**Goal:** Make the sandbox's network boundary something a user will leave
+switched on, by replacing an all-or-nothing switch with a per-host one — and
+be exact about the two platforms where that is not possible.
+
+- [x] Add `permissions.sandbox_egress` (`off`/`scoped`, default `off`). Under
+  `scoped` the sandbox denies direct remote egress while keeping loopback
+  reachable, and the command is routed through a Collomia-owned loopback
+  CONNECT broker that dials only the hosts named by host-scoped `allow` rules.
+  The allowlist is built from those rules rather than configured separately,
+  so there is no second list to keep in step.
+- [x] Take the destination from the proxy request itself and dial exactly that
+  host, with no TLS interception — an approved tunnel is spliced byte for byte.
+  This also removes any need for SNI inspection: a client cannot name one
+  destination and reach another.
+- [x] Ship no Linux backend, and say why. Landlock filters TCP by destination
+  port and never by address, so reaching a loopback broker means allowing that
+  port outright — which also allows every remote host on it, and the adversary
+  this control targets chooses its own port. A control defeated by the thing it
+  guards against is worse than an honest coarse one, exactly as with the
+  credential store's rejected encrypted-file fallback.
+- [x] Ship no Windows backend, and say why. AppContainer blocks loopback to
+  unpackaged local services regardless of network capability SIDs, so a
+  sandboxed command cannot reach the broker at all — no route rather than a
+  weaker one. The documented escape needs administrator rights and persistent
+  machine state, which the inbox-API-only Windows backend does not take.
+- [x] Never inject proxy variables where they cannot work: under `require` the
+  unsupported platforms fail closed, under `auto` they degrade visibly to
+  `sandbox_allow_network`, and with `sandbox: "off"` no broker starts anywhere.
+  A proxy the user believes is a boundary, which any program ignoring
+  `HTTP_PROXY` walks past, is worse than no claim at all.
+- [x] Drop inherited proxy variables before setting the broker's, so an
+  ambient `NO_PROXY` cannot route a command around it and the result does not
+  depend on how a library resolves duplicate environment keys.
+- [x] Broker background processes on the same terms, with the broker's lifetime
+  following the process rather than the tool call — otherwise `start_process`
+  would have been a documented way around the control.
+- [x] Collapse command-runner construction into one site. Delegated
+  verification built its own runner, which is how a containment field ends up
+  applied in the primary session and silently absent for delegated agents; a
+  source-scraping test now fails on a second construction site.
+- [x] Report the stance where people look: the effective posture and allowlist
+  size in `collo doctor` and the Session tab, a per-endpoint forecast in
+  `collo policy check`, and a refusal that names the host and the rule that
+  would permit it. The generic sandbox hint is suppressed after an egress
+  refusal, because pointing at `sandbox_allow_network` would send the user to
+  the switch this feature exists to replace.
+- [x] Keep no preset setting it. Scoped egress is enforceable on macOS only, so
+  a cross-platform bundle selecting it would make one preset name mean
+  different containment on different machines.
+
+**Behavior change:** none by default — `sandbox_egress` defaults to `off` and
+no preset selects it. Adopting `scoped` is a deliberate change; see the
+[compatibility note](docs/COMPATIBILITY.md#scoped-egress).
 
 ## Completed wave — first run and code intelligence
 
@@ -305,15 +366,38 @@ claiming enforcement the policy layer does not provide.
   autopilot. Recognition is by conventional path, so it is a usable default
   rather than secret detection; enforcing what a running process may read
   remains sandbox read confinement's job.
-- [ ] **P0 — Enforced endpoint-scoped egress:** the policy surface, declared
-  endpoints, and scoped grants ship; OS-level enforcement does not. Add a
-  Collomia-owned loopback egress broker that allows only policy-matched
-  destinations by CONNECT/SNI host without TLS interception, deny direct
-  remote egress in the sandbox where the backend supports it (macOS Seatbelt,
-  Linux Landlock ABI ≥ 4), degrade visibly on Windows AppContainer given its
-  unpackaged-loopback limitation, and keep `require` fail-closed. Preserve
-  command networking by default until this can replace the all-or-nothing
-  switch without breaking common tooling.
+- [x] **P1 — Scoped egress on macOS:** `permissions.sandbox_egress: "scoped"`
+  denies direct remote egress in the sandbox and routes commands through a
+  Collomia-owned loopback CONNECT broker that dials only the hosts named by
+  host-scoped `allow` rules, without TLS interception. Foreground commands,
+  background processes, and delegated verification are brokered on the same
+  terms through one configuration site.
+
+  **This was reclassified from P0 during implementation.** The all-or-nothing
+  `sandbox_allow_network` is enforced on all three platforms already, so the
+  safety floor never depended on this; what was missing was a version of that
+  floor people would leave switched on. It is a usability-of-security feature
+  over an existing enforced control, not a hole — and with it landing, no P0
+  remains outside Phase 8.
+- [x] **P1 — State the per-platform egress limits rather than degrade
+  vaguely:** the three backends do not sit on a gradient, so they are
+  documented as three distinct claims. macOS Seatbelt denies remote traffic
+  while keeping loopback, which is what makes the broker a boundary. Linux
+  Landlock filters TCP by port and never by address, so allowing the broker's
+  port would allow every remote host on it — an allowlist the adversary it
+  targets picks its own port around, which is why no Linux backend is shipped
+  rather than a weaker one. Windows AppContainer blocks loopback to unpackaged
+  local services, so the design has no route at all there, and its
+  all-or-nothing denial is the most complete of the three. Both refuse under
+  `require` and degrade visibly under `auto`; with `sandbox: "off"` no broker
+  starts anywhere, because a cooperative proxy is not presented as a boundary.
+- [ ] **P2 — Windows scoped egress:** only reachable through a
+  `CheckNetIsolation` loopback exemption (administrator, persistent machine
+  state, documented by Microsoft as a debugging aid) or WFP/firewall filters
+  keyed on the AppContainer SID (administrator, address-based rather than
+  host-based). Both conflict with the Windows backend's no-administrator,
+  inbox-API-only commitment, so this stays deliberately unbuilt rather than
+  half-built.
 - [ ] **P0 — Independent review:** sustain the adversarial suite and obtain an
   independent security assessment before 1.0.
 
@@ -426,18 +510,15 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-1. Build the enforced egress broker on top of the shipped policy surface: a
-   loopback CONNECT/SNI allowlist, sandbox-level denial of direct remote
-   egress where the backend supports it, and honest per-platform degradation.
-   This is the last P0 outside Phase 8.
-2. Gather real beta feedback on named primary profiles, cost estimates,
+1. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
-   new postures.
-3. Add opt-in plan-graph execution using verified results, write scopes,
+   new postures — including scoped egress, whose allowlist ergonomics are best
+   judged against real toolchains rather than predicted.
+2. Add opt-in plan-graph execution using verified results, write scopes,
    dependency readiness, and stale-state invalidation.
-4. Add explicit combined-parent verification and conservative result-ranking
+3. Add explicit combined-parent verification and conservative result-ranking
    criteria without turning a score into permission.
-5. Continue Phase 8 security/reliability campaigns in parallel with every
+4. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 
 ## Exit gates

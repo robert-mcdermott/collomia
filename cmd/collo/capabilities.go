@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 )
 
@@ -19,6 +20,18 @@ type capabilityRow struct {
 func capabilityMatrix() []capabilityRow {
 	sandboxStatus := "unsupported"
 	sandboxNote := "macOS Seatbelt, Linux Landlock, Windows 11 AppContainer + Job Object; no OS backend active on " + runtime.GOOS + "; default auto mode visibly degrades, while require refuses command execution"
+	// Scoped egress is reported by what this platform can actually enforce,
+	// not by what the setting can be set to. A matrix that showed the same
+	// capability everywhere would be exactly the over-claim the feature's
+	// per-platform design exists to avoid.
+	egressStatus := "unsupported"
+	egressNote := "permissions.sandbox_egress=scoped brokers command egress to hosts named by host-scoped allow rules; not enforceable on " + runtime.GOOS
+	if supported, why := egress.Supported(); supported {
+		egressStatus = "experimental"
+		egressNote = "permissions.sandbox_egress=scoped denies direct remote egress in the sandbox and routes commands through a loopback CONNECT broker that dials only hosts named by host-scoped allow rules; no TLS interception; macOS only; refused under sandbox=require elsewhere and visibly degraded under auto; no preset sets it"
+	} else {
+		egressNote += " (" + why + "); refused under sandbox=require and visibly degraded under auto, leaving all-or-nothing sandbox_allow_network in charge"
+	}
 	backend := sandbox.ForPlatform()
 	if backend.Available() == nil {
 		sandboxStatus = "experimental"
@@ -59,6 +72,7 @@ func capabilityMatrix() []capabilityRow {
 		{"permissions", "catastrophic command protection", "implemented", "non-overridable outcome denials plus mandatory one-time confirmation for destructive but legitimate commands; same checks for foreground, PTY, and background execution"},
 		{"permissions", "credential-store protection", "implemented", "permissions.protect_credentials off/prompt/deny, default prompt; recognized by conventional path, not content inspection; a blanket allow rule, tool-wide always, and autopilot never cover one, while a rule naming the path and a session grant scoped to the exact file do"},
 		{"permissions", "audit ledger", "implemented", "JSONL ledger outside the workspace"},
+		{"permissions", "scoped egress broker", egressStatus, egressNote},
 		{"permissions", "OS sandbox", sandboxStatus, sandboxNote},
 		{"config", "layering defaults→user→project→env", "implemented", "inspect with `collo config show`"},
 		{"config", "schema versioning + validation", "implemented", "`collo config validate [--strict]`; documented config/session/event compatibility and migration policy"},

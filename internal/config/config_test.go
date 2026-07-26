@@ -1068,3 +1068,54 @@ func TestUnknownCredentialSettingIsRejected(t *testing.T) {
 		t.Fatal("invalid setting was accepted")
 	}
 }
+
+// A project cannot turn scoped egress back off, exactly as it cannot weaken
+// any other containment setting.
+func TestProjectLayerCannotWeakenSandboxEgress(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"sandbox_egress":"scoped"}}`, `{"permissions":{"sandbox_egress":"off"}}`)
+	if cfg.Permissions.SandboxEgress != SandboxEgressScoped {
+		t.Fatalf("sandbox_egress = %q, want scoped", cfg.Permissions.SandboxEgress)
+	}
+	found := false
+	for _, clamped := range cfg.Clamped {
+		if clamped.Field == "sandbox_egress" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a refused weakening must be reported rather than applied silently")
+	}
+}
+
+func TestProjectLayerCanTightenSandboxEgress(t *testing.T) {
+	cfg := loadWithGlobal(t, "", `{"permissions":{"sandbox_egress":"scoped"}}`)
+	if cfg.Permissions.SandboxEgress != SandboxEgressScoped {
+		t.Fatalf("sandbox_egress = %q, want scoped", cfg.Permissions.SandboxEgress)
+	}
+}
+
+func TestSandboxEgressRejectsUnknownValue(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.SandboxEgress = "enforced"
+	found := false
+	for _, err := range cfg.ValidateFields() {
+		if err.Field == "permissions.sandbox_egress" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected a validation error for an unknown sandbox_egress posture")
+	}
+}
+
+// Scoped egress is enforceable on macOS only, so folding it into a
+// cross-platform bundle would make one preset name mean different containment
+// on different machines.
+func TestNoPresetEnablesSandboxEgress(t *testing.T) {
+	for _, name := range PresetNames() {
+		cfg := loadWithGlobal(t, "", `{"permissions":{"preset":"`+name+`"}}`)
+		if cfg.Permissions.SandboxEgress == SandboxEgressScoped {
+			t.Errorf("preset %q enabled scoped egress; it must stay an explicit opt-in", name)
+		}
+	}
+}

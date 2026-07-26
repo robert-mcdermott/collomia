@@ -10,6 +10,7 @@ import (
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/credstore"
+	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/logging"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
@@ -162,12 +163,32 @@ func runDoctorCommand(opts options) error {
 				}
 				add("sandbox", status, detail+"; requested policy is missing "+strings.Join(missing, " and "))
 			} else {
-				if allowNetwork {
+				scoped := strings.EqualFold(strings.TrimSpace(cfg.Permissions.SandboxEgress), appconfig.SandboxEgressScoped)
+				switch {
+				case scoped:
+					// The setting alone does not say what a command can reach:
+					// scoped egress is enforceable only where the backend can
+					// deny remote traffic while keeping loopback reachable.
+					supported, why := egress.Supported()
+					allowlist := egress.FromRules(cfg.Permissions.Rules)
+					switch {
+					case !supported:
+						detail += "; sandbox_egress=scoped is not enforceable here (" + why + "), so command networking follows sandbox_allow_network"
+						add("sandbox", warnOrFail(mode), detail)
+					case allowlist.Empty():
+						detail += "; command network is brokered but no allow rule names a host, so every outbound connection will be refused"
+						add("sandbox", "warn", detail)
+					default:
+						detail += fmt.Sprintf("; command network is brokered to %d allowed host pattern(s): %s", len(allowlist.Patterns()), strings.Join(allowlist.Patterns(), ", "))
+						add("sandbox", "ok", detail)
+					}
+				case allowNetwork:
 					detail += "; command network is allowed"
-				} else {
+					add("sandbox", "ok", detail)
+				default:
 					detail += "; command network is denied"
+					add("sandbox", "ok", detail)
 				}
-				add("sandbox", "ok", detail)
 			}
 		}
 	}
@@ -331,4 +352,14 @@ func orDefaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// warnOrFail escalates a degraded sandbox report to a failure under require,
+// which is the mode that promises to fail closed rather than continue with
+// less containment than was asked for.
+func warnOrFail(mode string) string {
+	if mode == string(sandbox.ModeRequire) {
+		return "fail"
+	}
+	return "warn"
 }

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/shell"
@@ -37,6 +38,10 @@ type Process struct {
 	// sandboxWarning is returned when auto mode could apply only part of the
 	// requested policy or had to run without OS enforcement.
 	sandboxWarning string
+	// broker routes this process's egress while it runs. It is closed when the
+	// process exits, so a long-lived server keeps its brokered route for its
+	// whole life and releases the loopback port immediately afterwards.
+	broker *egress.Broker
 }
 
 func (p *Process) status() string {
@@ -163,13 +168,40 @@ func (m *ProcessManager) StopAll() {
 func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process, error) {
 	argv := shellArgv(command)
 	sandboxWarning := ""
-	if runner.SandboxMode == sandbox.ModeAuto || runner.SandboxMode == sandbox.ModeRequire {
-		prepared, err := sandbox.Prepare(runner.Backend, runner.SandboxMode, argv, runner.sandboxPolicy())
+	// A background process must be brokered on the same terms as a foreground
+	// one. Skipping it here would leave start_process as a documented way
+	// around scoped egress, which is the kind of hole a policy layer cannot
+	// afford. The broker's lifetime therefore follows the process, not the
+	// tool call that created it.
+	plan := runner.planEgress()
+	if plan.err != nil {
+		return nil, plan.err
+	}
+	var broker *egress.Broker
+	if plan.broker {
+		started, err := egress.Start(runner.EgressAllowlist, runner.EgressObserve)
 		if err != nil {
+			if runner.SandboxMode == sandbox.ModeRequire {
+				return nil, fmt.Errorf("scoped egress required but the broker could not start: %w", err)
+			}
+			plan.degraded = "scoped egress broker could not start, so command networking followed sandbox_allow_network instead: " + err.Error()
+		} else {
+			broker = started
+		}
+	}
+	if runner.SandboxMode == sandbox.ModeAuto || runner.SandboxMode == sandbox.ModeRequire {
+		prepared, err := sandbox.Prepare(runner.Backend, runner.SandboxMode, argv, runner.sandboxPolicy(broker != nil))
+		if err != nil {
+			if broker != nil {
+				_ = broker.Close()
+			}
 			return nil, err
 		}
 		argv = prepared.Argv
 		sandboxWarning = prepared.Degraded
+	}
+	if plan.degraded != "" {
+		sandboxWarning = strings.TrimSpace(plan.degraded + "\n" + sandboxWarning)
 	}
 	// The process lifetime is owned by the manager, not the tool call's
 	// context: cancelling the turn must not kill a deliberately-started
@@ -177,15 +209,16 @@ func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process
 	procCtx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(procCtx, argv[0], argv[1:]...)
 	cmd.Dir = runner.Workspace
-	if runner.MinimalEnv {
-		cmd.Env = minimalEnv()
-	}
+	cmd.Env = runner.commandEnv(broker)
 	setProcessGroup(cmd)
-	p := &Process{Command: command, Started: time.Now(), output: &limitedBuffer{limit: procOutputCap}, cancel: cancel, doneCh: make(chan struct{}), sandboxWarning: sandboxWarning}
+	p := &Process{Command: command, Started: time.Now(), output: &limitedBuffer{limit: procOutputCap}, cancel: cancel, doneCh: make(chan struct{}), sandboxWarning: sandboxWarning, broker: broker}
 	cmd.Stdout = syncWriter{p}
 	cmd.Stderr = syncWriter{p}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		if broker != nil {
+			_ = broker.Close()
+		}
 		return nil, err
 	}
 	m.mu.Lock()
@@ -196,6 +229,9 @@ func (m *ProcessManager) start(runner *RunCommandTool, command string) (*Process
 	go func() {
 		err := cmd.Wait()
 		cancel()
+		if broker != nil {
+			_ = broker.Close()
+		}
 		p.mu.Lock()
 		p.done = true
 		p.exitErr = err

@@ -89,7 +89,7 @@ Installer overrides:
 # Install a particular release tag.
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh |
-  COLLO_VERSION=v0.1.3 sh
+  COLLO_VERSION=v0.1.8 sh
 
 # Install somewhere else.
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -637,6 +637,11 @@ get `standard`, which is exactly what earlier releases did.
 | `commands` | `open` | `open` | `allowlist` |
 | `command_env` | `full` | `minimal` | `minimal` |
 
+No preset sets `sandbox_egress`. Scoped egress is enforceable on macOS only,
+so folding it into a cross-platform bundle would make one preset name mean
+genuinely different containment on different machines. It stays a line you
+write yourself — see [Scoped egress](#scoped-egress-macos-only).
+
 Four properties make a preset safe to adopt:
 
 - **It is sugar, not a mode.** Every value it chooses is an ordinary field,
@@ -679,7 +684,7 @@ fields that layer did not state itself. It does not matter which is stricter:
 ambiguous.
 
 **Rule 2 — a project file can tighten containment, never weaken it.** This
-applies to `sandbox`, `sandbox_allow_network`,
+applies to `sandbox`, `sandbox_allow_network`, `sandbox_egress`,
 `sandbox_allow_read_outside_workspace`, `command_env`, `network`, `commands`,
 and `allow_outside_workspace`, and it applies the same way to an explicit
 field and to a preset:
@@ -727,6 +732,7 @@ layer is read at all; these rules decide what it may do once it is trusted.
 | `commands` | string | `open` (default) or `allowlist`. Under `allowlist`, a command is never approved automatically unless a rule or a session grant covers every executable it runs. |
 | `sandbox` | string | `off`, `auto`, or `require`; default `auto`. `off` is an explicit compatibility escape hatch available in your global configuration; a project file cannot select it. `require` refuses degraded execution. |
 | `sandbox_allow_network` | boolean | Allows network inside sandboxed shell/background commands. Defaults to `true` for package-manager compatibility; provider and MCP networking is separate. |
+| `sandbox_egress` | `off` \| `scoped` | Narrows the switch above from all-or-nothing to per-host. Under `scoped`, the OS sandbox denies direct remote traffic and commands are routed through a Collomia-owned loopback broker that dials only the hosts named by `allow` rules. macOS only; refused under `sandbox: "require"` elsewhere and visibly degraded under `auto`. See [Scoped egress](#scoped-egress-macos-only). |
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
 | `sandbox_writable_roots` | string list | Additional narrowly scoped read/write roots for sandboxed commands, resolved from the workspace when relative. Every writable root is implicitly readable. |
@@ -772,8 +778,67 @@ endpoints, exactly as it never covers a command the analyzer could not read;
 This is Collomia's own policy layer, not egress enforcement. A program that
 opens a socket without saying so on its command line — an arbitrary binary, a
 compiler plugin, a test suite — declares no endpoint here. The boundary for
-that traffic is the OS sandbox's `sandbox_allow_network`, which remains
-all-or-nothing.
+that traffic is the OS sandbox: `sandbox_allow_network` by default, or the
+per-host broker described next.
+
+### Scoped egress (macOS only)
+
+`sandbox_allow_network` is all-or-nothing, which makes it the first thing
+people turn off when a build needs a package registry. `sandbox_egress:
+"scoped"` is the narrower alternative:
+
+```json
+{
+  "permissions": {
+    "sandbox": "auto",
+    "sandbox_egress": "scoped",
+    "rules": [
+      { "action": "allow", "host": "proxy.golang.org",  "reason": "Go module proxy" },
+      { "action": "allow", "host": "sum.golang.org",    "reason": "Go checksum database" },
+      { "action": "allow", "host": "example.com",       "reason": "smoke-test target" },
+      { "action": "allow", "host": "*.githubusercontent.com", "reason": "raw file fetches" }
+    ]
+  }
+}
+```
+
+`reason` is optional but worth writing: it appears in the approval prompt when
+a rule fires and in the audit ledger, so a rule explains itself months later
+rather than reading as an unexplained exception.
+
+Under `scoped`, the OS sandbox denies direct remote traffic while leaving
+loopback reachable, and the command is pointed at a Collomia-owned proxy on
+loopback that dials only the hosts named by `allow` rules with a `host`. It is
+the same rule list the policy layer already matches, so there is no second
+allowlist to keep in step. A refused connection fails with a message naming
+the host and the rule that would permit it, and `collo policy check` will tell
+you in advance which of a command's endpoints the broker would allow.
+
+The broker never inspects or terminates TLS. An approved tunnel is spliced
+byte for byte, so no certificate is substituted and nothing decrypts your
+traffic.
+
+**Why macOS only.** This is enforcement only where the sandbox can deny remote
+traffic while keeping loopback reachable, and the three backends genuinely
+differ:
+
+| platform | scoped egress | why |
+| --- | --- | --- |
+| **macOS** (Seatbelt) | enforced | Seatbelt denies remote egress and keeps loopback, so the broker is the only way out |
+| **Linux** (Landlock) | unavailable | Landlock filters TCP by port and never by address, so allowing the broker's port also allows every remote host on that port — an allowlist the attacker it targets can simply step around |
+| **Windows** (AppContainer) | unavailable | AppContainer blocks loopback to unpackaged local services, so a sandboxed command cannot reach the broker at all |
+
+On Linux and Windows the setting is refused under `"sandbox": "require"` and
+degrades visibly under `"auto"`, leaving `sandbox_allow_network` in charge.
+Neither is left less contained than before: Windows AppContainer enforces
+all-or-nothing denial more completely than either Unix backend, covering UDP
+and DNS.
+
+Two further limits are worth stating plainly. With `"sandbox": "off"` no
+broker is started at all — without OS-level denial a proxy is a convention any
+program can ignore, and presenting that as a boundary would be worse than the
+coarse control. And an endpoint the analyzer could not read in advance is
+still checked, just at connection time rather than at approval time.
 
 ### Allowing and blocking specific endpoints
 
