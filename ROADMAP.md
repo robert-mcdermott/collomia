@@ -76,6 +76,36 @@ No wave is currently active. The completed waves below are the most recent
 work; see [Recommended next sequence](#recommended-next-sequence) for what the
 dependency order argues for next.
 
+## Completed wave — a Windows install that actually installs
+
+**Goal:** Make the documented Windows path work on a stock machine, including
+Windows 11 ARM64, without the user having to understand PowerShell's execution
+policy first.
+
+- [x] Stop detecting the CPU through
+  `[Runtime.InteropServices.RuntimeInformation]::OSArchitecture`. Windows
+  PowerShell 5.1 is a .NET Framework host with no native ARM64 build, and on
+  Windows 11 ARM64 that property is missing, which `Set-StrictMode` turned into
+  a hard `PropertyNotFoundStrict` failure before anything downloaded. The
+  machine-scoped `PROCESSOR_ARCHITECTURE` registry value is read first instead:
+  it reports the real hardware even when PowerShell itself is emulated.
+  `-Architecture`/`COLLO_ARCH` is the escape hatch when every probe fails.
+- [x] Document `irm ... | iex` as the install command. The execution policy
+  governs script *files*, so evaluating the script from memory is unaffected by
+  `Restricted` or `AllSigned` — no `Set-ExecutionPolicy`, no `Unblock-File`,
+  no elevation. The saved-file path is still documented, with the bypass scoped
+  to one invocation rather than changed machine-wide.
+- [x] Keep the caller's session clean, because `iex` runs the script in it.
+  `Set-StrictMode` and `$ErrorActionPreference` moved inside the installer
+  function; a test asserts under Windows PowerShell 5.1 that neither leaks.
+- [x] Update the user PATH by default, with `-NoPathUpdate` to opt out. Write
+  the registry value directly, preserving `REG_EXPAND_SZ`, rather than using
+  `[Environment]::SetEnvironmentVariable`, which rewrites PATH as `REG_SZ` and
+  permanently breaks entries such as `%USERPROFILE%\bin`. A PATH failure warns
+  instead of failing an install whose binary is already in place.
+- [x] Silence the progress bar during download. Windows PowerShell renders it
+  per buffer, which turns a 25 MB `Invoke-WebRequest` into minutes.
+
 ## Completed wave — built-in web search and fetch
 
 **Goal:** Stop the agent from guessing about anything newer than its training

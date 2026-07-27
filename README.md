@@ -76,20 +76,19 @@ checksum, and replaces an existing binary only after the new one passes its
 version check. Set `COLLO_INSTALL_DIR` or `COLLO_VERSION` to override the
 destination or pin a release.
 
-On Windows, download and run the checksum-verifying PowerShell installer. The
-explicit `-AddToPath` option updates the current user's PATH:
+Windows 11 (AMD64 or ARM64) uses the checksum-verifying PowerShell installer:
 
 ```powershell
-$Installer = Join-Path $env:TEMP 'install-collo.ps1'
-[Net.ServicePointManager]::SecurityProtocol = `
-  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -UseBasicParsing `
-  'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
-  -OutFile $Installer
-Get-Content $Installer
-Unblock-File $Installer
-& $Installer -AddToPath
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
 ```
+
+This installs to `%LocalAppData%\Programs\Collomia`, adds that directory to the
+current user's PATH, and needs neither elevation nor an execution-policy
+change: the script is never written to disk as a `.ps1`, so `Restricted` and
+`AllSigned` policies do not block it. Open a new terminal afterwards to pick up
+the PATH change, or pass `-NoPathUpdate` to leave PATH alone. To review the
+script before running it, see
+[Installing Collomia](docs/INSTALLING.md#native-windows-with-powershell).
 
 Each release also publishes a CycloneDX SBOM and GitHub/Sigstore provenance
 attestations. See [Installing Collomia](docs/INSTALLING.md) for direct binary

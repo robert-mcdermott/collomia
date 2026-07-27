@@ -113,37 +113,41 @@ sh install.sh
 
 ### Windows: install with PowerShell
 
-Download and inspect the repository-owned PowerShell installer, then run it.
-It detects AMD64 or ARM64, downloads the binary and checksum manifest, requires
-exactly one valid SHA-256 entry, tests the downloaded executable, and only then
-replaces the installed `collo.exe`. It does not require elevation. PATH changes
-are explicit through `-AddToPath`.
-
 ```powershell
-$Installer = Join-Path $env:TEMP 'install-collo.ps1'
-[Net.ServicePointManager]::SecurityProtocol = `
-  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -UseBasicParsing `
-  'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
-  -OutFile $Installer
-Get-Content $Installer
-Unblock-File $Installer
-& $Installer -AddToPath
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
 ```
 
-The default executable location is
-`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`. Install a pinned release or
-choose another directory with:
+The installer detects AMD64 or ARM64, downloads the binary and checksum
+manifest, requires exactly one valid SHA-256 entry, tests the downloaded
+executable, and only then replaces the installed `collo.exe`. It does not
+require elevation. The default executable location is
+`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`, and that directory is added to
+the current user's PATH, so open a new terminal before running `collo`.
+
+This form is unaffected by the PowerShell execution policy, because the script
+is evaluated from memory rather than run as a `.ps1` file. `Set-ExecutionPolicy`
+and `Unblock-File` are not needed. When you save the installer and run it as a
+file instead, scope the bypass to that one invocation with
+`powershell -ExecutionPolicy Bypass -File .\install-collo.ps1`.
+
+Piping into `iex` cannot pass parameters, so set the environment variables the
+script reads, or build a script block:
 
 ```powershell
-& $Installer -Version v0.2.0-beta.1 -InstallDir "$HOME\bin" -AddToPath
+$env:COLLO_VERSION = 'v0.2.0-beta.1'
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
+
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1))) `
+  -Version v0.2.0-beta.1 -InstallDir "$HOME\bin"
 ```
 
-`COLLO_VERSION`, `COLLO_INSTALL_DIR`, and `COLLO_REPOSITORY` provide equivalent
-defaults. Omit `-AddToPath` when shell configuration must remain unchanged.
-Close a running Collomia process before upgrading because Windows may refuse to
-replace an executable in use. The focused [installation guide](INSTALLING.md)
-also provides a direct `Invoke-WebRequest` binary workflow for organizations
+`COLLO_VERSION`, `COLLO_INSTALL_DIR`, `COLLO_REPOSITORY`, `COLLO_ARCH`, and
+`COLLO_NO_PATH_UPDATE` correspond to `-Version`, `-InstallDir`, `-Repository`,
+`-Architecture`, and `-NoPathUpdate`. Pass `-NoPathUpdate` when shell
+configuration must remain unchanged. Close a running Collomia process before
+upgrading because Windows may refuse to replace an executable in use. The
+focused [installation guide](INSTALLING.md) covers reviewing the script before
+running it, and a direct `Invoke-WebRequest` binary workflow for organizations
 that prohibit downloaded PowerShell scripts.
 
 ### Manual binary installation
