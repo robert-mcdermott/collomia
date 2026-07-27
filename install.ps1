@@ -142,6 +142,46 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint M
     }
 }
 
+function Get-CollomiaIdentity {
+    <#
+        Runs the downloaded executable's --version and returns its identity
+        line, or throws an error describing what actually happened.
+
+        The binary's own output is the authoritative signal, not $LASTEXITCODE.
+        $LASTEXITCODE is a global that a fresh session has never set, so
+        reading it bare under Set-StrictMode fails with VariableIsUndefined
+        whenever the invocation did not set it -- which hides the real problem
+        behind a PowerShell error about a variable. It is seeded and read
+        defensively here so a missing exit code is reported as "no exit code"
+        rather than crashing, and stderr is merged into the output so that a
+        chatty binary cannot trip $ErrorActionPreference = 'Stop'.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    Set-Variable -Name LASTEXITCODE -Scope Global -Value $null -ErrorAction SilentlyContinue
+
+    $output = $null
+    try {
+        $output = & $Path --version 2>&1
+    } catch {
+        throw "The downloaded binary could not be started ($Path): $($_.Exception.Message)"
+    }
+    $exitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+
+    $lines = @($output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    $identity = @($lines | Where-Object { $_.StartsWith('collo ', [StringComparison]::Ordinal) })[0]
+
+    if (-not $identity) {
+        $printed = if ($lines) { $lines -join ' | ' } else { 'nothing' }
+        $status = if ($null -eq $exitCode) { 'no exit code' } else { "exit code $exitCode" }
+        throw "The downloaded binary did not pass its version check ($status). $Path printed: $printed"
+    }
+    if ($null -ne $exitCode -and $exitCode -ne 0) {
+        throw "The downloaded binary reported '$identity' but exited with code $exitCode"
+    }
+    return $identity
+}
+
 function Add-CollomiaUserPath {
     <#
         Appends a directory to the current user's PATH and reports whether the
@@ -268,10 +308,7 @@ function Invoke-CollomiaInstall {
 
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
         Copy-Item -LiteralPath $binaryPath -Destination $destinationTemporary
-        $identity = & $destinationTemporary --version
-        if ($LASTEXITCODE -ne 0 -or -not $identity) {
-            throw 'The downloaded binary did not pass its version check'
-        }
+        $identity = Get-CollomiaIdentity -Path $destinationTemporary
         if ($Version -ne 'latest' -and -not $identity.StartsWith("collo $Version (", [StringComparison]::Ordinal)) {
             throw "Downloaded binary reports an unexpected version: $identity"
         }

@@ -37,6 +37,49 @@ Assert-Equal (Get-CollomiaAsset -Architecture $detected) (Get-CollomiaAsset) 'de
 Assert-Equal 'v0.2.0-beta.1' (Resolve-CollomiaVersion '0.2.0-beta.1') 'version normalization'
 Assert-Equal 'latest' (Resolve-CollomiaVersion 'latest') 'latest version'
 
+# The version check must report what the binary actually did. Reading
+# $LASTEXITCODE bare used to fail with VariableIsUndefined whenever the
+# invocation did not set it, hiding the real problem behind a PowerShell error.
+$identityRoot = Join-Path ([IO.Path]::GetTempPath()) ("collo-identity-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $identityRoot | Out-Null
+try {
+    function New-IdentityFixture {
+        param([string]$Name, [string[]]$Body)
+        $path = Join-Path $identityRoot "$Name.cmd"
+        Set-Content -LiteralPath $path -Value (@('@echo off') + $Body)
+        return $path
+    }
+
+    $good = New-IdentityFixture 'good' @('echo collo v0.1.8 (test)')
+    $banner = New-IdentityFixture 'banner' @('echo loading', 'echo collo v0.1.8 (test)')
+    $silent = New-IdentityFixture 'silent' @('exit /b 0')
+    $junk = New-IdentityFixture 'junk' @('echo something else entirely')
+    $failing = New-IdentityFixture 'failing' @('echo collo v0.1.8 (test)', 'exit /b 3')
+
+    foreach ($case in @($good, $banner)) {
+        # A fresh session has never set $LASTEXITCODE; the check must survive it.
+        Remove-Variable -Name LASTEXITCODE -Scope Global -Force -ErrorAction SilentlyContinue
+        Assert-Equal 'collo v0.1.8 (test)' (Get-CollomiaIdentity -Path $case) "identity from $case"
+    }
+
+    foreach ($case in @($silent, $junk, $failing, (Join-Path $identityRoot 'absent.cmd'))) {
+        Remove-Variable -Name LASTEXITCODE -Scope Global -Force -ErrorAction SilentlyContinue
+        $message = $null
+        $errorId = $null
+        try {
+            Get-CollomiaIdentity -Path $case | Out-Null
+        } catch {
+            $message = $_.Exception.Message
+            $errorId = $_.FullyQualifiedErrorId
+        }
+        if (-not $message) { throw "Get-CollomiaIdentity accepted $case" }
+        if ($errorId -eq 'VariableIsUndefined') { throw "Get-CollomiaIdentity leaked a `$LASTEXITCODE error for $case" }
+        if ($message -notmatch 'binary') { throw "unhelpful failure for ${case}: $message" }
+    }
+} finally {
+    Remove-Item -LiteralPath $identityRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # `irm ... | iex` runs the installer in the caller's own scope, so the script
 # must not leave that session in strict mode or with a changed
 # $ErrorActionPreference. COLLO_ARCH is invalid on purpose so the run fails
@@ -125,6 +168,10 @@ try {
         Copy-Item -LiteralPath (Join-Path (Join-Path $script:FixtureRoot $release) $name) -Destination $OutFile
     }
 
+    # Reproduce a fresh interactive session, where no native command has run and
+    # $LASTEXITCODE is therefore undefined. The fixture build above sets it, so
+    # CI would otherwise never exercise the state a real user starts from.
+    Remove-Variable -Name LASTEXITCODE -Scope Global -Force -ErrorAction SilentlyContinue
     Invoke-CollomiaInstall -InstallDir $installDir -Repository 'example/collomia' -NoPathUpdate
     $installed = Join-Path $installDir 'collo.exe'
     $identity = & $installed --version

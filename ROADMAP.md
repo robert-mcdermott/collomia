@@ -105,6 +105,15 @@ policy first.
   instead of failing an install whose binary is already in place.
 - [x] Silence the progress bar during download. Windows PowerShell renders it
   per buffer, which turns a 25 MB `Invoke-WebRequest` into minutes.
+- [x] Make the post-download version check report what the binary actually did.
+  It read `$LASTEXITCODE` bare, which is a global that a fresh interactive
+  session has never set, so any invocation that did not set one failed with
+  `VariableIsUndefined` instead of naming the real problem. CI never saw it
+  because the fixture build sets `$LASTEXITCODE` first; the tests now clear it
+  before installing. The binary's own output is the authoritative signal, the
+  exit code is consulted only when one exists, stderr is captured so a chatty
+  binary cannot trip `$ErrorActionPreference = 'Stop'`, and a failure quotes
+  what the executable printed.
 
 ## Completed wave — built-in web search and fetch
 
