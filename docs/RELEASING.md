@@ -59,6 +59,11 @@ tag explicitly.
 1. On the release branch, update `VERSION` to the intended semantic version,
    for example `v0.2.0-beta.1`, and update release notes plus [beta
    limitations](BETA.md) if behavior changed.
+1. Refresh `UserAgent` in `internal/web/client.go` to the current desktop
+   Chrome release if it has fallen more than a few major versions behind.
+   Presenting a browser is what keeps `web_fetch` working against CDN rules
+   that refuse non-browser clients, and a version old enough to look
+   implausible starts attracting the same rules it exists to satisfy.
 2. Run the local preflight below, then merge that reviewed release commit into
    `main` and wait for required CI checks on the exact commit.
 3. Use a clean checkout of that `main` commit for the tag. Do not tag or build

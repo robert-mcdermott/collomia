@@ -10,8 +10,8 @@ every roadmap feature is complete.
 
 - Interactive repository work with `permissions.mode: "ask"`.
 - Reviewable workspace edits backed by Git and Collomia's diff/undo tools.
-- Provider, MCP, skills, hooks, LSP, and headless evaluation in non-production
-  environments.
+- Provider, MCP, skills, hooks, LSP, web lookup, and headless evaluation in
+  non-production environments.
 - Default `auto` sandboxing after reviewing the platform-specific behavior and
   granting only the dependency/cache roots a toolchain actually needs.
 
@@ -27,10 +27,18 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   environment by default, and Windows AppContainer always confines user-data
   reads and blocks ordinary unpackaged localhost services. `auto` warns and
   continues when a backend is unavailable; use `require` for fail-closed
-  operation. Endpoint-scoped policy exists — host rules, the
-  `network: "scoped"` posture, and per-capability session grants — but it
-  describes only the endpoints a command names, and OS-level endpoint-scoped
-  egress enforcement is not implemented.
+  operation.
+- Endpoint-scoped policy for commands — host rules, the `network: "scoped"`
+  posture, and per-capability session grants — describes only the endpoints a
+  command's own text names. A program that opens a socket without naming it on
+  a command line is invisible to that layer. OS-enforced per-host egress does
+  exist as opt-in `sandbox_egress: "scoped"`, but it is experimental and macOS
+  only: Landlock filters TCP by port rather than address, and Windows
+  AppContainer cannot reach a loopback broker at all, so neither platform gets
+  an enforcement claim it could not keep. The built-in `web_search` and
+  `web_fetch` tools are the exception to all of this — Collomia opens those
+  connections itself and enforces a public-internet-only address boundary that
+  no configuration can disable.
 - Credential files are protected by conventional location, not by detecting
   secret material. Reaching one prompts by default and is not covered by a
   broad approval, but a key stored somewhere unconventional is not recognized,
@@ -39,14 +47,30 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   provider, so a secret an agent legitimately reads still reaches the model.
 - `autopilot` is not a promise that arbitrary commands are safe. Built-in
   catastrophic denials, policy, and OS sandboxing reduce risk but do not replace
-  review, backups, source control, or host isolation.
+  review, backups, source control, or host isolation. It also does not approve
+  everything: actions classified as external risk, which includes MCP tool
+  calls and both web tools, still require a rule, a session grant, or a person.
 - macOS and Windows release binaries are not yet platform code-signed or Apple
   notarized. Release provenance is signed through GitHub/Sigstore instead.
-- Windows PTY/ConPTY support and the browser-terminal backend remain pending.
+- Windows has no ConPTY backend yet. `run_command` with `pty: true` is Unix
+  only, and `collo --web` runs on macOS and Linux but not Windows.
 - MCP OAuth, experimental tasks, resource subscriptions, audio passthrough,
   annotations, and argument-level permission matching remain incomplete.
-- LSP definitions, references, formatting, and code actions remain incomplete;
-  diagnostics and the lexical symbol index are available now.
+- LSP code actions are not implemented. Diagnostics, `find_definition`,
+  `find_references`, `format_file`, and the lexical symbol index are available
+  now, and each language server must be installed for its language.
+- The built-in web tools read the public web and nothing else. They cannot
+  reach a local development server, an intranet host, or a cloud metadata
+  endpoint, and that boundary has no configuration escape — use `run_command`
+  with `curl` for anything inside your own network. They do not run
+  JavaScript, so a page that renders its content client-side comes back as a
+  near-empty shell with a note saying so rather than as the article. Search
+  parses DuckDuckGo's HTML endpoints, which can change without notice; a
+  layout change is reported as an engine failure rather than as "no results",
+  and bursts of searches are rate limited per address. Page content is
+  untrusted external data: it arrives inside a provenance frame, but framing
+  guides a model rather than constraining it, and the controls that actually
+  hold are the permission pipeline and the address boundary.
 - Multi-agent work is isolated and selectively integrated, but Collomia does
   not automatically reconcile conflicts, resume pending child work, or execute
   a complete plan graph autonomously.
