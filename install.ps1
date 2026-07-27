@@ -142,6 +142,27 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint M
     }
 }
 
+function Test-CollomiaStagingName {
+    <#
+        Reports whether an executable can be launched without tripping UAC
+        installer detection.
+
+        Windows assumes an unsigned executable that carries no version resource
+        is an installer when its file name contains a word such as "install",
+        "setup", or "update", and interposes an elevation consent dialog. From
+        PowerShell that looks like nothing at all: the call operator returns
+        with no output, no error, and no $LASTEXITCODE. Release binaries are
+        built without a version resource, so the staged file name is the only
+        thing keeping the post-download version check runnable for a standard
+        user. Administrators never see this, which is why continuous
+        integration cannot catch a regression here.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $name = [IO.Path]::GetFileName($Path)
+    return ($name -notmatch '(install|setup|update|patch)')
+}
+
 function Get-CollomiaIdentity {
     <#
         Runs the downloaded executable's --version and returns its identity
@@ -172,6 +193,12 @@ function Get-CollomiaIdentity {
     $identity = @($lines | Where-Object { $_.StartsWith('collo ', [StringComparison]::Ordinal) })[0]
 
     if (-not $identity) {
+        if ($null -eq $exitCode -and -not $lines) {
+            # No output, no error, and no exit code means Windows never started
+            # the process: an elevation consent dialog or an application-control
+            # policy intercepted the launch.
+            throw "Windows did not run the downloaded binary at $Path (no output and no exit code). Check for a User Account Control prompt or an application-control policy blocking it."
+        }
         $printed = if ($lines) { $lines -join ' | ' } else { 'nothing' }
         $status = if ($null -eq $exitCode) { 'no exit code' } else { "exit code $exitCode" }
         throw "The downloaded binary did not pass its version check ($status). $Path printed: $printed"
@@ -280,12 +307,19 @@ function Invoke-CollomiaInstall {
     }
     $versionLabel = if ($Version -eq 'latest') { 'latest stable release' } else { $Version }
 
-    $temporary = Join-Path ([IO.Path]::GetTempPath()) ("collo-install-" + [guid]::NewGuid())
+    # The staged and backup names must not contain a word that UAC installer
+    # detection treats as an installer -- see Test-CollomiaStagingName.
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) ("collo-download-" + [guid]::NewGuid())
     $binaryPath = Join-Path $temporary $asset
     $checksumPath = Join-Path $temporary 'checksums.txt'
     $destination = Join-Path $InstallDir 'collo.exe'
-    $destinationTemporary = Join-Path $InstallDir ('.collo.install.' + [guid]::NewGuid() + '.exe')
-    $backup = Join-Path $InstallDir ('.collo.backup.' + [guid]::NewGuid() + '.exe')
+    $destinationTemporary = Join-Path $InstallDir ('collo.staged.' + [guid]::NewGuid() + '.exe')
+    $backup = Join-Path $InstallDir ('collo.previous.' + [guid]::NewGuid() + '.exe')
+    foreach ($candidate in @($destinationTemporary, $backup)) {
+        if (-not (Test-CollomiaStagingName -Path $candidate)) {
+            throw "Internal error: staging name would trigger UAC installer detection: $candidate"
+        }
+    }
     $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
     $hadExisting = $false
 

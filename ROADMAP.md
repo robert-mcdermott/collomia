@@ -105,6 +105,14 @@ policy first.
   instead of failing an install whose binary is already in place.
 - [x] Silence the progress bar during download. Windows PowerShell renders it
   per buffer, which turns a 25 MB `Invoke-WebRequest` into minutes.
+- [x] Stop staging the download under a file name containing "install". Release
+  binaries carry no version resource, so Windows fell back to its UAC installer
+  detection heuristic, decided `.collo.install.<guid>.exe` was an installer, and
+  interposed an elevation consent dialog instead of running it. From PowerShell
+  that is invisible — the call operator returns with no output, no error, and no
+  exit code — so the version check failed on every standard-user machine.
+  Administrators, including CI runners, never see the prompt, which is why this
+  shipped. The staged and backup names are now asserted against the heuristic.
 - [x] Make the post-download version check report what the binary actually did.
   It read `$LASTEXITCODE` bare, which is a global that a fresh interactive
   session has never set, so any invocation that did not set one failed with

@@ -37,6 +37,26 @@ Assert-Equal (Get-CollomiaAsset -Architecture $detected) (Get-CollomiaAsset) 'de
 Assert-Equal 'v0.2.0-beta.1' (Resolve-CollomiaVersion '0.2.0-beta.1') 'version normalization'
 Assert-Equal 'latest' (Resolve-CollomiaVersion 'latest') 'latest version'
 
+# A staged file name containing an installer keyword makes Windows interpose a
+# UAC consent dialog instead of running the binary, which breaks the version
+# check for every standard user. Administrators, including CI runners, never see
+# it, so this has to be asserted rather than observed.
+foreach ($rejected in @(
+    'C:\x\.collo.install.9d36bcad.exe',
+    'C:\x\collo-setup.exe',
+    'C:\x\collo.update.exe',
+    'C:\x\collo-patch-1.exe'
+)) {
+    if (Test-CollomiaStagingName -Path $rejected) { throw "staging name should be rejected: $rejected" }
+}
+foreach ($accepted in @(
+    'C:\x\collo.staged.9d36bcad-20a2-4af1.exe',
+    'C:\x\collo.previous.9d36bcad-20a2-4af1.exe',
+    'C:\x\collo.exe'
+)) {
+    if (-not (Test-CollomiaStagingName -Path $accepted)) { throw "staging name should be accepted: $accepted" }
+}
+
 # The version check must report what the binary actually did. Reading
 # $LASTEXITCODE bare used to fail with VariableIsUndefined whenever the
 # invocation did not set it, hiding the real problem behind a PowerShell error.
