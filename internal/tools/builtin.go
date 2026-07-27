@@ -9,6 +9,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/egress"
 	"github.com/robert-mcdermott/collomia/internal/index"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
+	"github.com/robert-mcdermott/collomia/internal/web"
 )
 
 // ConfiguredRunCommandTool builds the command runner for a workspace from the
@@ -55,6 +56,10 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 	}
 	tracker := diffmodel.NewTracker(guard.Workspace)
 	procs := NewProcessManager()
+	// One client is shared by both web tools: its transport, bounds, and
+	// public-internet address guard are the capability, and a second
+	// construction site is where one of them would go missing.
+	webClient := web.New(web.Options{})
 	registry := NewRegistry(
 		ReadFileTool{Guard: guard}, ListFilesTool{Guard: guard}, SearchFilesTool{Guard: guard},
 		WriteFileTool{Guard: guard, Tracker: tracker}, EditFileTool{Guard: guard, Tracker: tracker},
@@ -69,6 +74,7 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		FindDefinitionTool{Guard: guard, Servers: cfg.LSP},
 		FindReferencesTool{Guard: guard, Servers: cfg.LSP},
 		FormatFileTool{Guard: guard, Servers: cfg.LSP, Tracker: tracker},
+		WebSearchTool{Client: webClient}, WebFetchTool{Client: webClient},
 	)
 	return registry, tracker, procs, nil
 }

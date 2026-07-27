@@ -114,7 +114,11 @@ func TestEveryToolNameIsDocumented(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		for _, m := range regexp.MustCompile(`ToolDefinition\{Name: "([a-z_]+)"`).FindAllStringSubmatch(string(data), -1) {
+		// The declaration is matched with flexible whitespace: a tool whose
+		// description is long enough to wrap its literal onto several lines is
+		// still a tool, and a guard that only saw the one-line form would let
+		// exactly the biggest tools go undocumented.
+		for _, m := range regexp.MustCompile(`ToolDefinition\{\s*Name:\s*"([a-z_]+)"`).FindAllStringSubmatch(string(data), -1) {
 			names[m[1]] = true
 		}
 		return nil

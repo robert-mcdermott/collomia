@@ -289,15 +289,31 @@ const configReferenceJSONC = `
     "denied_commands": [],
     // Rules are ordered; the first matching allow, prompt, or deny wins.
     // A host matches the endpoints a command's text names (a URL, an ssh
-    // destination, a Git remote URL) and the endpoint of an HTTP-transport MCP
-    // server. An allow rule never covers an endpoint Collomia could not read,
-    // such as a named Git remote or a registry chosen by configuration.
+    // destination, a Git remote URL), the endpoint of an HTTP-transport MCP
+    // server, and the endpoints web_search and web_fetch declare. An allow
+    // rule never covers an endpoint Collomia could not read, such as a named
+    // Git remote or a registry chosen by configuration.
     "rules": [
       {
         "action": "allow",
         "tool": "run_command",
         "command": "go",
         "reason": "project build tooling"
+      },
+      // web_search declares every endpoint it may fail over to, so a rule
+      // naming only one of them would stop covering the search the moment the
+      // primary endpoint failed. Match the whole family instead.
+      {
+        "action": "allow",
+        "tool": "web_search",
+        "host": "*.duckduckgo.com",
+        "reason": "built-in web search needs no approval"
+      },
+      {
+        "action": "allow",
+        "tool": "web_fetch",
+        "host": "pkg.go.dev",
+        "reason": "language documentation"
       },
       {
         "action": "deny",

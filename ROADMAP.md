@@ -50,6 +50,8 @@ also shipped:
   user-priced cost estimates, and image input;
 - MCP lifecycle/resources/prompts/progress/elicitation, safe live catalogs,
   external-data framing, skills, and hooks;
+- built-in configuration-free web search and page retrieval, confined to the
+  public internet by a connect-time address guard and framed as external data;
 - concurrent governed delegated agents with isolated Git worktrees, durable
   status, steering/cancellation, overlap-aware write-scope scheduling,
   freshness-bound three-way integration, and opt-in primary-reviewed
@@ -73,6 +75,130 @@ existed on all three platforms.
 No wave is currently active. The completed waves below are the most recent
 work; see [Recommended next sequence](#recommended-next-sequence) for what the
 dependency order argues for next.
+
+## Completed wave — a Windows install that actually installs
+
+**Goal:** Make the documented Windows path work on a stock machine, including
+Windows 11 ARM64, without the user having to understand PowerShell's execution
+policy first.
+
+- [x] Stop detecting the CPU through
+  `[Runtime.InteropServices.RuntimeInformation]::OSArchitecture`. Windows
+  PowerShell 5.1 is a .NET Framework host with no native ARM64 build, and on
+  Windows 11 ARM64 that property is missing, which `Set-StrictMode` turned into
+  a hard `PropertyNotFoundStrict` failure before anything downloaded. The
+  machine-scoped `PROCESSOR_ARCHITECTURE` registry value is read first instead:
+  it reports the real hardware even when PowerShell itself is emulated.
+  `-Architecture`/`COLLO_ARCH` is the escape hatch when every probe fails.
+- [x] Document `irm ... | iex` as the install command. The execution policy
+  governs script *files*, so evaluating the script from memory is unaffected by
+  `Restricted` or `AllSigned` — no `Set-ExecutionPolicy`, no `Unblock-File`,
+  no elevation. The saved-file path is still documented, with the bypass scoped
+  to one invocation rather than changed machine-wide.
+- [x] Keep the caller's session clean, because `iex` runs the script in it.
+  `Set-StrictMode` and `$ErrorActionPreference` moved inside the installer
+  function; a test asserts under Windows PowerShell 5.1 that neither leaks.
+- [x] Update the user PATH by default, with `-NoPathUpdate` to opt out. Write
+  the registry value directly, preserving `REG_EXPAND_SZ`, rather than using
+  `[Environment]::SetEnvironmentVariable`, which rewrites PATH as `REG_SZ` and
+  permanently breaks entries such as `%USERPROFILE%\bin`. A PATH failure warns
+  instead of failing an install whose binary is already in place.
+- [x] Silence the progress bar during download. Windows PowerShell renders it
+  per buffer, which turns a 25 MB `Invoke-WebRequest` into minutes.
+- [x] Stop staging the download under a file name containing "install". Release
+  binaries carry no version resource, so Windows fell back to its UAC installer
+  detection heuristic, decided `.collo.install.<guid>.exe` was an installer, and
+  interposed an elevation consent dialog instead of running it. From PowerShell
+  that is invisible — the call operator returns with no output, no error, and no
+  exit code — so the version check failed on every standard-user machine.
+  Administrators, including CI runners, never see the prompt, which is why this
+  shipped. The staged and backup names are now asserted against the heuristic.
+- [x] Make the post-download version check report what the binary actually did.
+  It read `$LASTEXITCODE` bare, which is a global that a fresh interactive
+  session has never set, so any invocation that did not set one failed with
+  `VariableIsUndefined` instead of naming the real problem. CI never saw it
+  because the fixture build sets `$LASTEXITCODE` first; the tests now clear it
+  before installing. The binary's own output is the authoritative signal, the
+  exit code is consulted only when one exists, stderr is captured so a chatty
+  binary cannot trip `$ErrorActionPreference = 'Stop'`, and a failure quotes
+  what the executable printed.
+
+## Completed wave — built-in web search and fetch
+
+**Goal:** Stop the agent from guessing about anything newer than its training
+data, without making the capability an integration a user has to find, install,
+trust, and pay for — and without giving a model-chosen URL a route into the
+user's own network.
+
+- [x] Ship `web_search` and `web_fetch` as built-ins with no API key, no
+  account, and no configuration. DuckDuckGo's no-JavaScript endpoints are the
+  backend because they are the only major search interface that answers a plain
+  query with no key and no quota; there is no Go client worth depending on, and
+  what exists wraps the same two endpoints. Adding `golang.org/x/net/html` cost
+  no new module — it was already an indirect dependency.
+- [x] Try both endpoints in order, and treat a 200 that parses to zero results
+  as an engine failure rather than as "no results". Scraping breaks; the
+  failure that matters is the silent one that tells a user the web has nothing
+  on their question.
+- [x] Reduce HTML structurally, not statistically: drop what is never content,
+  prefer a `<main>`/`<article>` that actually holds the article, and keep
+  headings, lists, code blocks, and tables. A readability score would let a
+  page fall on the wrong side of a threshold and lose its own text.
+- [x] Enforce a real address boundary rather than describing one. The check
+  runs on the resolved IP at connect time through the dialer's `Control` hook,
+  so it covers DNS rebinding, every redirect hop, and IPv4-mapped and NAT64
+  spellings of a private address alike. Loopback, private, link-local (cloud
+  metadata), CGNAT, multicast, benchmark, documentation, and reserved ranges
+  are all refused, and no configuration key can turn that off — a switch to
+  disable it is exactly what a prompt injection would ask a user to add.
+- [x] Ignore inherited proxy variables, strip URL credentials, keep no cookie
+  jar, and use a transport that is not shared with the provider client. Each
+  of those is a way a model-chosen request could otherwise reach a host the
+  guard never inspected or carry state that was never meant for it.
+- [x] Report a redirect that leaves the requested site instead of following it.
+  `web_fetch` declares the host of the URL it was given, so approving that host
+  must not become approval for wherever a redirector points; moves within one
+  site are followed normally. `web_search` symmetrically declares *every*
+  endpoint it may fail over to, so a rule covering only the primary endpoint
+  covers nothing.
+- [x] Classify both as external risk, so autopilot never approves them
+  silently and `permissions.network: "scoped"` governs them like any other
+  network-bearing action — while a `host` rule or a session grant still makes
+  ordinary use frictionless.
+- [x] Collapse external-data framing into one implementation. MCP framing and
+  web framing had to be the same code: a second source shipping a weaker copy
+  of the first source's protection is the defect shape this repository keeps
+  finding, and web pages are written by whoever the search ranked rather than
+  by a server the user chose to trust.
+- [x] Speak HTTP/1.1 and never negotiate HTTP/2. Go's HTTP/2 client sends a
+  distinctive SETTINGS frame that bot-management products fingerprint: holding
+  machine, address, and user agent constant, Stack Overflow returned 403 with
+  `cf-mitigated: challenge` on every HTTP/2 request and 200 on every HTTP/1.1
+  one, and Medium behaved the same. This — not the user-agent header — is what
+  made those sites readable. Found by asking why a 403 persisted after the
+  header change that was supposed to fix it.
+- [x] Present one fixed browser identity — current desktop Chrome on Windows.
+  A great many sites reject non-browser clients by default CDN rule, and a
+  page the user can read but the agent cannot is the capability failing at its
+  own premise. Deliberately not a rotating pool: rotation only defends against
+  a blocklist naming one exact string, which no operator applies to mainstream
+  Chrome, while turning any site that did refuse one entry into a failure that
+  reproduces a fraction of the time. Desktop rather than mobile because mobile
+  identities are served a smaller document. Nothing beyond the header — no TLS
+  fingerprint forgery, no challenge solving, no address rotation, no retry of
+  a refusal — and `docs/RELEASING.md` carries refreshing the version.
+- [x] Name DuckDuckGo's rate limiting instead of echoing it. A throttled
+  client gets HTTP 202 and a challenge page rather than a 429, which reported
+  verbatim reads like a Collomia bug and sends the user looking for one. Found
+  by measuring the user-agent pool against the live endpoints, which tripped
+  the limit and produced exactly that unhelpful message.
+- [x] Add an opt-in live suite (`COLLO_LIVE_WEB_TESTS=1`) that exercises each
+  search endpoint alone, so a working fallback cannot hide a primary that has
+  stopped parsing. The ordinary suite stays offline and credential-free.
+
+**Behavior change:** two new built-in tools, visible to the model by default
+and available in planning mode. They prompt like any other external action;
+`options.disabled_tools` removes them.
 
 ## Completed wave — scoped egress on macOS
 

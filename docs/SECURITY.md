@@ -293,6 +293,66 @@ to a prompt; it never allows, denies, or blocks a socket. `permissions.commands:
 the behavior of earlier releases, and both are monotonic across configuration
 layers: a project file can tighten them but cannot loosen them.
 
+### Built-in web tools: a real address boundary
+
+`web_search` and `web_fetch` are the exception to the paragraph above. They do
+not describe an endpoint and hope; they enforce one, because Collomia opens
+these connections itself rather than handing a command line to another program.
+
+The guard is installed on the dialer's `Control` hook, so it runs against the
+**resolved IP immediately before the socket is opened**, not against the
+hostname. Three consequences follow, and they are the reason for this design:
+
+- A hostname that resolves to a public address on the first lookup and a
+  private one on the second (DNS rebinding) is refused on the second.
+- Every redirect hop opens its own connection and is checked identically. No
+  redirect chain can walk from a public host to an internal one.
+- No name-based bypass exists. A CNAME to `localhost`, a public DNS record
+  pointing at `10.0.0.5`, and a literal `http://[::ffff:127.0.0.1]/` all fail
+  at the same place, on the address.
+
+Refused: loopback, the unspecified address, RFC 1918 and IPv6 unique-local
+ranges, link-local (which is where the cloud instance metadata services at
+`169.254.169.254` and `fd00:ec2::254` live), interface-local and ordinary
+multicast, carrier-grade NAT (`100.64.0.0/10`), IETF protocol assignments,
+the TEST-NET documentation ranges, the RFC 2544 benchmark range, `240.0.0.0/4`,
+the IPv6 documentation range, and any of the above reached through an
+IPv4-mapped or NAT64-translated address.
+
+**There is no configuration key that disables this.** The package exposes an
+option to permit private addresses; it is set only by that package's own tests
+and is not reachable from configuration, the command line, or the environment.
+A setting to turn this guard off is precisely the setting a prompt injection
+would try to talk a user into adding. To reach a development server or an
+intranet host, use `run_command` with `curl`, where command permission,
+shell-safety analysis, and the OS sandbox all apply.
+
+Three further properties bound what these tools can do:
+
+- **No inherited proxy.** The transport ignores `HTTP_PROXY`/`HTTPS_PROXY` and
+  friends. An inherited proxy would carry a model-chosen request to a host the
+  guard never inspected, routing straight around it.
+- **No credentials, no state.** URL userinfo (`https://user:pass@host/`) is
+  stripped before the request. There is no cookie jar, so nothing one fetch
+  receives is replayed to anything else. The transport is not shared with the
+  provider client, so no connection state or header from credential-bearing
+  traffic can reach a host the model chose.
+- **Bounded input.** 5 MiB per response (refused up front on an oversized
+  declared `Content-Length`), 30 seconds per retrieval, 1 MiB of extracted
+  text, and 5 same-site redirects. Non-text responses are refused with their
+  type and size rather than inlined.
+
+A redirect leaving the requested site is reported to the model and not
+followed. This is a permission property: `web_fetch` declares the host of the
+URL it was given, and a rule or session grant approving that host must not
+become approval for wherever a redirector points. `web_search` symmetrically
+declares *every* endpoint it may fail over to, so a host-scoped `allow` rule
+that covers only the primary endpoint does not cover the action at all.
+
+Both tools carry external risk, so autopilot never approves them silently, and
+both are subject to `permissions.network: "scoped"` like any other
+network-bearing action. `options.disabled_tools` removes them entirely.
+
 ### Configuration denials remain additive
 
 `permissions.denied_commands` augments the classifier with organization- or
@@ -955,9 +1015,9 @@ and refuse to overwrite an existing path even if it appears during creation.
 
 ## Prompt injection
 
-Tool output, repository text, skills, and MCP responses are external data. A
-sufficiently capable injection can still steer the model, so prose is not the
-security boundary.
+Tool output, repository text, skills, web pages, and MCP responses are external
+data. A sufficiently capable injection can still steer the model, so prose is
+not the security boundary.
 
 Every model-visible MCP tool result, resource, resource catalog, and expanded
 prompt template is wrapped in an `EXTERNAL_MCP_DATA` content-derived boundary
@@ -978,6 +1038,26 @@ risk), denied commands, uninspectable-command prompts, repository/server trust
 gates, rooted structured-file mutations, and—when enabled—the OS sandbox. A
 credential-free adversarial evaluation verifies that an allowed MCP-like read
 containing a forged permission grant still cannot authorize a workspace write.
+
+Web search results and fetched pages get the same treatment through the same
+implementation, as `EXTERNAL_WEB_DATA` frames carrying the source URL or search
+engine, the content type, and the byte count. This matters more for the web
+than for MCP: an MCP server is one the user chose to trust, while a fetched
+page is written by whoever the search ranked. The boundary is derived from a
+digest of the label, the provenance fields, and the content, so a page cannot
+close a boundary it has no way to predict, and the same normalization strips
+terminal control sequences before anything reaches the transcript. Titles,
+snippets, and provenance values are bounded and reduced to a single line, so an
+attacker-controlled page title cannot forge extra header fields or become a
+second set of instructions beside Collomia's own.
+
+The frames are not an instruction-following guarantee here either. What holds
+regardless is the same list: the web tools remain external risk and are never
+silently approved by autopilot; the address guard cannot be configured away, so
+a page that persuades the model to fetch `http://169.254.169.254/` still gets a
+refusal; a cross-site redirect cannot smuggle in a host the user never
+approved; and any action the model takes *because* of what it read still passes
+through the ordinary permission pipeline, denied commands, and the sandbox.
 
 ## Image attachment storage
 

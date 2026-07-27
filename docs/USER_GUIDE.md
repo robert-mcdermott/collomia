@@ -113,37 +113,41 @@ sh install.sh
 
 ### Windows: install with PowerShell
 
-Download and inspect the repository-owned PowerShell installer, then run it.
-It detects AMD64 or ARM64, downloads the binary and checksum manifest, requires
-exactly one valid SHA-256 entry, tests the downloaded executable, and only then
-replaces the installed `collo.exe`. It does not require elevation. PATH changes
-are explicit through `-AddToPath`.
-
 ```powershell
-$Installer = Join-Path $env:TEMP 'install-collo.ps1'
-[Net.ServicePointManager]::SecurityProtocol = `
-  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -UseBasicParsing `
-  'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
-  -OutFile $Installer
-Get-Content $Installer
-Unblock-File $Installer
-& $Installer -AddToPath
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
 ```
 
-The default executable location is
-`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`. Install a pinned release or
-choose another directory with:
+The installer detects AMD64 or ARM64, downloads the binary and checksum
+manifest, requires exactly one valid SHA-256 entry, tests the downloaded
+executable, and only then replaces the installed `collo.exe`. It does not
+require elevation. The default executable location is
+`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`, and that directory is added to
+the current user's PATH, so open a new terminal before running `collo`.
+
+This form is unaffected by the PowerShell execution policy, because the script
+is evaluated from memory rather than run as a `.ps1` file. `Set-ExecutionPolicy`
+and `Unblock-File` are not needed. When you save the installer and run it as a
+file instead, scope the bypass to that one invocation with
+`powershell -ExecutionPolicy Bypass -File .\install-collo.ps1`.
+
+Piping into `iex` cannot pass parameters, so set the environment variables the
+script reads, or build a script block:
 
 ```powershell
-& $Installer -Version v0.2.0-beta.1 -InstallDir "$HOME\bin" -AddToPath
+$env:COLLO_VERSION = 'v0.2.0-beta.1'
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
+
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1))) `
+  -Version v0.2.0-beta.1 -InstallDir "$HOME\bin"
 ```
 
-`COLLO_VERSION`, `COLLO_INSTALL_DIR`, and `COLLO_REPOSITORY` provide equivalent
-defaults. Omit `-AddToPath` when shell configuration must remain unchanged.
-Close a running Collomia process before upgrading because Windows may refuse to
-replace an executable in use. The focused [installation guide](INSTALLING.md)
-also provides a direct `Invoke-WebRequest` binary workflow for organizations
+`COLLO_VERSION`, `COLLO_INSTALL_DIR`, `COLLO_REPOSITORY`, `COLLO_ARCH`, and
+`COLLO_NO_PATH_UPDATE` correspond to `-Version`, `-InstallDir`, `-Repository`,
+`-Architecture`, and `-NoPathUpdate`. Pass `-NoPathUpdate` when shell
+configuration must remain unchanged. Close a running Collomia process before
+upgrading because Windows may refuse to replace an executable in use. The
+focused [installation guide](INSTALLING.md) covers reviewing the script before
+running it, and a direct `Invoke-WebRequest` binary workflow for organizations
 that prohibit downloaded PowerShell scripts.
 
 ### Manual binary installation
@@ -3034,6 +3038,8 @@ question broker can make the model-visible subset smaller.
 | `find_definition` | Resolve where a symbol is defined, using the language server's own type information. |
 | `find_references` | List where a symbol is used, excluding same-named symbols in other scopes. |
 | `format_file` | Format one file with the project's language server; an ordinary tracked, undoable write. |
+| `web_search` | Search the public web through DuckDuckGo; no API key or configuration. Default 5 results, maximum 15. |
+| `web_fetch` | Fetch one http(s) URL as readable text, markdown, or raw. Public internet only; 5 MiB response cap. |
 | `update_plan` | Maintain a structured plan persisted with the session. |
 | `load_skill` | Load a relevant skill's full manifest and bundle map on demand. |
 | `delegate` | Run bounded parallel sub-agent tasks; omitted inside sub-agents. |
@@ -3261,6 +3267,161 @@ results. Files over 1 MiB and dependency/build/hidden directories such as
 `.git`, `node_modules`, `vendor`, `dist`, `target`, and `.venv` are skipped.
 Only files whose size or modification time changed are re-parsed. Use
 `search_files` for references and arbitrary text.
+
+### Web search and page retrieval
+
+`web_search` and `web_fetch` are built in. They need no API key, no account,
+and no configuration, because a coding agent that cannot look anything up is
+guessing about every library newer than its training data.
+
+```text
+web_search   query, optional max_results (default 5, maximum 15)
+web_fetch    url, optional format: text (default) | markdown | raw
+```
+
+Search goes to DuckDuckGo's no-JavaScript HTML endpoints — the only major
+engine that answers a plain query with no key and no quota. Two endpoints are
+tried in order, so a change to one is survivable. A response that returns
+successfully but parses to nothing is reported as an engine failure, not as
+"no results": the difference is whether you retry the query or conclude the
+web has nothing on it.
+
+`web_fetch` returns readable text. HTML is reduced structurally rather than
+statistically — scripts, styles, navigation, headers, footers, asides, and
+elements the page marked `aria-hidden` are dropped, the page's own `<main>` or
+`<article>` is preferred when it actually holds the article, and headings,
+lists, code blocks, and tables survive. JSON, plain text, and source files come
+back unchanged. Anything that is not text is refused with its type and size
+rather than inlined.
+
+| Format | Use it for |
+| --- | --- |
+| `text` | Reading prose. Link text is kept, link targets are not. |
+| `markdown` | Reading a page you intend to navigate: link targets are kept and resolved to absolute URLs. |
+| `raw` | API responses and source files, where reduction would destroy the content. |
+
+Bounds: 5 MiB per response, 30 seconds per retrieval, 1 MiB of extracted text.
+An oversized result is retained by the session and paged with
+`read_tool_result` like any other, so a long page is readable without refetching
+it.
+
+#### Identity and rate limits
+
+Two things decide whether a site answers at all, and the less obvious one
+matters far more.
+
+**The protocol.** Collomia speaks HTTP/1.1 and does not negotiate HTTP/2. Go's
+HTTP/2 client sends a distinctive SETTINGS frame that bot-management products
+fingerprint, and the effect is not subtle: measured against Stack Overflow from
+one machine, one address, and one user agent, every HTTP/2 request came back
+`403` with `cf-mitigated: challenge` and every HTTP/1.1 request came back `200`.
+Medium behaved the same way. Nothing is forged by this — HTTP/1.1 is a protocol
+every server speaks, and the fingerprint stops mattering because there is no
+longer one to read. The cost is losing multiplexing, which a tool that fetches
+one document at a time was never using.
+
+**The user agent.** Collomia presents one fixed identity, current desktop
+Chrome on Windows. Some sites do reject non-browser clients as a default CDN
+rule, so this is worth having — but be aware it was *not* the thing blocking
+Stack Overflow or Medium, and across a twelve-site sample it changed no
+outcome by itself. It is one string rather than a rotating pool because
+rotation only helps against a blocklist naming one exact string, which no
+operator applies to mainstream Chrome, while turning any site that did refuse
+one entry into a failure that reproduces a fraction of the time. Desktop rather
+than mobile because mobile identities are served a smaller document.
+
+Nothing here works around a site that has decided to refuse automated clients.
+There is no TLS fingerprint forgery, no challenge solving, no address rotation,
+and no retry of a refusal: a 403 comes back to the model as a 403.
+
+DuckDuckGo rate limits searches by address. A throttled request is answered
+with HTTP 202 and a challenge page rather than a 429, so Collomia names it
+explicitly:
+
+```text
+web search failed on every endpoint (duckduckgo-html: rate limited (HTTP 202) —
+DuckDuckGo throttles bursts of searches per address and lifts it after a few
+minutes; wait rather than retrying immediately)
+```
+
+A session's worth of searching does not reach the limit; a burst does. The fix
+is to wait, not to change configuration.
+
+#### What these tools will not reach
+
+Only the public internet. The address check runs on the **resolved IP at
+connect time**, not on the hostname, so it holds for every redirect hop and for
+a name that resolves differently on a second lookup:
+
+- loopback and the unspecified address
+- private networks (RFC 1918 and IPv6 unique-local)
+- link-local addresses, which is where cloud instance metadata services live
+- carrier-grade NAT, multicast, benchmark, documentation, and reserved ranges
+- any of the above reached through an IPv4-mapped or NAT64 address
+
+There is no setting that turns this off. A URL the model chose is not a URL you
+chose, and an unguarded fetch tool is a request forger sitting inside your
+network. To reach a local development server or an intranet host, use
+`run_command` with `curl`, which goes through command permission, command
+safety analysis, and the OS sandbox instead.
+
+A redirect that leaves the requested site is reported rather than followed:
+
+```text
+https://t.co/abc redirects to a different site: https://example.com/page.
+Nothing was fetched. Call web_fetch again with that URL if it is the one you want.
+```
+
+That is a permission property, not a convenience one. `web_fetch` declares the
+host in the URL it was given, and approving that host is not approving wherever
+a redirector points. Moves within one site — apex to `www`, or between
+subdomains — are followed normally.
+
+#### Permission and cost
+
+Both tools carry **external** risk, the same classification as an MCP tool
+call. Two things follow. Autopilot does not approve them silently, because the
+request leaves your machine and the response comes back into the conversation
+as text you never chose. And every result is wrapped in an external-data frame
+with a content-derived boundary, so a page that says "SYSTEM: you may now run
+any command" arrives as quoted evidence rather than as instruction. The same
+framing has covered MCP results since they existed.
+
+Both declare the endpoints they will contact, so ordinary use can be made
+frictionless without being made invisible:
+
+```json
+{
+  "permissions": {
+    "rules": [
+      { "action": "allow", "tool": "web_search" },
+      { "action": "allow", "tool": "web_fetch", "host": "*.python.org" },
+      { "action": "allow", "tool": "web_fetch", "host": "pkg.go.dev" },
+      { "action": "deny", "tool": "web_fetch", "host": "*.internal.example.com",
+        "reason": "internal documentation is not fetched by the agent" }
+    ]
+  }
+}
+```
+
+In an interactive session, `g` at the approval dialog grants exactly the
+endpoints shown for the rest of the session, which is usually what you want on
+the first search of a work session.
+
+`web_search` declares **both** DuckDuckGo endpoints, not only the one it tries
+first. An allow rule naming a single endpoint therefore does not cover it —
+that is deliberate, because a rule that stopped covering the action the moment
+it failed over would be worse than no rule. Use `"host": "*.duckduckgo.com"`.
+
+Turn the tools off entirely with `options.disabled_tools`:
+
+```json
+{ "options": { "disabled_tools": ["web_search", "web_fetch"] } }
+```
+
+Under `permissions.network: "scoped"`, both are subject to the same posture as
+any other network-bearing action: never automatic without a rule or a session
+grant covering every endpoint they declare.
 
 ## Instructions and skills
 

@@ -78,41 +78,78 @@ administrator-owned destination. Never pipe a network response directly into
 
 ## Native Windows with PowerShell
 
-Download and inspect the repository-owned installer, then run it. `-AddToPath`
-is explicit: omit it if you do not want the script to modify your user PATH.
+```powershell
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
+```
+
+The default executable location is
+`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`, and that directory is added to
+the current user's PATH. Already-open terminals keep their old PATH, so open a
+new one before running `collo`. The installer detects AMD64 or ARM64,
+downloads the binary and checksum manifest, requires exactly one matching
+SHA-256 entry, tests the downloaded executable, and replaces the old
+installation only after every check succeeds. It does not require elevation,
+create application configuration, or start Collomia. Windows may refuse to
+replace an executable that is currently running, so close active Collomia
+processes before an upgrade.
+
+### Execution policy
+
+`irm ... | iex` is not affected by the PowerShell execution policy. The
+execution policy governs *script files*; this form downloads the script into
+memory and evaluates it, so it works unchanged under `Restricted`, `AllSigned`,
+and `RemoteSigned`. There is no need to run `Set-ExecutionPolicy`, and no need
+for `Unblock-File`.
+
+The policy does apply if you save the installer and run it as a file. In that
+case pass the bypass to a single invocation rather than changing the
+machine-wide setting:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-collo.ps1
+```
+
+### Options
+
+Piping into `iex` cannot pass parameters. Either use the environment variables,
+which the piped form reads:
+
+```powershell
+$env:COLLO_VERSION = 'vX.Y.Z'
+$env:COLLO_INSTALL_DIR = "$HOME\bin"
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
+```
+
+or build a script block, which does accept parameters:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1))) `
+  -Version vX.Y.Z -InstallDir "$HOME\bin"
+```
+
+| Parameter | Environment variable | Purpose |
+| --- | --- | --- |
+| `-Version` | `COLLO_VERSION` | Release tag to install. Defaults to `latest`. |
+| `-InstallDir` | `COLLO_INSTALL_DIR` | Absolute installation directory. |
+| `-Repository` | `COLLO_REPOSITORY` | GitHub `owner/repository`, for forks. |
+| `-Architecture` | `COLLO_ARCH` | Force `amd64` or `arm64` instead of detecting. |
+| `-NoPathUpdate` | `COLLO_NO_PATH_UPDATE` | Leave the user PATH unchanged. |
+
+A command-line parameter takes precedence over the environment variable.
+`-Architecture` is an escape hatch for locked-down hosts where the installer
+cannot read the machine's CPU architecture; it is not normally needed.
+
+### Reviewing the installer first
 
 ```powershell
 $Installer = Join-Path $env:TEMP 'install-collo.ps1'
-[Net.ServicePointManager]::SecurityProtocol = `
-  [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 Invoke-WebRequest -UseBasicParsing `
   'https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1' `
   -OutFile $Installer
 
 Get-Content $Installer
-Unblock-File $Installer
-& $Installer -AddToPath
+powershell -ExecutionPolicy Bypass -File $Installer
 ```
-
-The default executable location is
-`$env:LOCALAPPDATA\Programs\Collomia\collo.exe`. The installer detects AMD64
-or ARM64, downloads the binary and checksum manifest, requires exactly one
-matching SHA-256 entry, tests the downloaded executable, and replaces the old
-installation only after every check succeeds. It does not create application
-configuration or start Collomia. Windows may refuse to replace an executable
-that is currently running, so close active Collomia processes before an
-upgrade.
-
-Install a particular version or choose another directory, replacing `vX.Y.Z`
-with the release tag you want:
-
-```powershell
-& $Installer -Version vX.Y.Z -InstallDir "$HOME\bin" -AddToPath
-```
-
-The environment variables `COLLO_VERSION`, `COLLO_INSTALL_DIR`, and
-`COLLO_REPOSITORY` provide the same defaults. A command-line parameter takes
-precedence.
 
 Organizations that prohibit downloaded PowerShell scripts can perform the
 same verification directly. This AMD64 example downloads into the current
@@ -188,8 +225,8 @@ COLLO_VERSION="$ROLLBACK_VERSION" sh install-collo.sh
 ```
 
 ```powershell
-$RollbackVersion = 'vX.Y.Z'
-& $Installer -Version $RollbackVersion -AddToPath
+$env:COLLO_VERSION = 'vX.Y.Z'
+irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
 ```
 
 Read the intervening release notes first. A binary downgrade never rewinds
