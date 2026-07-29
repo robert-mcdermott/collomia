@@ -417,7 +417,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 }
 
 func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options, answer string, refused, progressed bool, runErr error, started time.Time) {
-	result := event.RunResult{Status: "ok", Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds()}
+	result := event.RunResult{Status: "ok", Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds(), Version: version.Version, Commit: version.Commit}
 	var usage *event.Usage
 	if runtime != nil {
 		result.ChangedFiles = runtime.Changes.Changed()

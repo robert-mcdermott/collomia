@@ -102,8 +102,55 @@ func TestParseAndRenderReplay(t *testing.T) {
 	if err := writeReplay(strings.NewReader(input), &out, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(out.String()); got != "valid Collomia schema-v1 trace: 4 events, 1 turn, 0 tools, status ok" {
+	if got := strings.TrimSpace(out.String()); got != "valid Collomia schema-v1 trace: 4 events, 1 turn, 0 tools, status ok\nbuild: not recorded in this trace; this binary is collo dev" {
 		t.Fatalf("summary=%q", got)
+	}
+}
+
+// A trace records the build that produced it so a replay can be told apart
+// from one this binary would produce. Traces predating the field stay valid
+// and report that it is absent rather than failing.
+func TestReplayReportsRecordedBuildAgainstThisBinary(t *testing.T) {
+	trace := func(result string) string {
+		return strings.Join([]string{
+			`{"schema":1,"time":"2026-07-21T12:00:00Z","kind":"turn.start"}`,
+			`{"schema":1,"time":"2026-07-21T12:00:02Z","kind":"turn.end"}`,
+			`{"schema":1,"time":"2026-07-21T12:00:03Z","kind":"run.result","result":` + result + `}`,
+		}, "\n")
+	}
+	cases := []struct{ name, result, want string }{
+		{
+			name:   "another release",
+			result: `{"status":"ok","duration_ms":3,"version":"0.1.9","commit":"abc1234"}`,
+			want:   "build: produced by collo 0.1.9 (abc1234); this binary is collo dev",
+		},
+		{
+			name:   "this binary",
+			result: `{"status":"ok","duration_ms":3,"version":"dev","commit":"unknown"}`,
+			want:   "build: produced by collo dev, matching this binary",
+		},
+		{
+			name:   "version without a commit",
+			result: `{"status":"ok","duration_ms":3,"version":"0.2.0"}`,
+			want:   "build: produced by collo 0.2.0; this binary is collo dev",
+		},
+		{
+			name:   "predates the field",
+			result: `{"status":"ok","duration_ms":3}`,
+			want:   "build: not recorded in this trace; this binary is collo dev",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out strings.Builder
+			if err := writeReplay(strings.NewReader(trace(c.result)), &out, true); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+			if got := lines[len(lines)-1]; got != c.want {
+				t.Fatalf("provenance=%q want=%q", got, c.want)
+			}
+		})
 	}
 }
 

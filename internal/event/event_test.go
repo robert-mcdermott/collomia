@@ -2,6 +2,7 @@ package event
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -61,6 +62,7 @@ func TestRunResultRoundTrips(t *testing.T) {
 	e.Result = &RunResult{
 		Status: "cancelled", Error: "context canceled", Failure: &Failure{ID: e.FailureID, Kind: FailureCancelled}, Partial: true,
 		Ephemeral: true, Refused: true, SessionID: "abc123", ChangedFiles: []string{"main.go"}, DurationMS: 1500,
+		Version: "0.1.9", Commit: "abc1234",
 	}
 	e.Usage = &Usage{InputTokens: 10, OutputTokens: 4}
 	data, err := json.Marshal(e)
@@ -73,8 +75,49 @@ func TestRunResultRoundTrips(t *testing.T) {
 	}
 	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" ||
 		decoded.FailureID != e.FailureID || decoded.Result.Failure == nil || decoded.Result.Failure.ID != e.FailureID || decoded.Result.Failure.Kind != FailureCancelled || !decoded.Result.Partial || !decoded.Result.Ephemeral || !decoded.Result.Refused ||
-		len(decoded.Result.ChangedFiles) != 1 || decoded.Usage == nil || decoded.Usage.InputTokens != 10 {
+		len(decoded.Result.ChangedFiles) != 1 || decoded.Usage == nil || decoded.Usage.InputTokens != 10 ||
+		decoded.Result.Version != "0.1.9" || decoded.Result.Commit != "abc1234" {
 		t.Fatalf("round trip mismatch: %+v", decoded)
+	}
+}
+
+// The embedded schema is published to consumers by `collo schema` but is not
+// enforced in-process, so nothing else stops a new RunResult field from going
+// unpublished. Additive fields need no SchemaVersion bump, which makes this
+// drift silent and this test the only thing that catches it.
+func TestEmbeddedJSONSchemaPublishesEveryRunResultField(t *testing.T) {
+	var schema struct {
+		Defs struct {
+			RunResult struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"runResult"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(JSONSchema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	published := schema.Defs.RunResult.Properties
+	if len(published) == 0 {
+		t.Fatal("published schema defines no runResult properties")
+	}
+	structType := reflect.TypeFor[RunResult]()
+	for i := range structType.NumField() {
+		name, _, _ := strings.Cut(structType.Field(i).Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		if _, ok := published[name]; !ok {
+			t.Errorf("RunResult field %q is not published in the embedded schema", name)
+		}
+	}
+	for name := range published {
+		if _, ok := structType.FieldByNameFunc(func(field string) bool {
+			f, _ := structType.FieldByName(field)
+			tag, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			return tag == name
+		}); !ok {
+			t.Errorf("published schema documents runResult.%q, which RunResult no longer has", name)
+		}
 	}
 }
 

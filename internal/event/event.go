@@ -140,6 +140,15 @@ type RunResult struct {
 	SessionID    string   `json:"session_id,omitempty"`
 	ChangedFiles []string `json:"changed_files,omitempty"`
 	DurationMS   int64    `json:"duration_ms"`
+	// Version and Commit identify the binary that produced the run, so a
+	// replayed trace can be told apart from one this binary would produce.
+	// Build identity is the whole answer rather than a partial one: prompts,
+	// tool descriptions, and agent logic are all compiled in with no runtime
+	// override, so an identical build means identical instructions. Released
+	// builds carry real values; a plain "go build" reports "dev"/"unknown"
+	// and so distinguishes releases but not two local builds.
+	Version string `json:"version,omitempty"`
+	Commit  string `json:"commit,omitempty"`
 }
 
 // FailureKind is the stable, provider-neutral reason a non-interactive run

@@ -245,7 +245,9 @@
         "refused": { "type": "boolean" },
         "session_id": { "type": "string" },
         "changed_files": { "type": "array", "items": { "type": "string" } },
-        "duration_ms": { "type": "integer", "minimum": 0 }
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "version": { "type": "string" },
+        "commit": { "type": "string" }
       }
     }
   }

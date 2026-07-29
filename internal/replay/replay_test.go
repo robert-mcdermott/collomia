@@ -143,3 +143,44 @@ func eventLine(schema int, kind, suffix string) string {
 func successfulResult() string {
 	return eventLine(1, "run.result", `,"result":{"status":"ok","duration_ms":1}`)
 }
+
+// Summary reports the build a trace recorded, and stays unchanged for traces
+// written before run.result carried one so existing traces keep validating.
+func TestSummaryReportsRecordedBuild(t *testing.T) {
+	trace := func(result string) *Trace {
+		lines := strings.Join([]string{
+			`{"schema":1,"time":"2026-07-21T12:00:00Z","kind":"turn.start"}`,
+			`{"schema":1,"time":"2026-07-21T12:00:01Z","kind":"turn.end"}`,
+			`{"schema":1,"time":"2026-07-21T12:00:02Z","kind":"run.result","result":` + result + `}`,
+		}, "\n")
+		parsed, err := Read(strings.NewReader(lines))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	withBuild := trace(`{"status":"ok","duration_ms":2,"version":"0.1.9","commit":"abc1234"}`)
+	if got, want := withBuild.Summary(), "valid Collomia schema-v1 trace: 3 events, 1 turn, 0 tools, status ok, produced by collo 0.1.9 (abc1234)"; got != want {
+		t.Errorf("summary=%q want=%q", got, want)
+	}
+	without := trace(`{"status":"ok","duration_ms":2}`)
+	if got, want := without.Summary(), "valid Collomia schema-v1 trace: 3 events, 1 turn, 0 tools, status ok"; got != want {
+		t.Errorf("summary=%q want=%q", got, want)
+	}
+}
+
+func TestBuildLabel(t *testing.T) {
+	cases := []struct{ version, commit, want string }{
+		{"0.1.9", "abc1234", "collo 0.1.9 (abc1234)"},
+		{"0.1.9", "", "collo 0.1.9"},
+		{"0.1.9", "unknown", "collo 0.1.9"},
+		{"dev", "unknown", "collo dev"},
+		{"", "abc1234", "collo unknown (abc1234)"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := BuildLabel(c.version, c.commit); got != c.want {
+			t.Errorf("BuildLabel(%q, %q)=%q want=%q", c.version, c.commit, got, c.want)
+		}
+	}
+}
