@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-26
+**Status updated:** 2026-07-29
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -40,7 +40,9 @@ also shipped:
   denials, credential-store protection, macOS per-host brokered command egress,
   secret redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
-  artifacts, rewind/fork, and fail-stop persistence handling;
+  artifacts, rewind/fork, coupled conversation-plus-workspace checkpoint
+  restore that fails closed on external edits, and fail-stop persistence
+  handling;
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
   verification, LSP diagnostics/definitions/references/formatting, repository
   indexing, PTY commands, and background processes;
@@ -75,6 +77,57 @@ existed on all three platforms.
 No wave is currently active. The completed waves below are the most recent
 work; see [Recommended next sequence](#recommended-next-sequence) for what the
 dependency order argues for next.
+
+## Completed wave — checkpoints that move the files too
+
+**Goal:** Make an undo that actually undoes, by ending the split between a
+conversation rewind that leaves the files alone and a file undo that knows
+nothing about the conversation — without ever letting a recovery feature
+destroy work the user did by hand.
+
+- [x] Add `/restore [turn]`, which creates the same non-destructive
+  conversation branch `/rewind` does *and* reverses every file mutation
+  recorded after that turn. The two halves already existed and were
+  independently solid; nothing connected them, so rewinding a turn left the
+  files it wrote in place and the transcript describing a tree that no longer
+  matched it.
+- [x] Teach the change tracker turn boundaries from the runtime's existing
+  event funnel rather than from the agent loop. Every surface — TUI, headless,
+  browser terminal — reports events through that one site, so there is no
+  second place a turn boundary could be missed, and the tracker never infers a
+  boundary from elapsed time.
+- [x] Verify the whole workspace before writing anything, and refuse the entire
+  operation if any file changed outside Collomia — naming every affected file,
+  not the first one found. Acting on one file and discovering a second
+  afterwards is the same trap as a partial restore.
+- [x] Verify before the conversation branches, not after. A drifted file found
+  after the branch existed would leave a conversation that moved alone —
+  precisely the split this wave exists to close. A test disables the pre-check
+  and fails, so the ordering is pinned rather than incidental.
+- [x] Collapse repeated mutations of one file into a single write, taking the
+  newest recorded content as what disk must hold and the oldest as what to
+  restore. Replaying twenty mutations backwards means twenty chances to stop
+  halfway; one write per file means none.
+- [x] Reverse a file the agent created (it is removed), restore one the agent
+  deleted along with its original permission bits, and treat a file the user
+  recreated where the agent deleted one as drift rather than as something to
+  overwrite.
+- [x] State the two real limits instead of papering over them. Change tracking
+  is in memory, so a restore to a turn from a resumed session reports that no
+  tracked changes needed reversing rather than implying it rewound writes it
+  never observed — the tracker's turn numbering is aligned to the session's
+  completed turns at every switch so the numbers still mean the same thing to
+  both halves. External effects — commands, installs, network calls,
+  deployments, MCP effects — are never reversed.
+- [x] Say what a checkpoint costs before it is chosen: each picker entry carries
+  how many changes across how many files restoring to it would reverse, because
+  a turn number conveys none of that.
+- [x] Leave `/rewind` exactly as it was, pointing at `/restore` for the coupled
+  form. Changing what an existing recovery command does to the workspace is the
+  last place to surprise someone.
+
+**Behavior change:** none. `/restore` is new; `/rewind`, `/undo`, and
+`collo sessions rewind` are unchanged.
 
 ## Completed wave — a Windows install that actually installs
 
@@ -529,9 +582,12 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 2 — Sessions and context
 
-- [ ] **P1 — Coupled checkpoints:** conversation rewind and file undo exist;
-  add an explicit conversation-plus-workspace checkpoint while continuing to
-  state that shell and external side effects cannot be reversed automatically.
+- [x] **P1 — Coupled checkpoints:** `/restore [turn]` branches the conversation
+  and reverses the tracked file mutations recorded after that turn as one
+  operation. The workspace is verified before the conversation branches, so
+  drift refuses both halves and names every file rather than half-applying.
+  Shell, network, and other external side effects are still not reversed, and
+  the process-local scope of change tracking is stated rather than implied.
 - [ ] **P2 — Nested instructions:** evaluate directory-scoped instruction
   inheritance after precedence and trust UX are designed.
 

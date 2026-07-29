@@ -367,6 +367,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			break
 		}
 		m.rewindTo(turn)
+	case "/restore":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
+			break
+		}
+		if len(args) == 0 {
+			m.openRestorePicker()
+			break
+		}
+		if len(args) != 1 {
+			m.addError(fmt.Errorf("usage: /restore [completed-turn-number]"))
+			break
+		}
+		turn, err := strconv.Atoi(args[0])
+		if err != nil || turn < 0 {
+			m.addError(fmt.Errorf("restore target must be a non-negative completed turn number"))
+			break
+		}
+		m.restoreTo(turn)
 	case "/retry":
 		if m.busy {
 			m.addError(fmt.Errorf("wait for the current turn to finish first"))

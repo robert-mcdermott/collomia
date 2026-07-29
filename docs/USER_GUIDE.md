@@ -2334,6 +2334,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/ps stop <id>` | Stop one background process and its descendants. |
 | `/sessions` (alias `/resume`) | Fuzzy-pick and switch to another durable session in place. |
 | `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
+| `/restore [turn]` | Branch the conversation and reverse the agent's tracked file changes back to an earlier completed turn. Refuses the whole operation, naming every file, if any changed outside Collomia. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
@@ -4471,8 +4472,58 @@ conversation rewind, not environment rollback. The source log is never
 truncated, restoration does not execute recorded tools, and Collomia does not
 change the workspace while creating the branch. Files changed by earlier or
 later turns, shell commands, package installs, deployments, remote MCP effects,
-and other external state remain as they are now. Use `/undo` for a compatible
-most-recent direct file edit, or use Git/worktrees for broader source recovery.
+and other external state remain as they are now. Use `/restore` to move the
+tracked files with the conversation, `/undo` for a compatible most-recent
+direct file edit, or Git/worktrees for broader source recovery.
+
+### Coupled checkpoint restore
+
+`/restore [turn]` is the conversation-plus-workspace form of the same
+checkpoint. It creates the identical non-destructive conversation branch and
+also reverses every file mutation the agent recorded after that turn, so the
+transcript and the working tree describe the same moment instead of
+disagreeing. Omitting the turn opens a picker whose entries say how many
+changes across how many files each choice would reverse; a turn number on its
+own does not tell you what restoring to it costs.
+
+**It fails closed.** The workspace is verified before the conversation
+branches, so a restore that cannot complete leaves *both* halves untouched. If
+any file changed outside Collomia since the checkpoint, the operation is
+refused and every affected file is named:
+
+```
+Restore refused
+
+These files changed outside Collomia since turn 2:
+
+  • internal/parser/lexer.go
+  • docs/NOTES.md
+
+Nothing was restored and the conversation did not move, because restoring
+would discard those edits. Save or revert them, then run /restore again —
+or use /rewind to branch the conversation alone.
+```
+
+A partially applied restore would leave a tree that neither the conversation
+nor the user describes, and silently overwriting your own edits would be worse
+than either. Naming every file rather than the first one found is deliberate:
+acting on one file and then discovering a second is the same trap.
+
+Two limits are real and stated rather than hidden:
+
+- **Only this process's file changes are reversible.** Change tracking lives in
+  memory, so restoring to a turn belonging to a session you resumed reports
+  that no tracked file changes needed reversing. It does not claim to have
+  rewound writes it never observed.
+- **External effects are never reversed.** Shell commands, package installs,
+  network calls, deployments, and remote MCP effects are outside the tracked
+  filesystem. `/restore` moves the conversation and the files; it does not move
+  the world. Use Git, a worktree, or a container when you need that.
+
+A restore also reverses a file the agent *created* after the checkpoint (it is
+removed) and restores one the agent *deleted*, including its original
+permission bits. Repeated mutations of the same file collapse into a single
+write, so a file the agent touched twenty times cannot be left halfway.
 
 On initial `--resume`/`--continue` and in-TUI switches, Collomia reconstructs
 the complete visible conversation from the durable transcript, including tool

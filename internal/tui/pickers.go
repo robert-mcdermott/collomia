@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
+	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
@@ -318,7 +320,122 @@ func (m *Model) rewindTo(turn int) {
 		return
 	}
 	m.rebuildTranscript()
-	m.addSystem(fmt.Sprintf("Created session %s from %s after completed turn %d. The original conversation and workspace are unchanged; file, command, and external side effects were not undone.", rewoundID, sourceID, turn))
+	m.addSystem(fmt.Sprintf("Created session %s from %s after completed turn %d. The original conversation and workspace are unchanged; file, command, and external side effects were not undone. /restore %d moves the tracked files with the conversation.", rewoundID, sourceID, turn, turn))
+}
+
+// openRestorePicker offers the same completed-turn boundaries as the rewind
+// picker, but each entry says how much of the workspace the choice would
+// reverse, because that is the part of the decision a turn number does not
+// convey.
+func (m *Model) openRestorePicker() {
+	if m.runtime.Sessions == nil || m.runtime.Session == nil {
+		m.addSystem("Session persistence is unavailable.")
+		return
+	}
+	if m.busy {
+		m.addError(fmt.Errorf("wait for the current turn to finish before restoring"))
+		return
+	}
+	checkpoints, err := m.runtime.Sessions.Checkpoints(m.runtime.Session.Meta.ID)
+	if err != nil {
+		m.addError(err)
+		return
+	}
+	if len(checkpoints) == 0 {
+		m.addSystem("There are no completed turns to restore. /undo reverts the most recent file change.")
+		return
+	}
+	var items []pickerItem
+	for i := len(checkpoints) - 2; i >= 0; i-- {
+		checkpoint := checkpoints[i]
+		desc := m.restoreCost(checkpoint.Turn)
+		// The cost leads: it is the new information, and it stays legible when
+		// a long prompt is truncated behind it. Both together have to fit one
+		// row, or the entries stop reading as a list.
+		if prompt := compactPickerText(checkpoint.Prompt, 34); prompt != "" {
+			desc += " · " + prompt
+		}
+		items = append(items, pickerItem{id: fmt.Sprint(checkpoint.Turn), title: fmt.Sprintf("After turn %d", checkpoint.Turn), desc: desc})
+	}
+	items = append(items, pickerItem{id: "0", title: "Before the first turn", desc: m.restoreCost(0)})
+	m.picker = newPicker("Restore conversation and files", items, func(m *Model, item pickerItem) tea.Cmd {
+		turn, err := strconv.Atoi(item.id)
+		if err != nil {
+			m.addError(err)
+			return nil
+		}
+		m.restoreTo(turn)
+		return nil
+	})
+	m.layout()
+	m.refresh()
+}
+
+// restoreCost describes what restoring to a turn would reverse, tersely enough
+// to share a picker row with the turn's prompt. It says "no tracked file
+// changes" rather than nothing at all, because a resumed session's earlier
+// turns are genuinely outside this process's reach and a blank description
+// would read as a restore that does everything.
+func (m *Model) restoreCost(turn int) string {
+	if m.runtime.Changes == nil {
+		return "change tracking unavailable"
+	}
+	files, mutations := m.runtime.Changes.PendingSince(turn)
+	if files == 0 {
+		return "no tracked file changes"
+	}
+	return fmt.Sprintf("%s in %s", pluralize(mutations, "change", "changes"), pluralize(files, "file", "files"))
+}
+
+func pluralize(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("%d %s", count, singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
+}
+
+// restoreTo moves the conversation and the tracked workspace together. A
+// workspace that drifted refuses the whole operation and names every file, so
+// the user chooses what to do rather than discovering a half-restored tree.
+func (m *Model) restoreTo(turn int) {
+	if m.runtime.Session == nil {
+		m.addError(fmt.Errorf("session persistence is unavailable"))
+		return
+	}
+	m.saveSessionDraft()
+	result, err := m.runtime.RestoreCheckpoint(turn)
+	if err != nil {
+		var drift *diffmodel.DriftError
+		if errors.As(err, &drift) {
+			var lines []string
+			for _, path := range drift.Files {
+				lines = append(lines, "  • "+m.relativePath(path))
+			}
+			m.addPanel("Restore refused", fmt.Sprintf(
+				"These files changed outside Collomia since turn %d:\n\n%s\n\nNothing was restored and the conversation did not move, because restoring would discard those edits. Save or revert them, then run /restore again — or use /rewind to branch the conversation alone.",
+				drift.Turn, strings.Join(lines, "\n")))
+			return
+		}
+		m.addError(err)
+		return
+	}
+	m.rebuildTranscript()
+	summary := fmt.Sprintf("Restored to completed turn %d as session %s (branched from %s).", result.Turn, result.SessionID, result.SourceID)
+	if len(result.Files) == 0 {
+		summary += " No tracked file changes needed reversing."
+	} else {
+		summary += fmt.Sprintf(" Reverted %s in %s.", pluralize(result.Mutations, "change", "changes"), pluralize(len(result.Files), "file", "files"))
+	}
+	m.addSystem(summary + " Commands, network calls, and other external side effects were not reversed.")
+}
+
+// relativePath prefers a workspace-relative name so a refusal reads like the
+// paths the rest of the interface shows.
+func (m *Model) relativePath(path string) string {
+	if rel, err := filepath.Rel(m.runtime.Workspace, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.ToSlash(rel)
+	}
+	return path
 }
 
 func compactPickerText(value string, limit int) string {
