@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-26
+**Status updated:** 2026-07-29
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -40,7 +40,9 @@ also shipped:
   denials, credential-store protection, macOS per-host brokered command egress,
   secret redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
-  artifacts, rewind/fork, and fail-stop persistence handling;
+  artifacts, rewind/fork, coupled conversation-plus-workspace checkpoint
+  restore that fails closed on external edits, and fail-stop persistence
+  handling;
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
   verification, LSP diagnostics/definitions/references/formatting, repository
   indexing, PTY commands, and background processes;
@@ -75,6 +77,176 @@ existed on all three platforms.
 No wave is currently active. The completed waves below are the most recent
 work; see [Recommended next sequence](#recommended-next-sequence) for what the
 dependency order argues for next.
+
+## Completed wave — the bar that keeps its exit key
+
+**Goal:** Stop the status bar from removing the user's way out in order to keep
+showing session decoration on a narrow terminal.
+
+- [x] Lay the bar out widest-first over tiered control hints instead of
+  dropping the whole right-hand side when it does not fit. At 80 columns the
+  bar previously showed no keyboard hints at all, and at 40 nothing but a
+  truncated context gauge — so in a split pane there was no visible way to
+  stop a running turn or answer a prompt. The controls now degrade through
+  named forms down to a minimum that always survives.
+- [x] Keep all three answers on an approval at every width. A prompt narrowed
+  to show only how to approve is a prompt biased toward approving.
+- [x] Make the left-hand badges droppable segments rather than one
+  concatenated string. Two things on this bar are both promised to survive any
+  width — the autonomy/containment mark and the exit key — and a string that
+  gets truncated can only honor whichever one the ellipsis misses. Explicit
+  drop ordering gives up the running spend before the model name.
+- [x] Enforce "additive" by comparison rather than by a width guess. The named
+  stance badge and the spend readout are laid out with and without, and kept
+  only when the control hint lands on the same tier and no other badge was
+  given up. The existing invariant test caught this: naming the stance had
+  started costing the working indicator at 80 columns.
+- [x] Pin the property with a test that sweeps every state across widths from
+  40 to 200, rather than trusting golden screens. **The goldens had recorded
+  the defect as correct** — `replay_chat_80x24` and `replay_chat_40x12` both
+  captured a status bar with no controls on it. A golden proves the screen has
+  not changed, not that it was ever right.
+
+**Behavior change:** none configurable. Narrow terminals show fewer badges and
+shorter control hints than before, and always show a way out.
+
+## Completed wave — the running turn
+
+**Goal:** Make the part of Collomia a user actually sits through — one turn,
+eleven provider calls over the same growing prompt — cheap, fast, and
+correctable, instead of expensive, slow, and all-or-nothing.
+
+- [x] Stop reporting prompt-cache hits that were never requested. Both
+  Anthropic adapters parsed `cache_read_input_tokens`, cost estimation priced
+  it at `cached_input_per_million`, and the README advertised prompt caching as
+  a tracked capability — but no request ever carried a `cache_control`
+  breakpoint, and Anthropic caches only on explicit opt-in. The whole feature
+  was display plumbing over a number that was structurally always zero. OpenAI
+  caches implicitly above ~1024 tokens, which is why it went unnoticed.
+- [x] Move the structured plan out of the system prompt. `update_plan`
+  rewrote the system block, so the front of every request changed during
+  exactly the multi-step work caching exists for. The plan now rides a trailing
+  message regenerated per request and never retained in the conversation — the
+  board stays the single source of truth, and no stale copy can accumulate in
+  the history. This was the prerequisite, not a detail: a breakpoint in front
+  of volatile content is invalidated by the agent's own progress tracking.
+- [x] Send two breakpoints, not four. One on the system block, which also
+  covers the tool definitions ahead of it in the prefix and is written once per
+  session; one rolling breakpoint on the last non-volatile message, so the next
+  call in the loop reads this one's history instead of paying for it again.
+  `Message.Volatile` is what keeps the rolling breakpoint behind the trailing
+  plan — a prefix that includes regenerated content is never read back, and a
+  cache write costs more than ordinary input, so misplacing it is worse than
+  not caching.
+- [x] Normalize `Usage.InputTokens` to mean the whole prompt. Anthropic reports
+  `input_tokens` net of both cache counters, so passing it through would have
+  collapsed the context gauge to near-empty exactly when the context was
+  fullest and priced most of the prompt at zero. Cache writes are tracked
+  separately and priced by `cache_write_per_million`, because they are billed
+  above the ordinary input rate rather than below it.
+- [x] Take the five-minute cache lifetime deliberately rather than by default.
+  The one-hour extension is requested through a beta header, and sending an
+  unrecognized beta header to an arbitrary compatible endpoint is a
+  compatibility risk taken for a saving nobody has measured yet.
+- [x] Never lose a request to an optimization. Any 400 naming `cache_control`
+  drops caching for the life of the client and retries once, so an endpoint
+  that has not implemented caching costs one wasted round trip rather than one
+  per call. Bedrock is deliberately untouched: `cachePoint` support varies by
+  model *and* region and fails with a hard `ValidationException` rather than
+  being ignored, so it stays honestly declared unsupported until it can be run
+  against real Bedrock.
+- [x] Say which of the three zeroes it is. A bare "0 cached" cannot distinguish
+  a provider with no cache, a prefix not yet written, and reuse that is
+  silently failing; `/context` and the Session tab now name the case.
+- [x] Let the primary agent be steered. The iteration-boundary hook, the bounded
+  drain-once queue, and the no-permission-grant framing all shipped with
+  delegated agents; the primary session passed `TakeSteering: nil` and the
+  composer refused mid-turn input with "Draft kept while the current turn
+  runs." Watching a turn head the wrong way left two options — wait, or `esc`
+  and lose it. Enter now steers, and the message says truthfully that it came
+  from the user rather than from a parent.
+- [x] Be exact about when guidance lands, and about what it does not do. It is
+  delivered at the next iteration boundary, never inside an in-flight call, an
+  executing tool, or a pending approval; the transcript marks it and says so.
+  It grants no permissions — an action that needed approval before the text
+  arrived still needs it after. Undelivered guidance is discarded when the turn
+  ends and the discard is reported, because a cancelled turn is the common case
+  and that text must not resurface against unrelated later work.
+- [x] Keep the hint additive. The status bar advertises steering only when it
+  does not push `esc cancel` off the bar: an indicator that hides the control
+  which stops a turn has made the session worse to advertise one that nudges it.
+
+**Behavior change:** two. Plain enter during a running turn now steers the
+agent instead of holding the draft. And `input_tokens` in usage output and the
+JSONL event stream now includes cached tokens on the Anthropic routes, where it
+previously excluded them; `cache_write_tokens` is a new additive field on the
+v1 event contract.
+
+**Measured, not argued.** The fixed prefix is 13.3 KB (~3410 tokens): 11.5 KB
+of tool schemas across 23 built-in tools plus a 1.8 KB system prompt. Across
+one turn, the share of prompt bytes that are retransmission a warm cache serves
+is 33% at one tool call, 71% at five, and 83% at ten. Against a live endpoint
+(`azure-foundry-anthropic`, claude-sonnet-5) two identical requests reported
+`cache_write=9627` then `cache_read=9627` — 100% of the second prompt served
+from cache, with only two tokens falling outside the cached prefix, which
+confirms the rolling conversation breakpoint is honored and not just the system
+one. That run also confirmed the usage normalization is load-bearing: the
+provider reported a raw `input_tokens` of 2 on both calls, so without summing
+the three counters the second request would have shown a two-token prompt and
+priced 9627 tokens at nothing. A write costs 1.25x and a read 0.1x, so the
+one-time write premium is repaid by the first read — every turn that uses a
+tool is already ahead.
+
+## Completed wave — checkpoints that move the files too
+
+**Goal:** Make an undo that actually undoes, by ending the split between a
+conversation rewind that leaves the files alone and a file undo that knows
+nothing about the conversation — without ever letting a recovery feature
+destroy work the user did by hand.
+
+- [x] Add `/restore [turn]`, which creates the same non-destructive
+  conversation branch `/rewind` does *and* reverses every file mutation
+  recorded after that turn. The two halves already existed and were
+  independently solid; nothing connected them, so rewinding a turn left the
+  files it wrote in place and the transcript describing a tree that no longer
+  matched it.
+- [x] Teach the change tracker turn boundaries from the runtime's existing
+  event funnel rather than from the agent loop. Every surface — TUI, headless,
+  browser terminal — reports events through that one site, so there is no
+  second place a turn boundary could be missed, and the tracker never infers a
+  boundary from elapsed time.
+- [x] Verify the whole workspace before writing anything, and refuse the entire
+  operation if any file changed outside Collomia — naming every affected file,
+  not the first one found. Acting on one file and discovering a second
+  afterwards is the same trap as a partial restore.
+- [x] Verify before the conversation branches, not after. A drifted file found
+  after the branch existed would leave a conversation that moved alone —
+  precisely the split this wave exists to close. A test disables the pre-check
+  and fails, so the ordering is pinned rather than incidental.
+- [x] Collapse repeated mutations of one file into a single write, taking the
+  newest recorded content as what disk must hold and the oldest as what to
+  restore. Replaying twenty mutations backwards means twenty chances to stop
+  halfway; one write per file means none.
+- [x] Reverse a file the agent created (it is removed), restore one the agent
+  deleted along with its original permission bits, and treat a file the user
+  recreated where the agent deleted one as drift rather than as something to
+  overwrite.
+- [x] State the two real limits instead of papering over them. Change tracking
+  is in memory, so a restore to a turn from a resumed session reports that no
+  tracked changes needed reversing rather than implying it rewound writes it
+  never observed — the tracker's turn numbering is aligned to the session's
+  completed turns at every switch so the numbers still mean the same thing to
+  both halves. External effects — commands, installs, network calls,
+  deployments, MCP effects — are never reversed.
+- [x] Say what a checkpoint costs before it is chosen: each picker entry carries
+  how many changes across how many files restoring to it would reverse, because
+  a turn number conveys none of that.
+- [x] Leave `/rewind` exactly as it was, pointing at `/restore` for the coupled
+  form. Changing what an existing recovery command does to the workspace is the
+  last place to surprise someone.
+
+**Behavior change:** none. `/restore` is new; `/rewind`, `/undo`, and
+`collo sessions rewind` are unchanged.
 
 ## Completed wave — a Windows install that actually installs
 
@@ -529,9 +701,12 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 2 — Sessions and context
 
-- [ ] **P1 — Coupled checkpoints:** conversation rewind and file undo exist;
-  add an explicit conversation-plus-workspace checkpoint while continuing to
-  state that shell and external side effects cannot be reversed automatically.
+- [x] **P1 — Coupled checkpoints:** `/restore [turn]` branches the conversation
+  and reverses the tracked file mutations recorded after that turn as one
+  operation. The workspace is verified before the conversation branches, so
+  drift refuses both halves and names every file rather than half-applying.
+  Shell, network, and other external side effects are still not reversed, and
+  the process-local scope of change tracking is stated rather than implied.
 - [ ] **P2 — Nested instructions:** evaluate directory-scoped instruction
   inheritance after precedence and trust UX are designed.
 
@@ -558,9 +733,20 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P1 — Provider discovery refinements:** Azure deployment/project
   discovery and routing, tested sovereign presets, and clearer resolved AWS
   identity/model-access diagnostics.
+- [x] **P1 — Provider prompt caching:** the Anthropic Messages routes send two
+  cache breakpoints — the stable tools/system prefix and a rolling
+  conversation boundary held behind any volatile trailing content — and drop
+  caching for the client after an explicit rejection. Usage is normalized so
+  `input_tokens` means the whole prompt whatever split a provider reports, and
+  cache writes are priced separately from cache reads. Bedrock `cachePoint`
+  remains unbuilt: support varies by model and region and fails hard rather
+  than degrading, so it stays declared unsupported until it can be verified
+  against real Bedrock.
 - [ ] **P1 — Modern API features:** general OpenAI/Azure Responses routing,
-  structured output, provider caching, richer thinking/content blocks, and
-  additional media types.
+  structured output, richer thinking/content blocks, and additional media
+  types. The one-hour cache TTL is open here: it needs a beta header whose
+  current status must be confirmed, and it is worth taking only on measured
+  evidence since the longer write is billed higher.
 - [ ] **P1 — Explicit routing/fallback:** ordered capability/health/cost/local
   choices that never silently cross privacy or residency boundaries.
 - [ ] **P1 — Usage and budgets:** normalized user-priced cost estimates and
@@ -604,12 +790,30 @@ claiming enforcement the policy layer does not provide.
 
 - [ ] **P1 — Finish artifact input:** raw clipboard image protocols and
   optional inline pixel previews where the terminal supports them.
+- [x] **P1 — Correctable turns:** typing during a running turn steers the
+  primary agent through the same iteration-boundary hook delegated children
+  use, with a bounded drain-once queue, an explicit no-permission-grant
+  framing, a transcript marker stating where the guidance will land, and a
+  reported discard when a turn ends before delivery.
 - [ ] **P1 — Workspace UI refinements:** the context rail now carries
   workspace, plan, agents, changed files, and background processes beside the
   transcript; automatically surfaced diagnostics and provider price/budget
   visibility remain.
-- [ ] **P1 — Accessibility validation:** native screen-reader, colored theme,
-  resize, and broader terminal-emulator coverage.
+- [ ] **P1 — Accessibility validation:** colour (`NO_COLOR` selects the plain
+  theme), motion (`options.reduced_motion`), and narrow-width resize behavior
+  are done, the last pinned by a width sweep rather than by golden screens.
+  Broader terminal-emulator coverage remains — the Kitty/`modifyOtherKeys` key
+  handling is the most emulator-sensitive code and is unverified across
+  emulators.
+
+  **Screen-reader support is deliberately not built.** Full-screen TUIs repaint
+  with absolute cursor positioning and screen readers follow the terminal
+  buffer, so the two are structurally opposed; of comparable tools only Claude
+  Code ships a mode for it, added recently after sustained user pressure, and
+  Codex/Crush/OpenCode have none. Collomia's non-interactive JSONL output is
+  already a linear-text path and is documented as the answer, in the same
+  idiom as Linux scoped egress. That keeps a future `--screen-reader` flag
+  cheap — wiring and documentation rather than architecture — if a user asks.
 - [ ] **P2 — Structured local service API:** authenticated stdio/socket or
   WebSocket access to the event/session/permission contracts. The current web
   terminal is a PTY transport, not this API.
@@ -636,15 +840,21 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-1. Gather real beta feedback on named primary profiles, cost estimates,
+1. Decide the one-hour cache TTL now that the mechanism is measured and
+   confirmed working. What is still unknown is only the gap behavior: the live
+   run measured back-to-back requests, not a session resumed after a pause,
+   which is the case the longer TTL exists for.
+2. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
    judged against real toolchains rather than predicted.
-2. Add opt-in plan-graph execution using verified results, write scopes,
-   dependency readiness, and stale-state invalidation.
-3. Add explicit combined-parent verification and conservative result-ranking
+3. Add opt-in plan-graph execution using verified results, write scopes,
+   dependency readiness, and stale-state invalidation. Steering is a
+   prerequisite that has now landed: adding autonomy on top of a loop that
+   could not be corrected without cancelling was the wrong order.
+4. Add explicit combined-parent verification and conservative result-ranking
    criteria without turning a score into permission.
-4. Continue Phase 8 security/reliability campaigns in parallel with every
+5. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 
 ## Exit gates

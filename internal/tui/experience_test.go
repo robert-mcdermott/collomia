@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -172,17 +173,23 @@ func TestAgentControlPickerRequiresExplicitStopAction(t *testing.T) {
 	}
 }
 
-func TestBusyComposerRunsOnlyLocalCommandsAndKeepsPromptDraft(t *testing.T) {
+func TestBusyComposerSteersTheTurnAndRunsOnlyLocalCommands(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
-	m.setComposerValue("draft for the next turn")
+	// Text typed mid-turn steers the running agent rather than being held
+	// until it finishes. Waiting out a turn that is going the wrong way, or
+	// cancelling it, were the only two options before this.
+	m.setComposerValue("actually check the parser first")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
-	if m.input.Value() != "draft for the next turn" || !m.busy {
-		t.Fatalf("busy prompt draft changed: value=%q busy=%t", m.input.Value(), m.busy)
+	if m.input.Value() != "" || !m.busy {
+		t.Fatalf("steering did not clear the composer: value=%q busy=%t", m.input.Value(), m.busy)
 	}
-	if last := m.blocks[len(m.blocks)-1]; last.role != "system" || !strings.Contains(last.content, "Draft kept") {
-		t.Fatalf("missing draft notice: %+v", last)
+	if m.runtime.Steering.Pending() != 1 {
+		t.Fatalf("guidance was not queued: pending=%d", m.runtime.Steering.Pending())
+	}
+	if last := m.blocks[len(m.blocks)-1]; last.role != "steering" || last.content != "actually check the parser first" {
+		t.Fatalf("steering block missing: %+v", last)
 	}
 	m.setComposerValue("/status")
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -306,5 +313,55 @@ func TestMCPPickerWithoutServers(t *testing.T) {
 	last := m.blocks[len(m.blocks)-1]
 	if !strings.Contains(last.content, "No MCP servers connected") {
 		t.Fatalf("expected hint, got %q", last.content)
+	}
+}
+
+// Guidance the turn ended before reaching must be discarded and reported, not
+// held. A cancelled turn is the common case, and surfacing that text at the
+// start of an unrelated later turn would apply it to work it was never
+// aimed at.
+func TestUndeliveredSteeringIsDiscardedWhenTheTurnEnds(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	m.turnStarted = time.Now()
+	m.setComposerValue("narrow it to the parser")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.runtime.Steering.Pending() != 1 {
+		t.Fatalf("guidance was not queued: %d", m.runtime.Steering.Pending())
+	}
+	updated, _ = m.Update(runMsg{done: true, final: "stopped"})
+	m = updated.(Model)
+	if m.runtime.Steering.Pending() != 0 {
+		t.Fatalf("undelivered guidance survived the turn: %d", m.runtime.Steering.Pending())
+	}
+	var notified bool
+	for _, b := range m.blocks {
+		if b.role == "system" && strings.Contains(b.content, "discarded") {
+			notified = true
+		}
+	}
+	if !notified {
+		t.Fatalf("discard was silent: %+v", m.blocks)
+	}
+}
+
+// Oversize guidance is refused, and the draft stays in the composer so the
+// user does not have to retype it.
+func TestRefusedSteeringKeepsTheDraft(t *testing.T) {
+	m := newTestModel(t)
+	m.busy = true
+	long := strings.Repeat("x", 5000)
+	m.setComposerValue(long)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.input.Value() != long {
+		t.Fatalf("refused guidance lost the draft: %d chars left", len(m.input.Value()))
+	}
+	if m.runtime.Steering.Pending() != 0 {
+		t.Fatalf("oversize guidance was queued: %d", m.runtime.Steering.Pending())
+	}
+	if last := m.blocks[len(m.blocks)-1]; last.role != "error" {
+		t.Fatalf("refusal was not reported: %+v", last)
 	}
 }

@@ -461,8 +461,18 @@ func TestPlanPersistsAcrossResume(t *testing.T) {
 	if _, err := resumed.Agent.Run(context.Background(), "continue the plan", nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(follow.requests) != 1 || !strings.Contains(follow.requests[0].System, "Active structured plan") || !strings.Contains(follow.requests[0].System, "ship it") || !strings.Contains(follow.requests[0].System, "go build") {
-		t.Fatalf("restored plan was not pinned in the next request: %+v", follow.requests)
+	// The restored plan rides the trailing message, not the system prompt,
+	// so that the cached request prefix survives every update_plan call.
+	if len(follow.requests) != 1 {
+		t.Fatalf("expected one follow-up request, got %d", len(follow.requests))
+	}
+	messages := follow.requests[0].Messages
+	trailing := messages[len(messages)-1].Content
+	if !strings.Contains(trailing, "Active structured plan") || !strings.Contains(trailing, "ship it") || !strings.Contains(trailing, "go build") {
+		t.Fatalf("restored plan was not pinned in the next request: %q", trailing)
+	}
+	if strings.Contains(follow.requests[0].System, "Active structured plan") {
+		t.Fatalf("plan leaked into the system prompt: %s", follow.requests[0].System)
 	}
 }
 

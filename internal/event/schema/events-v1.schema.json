@@ -152,6 +152,7 @@
         "input_tokens": { "type": "integer", "minimum": 0 },
         "output_tokens": { "type": "integer", "minimum": 0 },
         "cached_tokens": { "type": "integer", "minimum": 0 },
+        "cache_write_tokens": { "type": "integer", "minimum": 0 },
         "reasoning_tokens": { "type": "integer", "minimum": 0 },
         "cost_usd": { "type": "number", "minimum": 0 },
         "cost_available": { "type": "boolean" },
@@ -245,7 +246,9 @@
         "refused": { "type": "boolean" },
         "session_id": { "type": "string" },
         "changed_files": { "type": "array", "items": { "type": "string" } },
-        "duration_ms": { "type": "integer", "minimum": 0 }
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "version": { "type": "string" },
+        "commit": { "type": "string" }
       }
     }
   }

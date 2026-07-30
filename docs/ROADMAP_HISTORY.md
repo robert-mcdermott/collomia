@@ -39,6 +39,68 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-29 — Phase 2 coupled conversation-plus-workspace checkpoints
+
+- **Two halves that never met:** `session.Store.Rewind` branched the
+  conversation and documented that the workspace was untouched;
+  `diffmodel.Tracker.Undo` reversed exactly one file mutation and knew nothing
+  about turns. Both were solid, and the gap between them was the feature: after
+  a rewind the transcript described a tree that no longer matched it, and the
+  only route back was `/undo` pressed an unknown number of times. `/restore
+  [turn]` now does both as one operation.
+- **The tracker learns turns from the funnel that already exists:**
+  `Runtime.LogEvent` is the single site every surface — TUI, headless runner,
+  browser terminal — reports events through, and the session already counts
+  turns from the `turn.end` it carries. The tracker's `CompleteTurn` hangs off
+  the same event rather than off the agent loop, so there is no second place a
+  boundary could be missed, and each recorded `Snapshot` carries the turn it was
+  made during. Position in history would not have done: a resumed session's
+  numbering starts above zero.
+- **Verification runs before the conversation branches, and that ordering is
+  the design.** `Tracker.VerifyRestore` is a dry run; `RestoreCheckpoint` calls
+  it first and only then creates the branch. A drifted file discovered *after*
+  the branch existed would leave a conversation that had moved alone — exactly
+  the split the wave exists to close. This is pinned by an experiment rather
+  than by assertion: disabling the pre-check makes
+  `TestRestoreRefusedByDriftLeavesBothHalvesUntouched` fail on the branched
+  session, so the guard is demonstrably load-bearing.
+- **A refusal names every file, not the first one.** `DriftError` carries the
+  complete sorted list, and the TUI renders it as a titled panel with the paths
+  workspace-relative. Stopping at the first drifted file would send the user to
+  deal with it and then hit the second — the same trap as a partial restore,
+  arrived at more slowly.
+- **One write per file, not one per mutation.** The plan collapses every
+  mutation of a path into a single reversal: the newest recorded `After` is what
+  disk must hold, the oldest `Before` is what gets written. Replaying twenty
+  mutations backwards would be twenty chances to stop halfway, and the
+  intermediate states are not states anyone asked to see. A file the agent
+  created is removed; one it deleted comes back with its original permission
+  bits; a file the *user* recreated where the agent deleted one reads as drift
+  rather than as something to overwrite.
+- **The limits are reported, not hidden.** Change tracking is in memory, so a
+  restore to a turn belonging to a resumed session says "No tracked file changes
+  needed reversing" instead of implying it rewound writes it never observed —
+  and `alignChangeTurns` points the tracker's numbering at the session's
+  completed turns on startup, resume, switch, and rewind so a turn number means
+  the same thing to both halves. External effects — commands, installs, network
+  calls, deployments, MCP effects — are never reversed, and every success
+  message says so.
+- **The picker says what a choice costs:** `PendingSince` reports files and
+  mutations without touching disk, so each entry reads "reverses 3 changes
+  across 2 files". A turn number conveys none of that, and this is a decision
+  people should be able to make from the list.
+- **`/rewind` is unchanged**, and now points at `/restore` for the coupled form.
+  Altering what an existing recovery command does to the workspace is the last
+  place to surprise anyone. No behavior change ships in this wave.
+- **Sixteen new tests**, split between the tracker (turn attribution, collapsed
+  reversal, create/delete/mode round trips, external deletion and recreation as
+  drift, refusal writing nothing and staying retryable, turn alignment with an
+  empty history, and a session diff that afterwards shows only what survived) and the coupled surface (both halves moving together, both
+  halves staying put on drift, the picker's cost text, the resumed-session
+  honesty, and `/rewind` keeping its own limits). No CLI `collo sessions
+  restore` was added: the tracker is process-local, so a store-only command
+  could restore the conversation alone while appearing to do both.
+
 ### 2026-07-26 — Phase 7 first screen, modal dimming, and rail-aware wrapping
 
 - **The logo was never centred, and the reason was one long line:** the identity

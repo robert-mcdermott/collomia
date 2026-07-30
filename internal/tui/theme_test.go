@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 var hexColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
@@ -128,5 +130,32 @@ func TestOnColorContrast(t *testing.T) {
 	}
 	if onColor("#000000") != "#F8F8F5" {
 		t.Fatal("black background should get light text")
+	}
+}
+
+// TestCacheSummaryDistinguishesTheThreeZeroes is the point of the helper: a
+// bare "0 cached" cannot tell a user whether the provider has no cache, the
+// cache has not been written yet, or reuse is silently failing.
+func TestCacheSummaryDistinguishesTheThreeZeroes(t *testing.T) {
+	supported := provider.Capabilities{PromptCaching: provider.CapabilitySupported}
+	unsupported := provider.Capabilities{PromptCaching: provider.CapabilityUnsupported}
+	partial := provider.Capabilities{PromptCaching: provider.CapabilityPartial}
+
+	if got := cacheSummary(provider.Usage{InputTokens: 5000}, unsupported); got != "not supported by this provider/model" {
+		t.Errorf("unsupported provider: %q", got)
+	}
+	if got := cacheSummary(provider.Usage{InputTokens: 5000}, supported); got != "requested, not yet warm" {
+		t.Errorf("cold cache: %q", got)
+	}
+	if got := cacheSummary(provider.Usage{InputTokens: 5000}, partial); !strings.Contains(got, "no cache activity") {
+		t.Errorf("endpoint reporting nothing: %q", got)
+	}
+	// Nothing to say before the first request, whatever the capability is.
+	if got := cacheSummary(provider.Usage{}, supported); got != "" {
+		t.Errorf("no requests yet: %q", got)
+	}
+	warm := cacheSummary(provider.Usage{InputTokens: 10_000, CachedTokens: 8_000, CacheWriteTokens: 1_000}, supported)
+	if !strings.Contains(warm, "8.0k tok read") || !strings.Contains(warm, "1.0k tok written") || !strings.Contains(warm, "80%") {
+		t.Errorf("warm cache: %q", warm)
 	}
 }

@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/robert-mcdermott/collomia/internal/app"
 )
@@ -190,6 +192,63 @@ func assertScreenFits(t *testing.T, view string, width, height int) {
 	for i, line := range lines {
 		if got := ansi.StringWidth(line); got > width {
 			t.Fatalf("line %d is %d cells at width %d: %q", i, got, width, ansi.Strip(line))
+		}
+	}
+}
+
+// TestStatusBarNeverDropsItsExitKey is the invariant behind the tiered
+// control hints. Before this, the bar dropped its entire right-hand side the
+// moment it did not fit, so at 80 columns it showed no keyboard hints at all
+// and at 40 nothing but a truncated context gauge — the goldens had recorded
+// that as correct. In a split pane that leaves no visible way to stop a
+// running turn or answer an approval.
+func TestStatusBarNeverDropsItsExitKey(t *testing.T) {
+	states := []struct {
+		name string
+		// required is the substring that must survive at every width.
+		required string
+		setup    func(m *Model)
+	}{
+		{name: "idle", required: "ctrl+c", setup: func(*Model) {}},
+		{name: "busy", required: "esc cancel", setup: func(m *Model) {
+			m.busy = true
+			m.turnStarted = time.Now()
+		}},
+		{name: "approval", required: "n", setup: func(m *Model) {
+			m.pending = &approvalEnvelope{}
+		}},
+		{name: "question", required: "esc", setup: func(m *Model) {
+			m.question = &questionEnvelope{question: Question{Text: "which target?"}}
+		}},
+	}
+	for _, state := range states {
+		for _, width := range []int{40, 50, 60, 70, 80, 90, 100, 120, 160, 200} {
+			m := newTestModel(t)
+			m.width = width
+			state.setup(&m)
+			bar := ansi.Strip(m.renderStatusBar())
+			if !strings.Contains(bar, state.required) {
+				t.Errorf("%s at %d columns lost %q: %q", state.name, width, state.required, bar)
+			}
+			if lipgloss.Width(bar) > width {
+				t.Errorf("%s at %d columns overflowed to %d: %q", state.name, width, lipgloss.Width(bar), bar)
+			}
+		}
+	}
+}
+
+// An approval must never show only how to approve. Narrowing the terminal is
+// not a reason to bias the user toward yes.
+func TestNarrowApprovalKeepsAllThreeAnswers(t *testing.T) {
+	for _, width := range []int{40, 60, 80, 120} {
+		m := newTestModel(t)
+		m.width = width
+		m.pending = &approvalEnvelope{}
+		bar := ansi.Strip(m.renderStatusBar())
+		for _, key := range []string{"y", "a", "n"} {
+			if !strings.Contains(bar, key) {
+				t.Errorf("approval at %d columns lost the %q answer: %q", width, key, bar)
+			}
 		}
 	}
 }

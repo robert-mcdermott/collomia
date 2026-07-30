@@ -239,10 +239,19 @@ func TestLongContextRetentionEvaluation(t *testing.T) {
 			return nil
 		}, response: provider.Response{Content: "Earlier investigation established the generated-file constraint."}},
 		{check: func(request provider.Request) error {
-			if !strings.Contains(request.System, pinned) {
-				return fmt.Errorf("active plan is not pinned: %s", request.System)
+			// Pinned state survives compaction by being regenerated into the
+			// trailing message, which is also what keeps the cached request
+			// prefix intact across plan updates.
+			if len(request.Messages) == 0 {
+				return fmt.Errorf("no messages in request")
 			}
-			if len(request.Messages) == 0 || !strings.Contains(request.Messages[0].Content, failure) || !strings.Contains(request.Messages[0].Content, "Recent failure evidence retained verbatim") {
+			if trailing := request.Messages[len(request.Messages)-1].Content; !strings.Contains(trailing, pinned) {
+				return fmt.Errorf("active plan is not pinned: %s", trailing)
+			}
+			if strings.Contains(request.System, pinned) {
+				return fmt.Errorf("plan leaked into the system prompt: %s", request.System)
+			}
+			if !strings.Contains(request.Messages[0].Content, failure) || !strings.Contains(request.Messages[0].Content, "Recent failure evidence retained verbatim") {
 				return fmt.Errorf("exact failure did not survive compaction: %+v", request.Messages)
 			}
 			return nil

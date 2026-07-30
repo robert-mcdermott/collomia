@@ -51,6 +51,11 @@ type Runtime struct {
 	Processes   *tools.ProcessManager
 	Warnings    []error
 	Hooks       *hooks.Runner
+	// Steering carries guidance typed while the primary agent is mid-turn.
+	// It lives on the runtime rather than in the TUI because the agent is
+	// constructed here and every surface — TUI, browser terminal, a future
+	// local service API — needs the same one queue.
+	Steering *agent.SteeringQueue
 	// ActiveAgent is the visible named primary profile. Empty means the
 	// ordinary unprofiled primary agent.
 	ActiveAgent string
@@ -69,6 +74,13 @@ func (r *Runtime) LogEvent(e event.Event) {
 	r.Logger.Debug("event", "kind", string(e.Kind), "tool", tool, "error", errText, "failure_id", e.FailureID)
 	if r.Session != nil {
 		r.Session.AppendEvent(e)
+	}
+	// A checkpoint is a completed turn, so the change tracker learns turn
+	// boundaries from the same durable event the session counts them from.
+	// Doing it here rather than in the agent keeps one funnel: the TUI, the
+	// headless runner, and the browser terminal all report events through it.
+	if e.Kind == event.KindTurnEnd && r.Changes != nil {
+		r.Changes.CompleteTurn()
 	}
 }
 
@@ -282,6 +294,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		}
 		return "Active structured plan:\n" + current.Render()
 	}}
+	// The primary agent reaches the same iteration-boundary hook delegated
+	// children use, so guidance typed mid-turn lands where the conversation
+	// is consistent rather than underneath an in-flight request.
+	steering := agent.NewSteeringQueue()
+	agentOptions.TakeSteering = steering.Take
 	if sess != nil {
 		agentOptions.OnMessage = sess.AppendMessage
 		agentOptions.OnCompaction = sess.AppendCompaction
@@ -309,9 +326,27 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		sessionID = sess.Meta.ID
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime := &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent}
+	runtime := &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering}
+	runtime.alignChangeTurns()
 	runtime.addReviewedIntegrationTools()
 	return runtime, nil
+}
+
+// alignChangeTurns points the change tracker's turn numbering at the active
+// session's completed turns, so a checkpoint the user picks from the session's
+// history means the same turn to both halves of a restore. A resumed session
+// carries turns whose file mutations this process never recorded; the tracker
+// keeps an empty history for them, which is what makes a restore report that it
+// reversed nothing instead of implying it reversed everything.
+func (r *Runtime) alignChangeTurns() {
+	if r == nil || r.Changes == nil {
+		return
+	}
+	turns := 0
+	if r.Session != nil {
+		turns = r.Session.Meta.Turns
+	}
+	r.Changes.SetCompletedTurns(turns)
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -582,6 +617,7 @@ func (r *Runtime) SwitchSession(id string) error {
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
+	r.alignChangeTurns()
 	return nil
 }
 
@@ -610,6 +646,7 @@ func (r *Runtime) NewSession() error {
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
+	r.alignChangeTurns()
 	return nil
 }
 
@@ -638,7 +675,57 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
+	r.alignChangeTurns()
 	return sourceID, sess.Meta.ID, nil
+}
+
+// CheckpointRestore reports what a coupled restore moved: the conversation
+// branch it created, and the workspace files it reversed.
+type CheckpointRestore struct {
+	SourceID  string
+	SessionID string
+	Turn      int
+	Files     []string
+	Mutations int
+}
+
+// RestoreCheckpoint returns the conversation and the workspace together to a
+// completed turn: it creates the same non-destructive conversation branch
+// `/rewind` does, and reverses every file mutation this process recorded after
+// that turn.
+//
+// The workspace is verified before the conversation branches, so the failure
+// this is guarded against — a file edited outside Collomia since the checkpoint
+// — leaves both halves untouched and names the files. Command, network, and
+// other external side effects are never reversed; only tracked file mutations
+// are, and only those recorded by this process.
+func (r *Runtime) RestoreCheckpoint(turn int) (CheckpointRestore, error) {
+	if r.Sessions == nil || r.Session == nil {
+		return CheckpointRestore{}, fmt.Errorf("session persistence is unavailable")
+	}
+	if r.Changes == nil {
+		return CheckpointRestore{}, fmt.Errorf("change tracking is unavailable, so the workspace cannot be restored; /rewind branches the conversation alone")
+	}
+	result := CheckpointRestore{SourceID: r.Session.Meta.ID, Turn: turn}
+	// Prove the workspace half can succeed before anything moves. A drifted
+	// file discovered after the branch existed would leave a conversation
+	// describing a workspace that was never restored.
+	if err := r.Changes.VerifyRestore(turn); err != nil {
+		return result, err
+	}
+	sourceID, sessionID, err := r.RewindSession(turn)
+	result.SourceID = sourceID
+	if err != nil {
+		return result, err
+	}
+	result.SessionID = sessionID
+	restored, err := r.Changes.RestoreTo(turn)
+	result.Files = restored.Files
+	result.Mutations = restored.Mutations
+	if err != nil {
+		return result, fmt.Errorf("the conversation branched to %s but the workspace was not fully restored: %w", sessionID, err)
+	}
+	return result, nil
 }
 
 // askUserTool lets the model pause for a concise typed answer without

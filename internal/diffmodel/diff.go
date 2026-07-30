@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +161,11 @@ type Snapshot struct {
 	BeforeMode os.FileMode
 	AfterMode  os.FileMode
 	Time       time.Time
+	// Turn is the 1-based conversational turn the mutation happened during,
+	// so a checkpoint restore can select exactly the mutations that followed a
+	// completed turn. Zero means the tracker was never told about turns, which
+	// is the case for standalone diff callers.
+	Turn int
 }
 
 // FileDiff is one session-touched file rendered against its first-seen base.
@@ -188,6 +194,9 @@ type Tracker struct {
 	rootErr error
 	base    map[string]*string
 	history []Snapshot
+	// completedTurns is how many conversational turns have finished. A
+	// mutation recorded now belongs to the turn after them.
+	completedTurns int
 }
 
 // NewTracker optionally anchors undo beneath a workspace root. Built-in tools
@@ -220,7 +229,38 @@ func (t *Tracker) RecordWithMode(path, op string, before, after *string, beforeM
 	if _, seen := t.base[path]; !seen {
 		t.base[path] = before
 	}
-	t.history = append(t.history, Snapshot{Path: path, Op: op, Before: before, After: after, BeforeMode: beforeMode.Perm(), AfterMode: afterMode.Perm(), Time: time.Now().UTC()})
+	t.history = append(t.history, Snapshot{Path: path, Op: op, Before: before, After: after, BeforeMode: beforeMode.Perm(), AfterMode: afterMode.Perm(), Time: time.Now().UTC(), Turn: t.completedTurns + 1})
+}
+
+// CompleteTurn records that a conversational turn finished, so later mutations
+// belong to the next one. The caller is whichever surface observes the durable
+// turn boundary; the tracker never infers one from elapsed time.
+func (t *Tracker) CompleteTurn() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.completedTurns++
+}
+
+// SetCompletedTurns aligns the tracker's turn numbering with a session that
+// already has completed turns — a resume, a rewind, or a switch to another
+// session. Mutations recorded before the call keep the turn they were made in,
+// which is what keeps a restore honest: only this process's own writes are
+// reversible, and a restore to a turn from an earlier process finds nothing to
+// reverse rather than claiming to have undone it.
+func (t *Tracker) SetCompletedTurns(turns int) {
+	if turns < 0 {
+		turns = 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.completedTurns = turns
+}
+
+// CompletedTurns reports the tracker's current turn accounting.
+func (t *Tracker) CompletedTurns() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.completedTurns
 }
 
 // Changed lists the files touched this session, in first-touch order.
@@ -357,6 +397,205 @@ func (t *Tracker) Undo() (Snapshot, error) {
 	}
 	t.history = t.history[:len(t.history)-1]
 	return last, nil
+}
+
+// Restore reports what a checkpoint restore reversed. Files are listed in the
+// order they were first touched after the checkpoint.
+type Restore struct {
+	Turn      int
+	Files     []string
+	Mutations int
+}
+
+// DriftError refuses a restore because the workspace moved underneath it. It
+// names every file rather than the first one found: a user deciding what to do
+// next needs the whole list, and discovering the second file only after acting
+// on the first is the same trap as a partial restore.
+type DriftError struct {
+	Turn  int
+	Files []string
+}
+
+func (e *DriftError) Error() string {
+	return fmt.Sprintf("restore blocked: %s changed outside the agent since the checkpoint, so restoring to turn %d would discard those changes", strings.Join(e.Files, ", "), e.Turn)
+}
+
+// reversal is the collapsed plan for one file: what the last recorded mutation
+// left on disk, and what the first one found there. Collapsing per file rather
+// than replaying each mutation backwards means one write per file instead of
+// one per mutation, so a file touched twenty times cannot be left halfway.
+type reversal struct {
+	path       string
+	expected   *string
+	target     *string
+	targetMode os.FileMode
+	mutations  int
+}
+
+// PendingSince reports how many files and mutations a restore to the given
+// completed turn would reverse, without touching the workspace. It is what
+// lets a picker say what a choice costs before the choice is made.
+func (t *Tracker) PendingSince(turn int) (files, mutations int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	plan := t.planReversals(turn)
+	for _, r := range plan {
+		mutations += r.mutations
+	}
+	return len(plan), mutations
+}
+
+// VerifyRestore reports whether a restore to the given completed turn would
+// succeed, without touching the workspace. A coupled conversation-plus-
+// workspace restore checks this before it branches the conversation, so the
+// failure this control exists for — a file changed outside the agent — leaves
+// nothing at all changed rather than a conversation that moved alone.
+func (t *Tracker) VerifyRestore(turn int) error {
+	if turn < 0 {
+		return errors.New("restore turn must not be negative")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	targets, err := t.verifyLocked(t.planReversals(turn), turn)
+	for _, target := range targets {
+		if target != nil {
+			_ = target.Close()
+		}
+	}
+	return err
+}
+
+// verifyLocked proves every file in the plan still holds exactly what the agent
+// last wrote there, and returns the opened targets so the caller can write
+// through the same verified handles. Callers hold the lock.
+func (t *Tracker) verifyLocked(plan []reversal, turn int) ([]*safefile.Target, error) {
+	targets := make([]*safefile.Target, len(plan))
+	var drifted []string
+	for i, r := range plan {
+		target, err := t.mutationTarget(r.path)
+		if err != nil {
+			return targets, fmt.Errorf("restore blocked: secure target for %s: %w", r.path, err)
+		}
+		targets[i] = target
+		current, readErr := target.ReadFile()
+		switch {
+		case r.expected == nil:
+			// The last recorded mutation deleted the file. Anything present
+			// now was put there after the agent stopped touching it.
+			if readErr == nil {
+				drifted = append(drifted, r.path)
+				continue
+			}
+			if !errors.Is(readErr, os.ErrNotExist) {
+				return targets, fmt.Errorf("restore blocked: cannot inspect %s: %v", r.path, readErr)
+			}
+		case readErr != nil:
+			if errors.Is(readErr, os.ErrNotExist) {
+				drifted = append(drifted, r.path)
+				continue
+			}
+			return targets, fmt.Errorf("restore blocked: cannot read %s: %v", r.path, readErr)
+		case string(current) != *r.expected:
+			drifted = append(drifted, r.path)
+		}
+	}
+	if len(drifted) > 0 {
+		sort.Strings(drifted)
+		return targets, &DriftError{Turn: turn, Files: drifted}
+	}
+	return targets, nil
+}
+
+// RestoreTo reverses every tracked mutation made after the given completed
+// turn, returning the workspace to its state at that checkpoint.
+//
+// It verifies the whole plan before writing anything and refuses outright if
+// any file changed outside the agent, because a restore that half-applied and
+// then stopped leaves a workspace in a state neither the user nor the
+// conversation describes. Only mutations this process recorded are reversible:
+// the tracker is in-memory, so a restore to a turn from an earlier process
+// finds nothing to reverse rather than pretending otherwise, and shell,
+// network, and other external side effects are never reversed at all.
+func (t *Tracker) RestoreTo(turn int) (Restore, error) {
+	if turn < 0 {
+		return Restore{}, errors.New("restore turn must not be negative")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	plan := t.planReversals(turn)
+	if len(plan) == 0 {
+		t.completedTurns = turn
+		return Restore{Turn: turn}, nil
+	}
+
+	targets, err := t.verifyLocked(plan, turn)
+	defer func() {
+		for _, target := range targets {
+			if target != nil {
+				_ = target.Close()
+			}
+		}
+	}()
+	if err != nil {
+		return Restore{}, err
+	}
+
+	// Apply. Verification has already ruled out the failure this operation
+	// exists to avoid, so what remains is ordinary I/O.
+	result := Restore{Turn: turn}
+	for i, r := range plan {
+		var err error
+		if r.target == nil {
+			err = targets[i].Remove()
+		} else {
+			mode := r.targetMode
+			if mode == 0 {
+				mode = 0o644
+			}
+			err = targets[i].Replace([]byte(*r.target), mode)
+		}
+		if err != nil {
+			return result, fmt.Errorf("restore of %s failed after %d of %d files were restored: %w", r.path, len(result.Files), len(plan), err)
+		}
+		result.Files = append(result.Files, r.path)
+		result.Mutations += r.mutations
+	}
+
+	kept := make([]Snapshot, 0, len(t.history))
+	for _, snapshot := range t.history {
+		if snapshot.Turn <= turn {
+			kept = append(kept, snapshot)
+		}
+	}
+	t.history = kept
+	t.completedTurns = turn
+	return result, nil
+}
+
+// planReversals collapses the mutations recorded after a completed turn into
+// one reversal per file, in first-touch order. Callers hold the lock.
+func (t *Tracker) planReversals(turn int) []reversal {
+	byPath := map[string]*reversal{}
+	var order []*reversal
+	for _, snapshot := range t.history {
+		if snapshot.Turn <= turn {
+			continue
+		}
+		r, seen := byPath[snapshot.Path]
+		if !seen {
+			r = &reversal{path: snapshot.Path, target: snapshot.Before, targetMode: snapshot.BeforeMode}
+			byPath[snapshot.Path] = r
+			order = append(order, r)
+		}
+		r.expected = snapshot.After
+		r.mutations++
+	}
+	plan := make([]reversal, 0, len(order))
+	for _, r := range order {
+		plan = append(plan, *r)
+	}
+	return plan
 }
 
 func (t *Tracker) mutationTarget(path string) (*safefile.Target, error) {

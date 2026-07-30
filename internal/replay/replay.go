@@ -413,8 +413,33 @@ func lineError(line int, format string, args ...any) error {
 // Summary returns a stable one-line description suitable for --check and
 // support scripts.
 func (t *Trace) Summary() string {
-	return fmt.Sprintf("valid Collomia schema-v%d trace: %s, %s, %s, status %s",
+	summary := fmt.Sprintf("valid Collomia schema-v%d trace: %s, %s, %s, status %s",
 		event.SchemaVersion, countLabel(len(t.Events), "event"), countLabel(t.Turns, "turn"), countLabel(t.Tools, "tool"), t.Result.Status)
+	if build := BuildLabel(t.Result.Version, t.Result.Commit); build != "" {
+		summary += ", produced by " + build
+	}
+	return summary
+}
+
+// BuildLabel renders a recorded build identity for display, and is exported so
+// a caller comparing a trace against its own binary formats both sides the
+// same way. It returns empty when nothing was recorded, which is the case for
+// any trace written before run.result carried build identity.
+//
+// Replay reports the recorded build verbatim and never compares it against the
+// running binary: that comparison belongs to the caller, so replay stays a
+// pure function of its input.
+func BuildLabel(version, commit string) string {
+	if version == "" && commit == "" {
+		return ""
+	}
+	if version == "" {
+		version = "unknown"
+	}
+	if commit == "" || commit == "unknown" {
+		return "collo " + version
+	}
+	return "collo " + version + " (" + commit + ")"
 }
 
 func countLabel(count int, singular string) string {

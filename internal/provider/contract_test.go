@@ -82,7 +82,8 @@ func TestAnthropicMessagesContract(t *testing.T) {
 		fmt.Fprint(w, "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n")
 	}))
 	defer server.Close()
-	assertContractResponse(t, &AnthropicClient{Label: "anthropic-contract", BaseURL: server.URL, APIKey: "secret"}, "checked", Usage{InputTokens: 9, OutputTokens: 3, CachedTokens: 2})
+	// 9 uncached + 2 read back = the 11 prompt tokens the request consumed.
+	assertContractResponse(t, &AnthropicClient{Label: "anthropic-contract", BaseURL: server.URL, APIKey: "secret"}, "checked", Usage{InputTokens: 11, OutputTokens: 3, CachedTokens: 2})
 }
 
 func TestResponsesContract(t *testing.T) {

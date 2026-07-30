@@ -5,3 +5,9 @@ dist/
 .collomia/sessions/
 *.log
 .DS_Store
+# The maintainer's own project configuration and the variants swapped in to
+# exercise different postures. Root-anchored so test fixtures named the same
+# thing under testdata/ are still tracked.
+/.collomia.json
+/.collomia.json.*
+/.collomia.example.jsonc

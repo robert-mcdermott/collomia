@@ -140,6 +140,15 @@ type RunResult struct {
 	SessionID    string   `json:"session_id,omitempty"`
 	ChangedFiles []string `json:"changed_files,omitempty"`
 	DurationMS   int64    `json:"duration_ms"`
+	// Version and Commit identify the binary that produced the run, so a
+	// replayed trace can be told apart from one this binary would produce.
+	// Build identity is the whole answer rather than a partial one: prompts,
+	// tool descriptions, and agent logic are all compiled in with no runtime
+	// override, so an identical build means identical instructions. Released
+	// builds carry real values; a plain "go build" reports "dev"/"unknown"
+	// and so distinguishes releases but not two local builds.
+	Version string `json:"version,omitempty"`
+	Commit  string `json:"commit,omitempty"`
 }
 
 // FailureKind is the stable, provider-neutral reason a non-interactive run
@@ -168,13 +177,17 @@ type Failure struct {
 
 // Usage carries provider-reported token accounting.
 type Usage struct {
-	InputTokens     int     `json:"input_tokens"`
-	OutputTokens    int     `json:"output_tokens"`
-	CachedTokens    int     `json:"cached_tokens,omitempty"`
-	ReasoningTokens int     `json:"reasoning_tokens,omitempty"`
-	CostUSD         float64 `json:"cost_usd,omitempty"`
-	CostAvailable   bool    `json:"cost_available,omitempty"`
-	CostEstimated   bool    `json:"cost_estimated,omitempty"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	// CachedTokens and CacheWriteTokens are disjoint subsets of InputTokens:
+	// prompt tokens read from and written to the provider's prompt cache.
+	// Both are additive optional fields on the v1 event contract.
+	CachedTokens     int     `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int     `json:"reasoning_tokens,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
+	CostAvailable    bool    `json:"cost_available,omitempty"`
+	CostEstimated    bool    `json:"cost_estimated,omitempty"`
 }
 
 // DelegateVerification is one bounded, machine-observed command result from a

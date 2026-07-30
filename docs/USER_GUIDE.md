@@ -593,7 +593,7 @@ applies to every provider type.
 | `context_window` | integer | Configured model context size, used for status, preflight, and compaction. |
 | `temperature` | number | Optional sampling temperature. Omit for the provider/model default. |
 | `reasoning` | object | Optional provider-neutral reasoning control: `{"effort":"low|medium|high|xhigh|max"}`. Omit it to send no reasoning-specific field. |
-| `pricing` | object | Optional user-maintained USD rates per million tokens: required `input_per_million` and `output_per_million`, optional non-negative `cached_input_per_million`. |
+| `pricing` | object | Optional user-maintained USD rates per million tokens: required `input_per_million` and `output_per_million`, optional non-negative `cached_input_per_million` and `cache_write_per_million`. |
 | `connect_timeout_seconds` | integer | Connection setup timeout; defaults to `10`. |
 | `request_timeout_seconds` | integer | Whole request timeout; defaults to `1800`. |
 | `stream_idle_timeout_seconds` | integer | Maximum silence between stream chunks; defaults to `300`. |
@@ -619,8 +619,36 @@ Unrelated HTTP 400 responses are not rewritten or retried.
 Pricing is never bundled or downloaded. Rates can differ by date, region,
 contract, gateway, and caching tier, so you must configure values you have
 verified for the selected deployment. If `cached_input_per_million` is omitted,
-cached input is conservatively estimated at the ordinary input rate. Reasoning
+cached input is conservatively estimated at the ordinary input rate; the same
+applies to `cache_write_per_million`, which prices tokens written to the
+prompt cache and is normally charged above the ordinary input rate. Reasoning
 tokens are informational and are not added again to output tokens.
+
+### Prompt caching
+
+On the Anthropic Messages routes (`anthropic`, `anthropic-compatible`,
+`azure-foundry-anthropic`) Collomia asks the provider to cache the parts of a
+request that do not change: the tool definitions and system prompt, which are
+fixed for a session, and the conversation so far. A turn that makes ten tool
+calls is eleven provider requests over the same growing prefix, so this is
+where most of a session's input cost and time-to-first-token lives.
+
+Nothing needs configuring. If an endpoint rejects cache breakpoints, Collomia
+retries that request once without them and does not attempt caching again for
+that provider, so a compatible endpoint that has not implemented caching costs
+one wasted round trip rather than one per call.
+
+`/context` and the Session tab report the cache in words rather than as a bare
+number, because a zero has three unrelated causes: the provider has no cache,
+the prefix has not been written yet, or reuse is failing. Token counts include
+cached tokens — `input tokens` always means the whole prompt, whatever split
+the provider reports.
+
+Two limits worth knowing. Cached entries expire after five minutes of
+inactivity, so a session resumed after a long pause pays one full-price request
+to warm up again. And anything that changes the front of a request — switching
+model or provider, editing project instructions, changing agent profile — starts
+a new prefix.
 
 ### Presets: one line instead of eight
 
@@ -2249,11 +2277,37 @@ rows. The 80x24 layout is a supported baseline. Resizing preserves a manually sc
 chat position; new streaming output no longer pulls you to the bottom. Press
 `end` to resume live follow.
 
+### Steering a running turn
+
+Type while the agent is working and press `enter`. The text is handed to the
+running agent rather than held until the turn ends, so a turn heading the wrong
+way can be corrected instead of waited out or cancelled with `esc`.
+
+Guidance is delivered at the agent's next step — never inside an in-flight
+provider call, an executing tool, or a pending approval. The transcript marks
+it `YOU · STEERING` and says where it will land, so it is never mistaken for a
+message the agent has already read.
+
+Steering is a conversational instruction and **grants no permissions**. An
+action that needed approval before your text arrived still needs it after.
+
+At most 8 updates can wait at once and each is limited to 4096 characters;
+beyond either limit Collomia refuses and leaves the draft in the composer
+rather than dropping guidance you believe was delivered. If a turn ends before
+queued guidance is delivered — most often because you cancelled it — the
+guidance is discarded and reported, so it cannot resurface against unrelated
+later work.
+
+Slash commands still run locally while a turn is in flight; only the subset
+that is safe mid-turn is accepted, and the rest stay in the composer.
+
+Delegated agents are steered separately with `/agents steer` and `alt+a`.
+
 ### Keyboard reference
 
 | Key | Action |
 | --- | --- |
-| `enter` | Send the prompt or run the selected palette item. A draft that ends in a backslash, or that sits inside an unclosed ``` fence, gains a line instead of sending. |
+| `enter` | Send the prompt or run the selected palette item. A draft that ends in a backslash, or that sits inside an unclosed ``` fence, gains a line instead of sending. While a turn is running, it steers the agent instead — see [Steering a running turn](#steering-a-running-turn). |
 | `alt+enter` / `ctrl+j` | Insert a newline in the prompt. `ctrl+j` is a literal line feed and works in every terminal; `alt+enter` works everywhere except macOS Terminal.app's defaults. Terminals that speak the Kitty keyboard protocol or xterm's `modifyOtherKeys` also get `shift+enter` and `ctrl+enter`. |
 | `alt+e` | Edit the current draft in `$EDITOR`, then return it to the composer. |
 | `/` | Open/filter the slash-command palette. |
@@ -2334,6 +2388,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/ps stop <id>` | Stop one background process and its descendants. |
 | `/sessions` (alias `/resume`) | Fuzzy-pick and switch to another durable session in place. |
 | `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
+| `/restore [turn]` | Branch the conversation and reverse the agent's tracked file changes back to an earlier completed turn. Refuses the whole operation, naming every file, if any changed outside Collomia. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
@@ -4046,7 +4101,8 @@ primary even when `default_agent` is configured:
       "pricing": {
         "input_per_million": 1.25,
         "output_per_million": 10.0,
-        "cached_input_per_million": 0.125
+        "cached_input_per_million": 0.125,
+        "cache_write_per_million": 1.5625
       }
     }
   },
@@ -4471,8 +4527,58 @@ conversation rewind, not environment rollback. The source log is never
 truncated, restoration does not execute recorded tools, and Collomia does not
 change the workspace while creating the branch. Files changed by earlier or
 later turns, shell commands, package installs, deployments, remote MCP effects,
-and other external state remain as they are now. Use `/undo` for a compatible
-most-recent direct file edit, or use Git/worktrees for broader source recovery.
+and other external state remain as they are now. Use `/restore` to move the
+tracked files with the conversation, `/undo` for a compatible most-recent
+direct file edit, or Git/worktrees for broader source recovery.
+
+### Coupled checkpoint restore
+
+`/restore [turn]` is the conversation-plus-workspace form of the same
+checkpoint. It creates the identical non-destructive conversation branch and
+also reverses every file mutation the agent recorded after that turn, so the
+transcript and the working tree describe the same moment instead of
+disagreeing. Omitting the turn opens a picker whose entries say how many
+changes across how many files each choice would reverse; a turn number on its
+own does not tell you what restoring to it costs.
+
+**It fails closed.** The workspace is verified before the conversation
+branches, so a restore that cannot complete leaves *both* halves untouched. If
+any file changed outside Collomia since the checkpoint, the operation is
+refused and every affected file is named:
+
+```
+Restore refused
+
+These files changed outside Collomia since turn 2:
+
+  • internal/parser/lexer.go
+  • docs/NOTES.md
+
+Nothing was restored and the conversation did not move, because restoring
+would discard those edits. Save or revert them, then run /restore again —
+or use /rewind to branch the conversation alone.
+```
+
+A partially applied restore would leave a tree that neither the conversation
+nor the user describes, and silently overwriting your own edits would be worse
+than either. Naming every file rather than the first one found is deliberate:
+acting on one file and then discovering a second is the same trap.
+
+Two limits are real and stated rather than hidden:
+
+- **Only this process's file changes are reversible.** Change tracking lives in
+  memory, so restoring to a turn belonging to a session you resumed reports
+  that no tracked file changes needed reversing. It does not claim to have
+  rewound writes it never observed.
+- **External effects are never reversed.** Shell commands, package installs,
+  network calls, deployments, and remote MCP effects are outside the tracked
+  filesystem. `/restore` moves the conversation and the files; it does not move
+  the world. Use Git, a worktree, or a container when you need that.
+
+A restore also reverses a file the agent *created* after the checkpoint (it is
+removed) and restores one the agent *deleted*, including its original
+permission bits. Repeated mutations of the same file collapse into a single
+write, so a file the agent touched twenty times cannot be left halfway.
 
 On initial `--resume`/`--continue` and in-TUI switches, Collomia reconstructs
 the complete visible conversation from the durable transcript, including tool

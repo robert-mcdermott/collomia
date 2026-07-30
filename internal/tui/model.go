@@ -284,6 +284,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel = nil
 			m.input.Focus()
 			m.settleRunningTools()
+			// Guidance the turn ended before reaching is discarded rather
+			// than held. A cancelled turn is the common case, and surfacing
+			// that text at the start of an unrelated later turn would apply
+			// it to work the user never aimed it at.
+			m.discardUndeliveredSteering()
 			elapsed := time.Since(m.turnStarted).Round(time.Second / 10)
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
@@ -520,9 +525,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.busy {
 				if !strings.HasPrefix(value, "/") {
-					m.addSystem("Draft kept while the current turn runs. Use a local slash command now, or press enter after the turn finishes to send it.")
-					m.refresh()
-					return m, nil
+					return m, m.steerRunningTurn(value)
 				}
 				if !busySlashAllowed(value) {
 					m.addError(fmt.Errorf("%s is unavailable while the current turn is running; the command remains in the composer", strings.Fields(value)[0]))
@@ -600,6 +603,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // startTurn submits one prompt to the agent and begins streaming events.
+// steerRunningTurn hands a mid-turn draft to the running agent instead of
+// making the user choose between waiting and losing the turn to esc.
+//
+// The guidance is delivered at the next iteration boundary, never inside an
+// in-flight provider call, executing tool, or pending approval — so the
+// transcript says where it will land rather than implying it took effect now.
+// It is a conversational instruction and grants no permissions: an action the
+// agent could not take before this text arrived still needs its own approval.
+// discardUndeliveredSteering drops guidance the turn ended before reaching,
+// and says so rather than letting the text vanish silently.
+func (m *Model) discardUndeliveredSteering() {
+	pending := m.pendingSteering()
+	if pending == 0 {
+		return
+	}
+	m.runtime.Steering.Clear()
+	m.addSystem(fmt.Sprintf("The turn ended before %d steering update(s) were delivered; they were discarded. Send them as a new prompt.", pending))
+}
+
+// pendingSteering reports guidance queued but not yet delivered.
+func (m *Model) pendingSteering() int {
+	if m.runtime == nil || m.runtime.Steering == nil {
+		return 0
+	}
+	return m.runtime.Steering.Pending()
+}
+
+func (m *Model) steerRunningTurn(value string) tea.Cmd {
+	if m.runtime.Steering == nil {
+		m.addSystem("Draft kept while the current turn runs; press enter after it finishes to send it.")
+		m.refresh()
+		return nil
+	}
+	if err := m.runtime.Steering.Add(value); err != nil {
+		// The draft deliberately stays in the composer: a refused update the
+		// user has to retype is a worse outcome than the refusal itself.
+		m.addError(err)
+		m.refresh()
+		return nil
+	}
+	m.recordPrompt(value)
+	m.blocks = append(m.blocks, block{role: "steering", content: value})
+	m.input.Reset()
+	m.switchTab(tabChat)
+	m.syncComposerHeight()
+	m.updatePalette()
+	m.layout()
+	m.refresh()
+	return nil
+}
+
 func (m *Model) startTurn(value string) tea.Cmd {
 	parts, err := m.readPendingAttachments()
 	if err != nil {
@@ -886,6 +940,9 @@ func (m *Model) chatContent() string {
 		switch block.role {
 		case "user":
 			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + m.wrapProse(block.content, 0) + "\n\n")
+		case "steering":
+			b.WriteString(m.styles.userBadge.Render("YOU · STEERING") + "\n" + m.wrapProse(block.content, 0) + "\n" +
+				m.styles.muted.Render(m.wrapProse("↳ delivered at the agent's next step; grants no permissions", 0)) + "\n\n")
 		case "assistant":
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
 		case "tool":
@@ -1120,11 +1177,10 @@ func (m *Model) sessionSections(width int) string {
 	b.WriteString("\n")
 
 	b.WriteString(h("Context") + "\n")
-	usageText := fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)
-	if usage.CachedTokens > 0 {
-		usageText += fmt.Sprintf(" (%d cached)", usage.CachedTokens)
+	b.WriteString(kv("usage", fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)) + "\n")
+	if summary := cacheSummary(usage, m.runtime.Agent.Capabilities()); summary != "" {
+		b.WriteString(kv("prompt cache", summary) + "\n")
 	}
-	b.WriteString(kv("usage", usageText) + "\n")
 	if usage.CostAvailable {
 		b.WriteString(kv("cost", fmt.Sprintf("$%.6f estimated", usage.CostUSD)) + "\n")
 	}
@@ -1315,6 +1371,7 @@ func (m *Model) helpContent() string {
 	b.WriteString("\n" + m.styles.heading.Render("Keys") + "\n")
 	keys := [][2]string{
 		{"enter", "send prompt / run selected command"},
+		{"enter (mid-turn)", "steer the running agent; delivered at its next step, grants no permissions"},
 		{"alt+enter · ctrl+j", "insert a newline without sending"},
 		{"enter (unfinished)", "a draft ending in \\ or inside an open code fence gains a line instead"},
 		{m.binding("compose_editor"), "edit the current draft in $EDITOR"},
@@ -1471,19 +1528,24 @@ func (m Model) renderStatusBar() string {
 	}
 	estimate, window := m.runtime.Agent.ContextEstimate()
 
-	left := badge("✿", m.theme.Primary)
+	// Left-hand badges as droppable segments rather than one string, because
+	// two things on this bar are both promised to survive any width: the
+	// autonomy/containment mark, and the control that stops what is running.
+	// Concatenating and truncating can only honor one of them, and which one
+	// it honors depends on which end the ellipsis lands on. The `drop` field
+	// orders what is given up first; segments without one are never dropped.
+	segments := []statusSegment{{text: badge("✿", m.theme.Primary)}}
 	if m.runtime.ActiveAgent != "" {
-		left += m.styles.statusBase.Render(" ") + badge(m.runtime.ActiveAgent, m.theme.Accent)
+		segments = append(segments, statusSegment{text: badge(m.runtime.ActiveAgent, m.theme.Accent), drop: 15})
 	}
-	left += m.styles.statusBase.Render(" ") + badge(provider+"/"+model, m.theme.Border)
+	segments = append(segments, statusSegment{text: badge(provider+"/"+model, m.theme.Border), drop: 10})
 	// Autonomy and containment are one statement about risk, so the shield
 	// rides along in the mode badge: always visible, two columns, and it
 	// cannot be pushed off by a crowded bar. A louder named form is offered
 	// separately below when the stance deviates and there is room.
-	left += m.styles.statusBase.Render(" ") + badge(strings.ToUpper(mode)+" "+m.stanceGlyph(), modeColor)
-	stanceAnchor := len(left)
+	segments = append(segments, statusSegment{text: badge(strings.ToUpper(mode)+" "+m.stanceGlyph(), modeColor), stance: true})
 	if m.runtime.Agent.Plan() {
-		left += m.styles.statusBase.Render(" ") + badge("PLAN", m.theme.Accent)
+		segments = append(segments, statusSegment{text: badge("PLAN", m.theme.Accent), drop: 30})
 	}
 	if current := m.runtime.Plan.Current(); current != nil && len(current.Steps) > 0 {
 		done := 0
@@ -1492,16 +1554,16 @@ func (m Model) renderStatusBar() string {
 				done++
 			}
 		}
-		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("tasks %d/%d", done, len(current.Steps)), m.theme.Secondary)
+		segments = append(segments, statusSegment{text: badge(fmt.Sprintf("tasks %d/%d", done, len(current.Steps)), m.theme.Secondary), drop: 40})
 	}
 	if active := m.runtime.Team.Active(); active > 0 {
-		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("agents %d", active), m.theme.Accent)
+		segments = append(segments, statusSegment{text: badge(fmt.Sprintf("agents %d", active), m.theme.Accent), drop: 50})
 	}
 	if running := m.runtime.Processes.Running(); running > 0 {
-		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("procs %d", running), m.theme.Secondary)
+		segments = append(segments, statusSegment{text: badge(fmt.Sprintf("procs %d", running), m.theme.Secondary), drop: 60})
 	}
 	if len(m.pendingAttachments) > 0 {
-		left += m.styles.statusBase.Render(" ") + badge(fmt.Sprintf("images %d", len(m.pendingAttachments)), m.theme.Accent)
+		segments = append(segments, statusSegment{text: badge(fmt.Sprintf("images %d", len(m.pendingAttachments)), m.theme.Accent), drop: 70})
 	}
 	// Only shown once the session departs from its configured mouse setting:
 	// the toggle changes what a drag does, which is invisible until the user
@@ -1511,61 +1573,218 @@ func (m Model) renderStatusBar() string {
 		if m.mouseOn {
 			label = "MOUSE"
 		}
-		left += m.styles.statusBase.Render(" ") + badge(label, m.theme.Secondary)
+		segments = append(segments, statusSegment{text: badge(label, m.theme.Secondary), drop: 80})
 	}
-	left += m.styles.statusBase.Render(" " + contextGauge(m.theme, estimate, window, 10) + " ")
+	segments = append(segments, statusSegment{text: m.styles.statusBase.Render(contextGauge(m.theme, estimate, window, 10)), drop: 20})
 
-	var right string
+	// Control hints, widest first. The last entry is the one that must
+	// survive a narrow terminal: the key that stops or leaves whatever is
+	// happening. Everything ahead of it is detail that can be given up.
+	var controls []string
 	switch {
 	case m.hunkReview != nil:
-		right = m.styles.statusBase.Render("↑↓ move · space toggle · enter apply · esc back ")
+		controls = []string{
+			m.styles.statusBase.Render("↑↓ move · space toggle · enter apply · esc back "),
+			m.styles.statusBase.Render("esc back "),
+		}
 	case m.agentIntegration != nil:
-		right = m.styles.statusBase.Render("[ ] file · ↑↓ hunk · space toggle · enter apply · esc cancel ")
+		controls = []string{
+			m.styles.statusBase.Render("[ ] file · ↑↓ hunk · space toggle · enter apply · esc cancel "),
+			m.styles.statusBase.Render("enter apply · esc cancel "),
+			m.styles.statusBase.Render("esc cancel "),
+		}
 	case m.pending != nil:
-		right = m.styles.statusBase.Render("y approve · a always · n deny ")
+		controls = []string{
+			m.styles.statusBase.Render("y approve · a always · n deny "),
+			// All three keys stay together at every width. A prompt that
+			// shows only how to approve is a prompt biased toward approving.
+			m.styles.statusBase.Render("y/a/n "),
+		}
 	case m.question != nil:
-		right = m.styles.statusBase.Render("enter answer · esc decline ")
+		controls = []string{
+			m.styles.statusBase.Render("enter answer · esc decline "),
+			m.styles.statusBase.Render("esc decline "),
+		}
 	case m.busy:
 		elapsed := time.Since(m.turnStarted).Round(time.Second)
 		progress := m.spinner.View()
 		if m.runtime.Config.Options.ReducedMotion {
 			progress = "•"
 		}
-		right = m.styles.statusKey.Render(progress) + m.styles.statusBase.Render(fmt.Sprintf(" working %s · ", elapsed))
+		head := m.styles.statusKey.Render(progress) + m.styles.statusBase.Render(fmt.Sprintf(" working %s · ", elapsed))
+		agents := ""
 		if m.runtime.Team.Active() > 0 {
-			right += m.styles.statusKey.Render(m.binding("agent_control")) + m.styles.statusBase.Render(" agents · ")
+			agents = m.styles.statusKey.Render(m.binding("agent_control")) + m.styles.statusBase.Render(" agents · ")
 		}
-		right += m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" local commands · esc cancel ")
+		// Naming steering here is the only place most people will discover
+		// that a wrong turn can be corrected rather than cancelled, so it
+		// rides in the widest form and is given up before anything
+		// load-bearing.
+		steer := m.styles.statusKey.Render("enter") + m.styles.statusBase.Render(" steer · ")
+		if pending := m.pendingSteering(); pending > 0 {
+			steer = m.styles.statusKey.Render(fmt.Sprintf("%d queued", pending)) + m.styles.statusBase.Render(" · ")
+		}
+		tail := m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" local commands · esc cancel ")
+		controls = []string{
+			head + agents + steer + tail,
+			head + tail,
+			head + m.styles.statusBase.Render("esc cancel "),
+			m.styles.statusKey.Render(progress) + m.styles.statusBase.Render(" esc cancel "),
+		}
 	default:
-		right = m.styles.statusBase.Render("enter send · ") +
+		controls = []string{
+			m.styles.statusBase.Render("enter send · ") +
+				m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +
+				m.styles.statusKey.Render(m.binding("next_tab")) + m.styles.statusBase.Render(" tabs · ") +
+				m.styles.statusKey.Render("ctrl+c") + m.styles.statusBase.Render(" quit "),
 			m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +
-			m.styles.statusKey.Render(m.binding("next_tab")) + m.styles.statusBase.Render(" tabs · ") +
-			m.styles.statusKey.Render("ctrl+c") + m.styles.statusBase.Render(" quit ")
+				m.styles.statusKey.Render("ctrl+c") + m.styles.statusBase.Render(" quit "),
+			m.styles.statusKey.Render("ctrl+c") + m.styles.statusBase.Render(" quit "),
+		}
 	}
-	// The named stance badge is additive: it appears only when the stance is
-	// worth spelling out and only when it does not push the run controls off
-	// the bar. An indicator that hides "esc cancel" has made the session less
-	// safe, not more.
+	// Two badges are strictly additive: they may appear only when they cost
+	// nothing that the same bar would otherwise have shown. The named stance
+	// sits after the mode badge it elaborates; the running spend goes last.
+	//
+	// "Costs nothing" is enforced by comparison rather than by a width guess:
+	// the bar is laid out with and without each badge, and the badge is kept
+	// only if the control hint lands on the same tier and no other badge was
+	// given up to make room. An indicator that crowds out "esc cancel" has
+	// made the session less safe, not more.
 	if named := m.stanceNameBadge(); named != "" {
-		candidate := left[:stanceAnchor] + m.styles.statusBase.Render(" ") + named + left[stanceAnchor:]
-		if m.width-lipgloss.Width(candidate)-lipgloss.Width(right) >= 1 {
-			left = candidate
-		}
+		segments = m.addIfFree(segments, controls, statusSegment{text: named, drop: 90}, true)
 	}
-	// Spend is the last thing to claim space and the first to lose it. It is
-	// useful to watch during a turn but never worth displacing the controls
-	// that stop one.
 	if spend := m.spendReadout(); spend != "" {
-		candidate := left + spend + m.styles.statusBase.Render(" ")
-		if m.width-lipgloss.Width(candidate)-lipgloss.Width(right) >= 1 {
-			left = candidate
+		segments = m.addIfFree(segments, controls, statusSegment{text: spend, drop: 100}, false)
+	}
+	return m.composeStatusBar(segments, controls)
+}
+
+// addIfFree returns segments with extra inserted, but only when inserting it
+// changes nothing else about the bar. afterStance places it directly after
+// the autonomy badge rather than at the end.
+func (m Model) addIfFree(segments []statusSegment, controls []string, extra statusSegment, afterStance bool) []statusSegment {
+	candidate := make([]statusSegment, 0, len(segments)+1)
+	if afterStance {
+		inserted := false
+		for _, seg := range segments {
+			candidate = append(candidate, seg)
+			if seg.stance {
+				candidate = append(candidate, extra)
+				inserted = true
+			}
+		}
+		if !inserted {
+			candidate = append(candidate, extra)
+		}
+	} else {
+		candidate = append(append(candidate, segments...), extra)
+	}
+	base, baseTier := m.fitStatusBar(segments, controls)
+	with, withTier := m.fitStatusBar(candidate, controls)
+	if withTier != baseTier || len(with) != len(base)+1 {
+		return segments
+	}
+	return candidate
+}
+
+// statusSegment is one badge on the left of the status bar.
+type statusSegment struct {
+	text string
+	// drop orders what is given up when the bar is too narrow: the highest
+	// positive value goes first, so the running spend goes before the model
+	// name. Zero means the segment is never dropped, which is reserved for
+	// the flower anchor and the autonomy/containment badge.
+	drop int
+	// stance marks the autonomy/containment badge, so the named form can be
+	// inserted directly after it.
+	stance bool
+}
+
+// composeStatusBar lays the bar out widest-first, and treats the controls as
+// the part that must survive.
+//
+// The previous behavior dropped the entire right-hand side the moment it did
+// not fit, so below roughly a hundred columns the working indicator and
+// "esc cancel" vanished together while badges kept their space. In a split
+// pane that removes the user's visible way to stop a running turn in order to
+// keep showing "tasks 2/5". The order is now: everything; then the controls
+// abbreviated; then the badges trimmed to make room for the controls; and
+// only if the terminal is narrower than the controls themselves does anything
+// load-bearing get cut.
+func (m Model) composeStatusBar(segments []statusSegment, controls []string) string {
+	kept, tier := m.fitStatusBar(segments, controls)
+	if tier >= 0 {
+		out, _ := m.joinStatusBar(renderSegments(m, kept), controls[tier])
+		return out
+	}
+	// Only the undroppable badges and the narrowest controls remain, and they
+	// still do not fit. Cut the badges, never the controls.
+	essential := controls[len(controls)-1]
+	if room := m.width - lipgloss.Width(essential) - 1; room > 0 {
+		if out, ok := m.joinStatusBar(ansi.Truncate(renderSegments(m, kept), room, "…"), essential); ok {
+			return out
 		}
 	}
+	return ansi.Truncate(essential, max(1, m.width), "")
+}
+
+// fitStatusBar reports which badges survive and which control form fits,
+// widest first: every control form is tried against the full badge set, then
+// badges are given up in `drop` order and the forms are tried again.
+//
+// Badges are the cheaper loss. Session state elided from the bar is still one
+// keystroke away in the Session tab, while a missing exit key is not
+// recoverable by anything the user can see. A tier of -1 means nothing fit.
+func (m Model) fitStatusBar(segments []statusSegment, controls []string) ([]statusSegment, int) {
+	kept := segments
+	for {
+		for tier, candidate := range controls {
+			if _, ok := m.joinStatusBar(renderSegments(m, kept), candidate); ok {
+				return kept, tier
+			}
+		}
+		next, dropped := dropWidestPriority(kept)
+		if !dropped {
+			return kept, -1
+		}
+		kept = next
+	}
+}
+
+func (m Model) joinStatusBar(left, right string) (string, bool) {
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
-		return ansi.Truncate(left, max(1, m.width), "")
+		return "", false
 	}
-	return left + m.styles.statusBase.Render(strings.Repeat(" ", gap)) + right
+	return left + m.styles.statusBase.Render(strings.Repeat(" ", gap)) + right, true
+}
+
+func renderSegments(m Model, kept []statusSegment) string {
+	parts := make([]string, 0, len(kept))
+	for _, seg := range kept {
+		parts = append(parts, seg.text)
+	}
+	// badge() carries its own leading pad, so only the separators and the
+	// trailing space are added here.
+	return strings.Join(parts, m.styles.statusBase.Render(" ")) + m.styles.statusBase.Render(" ")
+}
+
+// dropWidestPriority removes the segment that is next in line to be given up,
+// reporting false once only undroppable segments remain.
+func dropWidestPriority(segments []statusSegment) ([]statusSegment, bool) {
+	worst, index := 0, -1
+	for i, seg := range segments {
+		if seg.drop > 0 && seg.drop > worst {
+			worst, index = seg.drop, i
+		}
+	}
+	if index < 0 {
+		return segments, false
+	}
+	out := make([]statusSegment, 0, len(segments)-1)
+	out = append(out, segments[:index]...)
+	return append(out, segments[index+1:]...), true
 }
 
 // spendReadout is the session's running token count and estimated cost.

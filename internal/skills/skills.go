@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/prompts"
 	"github.com/robert-mcdermott/collomia/internal/userconfig"
 )
 
@@ -282,10 +283,10 @@ func (s Skill) BundleCount() int { return len(s.Scripts) + len(s.References) + l
 
 func (c Catalog) Summary() string {
 	if len(c.Skills) == 0 {
-		return "No skills discovered."
+		return prompts.Text(prompts.SkillsEmpty)
 	}
 	var b strings.Builder
-	b.WriteString("Available skills (use load_skill only when a description matches the task; loaded skills may bundle scripts and reference files):\n")
+	b.WriteString(prompts.Text(prompts.SkillsHeader) + "\n")
 	for _, s := range c.Skills {
 		fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
 	}

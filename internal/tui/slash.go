@@ -107,9 +107,9 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if window > 0 {
 			windowText = fmt.Sprintf("%d", window)
 		}
-		cached := ""
-		if usage.CachedTokens > 0 {
-			cached = fmt.Sprintf(" (%d cached)", usage.CachedTokens)
+		cacheLine := ""
+		if summary := cacheSummary(usage, m.runtime.Agent.Capabilities()); summary != "" {
+			cacheLine = "\nPrompt cache: " + summary
 		}
 		reasoning := ""
 		if usage.ReasoningTokens > 0 {
@@ -137,7 +137,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
 		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
-		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input%s / %d output%s tokens%s\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, cached, usage.OutputTokens, reasoning, cost, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
+		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input / %d output%s tokens%s%s\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, usage.OutputTokens, reasoning, cacheLine, cost, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
 		if len(args) > 0 {
@@ -367,6 +367,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			break
 		}
 		m.rewindTo(turn)
+	case "/restore":
+		if m.busy {
+			m.addError(fmt.Errorf("wait for the current turn to finish first"))
+			break
+		}
+		if len(args) == 0 {
+			m.openRestorePicker()
+			break
+		}
+		if len(args) != 1 {
+			m.addError(fmt.Errorf("usage: /restore [completed-turn-number]"))
+			break
+		}
+		turn, err := strconv.Atoi(args[0])
+		if err != nil || turn < 0 {
+			m.addError(fmt.Errorf("restore target must be a non-negative completed turn number"))
+			break
+		}
+		m.restoreTo(turn)
 	case "/retry":
 		if m.busy {
 			m.addError(fmt.Errorf("wait for the current turn to finish first"))
