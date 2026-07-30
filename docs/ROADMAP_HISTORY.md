@@ -39,6 +39,70 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-30 — Phase 3/7 Windows pseudoconsole
+
+- **One backend was withholding two advertised capabilities.** `ptySupported`
+  was false in `internal/tools/command_pty_windows.go`, so `run_command` with
+  `pty: true` was refused; the same absence in
+  `internal/webterminal/session_windows.go` made `collo --web` unavailable on
+  Windows entirely. The roadmap had listed this once, under Phase 3, as though
+  it were a single tool flag.
+- **os/exec structurally cannot do it.** `syscall.SysProcAttr` on Windows
+  exposes `CreationFlags`, `Token`, `AdditionalInheritedHandles`, and
+  `ParentProcess` — but no proc-thread attribute list, and a pseudoconsole is
+  attached only through `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` on a
+  `STARTUPINFOEX`. `creack/pty`, already a dependency, returns `ErrUnsupported`
+  from its `start_windows.go`. So process creation, waiting, cancellation, and
+  job assignment all had to be written directly against
+  `golang.org/x/sys/windows`, which already exports the entire API —
+  `CreatePseudoConsole`, `ResizePseudoConsole`, `ClosePseudoConsole`, and the
+  attribute constant — so no new module was added.
+- **Shared rather than duplicated, because the risk is handle lifetime.** Both
+  callers needed the same primitive, and the API calls are the easy part.
+  `internal/conpty` owns the ordering that two copies would each have had to
+  rediscover: the parent's copies of the console's input-read and output-write
+  handles must be closed immediately after `CreatePseudoConsole` duplicates
+  them, or the output pipe still has a writer and a finished command never
+  reaches end-of-file — which presents as a PTY command that hangs after it
+  has already printed everything.
+- **The cancellation contract came out stronger than the one it matched.** The
+  child is created with `CREATE_SUSPENDED`, assigned to a job object carrying
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and only then resumed, so no descendant
+  can be spawned before the job exists. The ordinary `taskkill /T` path does
+  have that window. The existing `openDescendants`/`waitAllExited` walk is
+  reused unchanged to wait out the teardown, because returning before the
+  kernel has released those processes leaves them holding the workspace
+  directory open — the defect that walk was written for.
+- **Windows has no SIGTERM, and the docs say so instead of implying parity.**
+  `GenerateConsoleCtrlEvent` requires the sender to share the target's console,
+  which a pseudoconsole host by definition does not, so there is no signal to
+  send. The graceful step for an interactive session is closing the child's
+  console input; a program blocked on input can act on it and one that ignores
+  input cannot. It is documented as a request with a deadline.
+- **`go vet` shaped one line of the implementation, and the comment says which
+  part is presentation.** `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` takes the
+  console handle by value in the `lpValue` slot — Microsoft's own sample passes
+  `hPC`, not `&hPC` — so the natural spelling is a `uintptr`-to-
+  `unsafe.Pointer` conversion, which vet rejects and CI vets on the Windows
+  runner. The bits move through the handle's own address instead. That is
+  presentation, not extra safety: the result is still an `unsafe.Pointer`
+  holding a non-pointer, sound only because a HANDLE is a small integer the
+  collector will never mistake for a heap address.
+- **Two tests were skipped for a reason that was about to become false.**
+  `TestRunCommandPTY` and `TestRunCommandPTYTimeoutKillsGroup` said "pty
+  unsupported on windows"; the only genuinely platform-specific part was the
+  shell. They now run everywhere. Windows has no `test -t 0`, so the terminal
+  assertion is that a pseudoconsole renders its client through a virtual
+  terminal while a captured pipe does not — the difference programs actually
+  key on when deciding whether to colorize. That was the assertion least
+  certain to hold without a Windows machine, and it passed on first run.
+- **Verified on Windows 11, not only in CI.** The eleven `internal/conpty`
+  integration tests and both tool-level PTY tests passed on a real VM. The
+  close and terminate tests carry explicit timeouts whose failure messages name
+  the ordering mistake that would cause them, because a hang rather than a
+  wrong value is how handle-lifetime errors present; both finished in
+  hundredths of a second.
+
 ### 2026-07-30 — Phase 8 a trustworthy audit ledger
 
 - **A write-only file with no reader, no test, no bound, and no failure

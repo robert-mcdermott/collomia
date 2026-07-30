@@ -3170,7 +3170,7 @@ Common flags:
 --plan                               read-only plan tool surface
 --resume <id>                        resume a saved session
 --continue                           resume the most recently updated session
---web                                local browser terminal (macOS/Linux)
+--web                                local browser terminal
 --web-port <0..65535>                loopback port; 0/random by default
 --no-open                            print web URL without opening a browser
 --alt-screen                         force the alternate-screen TUI
@@ -3272,10 +3272,24 @@ Commands run from the workspace in their own process group. Timeout,
 cancellation, or session cleanup terminates descendants; a deliberately
 re-parented daemon remains a known residual risk.
 
-Unix commands that require a terminal can request `pty: true`. PTY execution
-is unavailable on native Windows. Use `start_process` for a server/watcher that
-should remain live while the agent continues; do not use shell backgrounding
-as a substitute.
+Commands that require a terminal can request `pty: true` on every platform. On
+Unix that is a PTY; on Windows it is a pseudoconsole, which needs Windows 10
+1809 or later and reports a clear error on anything older rather than running
+the command without terminal semantics. A command is quoted identically with
+and without `pty: true`, because the pseudoconsole path resolves and escapes
+its arguments exactly the way the ordinary path does.
+
+Cancellation reaches the whole process tree either way, but by different
+means. On Unix the child leads its own process group and the group is signalled.
+On Windows the child is created suspended and joined to a job object before it
+is allowed to run, so there is no instant in which it could spawn a descendant
+outside the job; cancelling terminates the job. Windows has no SIGTERM, so
+there is no graceful signal to send first — an interactive session closes the
+child's console input and gives it a short grace period, which a program
+blocked on input can act on and one that ignores input cannot.
+
+Use `start_process` for a server/watcher that should remain live while the
+agent continues; do not use shell backgrounding as a substitute.
 
 ### Background processes
 
@@ -4831,8 +4845,8 @@ protected like the transcript itself.
 
 ## Browser terminal
 
-On macOS and Linux, browser mode runs the same Bubble Tea TUI inside a real PTY
-and serves an embedded xterm.js client:
+Browser mode runs the same Bubble Tea TUI inside a real PTY — a pseudoconsole
+on Windows — and serves an embedded xterm.js client:
 
 ```sh
 collo --web

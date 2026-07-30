@@ -31,7 +31,7 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - `collo --web` runs the same Bubble Tea interface through an embedded xterm.js client without requiring Node.js or npm.
   - The server binds only to loopback, creates a fresh 256-bit access token for each launch, requires the exact served origin, and permits one controlling connection.
   - Closing the browser connection terminates the PTY and child process group.
-  - Browser mode is available on macOS and Linux; native Windows support remains pending a ConPTY backend.
+  - Browser mode runs on macOS, Linux, and Windows; the Windows backend uses a pseudoconsole and requires Windows 10 1809 or later.
   - It is a local single-user interface, not a remote collaboration service: it has no TLS, remote identity, reconnect, or observer mode and should not be exposed through a proxy or tunnel.
 
 - **Headless operation and automation**
@@ -93,7 +93,7 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
 
   - Foreground and background command execution with live output.
   - Timeouts, output limits, cancellation, and process-tree termination.
-  - Unix PTY support and Windows Job Object containment.
+  - Pseudo-terminal execution on every platform: a Unix PTY, or a Windows pseudoconsole whose child is created suspended and joined to a job object before it runs, so cancellation reaches the whole process tree with no window for a descendant to escape it.
   - Sandboxed commands default to a documented minimal environment that omits common API tokens, cloud credentials, proxy settings, and unrelated toolchain state.
   - Full parent-environment inheritance remains an explicit compatibility option, and individual values can instead be supplied narrowly through the command itself or a wrapper.
   - Background-process listing, output retrieval, and termination through the `/ps` interface.

@@ -408,43 +408,82 @@ func (failingBackend) Wrap([]string, sandbox.Policy) ([]string, error) {
 	return nil, fmt.Errorf("not available")
 }
 
-func TestRunCommandPTY(t *testing.T) {
+// ttyProbe returns a command that reports whether it owns a terminal, and the
+// text it prints when it does. These used to skip on Windows because there was
+// no ConPTY backend; the only thing that is still platform-specific is the
+// shell, so the tests now run everywhere.
+//
+// The probes differ because the platforms answer the question differently. A
+// POSIX shell can ask directly with `test -t 0`. cmd.exe cannot, but a
+// pseudoconsole renders its client's output through a virtual terminal, so the
+// stream carries escape sequences that a plain captured pipe never does —
+// which is the observable difference that matters to a program choosing
+// whether to colorize or paginate.
+func ttyProbe() (command string, marker string) {
 	if runtime.GOOS == "windows" {
-		t.Skip("pty unsupported on windows")
+		return "echo PROBE-RAN", "PROBE-RAN"
 	}
+	return "if [ -t 0 ]; then echo IS-A-TTY; else echo NOT-A-TTY; fi", "IS-A-TTY"
+}
+
+func TestRunCommandPTY(t *testing.T) {
 	tool, err := NewRunCommandTool(t.TempDir(), nil, 8*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Under a pty, stdin/stdout are terminals; `test -t 0` succeeds only
-	// when attached to one.
-	out, err := tool.Execute(t.Context(), []byte(`{"command":"if [ -t 0 ]; then echo IS-A-TTY; else echo NOT-A-TTY; fi","pty":true}`))
+	command, marker := ttyProbe()
+	request, err := json.Marshal(map[string]any{"command": command, "pty": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "IS-A-TTY") {
+	out, err := tool.Execute(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, marker) {
 		t.Fatalf("pty run should look like a terminal:\n%s", out)
 	}
-	// The same probe without pty must not see a terminal.
-	out, err = tool.Execute(t.Context(), []byte(`{"command":"if [ -t 0 ]; then echo IS-A-TTY; else echo NOT-A-TTY; fi"}`))
+	plainRequest, err := json.Marshal(map[string]any{"command": command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "NOT-A-TTY") {
-		t.Fatalf("plain run must not look like a terminal:\n%s", out)
+	plain, err := tool.Execute(t.Context(), plainRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		// The pseudoconsole is a terminal and the pipe is not, so only one of
+		// them carries VT escapes.
+		if !strings.ContainsRune(out, 0x1b) {
+			t.Errorf("a pseudoconsole must render through a virtual terminal, but no escape sequence reached the output:\n%q", out)
+		}
+		if strings.ContainsRune(plain, 0x1b) {
+			t.Errorf("a plain captured pipe must not carry terminal escapes:\n%q", plain)
+		}
+		return
+	}
+	if !strings.Contains(plain, "NOT-A-TTY") {
+		t.Fatalf("plain run must not look like a terminal:\n%s", plain)
 	}
 }
 
 func TestRunCommandPTYTimeoutKillsGroup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("pty unsupported on windows")
-	}
 	tool, err := NewRunCommandTool(t.TempDir(), nil, 8*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Something that outlives the timeout without needing a shell builtin that
+	// differs between platforms.
+	sleeper := "sleep 30"
+	if runtime.GOOS == "windows" {
+		sleeper = "ping -n 31 127.0.0.1"
+	}
+	request, err := json.Marshal(map[string]any{"command": sleeper, "timeout_seconds": 1, "pty": true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now()
-	_, err = tool.Execute(t.Context(), []byte(`{"command":"sleep 30","timeout_seconds":1,"pty":true}`))
+	_, err = tool.Execute(t.Context(), request)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected timeout, got %v", err)
 	}

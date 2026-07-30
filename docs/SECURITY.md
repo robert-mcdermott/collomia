@@ -777,18 +777,33 @@ Cancellation is honored while a child is queued, calling a provider, or waiting
 for approval. A cancelled approval returns no permission and cannot publish the
 proposed mutation; late child updates cannot revive a cancelling task.
 
-**PTY commands** (`run_command` with `pty: true`, Unix only) run in their
-own session (`setsid`) rather than merely a process group, because a
-pseudo-terminal's child processes attach to the session leader; killing the
-session on timeout or cancellation still reaches every descendant. Windows
-has no PTY support yet and reports a clear error rather than silently
-running without one.
+**PTY commands** (`run_command` with `pty: true`) reach every descendant on
+cancellation, by a different mechanism on each platform.
+
+On Unix the child runs in its own session (`setsid`) rather than merely a
+process group, because a pseudo-terminal's child processes attach to the
+session leader; killing the session on timeout or cancellation reaches the
+whole tree.
+
+On Windows the child is attached to a pseudoconsole, created suspended, and
+assigned to a job object before it is resumed, so there is no instant in which
+it could spawn a descendant outside the job; cancellation terminates the job
+and then waits for the kernel to release each process. Creating the child
+suspended is what makes this stronger than the non-PTY path's `taskkill /T`,
+which has that window. The pseudoconsole API requires Windows 10 1809 or
+later; an older release reports that rather than running without terminal
+semantics. There is no SIGTERM to send first — `GenerateConsoleCtrlEvent`
+requires the sender to share the target's console, which a pseudoconsole host
+does not — so a one-shot command is terminated directly, and only the
+interactive browser-terminal session has a graceful step (closing the child's
+console input, with a short deadline before the job is terminated).
 
 ## Browser-terminal boundary
 
 `collo --web` is a terminal transport around the same TUI, not a separate
-agent service. On macOS and Linux it starts a child `collo tui` in a real PTY,
-so the child has the same workspace, environment, provider credentials,
+agent service. It starts a child `collo tui` in a real PTY — a pseudoconsole
+on Windows — so the child has the same workspace, environment, provider
+credentials,
 configuration, tools, and permission policy as a normal terminal session.
 The browser receives and sends terminal bytes; it cannot choose a different
 executable, working directory, or environment through HTTP.

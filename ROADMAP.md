@@ -74,11 +74,60 @@ campaigns — since the last P0 outside it was reclassified on the evidence that
 the enforced all-or-nothing network boundary it was meant to add already
 existed on all three platforms. The audit ledger those campaigns and that
 review read from is now itself complete, attributable, bounded, and
-inspectable; that was the most recent wave.
+inspectable, and pseudo-terminal execution reaches all three platforms; those
+were the two most recent waves.
 
 No wave is currently active. See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — a pseudo-terminal on the third platform
+
+**Goal:** stop one missing backend from withholding two advertised capabilities
+from a first-class platform.
+
+- [x] Add `internal/conpty`, a shared Windows pseudoconsole implementation.
+  Both `run_command` with `pty: true` and `collo --web` needed the same
+  primitive, and the part that is easy to get wrong is handle lifetime rather
+  than the API calls. Two copies would each have had to rediscover that the
+  parent's copy of the console's output handle must be closed before anyone
+  reads from it — otherwise the pipe still has a writer and a finished command
+  never reaches end-of-file, which presents as "the PTY command hangs after it
+  finishes".
+- [x] Build the process here rather than on `os/exec`.
+  `syscall.SysProcAttr` on Windows exposes no proc-thread attribute list, and a
+  pseudoconsole is attached only through `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
+  on a `STARTUPINFOEX`, so `os/exec` structurally cannot do it. Quoting still
+  goes through the same `exec.LookPath` and `syscall.EscapeArg` path `os/exec`
+  uses: a command quoted one way without a PTY and another way with one would
+  be a far worse surprise than either quoting rule on its own.
+- [x] Strengthen the cancellation contract instead of matching it. The child is
+  created suspended, joined to a job object, and only then resumed, so there is
+  no instant in which it could spawn a descendant outside the job — a window
+  the ordinary `taskkill /T` path does have. The existing descendant walk is
+  reused to wait for the kernel to finish the teardown, because returning
+  earlier leaves processes holding the workspace directory open.
+- [x] Say what Windows cannot do rather than implying parity. There is no
+  SIGTERM: `GenerateConsoleCtrlEvent` requires the sender to share the target's
+  console, which a pseudoconsole host by definition does not. The graceful step
+  for an interactive session is closing the child's console input, documented
+  as a request with a deadline rather than as an equivalent of the Unix path.
+- [x] Un-skip the two PTY tests instead of leaving them skipped. They said
+  "pty unsupported on windows", which was about to become false; the only
+  genuinely platform-specific part was the shell, so they now run everywhere
+  with a per-platform probe. Windows has no `test -t 0`, so the terminal
+  assertion is that a pseudoconsole renders its client through a virtual
+  terminal and a captured pipe does not — which is the difference programs
+  actually key on when they decide whether to colorize.
+- [x] Cover the mechanics with tests that fail informatively. A hang rather
+  than a wrong value is the expected failure for handle-ordering mistakes, so
+  the close and terminate tests carry explicit timeouts whose messages name the
+  ordering error that would cause them.
+
+**Behavior change:** `pty: true` is no longer refused on Windows and
+`collo --web` no longer exits with a platform error there. Windows 10 1809 or
+later is required for the pseudoconsole API; older releases report that rather
+than running without terminal semantics.
 
 ## Completed wave — the record you can actually read
 
@@ -796,15 +845,15 @@ claiming enforcement the policy layer does not provide.
   not at all.
 - [ ] **P1 — Optional deeper review:** line-level pending-write selection and
   broader selective application for multi-file patches.
-- [ ] **P1 — Windows ConPTY:** add native PTY execution without weakening the
-  existing process-tree cancellation contract. This is one backend blocking two
-  advertised capabilities, not one flag: `ptySupported` is false in
-  `internal/tools/command_pty_windows.go`, so `run_command` with `pty: true` is
-  refused, and the same absence in `internal/webterminal/session_windows.go`
-  makes `collo --web` unavailable on Windows entirely. `golang.org/x/sys` is
-  already a direct dependency, so `CreatePseudoConsole` needs no new module;
-  the real constraint is that a ConPTY child must still be reaped through the
-  existing Job Object tree so cancellation keeps its contract.
+- [x] **P1 — Windows ConPTY:** `run_command` with `pty: true` and `collo --web`
+  both work on Windows through a shared `internal/conpty` package. The child is
+  created suspended and joined to a job object before it runs, so the
+  process-tree cancellation contract is strengthened rather than weakened —
+  there is no instant in which a descendant could be spawned outside the job.
+  Command-line construction goes through the same `exec.LookPath` and
+  `syscall.EscapeArg` path `os/exec` uses, so a command is quoted identically
+  with and without a PTY. No new dependency: the whole API is already in
+  `golang.org/x/sys/windows`.
 
 ### Phase 4 — Provider platform
 
@@ -956,22 +1005,20 @@ claiming enforcement the policy layer does not provide.
 
 Several waves in a row were P1 or P2 while the items that actually gate 1.0 did
 not move. The audit ledger — the cheapest of the remaining P0s, and the one an
-independent assessment starts from — has now been taken. The rest, in order:
+independent assessment starts from — has been taken, and Windows ConPTY closed
+the last platform-parity gap. The rest, in order:
 
-1. Add the Windows ConPTY backend. Best capability per unit of effort remaining
-   on the board — one backend restores `run_command` with `pty: true` *and*
-   `collo --web` on a first-class platform, with no new dependency.
-2. Gather real beta feedback on named primary profiles, cost estimates,
+1. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
    judged against real toolchains rather than predicted. This is the stated
-   prerequisite for item 3 and has not happened yet.
-3. Add opt-in plan-graph execution using verified results, write scopes,
+   prerequisite for item 2 and has not happened yet.
+2. Add opt-in plan-graph execution using verified results, write scopes,
    dependency readiness, and stale-state invalidation, then explicit
    combined-parent verification and conservative result-ranking criteria
    without turning a score into permission. `collo audit --actor` is now the
    surface that can say what each agent in such a graph was permitted to do.
-4. Continue Phase 8 security/reliability campaigns in parallel with every
+3. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave, and take the performance budgets while the prompt-cache wave's
    measurement harness is still warm.
 

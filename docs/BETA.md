@@ -52,8 +52,13 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   calls and both web tools, still require a rule, a session grant, or a person.
 - macOS and Windows release binaries are not yet platform code-signed or Apple
   notarized. Release provenance is signed through GitHub/Sigstore instead.
-- Windows has no ConPTY backend yet. `run_command` with `pty: true` is Unix
-  only, and `collo --web` runs on macOS and Linux but not Windows.
+- `run_command` with `pty: true` and `collo --web` now work on every supported
+  platform. Windows uses a pseudoconsole, which requires Windows 10 1809 or
+  later; on anything older the console cannot be created and the command
+  reports that rather than running without terminal semantics. Windows has no
+  signal equivalent to SIGTERM, so cancelling a pseudoconsole session closes
+  the child's console input and terminates the job after a short grace period
+  rather than asking politely first.
 - MCP OAuth, experimental tasks, resource subscriptions, audio passthrough,
   annotations, and argument-level permission matching remain incomplete.
 - LSP code actions are not implemented. Diagnostics, `find_definition`,

@@ -828,7 +828,7 @@ Flags:
   --plan                               start in read-only planning mode
   --resume <id>                        resume a saved session
   --continue                           resume the most recent session
-  --web                                serve the TUI in an authenticated local browser terminal (macOS/Linux)
+  --web                                serve the TUI in an authenticated local browser terminal
   --web-port <port>                    local browser-terminal port (default: random available port)
   --no-open                            (web) print the URL without opening the default browser
   --alt-screen                         force the interactive TUI to use the alternate screen

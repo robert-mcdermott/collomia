@@ -39,11 +39,11 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, non-destructive turn rewind, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, pinned plan state, referenced oversized results, and automatic context compaction.
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), colorized diff previews at approval, and **hunk-level approval** — accept or reject individual hunks of a `write_file` change before it lands.
 - Read-only git inspection tools (status, diff, log, blame) that never commit or push.
-- `run_command` supports a pseudo-terminal (`pty: true`, Unix) for interactive-only or isatty-dependent programs.
+- `run_command` supports a pseudo-terminal (`pty: true`) on every platform — a Unix PTY, or a Windows pseudoconsole — for interactive-only or isatty-dependent programs.
 - The agent can pause and ask you a typed question (`ask_user`) instead of guessing.
 - Command output streams into the transcript live, for both foreground and background commands.
 - Interactive and non-interactive operation from the same binary.
-- Local browser terminal (`collo --web`) that runs the existing TUI in a real PTY and serves an embedded, authenticated xterm.js client on loopback (macOS/Linux).
+- Local browser terminal (`collo --web`) that runs the existing TUI in a real PTY and serves an embedded, authenticated xterm.js client on loopback.
 
 ## Build and run
 
@@ -176,7 +176,7 @@ Active configuration files are strict JSON. `collo config reference` prints an e
 
 ```text
 collo [flags] [initial prompt]      start the interactive TUI
-collo --web [flags] [initial prompt]  open the interactive TUI in a local browser (macOS/Linux)
+collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
 collo run [flags] <prompt>          run once, or read a prompt from stdin
 collo init [--with-reference]       create project .collomia.json
 collo init --global [--with-reference]  create ~/.collomia/config.json
@@ -294,8 +294,8 @@ overwritten.
 
 ## Browser terminal
 
-On macOS and Linux, `--web` exposes the normal Collomia TUI through a local
-browser without creating a second frontend or agent protocol:
+`--web` exposes the normal Collomia TUI through a local browser without
+creating a second frontend or agent protocol:
 
 ```sh
 # Bind 127.0.0.1 on a random available port and open the default browser.
@@ -326,9 +326,7 @@ in this first version.
 
 Treat the printed URL as a password: anyone who obtains it can control the TUI
 and answer its approval prompts. Do not share, proxy, tunnel, or port-forward
-the server. It has no TLS or remote-user authentication. Native Windows web
-mode is not available until Collomia has a ConPTY backend; the command exits
-with a clear error rather than running the TUI without terminal semantics. See
+the server. It has no TLS or remote-user authentication. See
 [the browser-terminal security boundary](docs/SECURITY.md#browser-terminal-boundary)
 for the complete limitations.
 
