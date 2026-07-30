@@ -177,13 +177,17 @@ type Failure struct {
 
 // Usage carries provider-reported token accounting.
 type Usage struct {
-	InputTokens     int     `json:"input_tokens"`
-	OutputTokens    int     `json:"output_tokens"`
-	CachedTokens    int     `json:"cached_tokens,omitempty"`
-	ReasoningTokens int     `json:"reasoning_tokens,omitempty"`
-	CostUSD         float64 `json:"cost_usd,omitempty"`
-	CostAvailable   bool    `json:"cost_available,omitempty"`
-	CostEstimated   bool    `json:"cost_estimated,omitempty"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	// CachedTokens and CacheWriteTokens are disjoint subsets of InputTokens:
+	// prompt tokens read from and written to the provider's prompt cache.
+	// Both are additive optional fields on the v1 event contract.
+	CachedTokens     int     `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens  int     `json:"reasoning_tokens,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
+	CostAvailable    bool    `json:"cost_available,omitempty"`
+	CostEstimated    bool    `json:"cost_estimated,omitempty"`
 }
 
 // DelegateVerification is one bounded, machine-observed command result from a

@@ -75,7 +75,8 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 	case "anthropic", "anthropic-compatible":
 		c.Reasoning = CapabilityPartial
 		c.Images = CapabilityPartial
-		c.Constraints = []string{"Messages adapter; provider reasoning deltas are surfaced, but signed thinking blocks and cache creation are not yet round-tripped"}
+		c.PromptCaching = CapabilitySupported
+		c.Constraints = []string{"Messages adapter; provider reasoning deltas are surfaced, but signed thinking blocks are not yet round-tripped; prompt cache breakpoints are sent and dropped for the session if the endpoint rejects them"}
 	case "azure-openai":
 		c.Reasoning = CapabilityPartial
 		c.Images = CapabilityPartial
@@ -88,7 +89,8 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 	case "azure-foundry-anthropic":
 		c.Reasoning = CapabilityPartial
 		c.Images = CapabilityPartial
-		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
+		c.PromptCaching = CapabilitySupported
+		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; prompt cache breakpoints are sent and dropped for the session if the deployment rejects them; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
 	case "bedrock":
 		c.Reasoning = CapabilityPartial
 		c.Images = CapabilityPartial

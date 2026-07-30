@@ -129,6 +129,12 @@ type Pricing struct {
 	InputPerMillion       float64  `json:"input_per_million"`
 	OutputPerMillion      float64  `json:"output_per_million"`
 	CachedInputPerMillion *float64 `json:"cached_input_per_million,omitempty"`
+	// CacheWritePerMillion prices tokens written to the provider's prompt
+	// cache, which is normally charged above the ordinary input rate. When
+	// unset, writes are priced at InputPerMillion: an estimate that is
+	// slightly low is preferable to inventing a vendor's multiplier for an
+	// endpoint the user may have pointed anywhere.
+	CacheWritePerMillion *float64 `json:"cache_write_per_million,omitempty"`
 }
 
 type Permissions struct {
@@ -1085,6 +1091,9 @@ func (c Config) ValidateFields() []FieldError {
 			}
 			if provider.Pricing.CachedInputPerMillion != nil && *provider.Pricing.CachedInputPerMillion < 0 {
 				errs = append(errs, FieldError{field + ".pricing.cached_input_per_million", "must not be negative"})
+			}
+			if provider.Pricing.CacheWritePerMillion != nil && *provider.Pricing.CacheWritePerMillion < 0 {
+				errs = append(errs, FieldError{field + ".pricing.cache_write_per_million", "must not be negative"})
 			}
 		}
 	}

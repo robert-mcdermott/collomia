@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -289,7 +290,7 @@ func TestManualCompactUsesFocus(t *testing.T) {
 	}
 }
 
-func TestPinnedContextIsRefreshedForEveryRequest(t *testing.T) {
+func TestPinnedContextTrailsEveryRequestWithoutDisturbingThePrefix(t *testing.T) {
 	pinned := "Active structured plan:\n[ ] 1. inspect"
 	registry := tools.NewRegistry(tools.Function{
 		Def:    provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -299,16 +300,34 @@ func TestPinnedContextIsRefreshedForEveryRequest(t *testing.T) {
 			return "observed", nil
 		},
 	})
+	// The plan travels in the trailing message, never in the system prompt,
+	// so the request prefix stays byte-identical while the plan changes.
+	var firstSystem string
 	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if strings.Contains(request.System, "1. inspect") {
+			t.Fatalf("plan leaked into the system prompt, which breaks the cached prefix: %s", request.System)
+		}
+		last := request.Messages[len(request.Messages)-1]
+		if last.Role != "user" || !strings.Contains(last.Content, "Pinned session state") {
+			t.Fatalf("pinned state is not the trailing message: %+v", last)
+		}
+		// Marked volatile so a caching adapter keeps its breakpoint behind it.
+		if !last.Volatile {
+			t.Fatalf("trailing state is not marked volatile: %+v", last)
+		}
 		switch call {
 		case 1:
-			if !strings.Contains(request.System, "[ ] 1. inspect") {
-				t.Fatalf("initial plan missing from system prompt: %s", request.System)
+			firstSystem = request.System
+			if !strings.Contains(last.Content, "[ ] 1. inspect") {
+				t.Fatalf("initial plan missing from trailing state: %s", last.Content)
 			}
 			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "1", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
 		default:
-			if !strings.Contains(request.System, "[x] 1. inspect — verified") || strings.Contains(request.System, "[ ] 1. inspect") {
-				t.Fatalf("updated plan was not refreshed: %s", request.System)
+			if request.System != firstSystem {
+				t.Fatalf("system prompt changed between iterations:\n--- first ---\n%s\n--- now ---\n%s", firstSystem, request.System)
+			}
+			if !strings.Contains(last.Content, "[x] 1. inspect — verified") || strings.Contains(last.Content, "[ ] 1. inspect") {
+				t.Fatalf("updated plan was not refreshed: %s", last.Content)
 			}
 			return provider.Response{Content: "done"}, nil
 		}
@@ -319,6 +338,14 @@ func TestPinnedContextIsRefreshedForEveryRequest(t *testing.T) {
 	}
 	if breakdown := a.ContextBreakdown(); breakdown.PinnedStateChars != len(pinned) {
 		t.Fatalf("context breakdown=%+v pinned=%q", breakdown, pinned)
+	}
+	// The trailing state is generated per request, so a stale copy must never
+	// land in the durable conversation — two plans in the history is exactly
+	// the ambiguity moving it out of the system prompt is meant to avoid.
+	for _, m := range a.messages {
+		if strings.Contains(m.Content, "Pinned session state") {
+			t.Fatalf("trailing state was persisted into the conversation: %+v", m)
+		}
 	}
 }
 
@@ -1328,31 +1355,48 @@ func TestRunReturnsSameFailureIDPublishedByErrorEvent(t *testing.T) {
 	}
 }
 
+// Steering must arrive as an ordinary conversational instruction that grants
+// nothing, and it must say truthfully who sent it: a delegated child is
+// steered by its parent, the primary agent by the person at the keyboard.
+// Labelling user guidance as coming from a parent would tell the model an
+// instruction originated somewhere it did not.
 func TestSteeringBecomesExplicitBoundaryMessageWithoutPermissionGrant(t *testing.T) {
-	client := &fakeClient{chat: func(_ int, request provider.Request) (provider.Response, error) {
-		if len(request.Messages) != 2 {
-			t.Fatalf("messages=%+v", request.Messages)
-		}
-		last := request.Messages[1]
-		if last.Role != "user" || !strings.Contains(last.Content, "Parent steering update") || !strings.Contains(last.Content, "does not grant permissions") || !strings.Contains(last.Content, "focus on tests") {
-			t.Fatalf("steering message=%+v", last)
-		}
-		return provider.Response{Content: "done"}, nil
-	}}
-	delivered := false
-	agent := New(Options{
-		Client: client, ProviderName: "fake", Model: "m", Workspace: t.TempDir(),
-		Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
-		TakeSteering: func() []string {
-			if delivered {
-				return nil
+	for _, test := range []struct {
+		name     string
+		subagent bool
+		want     string
+	}{
+		{name: "primary session is steered by the user", want: "User steering update"},
+		{name: "delegated child is steered by its parent", subagent: true, want: "Parent steering update"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeClient{chat: func(_ int, request provider.Request) (provider.Response, error) {
+				if len(request.Messages) != 2 {
+					t.Fatalf("messages=%+v", request.Messages)
+				}
+				last := request.Messages[1]
+				if last.Role != "user" || !strings.Contains(last.Content, test.want) || !strings.Contains(last.Content, "does not grant permissions") || !strings.Contains(last.Content, "focus on tests") {
+					t.Fatalf("steering message=%+v", last)
+				}
+				return provider.Response{Content: "done"}, nil
+			}}
+			delivered := false
+			agent := New(Options{
+				Client: client, ProviderName: "fake", Model: "m", Workspace: t.TempDir(),
+				Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+				Subagent: test.subagent,
+				TakeSteering: func() []string {
+					if delivered {
+						return nil
+					}
+					delivered = true
+					return []string{"focus on tests"}
+				},
+			})
+			if _, err := agent.Run(t.Context(), "review", nil); err != nil {
+				t.Fatal(err)
 			}
-			delivered = true
-			return []string{"focus on tests"}
-		},
-	})
-	if _, err := agent.Run(t.Context(), "review", nil); err != nil {
-		t.Fatal(err)
+		})
 	}
 }
 
@@ -1397,5 +1441,46 @@ func TestCostBudgetUsesConfiguredPricingAndStopsAfterReportedOvershoot(t *testin
 	usage := a.Usage()
 	if !usage.CostAvailable || usage.CostUSD != 0.003 {
 		t.Fatalf("usage=%+v", usage)
+	}
+}
+
+// TestCostSeparatesCachedReadsFromCacheWrites pins the three-rate split. A
+// cache read is billed far below ordinary input and a cache write above it,
+// so folding either into the plain input count misreports the run in opposite
+// directions — and the reads are the whole point of asking for caching.
+func TestCostSeparatesCachedReadsFromCacheWrites(t *testing.T) {
+	cachedRate, writeRate := 0.1, 1.25
+	pricing := &appconfig.Pricing{
+		InputPerMillion:       1,
+		OutputPerMillion:      2,
+		CachedInputPerMillion: &cachedRate,
+		CacheWritePerMillion:  &writeRate,
+	}
+	// 10,000 prompt tokens: 8,000 read from cache, 1,000 written to it, and
+	// 1,000 ordinary. Plus 500 output tokens.
+	usage := estimateCost(provider.Usage{
+		InputTokens: 10_000, CachedTokens: 8_000, CacheWriteTokens: 1_000, OutputTokens: 500,
+	}, pricing)
+	want := (8_000*0.1 + 1_000*1.25 + 1_000*1 + 500*2) / 1_000_000
+	if !usage.CostAvailable || math.Abs(usage.CostUSD-want) > 1e-12 {
+		t.Fatalf("usage=%+v want cost=%v", usage, want)
+	}
+	// Without the split every prompt token would be ordinary input, which is
+	// the estimate this test exists to stop returning.
+	if naive := (10_000*1 + 500*2) / 1_000_000.0; math.Abs(usage.CostUSD-naive) < 1e-9 {
+		t.Fatalf("cost was not split by rate: %v", usage.CostUSD)
+	}
+}
+
+// A provider reporting counters that do not add up must not produce a
+// negative ordinary remainder and a nonsense cost.
+func TestCostClampsInconsistentCacheCounters(t *testing.T) {
+	cachedRate := 0.1
+	pricing := &appconfig.Pricing{InputPerMillion: 1, OutputPerMillion: 2, CachedInputPerMillion: &cachedRate}
+	usage := estimateCost(provider.Usage{
+		InputTokens: 100, CachedTokens: 900, CacheWriteTokens: 900, OutputTokens: 0,
+	}, pricing)
+	if usage.CostUSD < 0 {
+		t.Fatalf("negative cost from inconsistent counters: %+v", usage)
 	}
 }

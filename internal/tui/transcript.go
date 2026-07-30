@@ -83,6 +83,8 @@ func transcriptBlockTitle(entry block) string {
 	switch entry.role {
 	case "user":
 		return "YOU"
+	case "steering":
+		return "YOU · STEERING"
 	case "assistant":
 		return "COLLOMIA"
 	case "tool":

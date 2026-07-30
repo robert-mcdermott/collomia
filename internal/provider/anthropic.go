@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type AnthropicClient struct {
@@ -20,6 +21,28 @@ type AnthropicClient struct {
 	AuthHint     string
 	HTTP         *http.Client
 	Declared     Capabilities
+	caching      anthropicCacheProfile
+}
+
+// anthropicCacheProfile remembers an endpoint's refusal of cache_control for
+// the life of the client. Renegotiating per request would spend a rejected
+// round trip on every call to a compatible endpoint that does not implement
+// caching, which is the opposite of what the feature is for.
+type anthropicCacheProfile struct {
+	mu      sync.RWMutex
+	refused bool
+}
+
+func (p *anthropicCacheProfile) enabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return !p.refused
+}
+
+func (p *anthropicCacheProfile) refuse() {
+	p.mu.Lock()
+	p.refused = true
+	p.mu.Unlock()
 }
 
 func (c *AnthropicClient) Name() string { return c.Label }
@@ -112,11 +135,16 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 		}
 		body["tools"] = defs
 	}
+	caching := c.caching.enabled()
+	if caching {
+		anthropicApplyCaching(body, in.Messages, messages)
+	}
 	base := strings.TrimRight(c.BaseURL, "/")
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
-	for adjustment := 0; ; adjustment++ {
+	reasoningRetried, cachingRetried := false, false
+	for {
 		req, err := newJSONRequest(ctx, http.MethodPost, base+"/messages", body)
 		if err != nil {
 			return Response{}, err
@@ -145,10 +173,37 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 			if readErr != nil {
 				return Response{}, protocolError(c.Label, "read chat error response", readErr)
 			}
-			if adjustment == 0 && in.ReasoningEffort != "" && anthropicRejectedReasoning(resp.StatusCode, errorBody) {
+			if !reasoningRetried && in.ReasoningEffort != "" && anthropicRejectedReasoning(resp.StatusCode, errorBody) {
+				reasoningRetried = true
 				delete(body, "output_config")
 				if onDelta != nil {
 					onDelta(Delta{Warning: "provider or model rejected the configured reasoning effort; retrying with its default for this request"})
+				}
+				continue
+			}
+			// A compatible endpoint that does not implement prompt caching
+			// must not lose the request over it. The refusal is remembered
+			// on the client so the wasted round trip happens once rather
+			// than on every later call.
+			if !cachingRetried && caching && anthropicRejectedCaching(resp.StatusCode, errorBody) {
+				cachingRetried = true
+				caching = false
+				c.caching.refuse()
+				plain, plainErr := anthropicMessages(in.Messages)
+				if plainErr != nil {
+					return Response{}, plainErr
+				}
+				body["messages"] = plain
+				if in.System != "" {
+					body["system"] = in.System
+				}
+				if defs, ok := body["tools"].([]any); ok && len(defs) > 0 {
+					if last, ok := defs[len(defs)-1].(map[string]any); ok {
+						delete(last, "cache_control")
+					}
+				}
+				if onDelta != nil {
+					onDelta(Delta{Warning: "endpoint rejected prompt cache breakpoints; retrying without caching and not attempting it again for this provider"})
 				}
 				continue
 			}
@@ -162,6 +217,113 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 		response, err := parseAnthropicStream(resp.Body, onDelta)
 		return response, protocolError(c.Label, "read chat stream", err)
 	}
+}
+
+// anthropicUsage normalizes Anthropic's split token counters to the Usage
+// contract, where InputTokens is the whole prompt.
+//
+// Anthropic reports input_tokens net of both cache counters: a warm request
+// can bill twenty thousand prompt tokens and report input_tokens in the
+// hundreds. Passing that through would price the cached remainder at nothing
+// and make the context gauge read near-empty exactly when the context is
+// fullest.
+func anthropicUsage(input, output, cacheRead, cacheWrite int) Usage {
+	return Usage{
+		InputTokens:      input + cacheRead + cacheWrite,
+		OutputTokens:     output,
+		CachedTokens:     cacheRead,
+		CacheWriteTokens: cacheWrite,
+	}
+}
+
+// anthropicEphemeral is the cache breakpoint marker.
+//
+// The default five-minute lifetime is used deliberately rather than the
+// one-hour extension: the longer TTL is requested through a beta header, and
+// sending an unrecognized beta header to a compatible endpoint is a
+// compatibility risk taken on behalf of a saving that has not been measured
+// here. A tool call refreshes the entry, so an active loop keeps the prefix
+// warm; a session resumed after a long pause pays one full-price request.
+func anthropicEphemeral() map[string]any { return map[string]any{"type": "ephemeral"} }
+
+// anthropicApplyCaching places the request's cache breakpoints.
+//
+// Two, out of the four Anthropic permits, because they are the two that pay
+// for themselves in an agent loop:
+//
+//   - One at the end of the stable prefix. The request is ordered tools,
+//     system, messages, so a breakpoint on the system block also covers every
+//     tool definition ahead of it; with no system prompt it goes on the last
+//     tool instead. This region does not change for the life of a session, so
+//     it is written once and read by every later request.
+//   - One rolling breakpoint at the end of the conversation, so the next
+//     request in the loop reads this one's history instead of paying for it
+//     again. A turn with ten tool calls is eleven requests over the same
+//     growing prefix, which is where nearly all of the cost is.
+//
+// The rolling breakpoint must sit before any volatile trailing message.
+// Writing a prefix that includes content regenerated on every request would
+// produce an entry that is never read back — cache writes cost more than
+// ordinary input, so that is strictly worse than not caching at all.
+func anthropicApplyCaching(body map[string]any, source []Message, encoded []any) {
+	if system, ok := body["system"].(string); ok && system != "" {
+		body["system"] = []any{map[string]any{"type": "text", "text": system, "cache_control": anthropicEphemeral()}}
+	} else if defs, ok := body["tools"].([]any); ok && len(defs) > 0 {
+		if last, ok := defs[len(defs)-1].(map[string]any); ok {
+			last["cache_control"] = anthropicEphemeral()
+		}
+	}
+	// anthropicMessages emits exactly one entry per input message, which is
+	// what lets a breakpoint be chosen by index. If that ever stops being
+	// true, skip the conversation breakpoint rather than mark the wrong
+	// message: a misplaced breakpoint is a silent cost, not a visible error.
+	if len(encoded) != len(source) {
+		return
+	}
+	for i := len(source) - 1; i >= 0; i-- {
+		if source[i].Volatile {
+			continue
+		}
+		anthropicMarkCacheBreakpoint(encoded[i])
+		return
+	}
+}
+
+// anthropicMarkCacheBreakpoint attaches cache_control to a message's last
+// content block, promoting plain string content to a block first. An empty
+// message is left alone: an empty text block is rejected by the API, and
+// losing the request to a caching optimization is not a trade worth making.
+func anthropicMarkCacheBreakpoint(entry any) {
+	msg, ok := entry.(map[string]any)
+	if !ok {
+		return
+	}
+	switch content := msg["content"].(type) {
+	case string:
+		if content == "" {
+			return
+		}
+		msg["content"] = []any{map[string]any{"type": "text", "text": content, "cache_control": anthropicEphemeral()}}
+	case []any:
+		if len(content) == 0 {
+			return
+		}
+		if last, ok := content[len(content)-1].(map[string]any); ok {
+			last["cache_control"] = anthropicEphemeral()
+		}
+	}
+}
+
+// anthropicRejectedCaching keys on the field name alone. Compatible endpoints
+// word their rejections differently, and any 400 naming cache_control is
+// about this request's breakpoints whatever the surrounding prose says.
+func anthropicRejectedCaching(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	message := strings.ToLower(string(body))
+	return strings.Contains(message, "cache_control") || strings.Contains(message, "cache control") ||
+		strings.Contains(message, "cachecontrol") || strings.Contains(message, "prompt caching")
 }
 
 func anthropicRejectedReasoning(status int, body []byte) bool {
@@ -187,15 +349,16 @@ func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta f
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
-			InputTokens          int `json:"input_tokens"`
-			OutputTokens         int `json:"output_tokens"`
-			CacheReadInputTokens int `json:"cache_read_input_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.NewDecoder(r).Decode(&payload); err != nil {
 		return Response{}, err
 	}
-	out := Response{Stop: payload.StopReason, Usage: Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens, CachedTokens: payload.Usage.CacheReadInputTokens}}
+	out := Response{Stop: payload.StopReason, Usage: anthropicUsage(payload.Usage.InputTokens, payload.Usage.OutputTokens, payload.Usage.CacheReadInputTokens, payload.Usage.CacheCreationInputTokens)}
 	for _, part := range payload.Content {
 		switch part.Type {
 		case "text":
@@ -279,9 +442,10 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 			Index   int    `json:"index"`
 			Message *struct {
 				Usage struct {
-					InputTokens          int `json:"input_tokens"`
-					OutputTokens         int `json:"output_tokens"`
-					CacheReadInputTokens int `json:"cache_read_input_tokens"`
+					InputTokens              int `json:"input_tokens"`
+					OutputTokens             int `json:"output_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock *struct {
@@ -313,9 +477,12 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 			return &Error{Kind: streamErrorKind(envelope.Error.Type), Retryable: false, Message: sanitizeProviderText(envelope.Error.Message, 2048)}
 		}
 		if envelope.Message != nil {
-			out.Usage.InputTokens = envelope.Message.Usage.InputTokens
-			out.Usage.OutputTokens = envelope.Message.Usage.OutputTokens
-			out.Usage.CachedTokens = envelope.Message.Usage.CacheReadInputTokens
+			usage := anthropicUsage(envelope.Message.Usage.InputTokens, envelope.Message.Usage.OutputTokens,
+				envelope.Message.Usage.CacheReadInputTokens, envelope.Message.Usage.CacheCreationInputTokens)
+			out.Usage.InputTokens = usage.InputTokens
+			out.Usage.OutputTokens = usage.OutputTokens
+			out.Usage.CachedTokens = usage.CachedTokens
+			out.Usage.CacheWriteTokens = usage.CacheWriteTokens
 		}
 		if envelope.Usage != nil {
 			out.Usage.OutputTokens = envelope.Usage.OutputTokens

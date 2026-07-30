@@ -44,6 +44,15 @@ type Message struct {
 	Parts      []ContentPart `json:"parts,omitempty"`
 	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
+	// Volatile marks a message the caller regenerates for every request
+	// rather than retaining in the conversation. Adapters with explicit
+	// prompt caching must not place a cache breakpoint at or after one: the
+	// cached prefix would differ on every request and never be read back.
+	//
+	// Deliberately not serialized. A volatile message is by definition not
+	// part of the durable conversation, so a persisted copy would be a stale
+	// duplicate of state the caller rebuilds anyway.
+	Volatile bool `json:"-"`
 }
 
 // HasImages reports whether a request carries any typed image content.
@@ -69,11 +78,24 @@ type Request struct {
 }
 
 type Usage struct {
+	// InputTokens is every prompt token the request consumed, including any
+	// served from or written to the provider cache.
+	//
+	// Adapters must normalize to this. Providers do not agree: OpenAI's
+	// prompt_tokens already includes cached tokens, while Anthropic reports
+	// input_tokens net of both cache counters, so passing the raw number
+	// through would make the context gauge collapse the moment a cache went
+	// warm and would price most of the prompt at zero.
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	// CachedTokens counts prompt tokens served from the provider cache
 	// (a subset of InputTokens), when the provider reports it.
 	CachedTokens int `json:"cached_tokens,omitempty"`
+	// CacheWriteTokens counts prompt tokens written to the provider cache
+	// (also a subset of InputTokens), when the provider reports it. Writes
+	// are billed above the ordinary input rate, so they are tracked
+	// separately rather than folded into CachedTokens.
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 	// ReasoningTokens counts hidden reasoning output, when reported.
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 	// CostUSD is an estimate derived only from user-configured pricing.

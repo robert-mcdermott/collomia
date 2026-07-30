@@ -281,6 +281,12 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				return "", wrapped
 			}
 		}
+		// After attachment resolution, because the trailing state is
+		// generated here rather than retained in the session and so has no
+		// attachment to resolve.
+		if state, ok := a.turnState(); ok {
+			messages = append(messages, state)
+		}
 		if client == nil {
 			err := reportError(send, errors.New("no provider client configured"))
 			return "", err
@@ -349,6 +355,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		a.usage.InputTokens += response.Usage.InputTokens
 		a.usage.OutputTokens += response.Usage.OutputTokens
 		a.usage.CachedTokens += response.Usage.CachedTokens
+		a.usage.CacheWriteTokens += response.Usage.CacheWriteTokens
 		a.usage.ReasoningTokens += response.Usage.ReasoningTokens
 		a.usage.CostUSD += response.Usage.CostUSD
 		a.usage.CostAvailable = a.usage.CostAvailable || response.Usage.CostAvailable
@@ -416,6 +423,14 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 func (a *Agent) applySteering() {
 	a.mu.RLock()
 	take := a.takeSteering
+	// A delegated child is steered by its parent; the primary agent is
+	// steered by the person at the keyboard. Naming the wrong one would tell
+	// the model an instruction came from somewhere it did not, which is
+	// exactly the distinction the rest of the prompt asks it to respect.
+	source := "User"
+	if a.subagent {
+		source = "Parent"
+	}
 	a.mu.RUnlock()
 	if take == nil {
 		return
@@ -425,7 +440,7 @@ func (a *Agent) applySteering() {
 		if guidance == "" {
 			continue
 		}
-		a.appendMessage(provider.Message{Role: "user", Content: "Parent steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance})
+		a.appendMessage(provider.Message{Role: "user", Content: source + " steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance})
 	}
 }
 
@@ -724,12 +739,6 @@ func (a *Agent) systemPrompt(plan bool) string {
 		}
 		sub = "\n" + prompts.Text(fragment)
 	}
-	pinned := ""
-	if a.pinnedContext != nil {
-		if value := strings.TrimSpace(a.pinnedContext()); value != "" {
-			pinned = "\n" + prompts.Render(prompts.PinnedState, value) + "\n"
-		}
-	}
 	return prompts.Agent(prompts.SystemView{
 		Workspace:           a.workspace,
 		OS:                  runtime.GOOS,
@@ -738,9 +747,32 @@ func (a *Agent) systemPrompt(plan bool) string {
 		Subagent:            sub,
 		ProfileInstructions: profileInstructions(a.profileInstructions),
 		ProjectInstructions: a.projectInstructions,
-		PinnedState:         pinned,
 		SkillsSummary:       a.catalog.Summary(),
 	})
+}
+
+// turnState renders the pinned session state as a trailing message, or
+// returns false when there is none.
+//
+// This deliberately does not live in the system prompt. The pinned state is
+// the live structured plan, which update_plan rewrites during exactly the
+// multi-step work where prompt caching matters most; anything ahead of the
+// conversation in the request has to stay byte-identical between iterations
+// or every cached prefix is discarded. Placing it after the history keeps the
+// prefix stable while leaving the state the last thing the model reads.
+//
+// The message is regenerated per request and never appended to a.messages, so
+// the conversation cannot accumulate stale copies of a plan and compaction has
+// nothing to preserve — the board is the single source of truth either way.
+func (a *Agent) turnState() (provider.Message, bool) {
+	if a.pinnedContext == nil {
+		return provider.Message{}, false
+	}
+	value := strings.TrimSpace(a.pinnedContext())
+	if value == "" {
+		return provider.Message{}, false
+	}
+	return provider.Message{Role: "user", Content: prompts.Render(prompts.PinnedState, value), Volatile: true}, true
 }
 
 func profileInstructions(value string) string {
@@ -1709,14 +1741,24 @@ func estimateCost(usage provider.Usage, pricing *appconfig.Pricing) provider.Usa
 		usage.InputTokens+usage.OutputTokens <= 0 {
 		return usage
 	}
-	cached := min(max(usage.CachedTokens, 0), max(usage.InputTokens, 0))
-	ordinaryInput := max(usage.InputTokens-cached, 0)
+	// Cache reads and writes are both subsets of InputTokens, so the three
+	// rates apply to disjoint parts of one total. Clamping keeps a provider
+	// reporting inconsistent counters from producing a negative remainder.
+	input := max(usage.InputTokens, 0)
+	cached := min(max(usage.CachedTokens, 0), input)
+	written := min(max(usage.CacheWriteTokens, 0), input-cached)
+	ordinaryInput := max(input-cached-written, 0)
 	cachedRate := pricing.InputPerMillion
 	if pricing.CachedInputPerMillion != nil {
 		cachedRate = *pricing.CachedInputPerMillion
 	}
+	writeRate := pricing.InputPerMillion
+	if pricing.CacheWritePerMillion != nil {
+		writeRate = *pricing.CacheWritePerMillion
+	}
 	usage.CostUSD = (float64(ordinaryInput)*pricing.InputPerMillion +
 		float64(cached)*cachedRate +
+		float64(written)*writeRate +
 		float64(max(usage.OutputTokens, 0))*pricing.OutputPerMillion) / 1_000_000
 	usage.CostAvailable = true
 	usage.CostEstimated = true
@@ -1726,8 +1768,9 @@ func estimateCost(usage provider.Usage, pricing *appconfig.Pricing) provider.Usa
 func eventUsage(usage provider.Usage) *event.Usage {
 	return &event.Usage{
 		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
-		CachedTokens: usage.CachedTokens, ReasoningTokens: usage.ReasoningTokens,
-		CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
+		CachedTokens: usage.CachedTokens, CacheWriteTokens: usage.CacheWriteTokens,
+		ReasoningTokens: usage.ReasoningTokens,
+		CostUSD:         usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
 	}
 }
 
@@ -1742,6 +1785,12 @@ func (a *Agent) ContextEstimate() (estimated int, window int) {
 	if base == 0 {
 		start = 0
 		chars += len(a.systemPrompt(a.planMode))
+		// Counted only here. Once a request has reported usage, the trailing
+		// state is already inside base: it is resent every iteration, so
+		// adding it again would double-count it on every estimate.
+		if state, ok := a.turnState(); ok {
+			chars += len(state.Content)
+		}
 	}
 	if start > len(a.messages) {
 		start = len(a.messages)
@@ -1788,8 +1837,11 @@ func (a *Agent) ContextBreakdown() ContextBreakdown {
 	if a.pinnedContext != nil {
 		pinned = strings.TrimSpace(a.pinnedContext())
 	}
+	// The pinned state is no longer part of the system prompt, so it is not
+	// subtracted here; it is reported on its own below and counted by
+	// ContextEstimate as trailing state.
 	totalSystem := len(a.systemPrompt(a.planMode))
-	baseSystem := totalSystem - len(a.projectInstructions) - len(a.profileInstructions) - len(a.catalog.Summary()) - len(pinned)
+	baseSystem := totalSystem - len(a.projectInstructions) - len(a.profileInstructions) - len(a.catalog.Summary())
 	if baseSystem < 0 {
 		baseSystem = totalSystem
 	}
@@ -1903,6 +1955,7 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	a.usage.InputTokens += response.Usage.InputTokens
 	a.usage.OutputTokens += response.Usage.OutputTokens
 	a.usage.CachedTokens += response.Usage.CachedTokens
+	a.usage.CacheWriteTokens += response.Usage.CacheWriteTokens
 	a.usage.ReasoningTokens += response.Usage.ReasoningTokens
 	a.usage.CostUSD += response.Usage.CostUSD
 	a.usage.CostAvailable = a.usage.CostAvailable || response.Usage.CostAvailable

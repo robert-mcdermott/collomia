@@ -51,6 +51,11 @@ type Runtime struct {
 	Processes   *tools.ProcessManager
 	Warnings    []error
 	Hooks       *hooks.Runner
+	// Steering carries guidance typed while the primary agent is mid-turn.
+	// It lives on the runtime rather than in the TUI because the agent is
+	// constructed here and every surface — TUI, browser terminal, a future
+	// local service API — needs the same one queue.
+	Steering *agent.SteeringQueue
 	// ActiveAgent is the visible named primary profile. Empty means the
 	// ordinary unprofiled primary agent.
 	ActiveAgent string
@@ -289,6 +294,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		}
 		return "Active structured plan:\n" + current.Render()
 	}}
+	// The primary agent reaches the same iteration-boundary hook delegated
+	// children use, so guidance typed mid-turn lands where the conversation
+	// is consistent rather than underneath an in-flight request.
+	steering := agent.NewSteeringQueue()
+	agentOptions.TakeSteering = steering.Take
 	if sess != nil {
 		agentOptions.OnMessage = sess.AppendMessage
 		agentOptions.OnCompaction = sess.AppendCompaction
@@ -316,7 +326,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		sessionID = sess.Meta.ID
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime := &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent}
+	runtime := &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering}
 	runtime.alignChangeTurns()
 	runtime.addReviewedIntegrationTools()
 	return runtime, nil

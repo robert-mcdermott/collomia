@@ -21,7 +21,6 @@ func fragments() map[string]any {
 			Subagent:            "\n" + Text(SubagentImplement),
 			ProfileInstructions: Render(ProfileInstructions, "profile body") + "\n\n",
 			ProjectInstructions: "project body",
-			PinnedState:         "\n" + Render(PinnedState, "pinned body") + "\n",
 			SkillsSummary:       Text(SkillsEmpty),
 		},
 		ModeExecution:         nil,

@@ -284,6 +284,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel = nil
 			m.input.Focus()
 			m.settleRunningTools()
+			// Guidance the turn ended before reaching is discarded rather
+			// than held. A cancelled turn is the common case, and surfacing
+			// that text at the start of an unrelated later turn would apply
+			// it to work the user never aimed it at.
+			m.discardUndeliveredSteering()
 			elapsed := time.Since(m.turnStarted).Round(time.Second / 10)
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
@@ -520,9 +525,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.busy {
 				if !strings.HasPrefix(value, "/") {
-					m.addSystem("Draft kept while the current turn runs. Use a local slash command now, or press enter after the turn finishes to send it.")
-					m.refresh()
-					return m, nil
+					return m, m.steerRunningTurn(value)
 				}
 				if !busySlashAllowed(value) {
 					m.addError(fmt.Errorf("%s is unavailable while the current turn is running; the command remains in the composer", strings.Fields(value)[0]))
@@ -600,6 +603,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // startTurn submits one prompt to the agent and begins streaming events.
+// steerRunningTurn hands a mid-turn draft to the running agent instead of
+// making the user choose between waiting and losing the turn to esc.
+//
+// The guidance is delivered at the next iteration boundary, never inside an
+// in-flight provider call, executing tool, or pending approval — so the
+// transcript says where it will land rather than implying it took effect now.
+// It is a conversational instruction and grants no permissions: an action the
+// agent could not take before this text arrived still needs its own approval.
+// discardUndeliveredSteering drops guidance the turn ended before reaching,
+// and says so rather than letting the text vanish silently.
+func (m *Model) discardUndeliveredSteering() {
+	pending := m.pendingSteering()
+	if pending == 0 {
+		return
+	}
+	m.runtime.Steering.Clear()
+	m.addSystem(fmt.Sprintf("The turn ended before %d steering update(s) were delivered; they were discarded. Send them as a new prompt.", pending))
+}
+
+// pendingSteering reports guidance queued but not yet delivered.
+func (m *Model) pendingSteering() int {
+	if m.runtime == nil || m.runtime.Steering == nil {
+		return 0
+	}
+	return m.runtime.Steering.Pending()
+}
+
+func (m *Model) steerRunningTurn(value string) tea.Cmd {
+	if m.runtime.Steering == nil {
+		m.addSystem("Draft kept while the current turn runs; press enter after it finishes to send it.")
+		m.refresh()
+		return nil
+	}
+	if err := m.runtime.Steering.Add(value); err != nil {
+		// The draft deliberately stays in the composer: a refused update the
+		// user has to retype is a worse outcome than the refusal itself.
+		m.addError(err)
+		m.refresh()
+		return nil
+	}
+	m.recordPrompt(value)
+	m.blocks = append(m.blocks, block{role: "steering", content: value})
+	m.input.Reset()
+	m.switchTab(tabChat)
+	m.syncComposerHeight()
+	m.updatePalette()
+	m.layout()
+	m.refresh()
+	return nil
+}
+
 func (m *Model) startTurn(value string) tea.Cmd {
 	parts, err := m.readPendingAttachments()
 	if err != nil {
@@ -886,6 +940,9 @@ func (m *Model) chatContent() string {
 		switch block.role {
 		case "user":
 			b.WriteString(m.styles.userBadge.Render("YOU") + "\n" + m.wrapProse(block.content, 0) + "\n\n")
+		case "steering":
+			b.WriteString(m.styles.userBadge.Render("YOU · STEERING") + "\n" + m.wrapProse(block.content, 0) + "\n" +
+				m.styles.muted.Render(m.wrapProse("↳ delivered at the agent's next step; grants no permissions", 0)) + "\n\n")
 		case "assistant":
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
 		case "tool":
@@ -1120,11 +1177,10 @@ func (m *Model) sessionSections(width int) string {
 	b.WriteString("\n")
 
 	b.WriteString(h("Context") + "\n")
-	usageText := fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)
-	if usage.CachedTokens > 0 {
-		usageText += fmt.Sprintf(" (%d cached)", usage.CachedTokens)
+	b.WriteString(kv("usage", fmt.Sprintf("%d input / %d output tokens", usage.InputTokens, usage.OutputTokens)) + "\n")
+	if summary := cacheSummary(usage, m.runtime.Agent.Capabilities()); summary != "" {
+		b.WriteString(kv("prompt cache", summary) + "\n")
 	}
-	b.WriteString(kv("usage", usageText) + "\n")
 	if usage.CostAvailable {
 		b.WriteString(kv("cost", fmt.Sprintf("$%.6f estimated", usage.CostUSD)) + "\n")
 	}
@@ -1315,6 +1371,7 @@ func (m *Model) helpContent() string {
 	b.WriteString("\n" + m.styles.heading.Render("Keys") + "\n")
 	keys := [][2]string{
 		{"enter", "send prompt / run selected command"},
+		{"enter (mid-turn)", "steer the running agent; delivered at its next step, grants no permissions"},
 		{"alt+enter · ctrl+j", "insert a newline without sending"},
 		{"enter (unfinished)", "a draft ending in \\ or inside an open code fence gains a line instead"},
 		{m.binding("compose_editor"), "edit the current draft in $EDITOR"},
@@ -1535,7 +1592,20 @@ func (m Model) renderStatusBar() string {
 		if m.runtime.Team.Active() > 0 {
 			right += m.styles.statusKey.Render(m.binding("agent_control")) + m.styles.statusBase.Render(" agents · ")
 		}
-		right += m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" local commands · esc cancel ")
+		controls := m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" local commands · esc cancel ")
+		// Naming steering here is the only place most people will discover
+		// that a wrong turn can be corrected instead of cancelled — but it is
+		// still additive. A hint that pushes "esc cancel" off the bar has
+		// taken away the control that stops a turn to advertise one that
+		// nudges it.
+		hint := m.styles.statusKey.Render("enter") + m.styles.statusBase.Render(" steer · ")
+		if pending := m.pendingSteering(); pending > 0 {
+			hint = m.styles.statusKey.Render(fmt.Sprintf("%d queued", pending)) + m.styles.statusBase.Render(" · ")
+		}
+		if m.width-lipgloss.Width(left)-lipgloss.Width(right+hint+controls) >= 1 {
+			right += hint
+		}
+		right += controls
 	default:
 		right = m.styles.statusBase.Render("enter send · ") +
 			m.styles.statusKey.Render("/") + m.styles.statusBase.Render(" commands · ") +

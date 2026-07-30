@@ -78,6 +78,78 @@ No wave is currently active. The completed waves below are the most recent
 work; see [Recommended next sequence](#recommended-next-sequence) for what the
 dependency order argues for next.
 
+## Completed wave — the running turn
+
+**Goal:** Make the part of Collomia a user actually sits through — one turn,
+eleven provider calls over the same growing prompt — cheap, fast, and
+correctable, instead of expensive, slow, and all-or-nothing.
+
+- [x] Stop reporting prompt-cache hits that were never requested. Both
+  Anthropic adapters parsed `cache_read_input_tokens`, cost estimation priced
+  it at `cached_input_per_million`, and the README advertised prompt caching as
+  a tracked capability — but no request ever carried a `cache_control`
+  breakpoint, and Anthropic caches only on explicit opt-in. The whole feature
+  was display plumbing over a number that was structurally always zero. OpenAI
+  caches implicitly above ~1024 tokens, which is why it went unnoticed.
+- [x] Move the structured plan out of the system prompt. `update_plan`
+  rewrote the system block, so the front of every request changed during
+  exactly the multi-step work caching exists for. The plan now rides a trailing
+  message regenerated per request and never retained in the conversation — the
+  board stays the single source of truth, and no stale copy can accumulate in
+  the history. This was the prerequisite, not a detail: a breakpoint in front
+  of volatile content is invalidated by the agent's own progress tracking.
+- [x] Send two breakpoints, not four. One on the system block, which also
+  covers the tool definitions ahead of it in the prefix and is written once per
+  session; one rolling breakpoint on the last non-volatile message, so the next
+  call in the loop reads this one's history instead of paying for it again.
+  `Message.Volatile` is what keeps the rolling breakpoint behind the trailing
+  plan — a prefix that includes regenerated content is never read back, and a
+  cache write costs more than ordinary input, so misplacing it is worse than
+  not caching.
+- [x] Normalize `Usage.InputTokens` to mean the whole prompt. Anthropic reports
+  `input_tokens` net of both cache counters, so passing it through would have
+  collapsed the context gauge to near-empty exactly when the context was
+  fullest and priced most of the prompt at zero. Cache writes are tracked
+  separately and priced by `cache_write_per_million`, because they are billed
+  above the ordinary input rate rather than below it.
+- [x] Take the five-minute cache lifetime deliberately rather than by default.
+  The one-hour extension is requested through a beta header, and sending an
+  unrecognized beta header to an arbitrary compatible endpoint is a
+  compatibility risk taken for a saving nobody has measured yet.
+- [x] Never lose a request to an optimization. Any 400 naming `cache_control`
+  drops caching for the life of the client and retries once, so an endpoint
+  that has not implemented caching costs one wasted round trip rather than one
+  per call. Bedrock is deliberately untouched: `cachePoint` support varies by
+  model *and* region and fails with a hard `ValidationException` rather than
+  being ignored, so it stays honestly declared unsupported until it can be run
+  against real Bedrock.
+- [x] Say which of the three zeroes it is. A bare "0 cached" cannot distinguish
+  a provider with no cache, a prefix not yet written, and reuse that is
+  silently failing; `/context` and the Session tab now name the case.
+- [x] Let the primary agent be steered. The iteration-boundary hook, the bounded
+  drain-once queue, and the no-permission-grant framing all shipped with
+  delegated agents; the primary session passed `TakeSteering: nil` and the
+  composer refused mid-turn input with "Draft kept while the current turn
+  runs." Watching a turn head the wrong way left two options — wait, or `esc`
+  and lose it. Enter now steers, and the message says truthfully that it came
+  from the user rather than from a parent.
+- [x] Be exact about when guidance lands, and about what it does not do. It is
+  delivered at the next iteration boundary, never inside an in-flight call, an
+  executing tool, or a pending approval; the transcript marks it and says so.
+  It grants no permissions — an action that needed approval before the text
+  arrived still needs it after. Undelivered guidance is discarded when the turn
+  ends and the discard is reported, because a cancelled turn is the common case
+  and that text must not resurface against unrelated later work.
+- [x] Keep the hint additive. The status bar advertises steering only when it
+  does not push `esc cancel` off the bar: an indicator that hides the control
+  which stops a turn has made the session worse to advertise one that nudges it.
+
+**Behavior change:** two. Plain enter during a running turn now steers the
+agent instead of holding the draft. And `input_tokens` in usage output and the
+JSONL event stream now includes cached tokens on the Anthropic routes, where it
+previously excluded them; `cache_write_tokens` is a new additive field on the
+v1 event contract.
+
 ## Completed wave — checkpoints that move the files too
 
 **Goal:** Make an undo that actually undoes, by ending the split between a
@@ -614,9 +686,20 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P1 — Provider discovery refinements:** Azure deployment/project
   discovery and routing, tested sovereign presets, and clearer resolved AWS
   identity/model-access diagnostics.
+- [x] **P1 — Provider prompt caching:** the Anthropic Messages routes send two
+  cache breakpoints — the stable tools/system prefix and a rolling
+  conversation boundary held behind any volatile trailing content — and drop
+  caching for the client after an explicit rejection. Usage is normalized so
+  `input_tokens` means the whole prompt whatever split a provider reports, and
+  cache writes are priced separately from cache reads. Bedrock `cachePoint`
+  remains unbuilt: support varies by model and region and fails hard rather
+  than degrading, so it stays declared unsupported until it can be verified
+  against real Bedrock.
 - [ ] **P1 — Modern API features:** general OpenAI/Azure Responses routing,
-  structured output, provider caching, richer thinking/content blocks, and
-  additional media types.
+  structured output, richer thinking/content blocks, and additional media
+  types. The one-hour cache TTL is open here: it needs a beta header whose
+  current status must be confirmed, and it is worth taking only on measured
+  evidence since the longer write is billed higher.
 - [ ] **P1 — Explicit routing/fallback:** ordered capability/health/cost/local
   choices that never silently cross privacy or residency boundaries.
 - [ ] **P1 — Usage and budgets:** normalized user-priced cost estimates and
@@ -660,6 +743,11 @@ claiming enforcement the policy layer does not provide.
 
 - [ ] **P1 — Finish artifact input:** raw clipboard image protocols and
   optional inline pixel previews where the terminal supports them.
+- [x] **P1 — Correctable turns:** typing during a running turn steers the
+  primary agent through the same iteration-boundary hook delegated children
+  use, with a bounded drain-once queue, an explicit no-permission-grant
+  framing, a transcript marker stating where the guidance will land, and a
+  reported discard when a turn ends before delivery.
 - [ ] **P1 — Workspace UI refinements:** the context rail now carries
   workspace, plan, agents, changed files, and background processes beside the
   transcript; automatically surfaced diagnostics and provider price/budget
@@ -692,15 +780,24 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-1. Gather real beta feedback on named primary profiles, cost estimates,
+1. Measure the caching wave on a real multi-tool session: cache-read ratio,
+   cost delta, and time-to-first-token delta, before and after. The case for
+   it was argued from request structure rather than from numbers, and the
+   one-hour TTL decision should not be taken without them.
+2. Accessibility validation (Phase 7). It is the only remaining P1 that serves
+   "best looking, most enjoyable to use" rather than widening reach, and it
+   has now been deferred through several TUI waves.
+3. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
    judged against real toolchains rather than predicted.
-2. Add opt-in plan-graph execution using verified results, write scopes,
-   dependency readiness, and stale-state invalidation.
-3. Add explicit combined-parent verification and conservative result-ranking
+4. Add opt-in plan-graph execution using verified results, write scopes,
+   dependency readiness, and stale-state invalidation. Steering is a
+   prerequisite that has now landed: adding autonomy on top of a loop that
+   could not be corrected without cancelling was the wrong order.
+5. Add explicit combined-parent verification and conservative result-ranking
    criteria without turning a score into permission.
-4. Continue Phase 8 security/reliability campaigns in parallel with every
+6. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 
 ## Exit gates

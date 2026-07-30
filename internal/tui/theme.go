@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 	"golang.org/x/term"
 )
 
@@ -301,4 +302,31 @@ func formatTokens(n int) string {
 		return fmt.Sprintf("%.1fk tok", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d tok", n)
+}
+
+// cacheSummary describes the prompt cache in words rather than as a bare
+// number.
+//
+// A zero is the least informative thing this can print, because it has three
+// unrelated causes: the provider does not implement caching, it does but the
+// prefix has not been written yet, or it does and something is stopping the
+// prefix from being reused. Those call for different actions, so they are
+// reported differently. Returns "" when there is nothing yet to describe.
+func cacheSummary(usage provider.Usage, caps provider.Capabilities) string {
+	if caps.PromptCaching == provider.CapabilityUnsupported {
+		return "not supported by this provider/model"
+	}
+	if usage.InputTokens <= 0 {
+		return ""
+	}
+	read, written := max(usage.CachedTokens, 0), max(usage.CacheWriteTokens, 0)
+	if read == 0 && written == 0 {
+		if caps.PromptCaching == provider.CapabilitySupported {
+			return "requested, not yet warm"
+		}
+		return "no cache activity reported by this endpoint"
+	}
+	share := 100 * float64(read) / float64(usage.InputTokens)
+	return fmt.Sprintf("%s read, %s written — %.0f%% of prompt tokens served from cache",
+		formatTokens(read), formatTokens(written), share)
 }

@@ -25,7 +25,7 @@ Operating rules:
 - When implementation is complete, use detect_verification to find this project's real build/lint/test commands, run proportionate verification with run_command, and summarize the outcome clearly.
 - Tool errors are recoverable: diagnose them and try a safer approach.
 
-{{.ProfileInstructions}}{{.ProjectInstructions}}{{.PinnedState}}
+{{.ProfileInstructions}}{{.ProjectInstructions}}
 
 {{.SkillsSummary}}
 {{- end}}
@@ -60,7 +60,15 @@ Active agent profile instructions:
 {{.}}
 {{- end}}
 
+{{/*
+Rendered into a trailing message rather than into the system prompt. It is
+regenerated for every provider request, so it must never be appended to the
+durable conversation: see Agent.turnState.
+*/}}
+
 {{define "pinned.state" -}}
-Pinned session state (authoritative; preserve across compaction):
+Pinned session state (authoritative; preserve across compaction). This block is
+regenerated for every request and always reflects the current state, so ignore
+any earlier copy of it in this conversation:
 {{.}}
 {{- end}}

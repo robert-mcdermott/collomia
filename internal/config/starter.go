@@ -169,10 +169,14 @@ const configReferenceJSONC = `
       "reasoning": {"effort": "medium"},
       // Optional user-maintained USD rates per one million tokens. Collomia
       // never ships model prices because providers and contracts change.
+      // "cache_write_per_million" prices tokens written to the provider's
+      // prompt cache, normally above the ordinary input rate; omit it to
+      // price writes at "input_per_million".
       "pricing": {
         "input_per_million": 1.25,
         "output_per_million": 10.0,
-        "cached_input_per_million": 0.125
+        "cached_input_per_million": 0.125,
+        "cache_write_per_million": 1.5625
       }
     },
     "anthropic": {

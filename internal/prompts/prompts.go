@@ -66,11 +66,16 @@ type SystemView struct {
 	// Subagent is a rendered subagent fragment including its leading
 	// newline, or empty for a top-level agent.
 	Subagent string
-	// ProfileInstructions, ProjectInstructions and PinnedState are already
-	// wrapped in their headers and separators, or empty when unset.
+	// ProfileInstructions and ProjectInstructions are already wrapped in
+	// their headers and separators, or empty when unset.
+	//
+	// Everything in this view must be stable for the lifetime of a turn.
+	// The system prompt is the head of the request prefix that provider
+	// prompt caching keys on, so a field that changes between iterations
+	// invalidates the cache for the whole request. Volatile session state
+	// belongs in a trailing message instead: see the PinnedState fragment.
 	ProfileInstructions string
 	ProjectInstructions string
-	PinnedState         string
 	SkillsSummary       string
 }
 
