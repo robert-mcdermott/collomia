@@ -425,3 +425,74 @@ func TestAlwaysAvailabilityIsDecidedInOnePlace(t *testing.T) {
 		t.Errorf("these files re-derive whether a persistent grant is available instead of reading permission.Request.AllowsAlways: %s", strings.Join(offenders, ", "))
 	}
 }
+
+// The capability matrix is generated from capabilityMatrix(), but nothing
+// stopped the generated file from going stale: the build-identity detail added
+// to `replay --check` never reached docs/CAPABILITIES.md, and the whole suite
+// stayed green for a release window with the published matrix understating what
+// the binary did. This is the same defect shape the RunResult-versus-schema
+// sync test exists for, so it gets the same treatment.
+//
+// Two rows describe what the host platform can actually enforce and therefore
+// differ by GOOS on purpose — a matrix claiming Seatbelt on Linux would be the
+// over-claim their per-platform design exists to avoid. Those rows are checked
+// for presence and status rather than byte equality, so the guard runs
+// everywhere while still catching a row that was added, removed, renamed, or
+// silently reworded.
+func TestCapabilityMatrixDocIsRegenerated(t *testing.T) {
+	root := repoRoot(t)
+	published, err := os.ReadFile(filepath.Join(root, "docs", "CAPABILITIES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	platformDependent := map[string]bool{"OS sandbox": true, "scoped egress broker": true}
+
+	rowKey := func(line string) (string, bool) {
+		fields := strings.Split(strings.Trim(line, "|"), " | ")
+		if len(fields) != 4 || strings.TrimSpace(fields[0]) == "Area" || strings.HasPrefix(strings.TrimSpace(fields[0]), "---") {
+			return "", false
+		}
+		return strings.TrimSpace(fields[1]), true
+	}
+	index := func(text string) map[string]string {
+		rows := map[string]string{}
+		for _, line := range strings.Split(normalizeNewlines(text), "\n") {
+			if !strings.HasPrefix(line, "| ") {
+				continue
+			}
+			if key, ok := rowKey(line); ok {
+				rows[key] = line
+			}
+		}
+		return rows
+	}
+
+	want, got := index(capabilityMarkdown()), index(string(published))
+	if len(want) < 30 {
+		t.Fatalf("parsed only %d generated rows; the matrix shape changed and this guard needs updating", len(want))
+	}
+	for capability, wantRow := range want {
+		gotRow, ok := got[capability]
+		if !ok {
+			t.Errorf("capability %q is in the matrix but missing from docs/CAPABILITIES.md; run `collo capabilities --markdown > docs/CAPABILITIES.md`", capability)
+			continue
+		}
+		if platformDependent[capability] {
+			// Compare the status column only; the notes name this GOOS.
+			wantStatus := strings.Split(wantRow, " | ")[2]
+			gotStatus := strings.Split(gotRow, " | ")[2]
+			if wantStatus != gotStatus && gotStatus != "experimental" && gotStatus != "unsupported" {
+				t.Errorf("capability %q has status %q, which is not a value this platform-dependent row may take", capability, gotStatus)
+			}
+			continue
+		}
+		if wantRow != gotRow {
+			t.Errorf("docs/CAPABILITIES.md is stale for %q; run `collo capabilities --markdown > docs/CAPABILITIES.md`\n published: %s\n generated: %s", capability, gotRow, wantRow)
+		}
+	}
+	for capability := range got {
+		if _, ok := want[capability]; !ok {
+			t.Errorf("docs/CAPABILITIES.md carries %q, which the matrix no longer produces", capability)
+		}
+	}
+}

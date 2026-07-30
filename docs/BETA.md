@@ -74,6 +74,15 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
 - Multi-agent work is isolated and selectively integrated, but Collomia does
   not automatically reconcile conflicts, resume pending child work, or execute
   a complete plan graph autonomously.
+- Prompt caching is requested on the Anthropic Messages routes only, with the
+  provider's default five-minute lifetime, so a session resumed after a longer
+  pause pays a full uncached prompt again. OpenAI-family endpoints cache
+  implicitly and need nothing from Collomia. Bedrock is declared without cache
+  support on purpose: its cache points vary by model and region and fail the
+  whole request rather than being ignored, so support waits until it can be
+  qualified against a real deployment. An endpoint that rejects a cache
+  breakpoint disables caching for the life of the process after one wasted
+  request, which is correct but costs that request.
 - Provider behavior still depends on the selected model, account, deployment,
   regional availability, and upstream API changes. Use the capability display,
   `collo doctor`, and live provider qualification before relying on a hosted

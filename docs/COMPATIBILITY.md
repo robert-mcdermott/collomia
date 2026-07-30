@@ -167,6 +167,64 @@ A newer configuration is rejected with an instruction to upgrade the binary.
 Normal loading's unknown-field tolerance supports forward-compatible optional
 settings; use strict validation in CI and after manual edits to catch typos.
 
+### Reported prompt token counts
+
+Collomia now requests Anthropic prompt caching, and the usage it reports on
+those routes changed meaning as a result. This affects anyone computing spend
+or context pressure from a token count rather than from `cost_usd`.
+
+The Anthropic Messages API reports `input_tokens` *net* of both cache counters:
+a request whose entire prompt was served from cache reports an `input_tokens`
+of roughly zero and the real figure under `cache_read_input_tokens`. Passing
+that through unchanged would have understated the prompt by whatever the cache
+served — a measured live request reported a raw `input_tokens` of 2 for a 9,629
+token prompt — collapsing the context gauge exactly when the context was
+fullest and pricing most of the prompt at nothing.
+
+So on the `anthropic`, `anthropic-compatible`, and `azure-foundry-anthropic`
+routes:
+
+- `input_tokens` is now the whole prompt: uncached plus cache reads plus cache
+  writes. It previously excluded the cached portion. Comparing this field
+  across the upgrade will show an apparent increase that is a correction, not
+  new consumption;
+- `cached_tokens` is the portion served from cache. It was always present and
+  was always zero before this release, because nothing ever requested a cache;
+- `cache_write_tokens` is new and additive under schema v1, reporting tokens
+  written to the cache. Consumers tolerating unknown optional fields, as
+  [automation consumers](#automation-consumers) are asked to, need no change;
+- `cost_usd` already accounts for all three at their separate rates and is the
+  field to compare across this boundary. Cache reads bill below ordinary input
+  and cache writes above it, so a spend figure recomputed from `input_tokens`
+  alone will now overstate cost on a cache-warm session.
+
+The OpenAI, Bedrock, and Bedrock Mantle routes are unaffected: OpenAI reports a
+gross `input_tokens` and caches implicitly, and Bedrock is declared without
+cache support rather than sending a cache point that varies by model and
+region.
+
+The event schema stays at v1 deliberately. The field's name, type, and required
+status are unchanged and the new field is optional, so no existing reader
+breaks; what changed is that a number that was quietly wrong is now right.
+Bumping the schema would force every strict client to update in order to
+receive a correction.
+
+### Steering a running turn
+
+Pressing `enter` on a non-empty draft while a turn is running now sends that
+text to the agent as steering guidance. It previously held the draft in the
+composer with a message explaining that it would be sent after the turn ended.
+
+Nothing about permissions changed. Steering arrives at an iteration boundary as
+an ordinary user message that grants nothing: an action that would have prompted
+before the guidance arrived still prompts after it, and guidance never lands
+inside an in-flight provider call, an executing tool, or a pending approval.
+Guidance that was never delivered — because the turn ended or was cancelled
+first — is discarded and reported rather than held against later work.
+
+This changes an interactive surface only. Headless runs, `collo` in
+non-interactive mode, and the JSONL event stream are unaffected.
+
 ## Sessions and upgrades
 
 Durable session JSONL is append-only. Current releases:

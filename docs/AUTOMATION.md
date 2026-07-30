@@ -74,7 +74,7 @@ Current one-shot runs emit these events when applicable:
 | `tool.output` | `tool` | Live bounded tool output. |
 | `tool.result` | `tool` | Completed tool result and error flag. |
 | `permission.decision` | `permission` | Allow/deny decision, source, matched rule, and resources. |
-| `usage` | `usage` | Provider-reported input/output/cached/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. |
+| `usage` | `usage` | Provider-reported input/output/cached/cache-write/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. `input_tokens` counts the whole prompt including cached tokens; see [final result](#final-result). |
 | `context.compaction` | `text` | Context was compacted. |
 | `warning` | `text` | Non-fatal runtime/provider warning. |
 | `error` | `error`, optional `provider`, optional `failure_id` | A failure observed during the run. |
@@ -145,7 +145,11 @@ readability):
   },
   "usage": {
     "input_tokens": 5210,
-    "output_tokens": 644
+    "cached_tokens": 3410,
+    "cache_write_tokens": 0,
+    "output_tokens": 644,
+    "cost_usd": 0.0121,
+    "cost_estimated": true
   }
 }
 ```
@@ -164,6 +168,30 @@ readability):
 | `session_id` | Durable session ID. Omitted for ephemeral or pre-session startup failures. |
 | `changed_files` | Workspace files changed through Collomia's tracked write tools. |
 | `duration_ms` | Wall-clock duration measured by the headless runner. |
+
+`usage` fields:
+
+| Field | Meaning |
+|---|---|
+| `input_tokens` | The whole prompt: uncached tokens plus cache reads plus cache writes. |
+| `cached_tokens` | Portion of `input_tokens` served from the provider's prompt cache. |
+| `cache_write_tokens` | Portion of `input_tokens` written to the cache by this request. |
+| `output_tokens` | Tokens generated. |
+| `reasoning_tokens` | Reasoning tokens, where the provider reports them separately. |
+| `cost_usd` | User-priced estimate covering all four rates. Present only when `cost_available` is true. |
+| `cost_available` | Configured pricing was sufficient to produce an estimate. |
+| `cost_estimated` | The figure is Collomia's own arithmetic over configured prices, never a provider bill. |
+
+**`input_tokens` changed meaning in v0.2.0 on the Anthropic routes.** It now
+includes the cached portion, where it previously excluded it, because the
+Anthropic Messages API reports that field net of both cache counters and
+Collomia now requests caching. A consumer comparing the field across the
+upgrade will see an apparent increase that is a correction rather than new
+consumption. Cache reads bill below ordinary input and writes above it, so
+recompute spend from `cost_usd` rather than from a token count and a single
+rate. `cache_write_tokens` is new and optional; readers tolerating unknown
+fields need no change. See the [compatibility
+note](COMPATIBILITY.md#reported-prompt-token-counts).
 
 For a failed or cancelled run, the event-level `failure_id` and
 `result.failure.id` contain the same value, for example

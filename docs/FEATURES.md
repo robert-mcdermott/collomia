@@ -1,6 +1,6 @@
 # Collomia — High-Level Feature and Security Summary
 
-_Reviewed against Collomia v0.1.9, commit `7099cf8`. Features are implemented unless identified as experimental or unsupported._
+_Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented unless identified as experimental or unsupported._
 
 - **Deployment and platform support**
 
@@ -21,6 +21,8 @@ _Reviewed against Collomia v0.1.9, commit `7099cf8`. Features are implemented un
   - Activity center, session status dashboard, transcript browser, prompt history, draft preservation, notifications, and OSC52 clipboard support.
   - Workspace-aware `@` file and folder selection, saved prompt insertion, and image attachments.
   - Mouse reporting can be toggled while the application is running, allowing either in-application scrolling and tab selection or ordinary terminal text selection.
+  - A running turn can be steered by typing and pressing enter. Guidance arrives at the next iteration boundary, never interrupting an executing tool or a pending approval, and grants no permissions of its own.
+  - The status bar keeps the cancel key visible at every terminal width, shortening or dropping lower-priority segments first.
   - Generates completion scripts for Bash, Zsh, Fish, and PowerShell without requiring a shell plugin.
   - Reduced-motion and reduced-dimming accessibility options.
 
@@ -60,6 +62,8 @@ _Reviewed against Collomia v0.1.9, commit `7099cf8`. Features are implemented un
   - Contradictory or unsupported model configurations fail before a provider request is sent.
   - Provider failures are classified, with bounded retries, backoff, jitter, `Retry-After` handling, configurable timeouts, and circuit-health reporting.
   - Streaming output normalizes text, reasoning, tool-call arguments, usage, warnings, and errors across providers.
+  - Prompt caching is requested automatically on Anthropic-compatible routes, where the stable prefix of tool schemas and system prompt is otherwise resent in full on every call of a turn. OpenAI-family endpoints cache implicitly; Bedrock is declared without support rather than sending a cache point that varies by model and region.
+  - Reported token counts always describe the whole prompt, with cache reads and writes broken out and priced separately.
 
 - **Built-in web access**
 
@@ -121,6 +125,7 @@ _Reviewed against Collomia v0.1.9, commit `7099cf8`. Features are implemented un
   - Command-line session administration supports listing, inspection, renaming, archiving, unarchiving, and explicit deletion.
   - Session storage is append-only and fails safely if a required durable write cannot be completed.
   - Rewinding creates a new branch of the conversation; it does not silently replay tool actions.
+  - Restoring branches the conversation and reverses the file changes recorded after that turn as one operation, refusing the whole operation and naming every affected file if anything changed outside Collomia. Commands, network calls, and other external effects are never reversed.
   - Automatic and manual context compaction preserve important evidence, including failed verification results.
   - Token and cost accounting is available per turn and per session, with configurable budget limits.
   - Images and other attachments are retained as governed session context.
