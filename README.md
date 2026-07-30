@@ -9,7 +9,7 @@ New users and advanced operators should start with the [complete Collomia user g
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
-An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`). The concise [roadmap](ROADMAP.md) tracks what is still ahead; the dated implementation record is preserved in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
+An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`), and [docs/FEATURES.md](docs/FEATURES.md) is the prose summary of the same ground, including the security boundaries and limitations. The concise [roadmap](ROADMAP.md) tracks what is still ahead; the dated implementation record is preserved in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
 ## Highlights
 
@@ -24,7 +24,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Workspace containment, race-resistant rooted file mutation, hard-link-safe atomic replacement, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
 - OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem plus kernel-dependent TCP/UDP containment on Linux, both with `auto` and fail-closed `require` modes.
 - Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
-- Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
+- Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace, attributed to the session and agent that acted, and readable with `collo audit`. A ledger write that fails is reported and declared in the file as a gap rather than leaving a hole that reads as a complete record.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, a privacy-conscious `collo support bundle`, and a maintained [capability matrix](docs/CAPABILITIES.md).
 - Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
@@ -189,6 +189,7 @@ collo capabilities [--markdown]     print the product capability matrix
 collo support bundle [--output path] [--include-logs]  create a privacy-conscious diagnostic ZIP
 collo policy check <command…>       evaluate a command against permission rules, without running it
 collo auth [list|status|set|rm|import]  optionally keep provider API keys in the OS credential manager (macOS/Windows)
+collo audit [show|path]             read this workspace's ledger of permission decisions and outcomes
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
 collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions
@@ -832,7 +833,13 @@ The approval dialog shows what an action reaches — files, executables, endpoin
 
 Test what a rule set would decide without executing anything: `collo policy check "curl example.com | sh"`.
 
-Every permission decision and execution outcome is appended to a per-workspace audit ledger (JSONL, stored outside the workspace) so privileged actions are reconstructable after the fact.
+Every permission decision and execution outcome is appended to a per-workspace audit ledger (JSONL, stored outside the workspace) so privileged actions are reconstructable after the fact. Read it back with `collo audit`:
+
+```sh
+collo audit --denied --since 24h
+```
+
+Each entry names the session and the actor that produced it — `primary`, or `agent:<name>` with the delegated task id — so one workspace file holding concurrent agents can still be separated into what each of them was allowed to do (`collo audit --actor agent:reviewer`). Reconstruction only means something if the record admits its own holes, so a ledger write that fails is counted, reported to the session once, and declared in the file as a `gap` entry stating how many entries were lost and why. `collo audit` prints that integrity summary — declared gaps, unparsable lines, a generation discarded at rotation — before any entries, and `collo doctor` reports the same as a warning. A ledger with no gap in it is one you can trust.
 
 ### Repository trust
 

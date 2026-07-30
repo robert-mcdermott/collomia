@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-29
+**Status updated:** 2026-07-30
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -72,11 +72,88 @@ and reliability gates are complete. Those now live entirely in Phase 8 —
 independent review, sustained adversarial campaigns, and the reliability
 campaigns — since the last P0 outside it was reclassified on the evidence that
 the enforced all-or-nothing network boundary it was meant to add already
-existed on all three platforms.
+existed on all three platforms. The audit ledger those campaigns and that
+review read from is now itself complete, attributable, bounded, and
+inspectable; that was the most recent wave.
 
-No wave is currently active. The completed waves below are the most recent
-work; see [Recommended next sequence](#recommended-next-sequence) for what the
-dependency order argues for next.
+No wave is currently active. See
+[Recommended next sequence](#recommended-next-sequence) for what the dependency
+order argues for next.
+
+## Completed wave — the record you can actually read
+
+**Goal:** make the audit ledger the thing the README already claimed it was —
+a complete, attributable, bounded, inspectable record of every privileged
+action — because the independent review that gates 1.0 starts from that record
+and it was the weakest durable stream in the project.
+
+- [x] Stop losing entries silently. `Append` discarded every write error, so an
+  unwritable ledger or a full disk produced a file that still read as
+  complete — the worst possible failure for a record. A failure is now counted,
+  reported to the session once (not once per authorized action, which a full
+  disk would turn into a flood), and **declared in the file**: the next entry
+  that reaches disk is preceded by a `gap` record naming how many entries were
+  lost, since when, and why. The gap and the resumed entry are written as one
+  buffer, because a gap marker that itself failed to persist would leave
+  exactly the hole it exists to prevent.
+- [x] Do not fail the turn over it. Refusing work the user already authorized
+  because a record could not be filed is the wrong trade — which is why this is
+  fail-visible rather than the session store's fail-stop. The distinction is
+  now stated in `docs/SECURITY.md` instead of the blanket "best-effort
+  diagnostic" that covered both the debug log and this.
+- [x] Name who acted. Entries carried no session, agent, or task identity, so
+  one workspace file receiving writes from the primary agent, several
+  concurrently scheduled delegated agents, and any other `collo` process on the
+  same directory interleaved into something no reader could separate. Every
+  entry now carries the session id, the actor (`primary` or `agent:<profile>`),
+  and the delegated task id. `collo audit --actor agent:reviewer` is the point
+  of the field.
+- [x] Stop dropping the child's ledger error. Both delegated-agent construction
+  sites did `if ledger, err := audit.Open(...); err == nil`, so a child whose
+  ledger could not be opened ran **completely unaudited** while the primary
+  session's identical failure was reported. One `Agent.attachLedger` now owns
+  redaction, the failure route, and identity together, and a source-scraping
+  test fails on a third caller of `audit.Open` — the same guard shape that
+  pinned single-site command-runner construction after the same defect.
+- [x] Ship a reader, because nothing read the ledger back. `collo replay`
+  excludes audit JSONL by documentation and support bundles exclude its
+  content, so "reconstructable after the fact" meant locating
+  `~/.collomia/audit/<name>-<hash>.jsonl` and parsing it by hand. `collo audit`
+  filters by session, actor, tool, time window, and refusals, emits JSONL for
+  external tooling, and prints a per-actor summary.
+- [x] Lead with completeness, not with entries. `collo audit` states any
+  declared gap, any unparsable line, and any generation discarded at rotation
+  *before* it prints anything, because someone reconstructing an incident has
+  to know the record has holes before drawing conclusions from what is in it.
+  `collo doctor` gained the same check — it previously verified only that the
+  directory could be created, which answers whether a ledger can be opened and
+  not whether the one on disk is intact.
+- [x] Bound the growth, and admit what the bound discards. The ledger grew
+  forever while every other retained artifact in the project is bounded. It now
+  rotates at 64 MiB keeping one previous generation, and the fresh file opens
+  with a `rotation` entry that says when an older generation had to be removed —
+  a record that quietly shortened itself would be the silent-hole defect again,
+  in a slower form.
+- [x] Latch the state where people look. A failure reported at startup has been
+  dismissed by the time it matters, so the session latches its own count and the
+  Session tab's Security block reports the record as recording or INCOMPLETE
+  alongside the settings that produced it, marked like degraded sandboxing
+  rather than as an ordinary row.
+- [x] Test the package at all. `internal/audit` had **no test of its own** — one
+  happy-path case written from `internal/permission` was the entire coverage,
+  and the profile read 0.0%. It is now 83%, covering redaction of every field
+  that can carry a secret, concurrent writers through separate handles,
+  declared and detected incompleteness, rotation, filters, and the failure and
+  recovery reports. The smoke test that followed found two more defects the
+  unit tests had not: a zero `since` timestamp emitted on every ordinary entry
+  because `omitempty` does not omit a zero `time.Time`, and ledger counts
+  printed without pluralization.
+
+**Behavior change:** none to permissions or execution. `collo audit` is new;
+ledger entries gained additive `session`, `actor`, and `task` fields and two
+new entry kinds (`gap`, `rotation`) that older readers can ignore; a ledger
+larger than 64 MiB now rotates rather than growing without bound. See the
+[compatibility note](docs/COMPATIBILITY.md).
 
 ## Completed wave — the bar that keeps its exit key
 
@@ -720,7 +797,14 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P1 — Optional deeper review:** line-level pending-write selection and
   broader selective application for multi-file patches.
 - [ ] **P1 — Windows ConPTY:** add native PTY execution without weakening the
-  existing process-tree cancellation contract.
+  existing process-tree cancellation contract. This is one backend blocking two
+  advertised capabilities, not one flag: `ptySupported` is false in
+  `internal/tools/command_pty_windows.go`, so `run_command` with `pty: true` is
+  refused, and the same absence in `internal/webterminal/session_windows.go`
+  makes `collo --web` unavailable on Windows entirely. `golang.org/x/sys` is
+  already a direct dependency, so `CreatePseudoConsole` needs no new module;
+  the real constraint is that a ConPTY child must still be reaped through the
+  existing Job Object tree so cancellation keeps its contract.
 
 ### Phase 4 — Provider platform
 
@@ -827,10 +911,40 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P0 — Security program:** sustained fuzz/adversarial campaigns and an
   independent review.
 - [ ] **P0 — Reliability campaigns:** host-level filesystem exhaustion,
-  power-loss durability, native terminal loss, remaining diagnostic/audit
-  fail-stop policy, and longer cancellation stress.
+  power-loss durability, native terminal loss, and longer cancellation stress.
+  The diagnostic/audit half of this item is broken out below, because it turned
+  out to be a feature rather than a policy decision.
+- [x] **P0 — A trustworthy audit ledger:** every entry names the session and
+  actor that wrote it; a write failure is counted, reported once, and declared
+  in the file as a gap rather than leaving a hole that reads as complete; both
+  delegated-agent paths route through one attachment site that no longer drops
+  `audit.Open`'s error; `collo audit` reads the record back and leads with its
+  integrity; growth is bounded by rotation that admits what it discards; and
+  the package went from no test of its own to 83% coverage. What remains here
+  is a boundary rather than a gap: this records what Collomia's permission
+  layer decided, not what an approved process then did on its own, which is
+  sandbox read/write confinement's job and is documented as such.
+- [ ] **P2 — Decide whether a mandatory-audit posture should exist:**
+  `docs/FEATURES.md` claimed audit writes could be made mandatory by policy,
+  and listed "audit requirements" among the monotonically clamped containment
+  fields. Neither has ever existed: there is no such key in
+  `appconfig.Permissions` and `ContainmentFields()` does not include one. The
+  documentation has been corrected rather than the gap papered over, and the
+  claim is now blocked by `TestDocumentedPermissionSettingsAllExist`.
+
+  The question the false claim raises is still a fair one. The audit wave chose
+  fail-visible deliberately — refusing work the user already authorized because
+  a record could not be filed is the wrong default — but a regulated deployment
+  may genuinely want "no action proceeds unless it can be recorded" as an
+  opt-in posture, and the wave left the mechanism in place for it
+  (`Ledger.Degraded`, `OnFailure`, and the runtime's latched health). It would
+  be a new clamped containment field with a fail-closed headless path. It stays
+  unbuilt until someone wants it, because a posture nobody has asked for is how
+  the original claim came to be written in the first place.
 - [ ] **P1 — Performance budgets:** idle memory, token overhead, compaction
-  quality, monorepo fixtures, and same-hardware regression thresholds.
+  quality, monorepo fixtures, and same-hardware regression thresholds. The
+  prompt-cache wave established the measurement discipline and the live-endpoint
+  harness this needs, so it is cheapest to take while that work is still warm.
 - [ ] **P1 — Optional telemetry decision:** only opt-in, minimal, documented,
   locally inspectable/deletable, and fully disabled by offline mode.
 - [ ] **P1 — Native release signing:** Apple signing/notarization, Windows
@@ -840,22 +954,38 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-1. Decide the one-hour cache TTL now that the mechanism is measured and
-   confirmed working. What is still unknown is only the gap behavior: the live
-   run measured back-to-back requests, not a session resumed after a pause,
-   which is the case the longer TTL exists for.
+Several waves in a row were P1 or P2 while the items that actually gate 1.0 did
+not move. The audit ledger — the cheapest of the remaining P0s, and the one an
+independent assessment starts from — has now been taken. The rest, in order:
+
+1. Add the Windows ConPTY backend. Best capability per unit of effort remaining
+   on the board — one backend restores `run_command` with `pty: true` *and*
+   `collo --web` on a first-class platform, with no new dependency.
 2. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
-   judged against real toolchains rather than predicted.
+   judged against real toolchains rather than predicted. This is the stated
+   prerequisite for item 3 and has not happened yet.
 3. Add opt-in plan-graph execution using verified results, write scopes,
-   dependency readiness, and stale-state invalidation. Steering is a
-   prerequisite that has now landed: adding autonomy on top of a loop that
-   could not be corrected without cancelling was the wrong order.
-4. Add explicit combined-parent verification and conservative result-ranking
-   criteria without turning a score into permission.
-5. Continue Phase 8 security/reliability campaigns in parallel with every
-   feature wave.
+   dependency readiness, and stale-state invalidation, then explicit
+   combined-parent verification and conservative result-ranking criteria
+   without turning a score into permission. `collo audit --actor` is now the
+   surface that can say what each agent in such a graph was permitted to do.
+4. Continue Phase 8 security/reliability campaigns in parallel with every
+   feature wave, and take the performance budgets while the prompt-cache wave's
+   measurement harness is still warm.
+
+Two small decisions can ride along with whichever wave ships next rather than
+becoming waves of their own:
+
+- The one-hour cache TTL. The mechanism is measured and confirmed working; what
+  is unknown is only gap behavior, since the live run measured back-to-back
+  requests rather than a session resumed after a pause. Instrument the real
+  gap between turns before paying a write premium that is 2x rather than 1.25x.
+- Deliberately **not** another terminal-surface wave. Four of the last six
+  touched it, the width sweep now pins the property the golden screens had
+  recorded wrong, and the returns there are visibly smaller than a security
+  control with no tests.
 
 ## Exit gates
 

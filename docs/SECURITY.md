@@ -609,9 +609,35 @@ not model-visible or executable and may be removed after confirming no active
 Collomia operation owns it.
 
 This fail-stop guard covers the durable conversation/session store. The debug
-log and permission audit ledger remain best-effort diagnostics; their
-availability is checked by `collo doctor`, but a later I/O failure in those
-diagnostic streams does not currently stop a tool.
+log remains a best-effort diagnostic: its availability is checked by
+`collo doctor`, but a later I/O failure in it does not stop a tool.
+
+The permission audit ledger is deliberately neither of those. A ledger write
+failure does not stop a tool — refusing work the user already authorized
+because a record could not be filed would be the wrong trade — but it is never
+silent either. Each failure is counted, the first is reported to the session as
+a warning, and the next entry that does reach disk is preceded by a `gap`
+record naming how many entries were lost, when the loss began, and why. The
+count is latched for the life of the session and shown in the Session tab's
+Security block, so "is this record complete?" is answerable while the session
+is still running rather than only afterwards.
+
+That property is what lets a reader trust a ledger with no gap records in it.
+`collo audit` leads with an integrity line stating any declared gap, any line
+that would not parse, and any older generation discarded at rotation, before it
+prints a single entry — a damaged record must not be read as an intact one.
+`collo doctor` reports the same thing as a warning check.
+
+Every entry names the session that produced it, the actor (`primary`, or
+`agent:<profile>` for a delegated agent), and the delegated task id. One
+workspace file receives writes from the primary agent, from every concurrently
+scheduled delegated agent, and from any other Collomia process open on that
+directory; without that identity those streams could not be separated again.
+
+The ledger is bounded: one generation rotates at 64 MiB and exactly one
+previous generation is retained, so a workspace's history occupies at most
+128 MiB. A rotation that had to discard an older generation records that fact
+in the new file rather than leaving it to be inferred from a missing one.
 
 ## Delegated-agent boundary
 
@@ -624,7 +650,12 @@ child cannot enable outside-workspace access, network access, user-data reads,
 or a weaker sandbox policy that the parent did not have. Disabled tools are
 checked again at execution time, not merely hidden from the model's tool list.
 
-Every child gets a distinct permission manager and audit ledger. A child
+Every child gets a distinct permission manager and its own ledger handle,
+writing to the workspace ledger under its own actor and task identity — so
+`collo audit --actor agent:<name>` reconstructs exactly what one delegated
+agent was allowed to do. A child whose ledger cannot be opened is reported as a
+session warning naming that actor, because a delegated agent acting with no
+record is precisely the case that must not pass unmentioned. A child
 approval is shown through the normal themed approval dialog with the delegated
 task name and ID, and approval affects only that proposed action. Write-capable
 children get independent Git worktrees; Collomia records their changed files

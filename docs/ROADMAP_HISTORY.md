@@ -39,6 +39,80 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-30 — Phase 8 a trustworthy audit ledger
+
+- **A write-only file with no reader, no test, no bound, and no failure
+  signal.** `internal/audit` was 5 functions and 116 lines carrying the claim
+  the README leads with — "every permission decision and execution outcome…
+  so privileged actions are reconstructable" — and the coverage profile read
+  0.0%. Its only test was one happy-path case written from
+  `internal/permission`. Nothing in the product read the file back: `collo
+  replay` excludes audit JSONL by documentation, support bundles exclude its
+  content, and there was no `collo audit`. Reconstruction meant locating
+  `~/.collomia/audit/<name>-<12-hex>.jsonl` and parsing JSONL by hand.
+- **The silent hole was the defect that mattered.** `Append` ended with
+  `_, _ = file.Write(...)` after an `if err != nil { return }` on the open, so
+  an unwritable ledger, a full disk, or a short write produced a file that
+  still read as complete — the worst failure mode a record has, because a
+  reader cannot distinguish it from nothing having happened. The fix is not
+  fail-stop: refusing work the user already authorized because a record could
+  not be filed is the wrong trade, and the session store's guarantee is not the
+  right one here. It is fail-visible. Failures are counted; the first is
+  reported to the session once (not once per authorized action, which a full
+  disk would turn into a flood of identical warnings); and the next entry that
+  reaches disk is preceded by a `gap` record naming how many entries were lost,
+  when the loss began, and why. The gap and the resumed entry are written as
+  one buffer — a gap marker that itself failed to persist would leave exactly
+  the hole it exists to prevent. `docs/SECURITY.md` previously grouped this
+  with the debug log as a "best-effort diagnostic"; the two are now described
+  separately, because they no longer behave the same way.
+- **Nobody could tell which agent acted.** Entries carried no session, actor,
+  or task field. One workspace ledger receives writes from the primary agent,
+  from every concurrently scheduled delegated agent, and from any other `collo`
+  process open on that directory, so those streams interleaved into something
+  no reader could separate again. The approval dialog did prefix "delegated
+  agent X (id)" — but onto a *display copy* of the request, so what the ledger
+  recorded was the unprefixed summary, indistinguishable from the primary's.
+  Identity now lives on the `Ledger` (`Identify(session, actor, task)`) rather
+  than on each `Append` call, so the two `Append` sites in the permission layer
+  did not have to change and cannot forget it.
+- **A child could run completely unaudited.** Both delegated-agent construction
+  sites did `if ledger, ledgerErr := audit.Open(workspace); ledgerErr == nil`
+  and dropped the error, while the primary path at `app.go` turned the same
+  failure into a startup warning. `Agent.attachLedger` is now the single site
+  owning redaction, the failure route, and the three identity fields together,
+  and `TestAuditLedgerHasOneAttachmentSite` fails on a third caller of
+  `audit.Open` — the same source-scraping guard shape that pinned single-site
+  command-runner construction after the same defect produced a containment
+  field present in the primary session and silently absent for delegates.
+- **Completeness is printed before the entries, not after.** `collo audit`
+  states any declared gap, any line that would not parse, and any generation
+  discarded at rotation ahead of the first entry, because someone
+  reconstructing an incident has to know the record has holes before drawing
+  conclusions from what is in it. `collo doctor` gained the matching check: it
+  previously verified only that the ledger *directory* could be created, which
+  answers whether a ledger can be opened and not whether the one already on
+  disk is intact. The session latches its own failure count on the runtime and
+  the Session tab's Security block reports it, marked like degraded sandboxing
+  rather than as an ordinary row — a startup warning has been dismissed by the
+  time the question is asked.
+- **Bounded, and honest about the bound.** The ledger grew without limit while
+  every other retained artifact in the project is bounded. It now rotates at
+  64 MiB keeping exactly one previous generation, and the new file opens with a
+  `rotation` entry that says when an older generation had to be discarded. A
+  record that quietly shortened itself would be the silent-hole defect again in
+  a slower form; `Report.Complete()` is false when a generation was dropped.
+- **From 0.0% to 83%, and the smoke test still found two more.** The new suite
+  covers redaction of every field that can carry a secret (and that redaction
+  no longer rewrites the caller's `Resources` slice, which the approval dialog
+  shares), four concurrent writers through separate handles producing zero torn
+  lines, declared and detected incompleteness, rotation, the filters, and the
+  failure and recovery reports. Running the real binary against a fixture
+  afterwards found two defects the unit tests had not: `omitempty` does not
+  omit a zero `time.Time`, so every ordinary entry was emitting
+  `"since":"0001-01-01T00:00:00Z"` (the field is now `*time.Time`), and the
+  integrity summary printed "1 declared gaps".
+
 ### 2026-07-29 — Phase 2 coupled conversation-plus-workspace checkpoints
 
 - **Two halves that never met:** `session.Store.Rewind` branched the

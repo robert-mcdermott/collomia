@@ -24,11 +24,19 @@ Image attachment blobs do not contain an executable schema. Their session
 references carry type, size, and SHA-256 metadata, all of which are rechecked
 before provider delivery.
 
-Trust records, MCP pins, audit ledgers, debug logs, and generated configuration
-references are internal operational data. They are not public extension APIs.
-When an internal cache or pin can be safely reconstructed, a future release
-may require the user to review or recreate it instead of attempting an unsafe
-migration.
+Trust records, MCP pins, debug logs, and generated configuration references are
+internal operational data. They are not public extension APIs. When an internal
+cache or pin can be safely reconstructed, a future release may require the user
+to review or recreate it instead of attempting an unsafe migration.
+
+The audit ledger sits between those two groups. It is not an extension API and
+carries no schema version, but it is the record of what an agent was permitted
+to do, so it is never rewritten or migrated in place, and its reader tolerates
+entries written by any earlier release: fields added since — `session`,
+`actor`, `task`, and the `gap` and `rotation` entry kinds — are additive, and
+an older entry lacking them reads as unattributed rather than as an error.
+`collo audit` reports an entry it cannot parse as an unreadable line rather
+than discarding it silently.
 
 ## Additive and breaking changes
 

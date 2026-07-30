@@ -59,6 +59,48 @@ type Runtime struct {
 	// ActiveAgent is the visible named primary profile. Empty means the
 	// ordinary unprofiled primary agent.
 	ActiveAgent string
+	// Audit is the primary agent's ledger. Delegated agents hold their own
+	// handles on the same workspace file, which is why completeness is
+	// latched separately in auditHealth rather than read from this one.
+	Audit       *audit.Ledger
+	auditHealth *auditHealth
+}
+
+// auditHealth latches every reason the audit record for this session might be
+// incomplete — an unopenable ledger at startup, a write that failed later,
+// from the primary agent or from any delegated one. A status surface asking
+// "is the record complete?" must not have to consult several ledger handles
+// and guess about the ones that were never created.
+type auditHealth struct {
+	mu       sync.Mutex
+	failures int
+	first    error
+	firstAt  time.Time
+}
+
+func (h *auditHealth) note(err error) {
+	if h == nil || err == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failures == 0 {
+		h.first = err
+		h.firstAt = time.Now().UTC()
+	}
+	h.failures++
+}
+
+// AuditHealth reports whether this session's audit record is known to be
+// incomplete: how many failures were seen, and the first one. A zero count
+// means every decision and outcome reached disk.
+func (r *Runtime) AuditHealth() (failures int, first error, at time.Time) {
+	if r == nil || r.auditHealth == nil {
+		return 0, nil, time.Time{}
+	}
+	r.auditHealth.mu.Lock()
+	defer r.auditHealth.mu.Unlock()
+	return r.auditHealth.failures, r.auditHealth.first, r.auditHealth.firstAt
 }
 
 // LogEvent records a runtime event in the debug log and the durable
@@ -206,6 +248,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 			logger.Debug("session start", "workspace", workspace, "config", cfg.Source, "provider", providerName, "model", model, "autonomy", cfg.Permissions.Mode)
 		}
 	}
+	// The audit ledger's own health is latched here rather than only reported
+	// as a startup warning: a directory that was writable at startup can stop
+	// being writable mid-session, and the record must be able to say so at the
+	// moment someone asks whether it is complete.
+	health := &auditHealth{}
 	ledger, ledgerErr := audit.Open(workspace)
 	if ledgerErr == nil {
 		ledger.Redact = redactor.Redact
@@ -216,7 +263,9 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		warnings = append(warnings, fmt.Errorf("skills: %s", issue))
 	}
 	if ledgerErr != nil {
-		warnings = append(warnings, fmt.Errorf("audit ledger unavailable: %w", ledgerErr))
+		wrapped := fmt.Errorf("audit ledger unavailable: %w", ledgerErr)
+		warnings = append(warnings, wrapped)
+		health.note(wrapped)
 	}
 	if !cfg.ProjectTrusted {
 		warnings = append(warnings, fmt.Errorf("workspace is not trusted: project configuration, skills, and instructions were ignored; run `collo trust` after reviewing %s", appconfig.ProjectFile))
@@ -247,6 +296,33 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 				return nil, fmt.Errorf("session: %w", storeErr)
 			}
 		}
+	}
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.Meta.ID
+	}
+	// runtime is captured before it exists so a ledger failure that happens
+	// mid-session reaches the same event funnel every surface reads. Nothing
+	// appends to the ledger before this constructor returns, so the closure
+	// never observes the nil.
+	var runtime *Runtime
+	auditFailure := func(err error) {
+		warning := event.New(event.KindWarning)
+		if err != nil {
+			health.note(err)
+			logger.Warn("audit ledger", "error", err.Error())
+			warning.Text = err.Error()
+		} else {
+			logger.Info("audit ledger", "recovered", true)
+			warning.Text = "audit ledger writes resumed; the entries lost while it was failing are declared in the ledger as a gap"
+		}
+		if runtime != nil {
+			runtime.LogEvent(warning)
+		}
+	}
+	if ledger != nil {
+		ledger.Identify(sessionID, audit.ActorPrimary, "")
+		ledger.OnFailure = auditFailure
 	}
 	// Structured plan artifact, maintained by the agent via update_plan and
 	// persisted with the session.
@@ -304,6 +380,8 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		agentOptions.OnCompaction = sess.AppendCompaction
 		agentOptions.PersistenceError = sess.Err
 	}
+	agentOptions.SessionID = sessionID
+	agentOptions.AuditFailure = auditFailure
 	agentRuntime := agent.New(agentOptions)
 	team := agent.NewTeam()
 	attachTeam(team, sess)
@@ -321,12 +399,8 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	for _, warning := range warnings {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
-	sessionID := ""
-	if sess != nil {
-		sessionID = sess.Meta.ID
-	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime := &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering}
+	runtime = &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health}
 	runtime.alignChangeTurns()
 	runtime.addReviewedIntegrationTools()
 	return runtime, nil

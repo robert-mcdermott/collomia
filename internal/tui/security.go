@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/egress"
 )
@@ -139,6 +140,19 @@ func (m Model) securityContent(width int) string {
 	b.WriteString(kv("command env", orDefault(permissions.CommandEnv, "minimal when sandboxed")) + "\n")
 	b.WriteString(kv("outside reads", fmt.Sprintf("%t (built-in file tools)", permissions.AllowOutsideWorkspace)) + "\n")
 
+	// The record of what was decided belongs beside the settings that decided
+	// it. A degraded ledger is reported as a warning row rather than an
+	// ordinary one, for the same reason degraded sandboxing is: a control that
+	// has quietly stopped working must not read like a control that is on.
+	b.WriteString(kv("audit record", auditSummary(m.runtime)) + "\n")
+	if failures, first, _ := m.runtime.AuditHealth(); failures > 0 {
+		detail := "unknown error"
+		if first != nil {
+			detail = first.Error()
+		}
+		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ this session's permission record is incomplete: "+detail, max(1, width))) + "\n")
+	}
+
 	b.WriteString(group("This session"))
 	commands, hosts, credentials := m.runtime.Permissions.SessionGrants()
 	b.WriteString(kv("grants", describeGrants(commands, hosts, credentials)) + "\n")
@@ -147,6 +161,20 @@ func (m Model) securityContent(width int) string {
 	}
 	b.WriteString(m.styles.muted.Render("  full reference: collo config reference · docs/SECURITY.md") + "\n\n")
 	return b.String()
+}
+
+// auditSummary states where the permission record for this workspace lives
+// and whether it is currently complete, so the answer to "can I reconstruct
+// what happened" is visible before it is needed rather than after.
+func auditSummary(runtime *app.Runtime) string {
+	failures, _, _ := runtime.AuditHealth()
+	if failures > 0 {
+		return fmt.Sprintf("INCOMPLETE — %d write failure(s) this session; read with collo audit", failures)
+	}
+	if runtime.Audit == nil {
+		return "unavailable — no ledger was opened, so this session is unrecorded"
+	}
+	return "recording — read with collo audit"
 }
 
 // egressSummary reports what a sandboxed command can actually reach, which is

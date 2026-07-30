@@ -86,6 +86,8 @@ type Agent struct {
 	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
 	auditRedact         func(string) string
+	auditFailure        func(error)
+	sessionID           string
 	onUsage             func(provider.Usage)
 	onAction            func(string)
 	takeSteering        func() []string
@@ -137,6 +139,14 @@ type Options struct {
 	// checks it before provider and tool boundaries so a failed session log
 	// cannot be followed by another external or mutating action.
 	PersistenceError func() error
+	// AuditFailure reports that a ledger could not be opened or written. A
+	// delegated agent whose ledger is unavailable would otherwise act
+	// completely unaudited while the primary session's identical failure was
+	// reported, so both routes end here.
+	AuditFailure func(error)
+	// SessionID identifies the durable session on every ledger entry, so a
+	// workspace file shared by concurrent sessions stays separable.
+	SessionID string
 }
 
 func New(opts Options) *Agent {
@@ -150,7 +160,30 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+}
+
+// attachLedger is the single site that gives a permission manager its audit
+// ledger. Both delegated-agent construction paths route through it, because
+// two of them is how one path ends up unaudited: the identity fields and the
+// failure report each have to be remembered, and the copy that forgets them
+// is silent by construction. TestAuditLedgerHasOneAttachmentSite fails on a
+// third caller of audit.Open.
+func (a *Agent) attachLedger(manager *permission.Manager, workspace, actor, task string) {
+	a.mu.RLock()
+	redact, failure, sessionID := a.auditRedact, a.auditFailure, a.sessionID
+	a.mu.RUnlock()
+	ledger, err := audit.Open(workspace)
+	if err != nil {
+		if failure != nil {
+			failure(fmt.Errorf("audit ledger unavailable for %s: %w", actor, err))
+		}
+		return
+	}
+	ledger.Redact = redact
+	ledger.OnFailure = failure
+	ledger.Identify(sessionID, actor, task)
+	manager.SetLedger(ledger)
 }
 
 // appendMessage adds to the conversation and notifies the persistence hook.
@@ -1285,7 +1318,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	client, providerName, model, providerConfig := a.client, a.providerName, a.model, a.providerConfig
 	workspace, parentRegistry := a.workspace, a.registry
 	catalog, instructions, maxOut, maxIter := a.catalog, a.projectInstructions, a.maxToolOutput, a.maxIterations
-	auditRedact := a.auditRedact
+	auditRedact, auditFailure, sessionID := a.auditRedact, a.auditFailure, a.sessionID
 	disabled := keys(a.disabled)
 	persistenceError := a.persistenceError
 	a.mu.RUnlock()
@@ -1329,12 +1362,10 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			return decision, err
 		}
 	}
+	childActor := audit.AgentActor(task.Name)
 	childManager := permission.New(childConfig.Permissions, childApprover)
 	childManager.SetRestrictions(profile.Permissions.Rules)
-	if ledger, ledgerErr := audit.Open(workspace); ledgerErr == nil {
-		ledger.Redact = auditRedact
-		childManager.SetLedger(ledger)
-	}
+	a.attachLedger(childManager, workspace, childActor, id)
 	childWorkspace := workspace
 	childRegistry := parentRegistry.Clone()
 	childRegistry.Remove("delegate")
@@ -1378,10 +1409,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		childRegistry = reg
 		childManager = permission.New(childConfig.Permissions, childApprover)
 		childManager.SetRestrictions(profile.Permissions.Rules)
-		if ledger, ledgerErr := audit.Open(childWorkspace); ledgerErr == nil {
-			ledger.Redact = auditRedact
-			childManager.SetLedger(ledger)
-		}
+		a.attachLedger(childManager, childWorkspace, childActor, id)
 	}
 
 	if len(profile.Tools) > 0 {
@@ -1403,6 +1431,10 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
 		DisabledTools: disabled, PlanMode: childPlan, Subagent: true,
 		PersistenceError: persistenceError,
+		// A child that delegates further must keep the same reporting route
+		// and the same session identity, or the grandchild is the unaudited
+		// one instead.
+		AuditRedact: auditRedact, AuditFailure: auditFailure, SessionID: sessionID,
 		OnUsage: func(current provider.Usage) {
 			if team != nil {
 				team.SetUsage(id, current)

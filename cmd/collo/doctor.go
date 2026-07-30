@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/audit"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/credstore"
 	"github.com/robert-mcdermott/collomia/internal/egress"
@@ -193,6 +194,13 @@ func runDoctorCommand(opts options) error {
 		}
 	}
 
+	// Audit ledger. Doctor used to check only that the directory could be
+	// created, which answers "can a ledger be opened" and not "is the record
+	// this workspace already has complete" — the question someone actually
+	// brings to a permission trail.
+	auditStatus, auditDetail := auditDiagnostic(opts.cwd)
+	add("audit", auditStatus, auditDetail)
+
 	// Log directory.
 	if dir, logErr := logging.Dir(); logErr != nil {
 		add("logs", "warn", logErr.Error())
@@ -214,6 +222,43 @@ func runDoctorCommand(opts options) error {
 		return errors.New("doctor found failing checks")
 	}
 	return nil
+}
+
+// auditDiagnostic reports whether this workspace's permission record can be
+// written and whether what is already on disk is complete. A declared gap is a
+// warning rather than a failure: the actions it covers were still governed by
+// the permission pipeline, and only the record of them was lost.
+func auditDiagnostic(workspace string) (status, detail string) {
+	dir, err := audit.Dir()
+	if err != nil {
+		return "warn", "ledger directory unavailable: " + err.Error()
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "fail", "ledger directory is not writable, so privileged actions will go unrecorded: " + err.Error()
+	}
+	path := filepath.Join(dir, audit.FileName(workspace))
+	report, err := audit.Read(path, audit.Filter{})
+	if err != nil {
+		return "warn", "ledger unreadable: " + err.Error()
+	}
+	if len(report.Files) == 0 {
+		return "ok", path + " (no privileged action recorded yet)"
+	}
+	summary := fmt.Sprintf("%s; %d %s", path, report.Total, plural(report.Total, "entry", "entries"))
+	if report.Complete() {
+		return "ok", summary + "; complete"
+	}
+	var problems []string
+	if report.Dropped > 0 {
+		problems = append(problems, fmt.Sprintf("%d %s lost across %d declared %s", report.Dropped, plural(report.Dropped, "entry", "entries"), report.Gaps, plural(report.Gaps, "gap", "gaps")))
+	}
+	if report.Malformed > 0 {
+		problems = append(problems, fmt.Sprintf("%d unreadable %s", report.Malformed, plural(report.Malformed, "line", "lines")))
+	}
+	if report.Discarded {
+		problems = append(problems, "an older generation was discarded at rotation")
+	}
+	return "warn", summary + "; INCOMPLETE: " + strings.Join(problems, ", ") + " — inspect with `collo audit`"
 }
 
 // credentialStoreDiagnostic reports the optional OS credential store. An

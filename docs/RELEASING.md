@@ -59,6 +59,13 @@ tag explicitly.
 1. On the release branch, update `VERSION` to the intended semantic version,
    for example `v0.2.0-beta.1`, and update release notes plus [beta
    limitations](BETA.md) if behavior changed.
+1. Re-review [the feature and security summary](FEATURES.md) against the
+   release and update its version and commit header. It is a hand-written
+   prose summary rather than a generated artifact — unlike
+   [the capability matrix](CAPABILITIES.md), which `collo capabilities
+   --markdown` regenerates and a test keeps in step — so nothing else catches
+   it going stale. It once claimed a policy setting that could make audit
+   writes mandatory, which has never existed.
 1. Refresh `UserAgent` in `internal/web/client.go` to the current desktop
    Chrome release if it has fallen more than a few major versions behind.
    Presenting a browser is what keeps `web_fetch` working against CDN rules

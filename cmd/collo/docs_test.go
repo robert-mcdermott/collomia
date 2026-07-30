@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -291,6 +292,67 @@ func TestGuideListsEveryProtectedCredentialLocation(t *testing.T) {
 	for _, location := range exempt {
 		if !strings.Contains(guide, "`"+location+"`") {
 			t.Errorf("%s is exempt from credential protection but the user guide does not say so", location)
+		}
+	}
+}
+
+// The reverse of TestEveryContainmentSettingIsIntroducedInTheReadme: no
+// document may name a `permissions.<field>` that configuration validation
+// would reject.
+//
+// The forward guard only checks that every real setting is mentioned
+// somewhere, which cannot catch a setting that was written about but never
+// built. docs/FEATURES.md claimed audit writes could be made mandatory by
+// policy and listed "audit requirements" among the monotonically clamped
+// containment fields; neither has ever existed. That is the same shape as the
+// `host` matcher that shipped inert and the install guide that cited a
+// nonexistent version — a documented control a reader would rely on.
+func TestDocumentedPermissionSettingsAllExist(t *testing.T) {
+	real := map[string]bool{}
+	permissions := reflect.TypeOf(appconfig.Permissions{})
+	for i := range permissions.NumField() {
+		tag := permissions.Field(i).Tag.Get("json")
+		if name, _, _ := strings.Cut(tag, ","); name != "" && name != "-" {
+			real[name] = true
+		}
+	}
+	if len(real) < 10 {
+		t.Fatalf("found only %d permission fields; the struct shape changed and this guard needs updating", len(real))
+	}
+	reference := regexp.MustCompile(`permissions\.([a-z_]+)`)
+	for name, text := range docFiles(t) {
+		for _, m := range reference.FindAllStringSubmatch(text, -1) {
+			if !real[m[1]] {
+				t.Errorf("%s refers to permissions.%s, which is not a real configuration field", name, m[1])
+			}
+		}
+	}
+}
+
+// The audit ledger's `source` field is what answers "why was this allowed?",
+// so the guide's table of its values must be complete.
+//
+// This guard exists because the first version of that table was written from
+// the stale comment on audit.Entry and listed six of the thirteen values the
+// permission layer actually emits — a documented-but-wrong enumeration, which
+// is the same class of defect as a documented-but-absent control.
+func TestGuideDocumentsEveryAuditDecisionSource(t *testing.T) {
+	root := repoRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, "internal", "permission", "permission.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, m := range regexp.MustCompile(`Source: *"([a-z-]+)"`).FindAllStringSubmatch(string(source), -1) {
+		found[m[1]] = true
+	}
+	if len(found) < 10 {
+		t.Fatalf("found only %d decision sources; the permission layer's shape changed and this guard needs updating", len(found))
+	}
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	for value := range found {
+		if !strings.Contains(guide, "| `"+value+"` |") {
+			t.Errorf("the permission layer records source %q but the user guide's audit table does not list it", value)
 		}
 	}
 }

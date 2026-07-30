@@ -104,10 +104,13 @@ type options struct {
 	output                                         string
 	resume                                         string
 	mcpURL                                         string
+	auditSession, auditActor, auditTool            string
+	auditSince                                     string
+	auditLimit                                     int
 	webPort, mcpTimeout                            int
 	plan, global, help, version, jsonl, ephemeral  bool
 	strict, revoke, status, debug, markdown, yes   bool
-	check                                          bool
+	check, denied                                  bool
 	includeLogs                                    bool
 	cont, withReference, web, webPortSet, noOpen   bool
 	mcpTimeoutSet                                  bool
@@ -203,6 +206,8 @@ func run(args []string) error {
 		return runPolicyCommand(opts)
 	case "auth":
 		return runAuthCommand(opts)
+	case "audit":
+		return runAuditCommand(opts)
 	case "sessions":
 		return runSessionsCommand(opts)
 	case "skills":
@@ -499,7 +504,7 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "support" || arg == "policy" || arg == "auth" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
+		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "support" || arg == "policy" || arg == "auth" || arg == "audit" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
 			opts.command = arg
 			continue
 		}
@@ -533,6 +538,57 @@ func parse(args []string) (options, error) {
 			opts.yes = true
 		case arg == "--check":
 			opts.check = true
+		case arg == "--denied":
+			opts.denied = true
+		case strings.HasPrefix(arg, "--session="):
+			opts.auditSession = strings.TrimPrefix(arg, "--session=")
+		case arg == "--session":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--session requires a session id")
+			}
+			i++
+			opts.auditSession = args[i]
+		case strings.HasPrefix(arg, "--actor="):
+			opts.auditActor = strings.TrimPrefix(arg, "--actor=")
+		case arg == "--actor":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--actor requires primary or agent:<name>")
+			}
+			i++
+			opts.auditActor = args[i]
+		case strings.HasPrefix(arg, "--tool="):
+			opts.auditTool = strings.TrimPrefix(arg, "--tool=")
+		case arg == "--tool":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--tool requires a tool name")
+			}
+			i++
+			opts.auditTool = args[i]
+		case strings.HasPrefix(arg, "--since="):
+			opts.auditSince = strings.TrimPrefix(arg, "--since=")
+		case arg == "--since":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--since requires a duration such as 24h")
+			}
+			i++
+			opts.auditSince = args[i]
+		case strings.HasPrefix(arg, "--limit="):
+			value := strings.TrimPrefix(arg, "--limit=")
+			limit, parseErr := strconv.Atoi(value)
+			if parseErr != nil || limit <= 0 {
+				return opts, fmt.Errorf("--limit requires a positive number of entries")
+			}
+			opts.auditLimit = limit
+		case arg == "--limit":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--limit requires a positive number of entries")
+			}
+			i++
+			limit, parseErr := strconv.Atoi(args[i])
+			if parseErr != nil || limit <= 0 {
+				return opts, fmt.Errorf("--limit requires a positive number of entries")
+			}
+			opts.auditLimit = limit
 		case arg == "--include-logs":
 			opts.includeLogs = true
 		case strings.HasPrefix(arg, "--output="):
@@ -687,6 +743,9 @@ func parse(args []string) (options, error) {
 	if opts.command != "support" && (opts.includeLogs || opts.output != "") {
 		return opts, fmt.Errorf("--include-logs and --output are only available for `collo support bundle`")
 	}
+	if opts.command != "audit" && (opts.auditSession != "" || opts.auditActor != "" || opts.auditTool != "" || opts.auditSince != "" || opts.auditLimit > 0 || opts.denied) {
+		return opts, fmt.Errorf("--session, --actor, --tool, --since, --limit, and --denied are only available for `collo audit`")
+	}
 	return opts, nil
 }
 
@@ -747,6 +806,7 @@ Usage:
   collo support bundle [--output path] [--include-logs]  create a privacy-conscious diagnostic archive
   collo policy check <command…>       evaluate a command against permission rules without running it
   collo auth [list|status|set|rm|import]  store provider API keys in the OS credential manager (macOS/Windows; optional)
+  collo audit [show|path]             read this workspace's ledger of permission decisions and outcomes
   collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
   collo verify [focus]                detect and run this project's build/lint/test commands headlessly
   collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions
@@ -773,9 +833,15 @@ Flags:
   --no-open                            (web) print the URL without opening the default browser
   --alt-screen                         force the interactive TUI to use the alternate screen
   --no-alt-screen                      keep the final TUI frame in terminal scrollback
-  --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled)
+  --jsonl                              (run) emit schema-versioned JSONL events on stdout; the final line is a run.result summary (status ok|error|cancelled); (audit) emit matching ledger entries as JSONL
   --ephemeral                          (run) do not create or update a durable conversation session; audit and workspace changes still apply
   --check                              (replay) validate the trace and print only its summary
+  --session <id>                       (audit) only entries written by one durable session
+  --actor <name>                       (audit) only entries by primary or agent:<name>
+  --tool <name>                        (audit) only entries for one tool
+  --since <duration>                   (audit) only entries newer than a duration such as 24h
+  --limit <n>                          (audit) keep only the most recent n matching entries
+  --denied                             (audit) only refused decisions and failed executions
   --output <path>                      (support bundle) archive path (default: timestamped ZIP under ~/.collomia/support)
   --include-logs                       (support bundle) include up to five recent bounded, redacted debug logs
   --debug                              write a redacted debug log (see collo doctor for path)

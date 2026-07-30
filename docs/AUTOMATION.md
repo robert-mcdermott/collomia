@@ -265,7 +265,10 @@ has `ephemeral: true` and no `session_id`.
 It does **not** make the run read-only or untracked:
 
 - workspace mutations still happen when policy allows them;
-- permission decisions and execution outcomes still go to the audit ledger;
+- permission decisions and execution outcomes still go to the audit ledger,
+  which is how you reconstruct an ephemeral run afterwards: its entries carry
+  no `session` field, so `collo audit --since <window>` is the way to find
+  them;
 - `--debug` still writes its explicitly requested redacted diagnostic log;
 - provider, MCP, hook, and command behavior is otherwise unchanged.
 
@@ -319,9 +322,20 @@ while a successful result requires clean `turn.end` and tool completion.
 
 `collo replay` consumes completed headless run streams. Durable session JSONL
 and permission audit ledgers have different record envelopes and are not valid
-replay inputs. Replay verifies recorded structure; it does not prove that an
-upstream provider response was factually correct or that an external action
-actually had the claimed effect.
+replay inputs — the audit ledger has its own reader, `collo audit`, documented
+in the [user guide](USER_GUIDE.md#audit-ledger). Replay verifies recorded
+structure; it does not prove that an upstream provider response was factually
+correct or that an external action actually had the claimed effect.
+
+The two answer different questions, and an automated pipeline usually wants
+both. A run trace is one run's narrative, produced only when you asked for
+`--jsonl` and only as complete as that stream. The ledger is the durable
+per-workspace record of what was permitted, written whether or not anyone was
+capturing output, spanning every run and every delegated agent — and it states
+its own completeness, which a captured stream cannot. For a CI job that must
+prove what an agent was allowed to do, `collo audit --since <window> --jsonl`
+is the artifact to retain, after checking that
+`collo audit --since <window>` reports the record as complete.
 
 ## Complete automation examples
 

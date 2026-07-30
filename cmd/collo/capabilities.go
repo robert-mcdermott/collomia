@@ -72,7 +72,7 @@ func capabilityMatrix() []capabilityRow {
 		{"permissions", "per-capability approval grants", "implemented", "the approval dialog shows files/executables/endpoints/credentials separately; 'g' grants exactly the reach shown for the session, and every dimension must be covered before a later action is automatic; a credential grant covers only the target shown and is never offered under protect_credentials=deny"},
 		{"permissions", "catastrophic command protection", "implemented", "non-overridable outcome denials plus mandatory one-time confirmation for destructive but legitimate commands; same checks for foreground, PTY, and background execution"},
 		{"permissions", "credential-store protection", "implemented", "permissions.protect_credentials off/prompt/deny, default prompt; recognized by conventional path, not content inspection; a blanket allow rule, tool-wide always, and autopilot never cover one, while a rule naming the path and a session grant scoped to the exact file do"},
-		{"permissions", "audit ledger", "implemented", "JSONL ledger outside the workspace"},
+		{"permissions", "audit ledger", "implemented", "per-workspace JSONL ledger outside the workspace; every entry names the session, actor (primary or agent:<name>), and delegated task; a write failure is reported once and declared in the file as a gap entry rather than leaving a silent hole; bounded by rotation with one retained generation; read back with `collo audit`, whose integrity line states any gap, unreadable line, or discarded generation"},
 		{"permissions", "scoped egress broker", egressStatus, egressNote},
 		{"permissions", "OS sandbox", sandboxStatus, sandboxNote},
 		{"config", "layering defaults→user→project→env", "implemented", "inspect with `collo config show`"},

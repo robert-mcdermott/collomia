@@ -96,6 +96,14 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   boundaries. An action already executing at the instant of a disk failure or
   process death may still have taken effect; resume marks it interrupted and
   requires inspection instead of replaying it.
+- The audit ledger records what Collomia's permission layer decided and what
+  the resulting execution returned; it is not a system-call audit, so a program
+  that was approved and then opened a socket or read a file on its own is
+  outside its view. A ledger write failure does not stop the agent loop, but it
+  is reported and declared in the file as a gap, so an incomplete record never
+  reads as a complete one — check with `collo audit` or `collo doctor`.
+  Redaction is best-effort pattern matching, so review a ledger before sharing
+  it.
 
 Do not advertise the beta as safe for unattended production changes,
 deployments, credential-bearing automation, or security-critical environments.

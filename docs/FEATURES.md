@@ -145,7 +145,7 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
 
   - Configuration is layered from built-in defaults through user, project, and environment settings.
   - Repository or project configuration may tighten containment but cannot weaken the user’s established security posture.
-  - Monotonic enforcement applies to sandbox policy, outside-workspace reads, command posture, network posture, credential protection, audit requirements, and containment presets.
+  - Monotonic enforcement applies to sandbox policy, sandbox network and outside-workspace reads, the command environment, outside-workspace access, command posture, network posture, scoped egress, credential protection, and containment presets.
   - Attempts by project configuration to weaken containment are refused and reported.
   - Only the global configuration owner can explicitly disable the operating-system sandbox.
   - Configuration inspection reports both effective values and their origins.
@@ -203,8 +203,12 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
 
   - File changes are presented for review before approval where required.
   - Multi-hunk `write_file` changes support individual hunk acceptance; other edit mechanisms support file-level review.
-  - A JSONL audit ledger records relevant security and tool events outside the workspace.
-  - Audit storage is presently best-effort unless policy explicitly requires successful audit writes.
+  - A JSONL audit ledger records every permission decision and execution outcome outside the workspace, readable through `collo audit` with filters for session, actor, tool, time window, and refusals, plus JSONL output for external tooling.
+  - Every entry names the session and the actor that produced it — `primary`, or `agent:<profile>` with the delegated task id — so one workspace ledger holding concurrent delegated agents can still be separated into what each was permitted to do.
+  - A ledger write failure does not stop the agent loop, but it is never silent: failures are counted, reported to the session once, and declared in the file as a gap entry stating how many entries were lost, since when, and why.
+  - `collo audit` reports the record's integrity — declared gaps, unreadable lines, a generation discarded at rotation — before any entries, and `collo doctor` reports the same as a warning check, so an incomplete record is never read as a complete one.
+  - Ledger growth is bounded by rotation at 64 MiB with one retained previous generation, and a rotation that discarded older history records that fact.
+  - There is no configuration setting that makes a failed audit write stop an action; audit is fail-visible, not fail-stop, and is not one of the monotonically clamped containment fields.
   - The session status view exposes effective permissions, grants, sandbox state, network posture, and configuration origins.
   - Containment degradation is shown rather than silently hidden.
 
@@ -284,5 +288,5 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - The standard preset permits command network access and outside-workspace reads unless explicitly tightened.
   - Provider HTTP traffic, remote MCP connections, hooks, and LSP processes run in the Collomia process and are outside the command sandbox and command egress broker.
   - MCP and skills are governed by trust and integrity checks, but installing or enabling them still extends the trusted computing base.
-  - The audit ledger is best-effort under ordinary configuration.
+  - The audit ledger records what the permission layer decided and what the resulting execution returned. It is not a system-call audit: a program that was approved and then opened a socket or read a file on its own is outside its view. A ledger write failure is reported and declared rather than silently dropped, but no setting causes it to stop an action.
   - There is no hosted enterprise identity plane, centralized SSO/RBAC service, or remote policy administration layer.
