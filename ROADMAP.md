@@ -78,6 +78,38 @@ No wave is currently active. The completed waves below are the most recent
 work; see [Recommended next sequence](#recommended-next-sequence) for what the
 dependency order argues for next.
 
+## Completed wave — the bar that keeps its exit key
+
+**Goal:** Stop the status bar from removing the user's way out in order to keep
+showing session decoration on a narrow terminal.
+
+- [x] Lay the bar out widest-first over tiered control hints instead of
+  dropping the whole right-hand side when it does not fit. At 80 columns the
+  bar previously showed no keyboard hints at all, and at 40 nothing but a
+  truncated context gauge — so in a split pane there was no visible way to
+  stop a running turn or answer a prompt. The controls now degrade through
+  named forms down to a minimum that always survives.
+- [x] Keep all three answers on an approval at every width. A prompt narrowed
+  to show only how to approve is a prompt biased toward approving.
+- [x] Make the left-hand badges droppable segments rather than one
+  concatenated string. Two things on this bar are both promised to survive any
+  width — the autonomy/containment mark and the exit key — and a string that
+  gets truncated can only honor whichever one the ellipsis misses. Explicit
+  drop ordering gives up the running spend before the model name.
+- [x] Enforce "additive" by comparison rather than by a width guess. The named
+  stance badge and the spend readout are laid out with and without, and kept
+  only when the control hint lands on the same tier and no other badge was
+  given up. The existing invariant test caught this: naming the stance had
+  started costing the working indicator at 80 columns.
+- [x] Pin the property with a test that sweeps every state across widths from
+  40 to 200, rather than trusting golden screens. **The goldens had recorded
+  the defect as correct** — `replay_chat_80x24` and `replay_chat_40x12` both
+  captured a status bar with no controls on it. A golden proves the screen has
+  not changed, not that it was ever right.
+
+**Behavior change:** none configurable. Narrow terminals show fewer badges and
+shorter control hints than before, and always show a way out.
+
 ## Completed wave — the running turn
 
 **Goal:** Make the part of Collomia a user actually sits through — one turn,
@@ -149,6 +181,21 @@ agent instead of holding the draft. And `input_tokens` in usage output and the
 JSONL event stream now includes cached tokens on the Anthropic routes, where it
 previously excluded them; `cache_write_tokens` is a new additive field on the
 v1 event contract.
+
+**Measured, not argued.** The fixed prefix is 13.3 KB (~3410 tokens): 11.5 KB
+of tool schemas across 23 built-in tools plus a 1.8 KB system prompt. Across
+one turn, the share of prompt bytes that are retransmission a warm cache serves
+is 33% at one tool call, 71% at five, and 83% at ten. Against a live endpoint
+(`azure-foundry-anthropic`, claude-sonnet-5) two identical requests reported
+`cache_write=9627` then `cache_read=9627` — 100% of the second prompt served
+from cache, with only two tokens falling outside the cached prefix, which
+confirms the rolling conversation breakpoint is honored and not just the system
+one. That run also confirmed the usage normalization is load-bearing: the
+provider reported a raw `input_tokens` of 2 on both calls, so without summing
+the three counters the second request would have shown a two-token prompt and
+priced 9627 tokens at nothing. A write costs 1.25x and a read 0.1x, so the
+one-time write premium is repaid by the first read — every turn that uses a
+tool is already ahead.
 
 ## Completed wave — checkpoints that move the files too
 
@@ -752,8 +799,21 @@ claiming enforcement the policy layer does not provide.
   workspace, plan, agents, changed files, and background processes beside the
   transcript; automatically surfaced diagnostics and provider price/budget
   visibility remain.
-- [ ] **P1 — Accessibility validation:** native screen-reader, colored theme,
-  resize, and broader terminal-emulator coverage.
+- [ ] **P1 — Accessibility validation:** colour (`NO_COLOR` selects the plain
+  theme), motion (`options.reduced_motion`), and narrow-width resize behavior
+  are done, the last pinned by a width sweep rather than by golden screens.
+  Broader terminal-emulator coverage remains — the Kitty/`modifyOtherKeys` key
+  handling is the most emulator-sensitive code and is unverified across
+  emulators.
+
+  **Screen-reader support is deliberately not built.** Full-screen TUIs repaint
+  with absolute cursor positioning and screen readers follow the terminal
+  buffer, so the two are structurally opposed; of comparable tools only Claude
+  Code ships a mode for it, added recently after sustained user pressure, and
+  Codex/Crush/OpenCode have none. Collomia's non-interactive JSONL output is
+  already a linear-text path and is documented as the answer, in the same
+  idiom as Linux scoped egress. That keeps a future `--screen-reader` flag
+  cheap — wiring and documentation rather than architecture — if a user asks.
 - [ ] **P2 — Structured local service API:** authenticated stdio/socket or
   WebSocket access to the event/session/permission contracts. The current web
   terminal is a PTY transport, not this API.
@@ -780,24 +840,21 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-1. Measure the caching wave on a real multi-tool session: cache-read ratio,
-   cost delta, and time-to-first-token delta, before and after. The case for
-   it was argued from request structure rather than from numbers, and the
-   one-hour TTL decision should not be taken without them.
-2. Accessibility validation (Phase 7). It is the only remaining P1 that serves
-   "best looking, most enjoyable to use" rather than widening reach, and it
-   has now been deferred through several TUI waves.
-3. Gather real beta feedback on named primary profiles, cost estimates,
+1. Decide the one-hour cache TTL now that the mechanism is measured and
+   confirmed working. What is still unknown is only the gap behavior: the live
+   run measured back-to-back requests, not a session resumed after a pause,
+   which is the case the longer TTL exists for.
+2. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
    judged against real toolchains rather than predicted.
-4. Add opt-in plan-graph execution using verified results, write scopes,
+3. Add opt-in plan-graph execution using verified results, write scopes,
    dependency readiness, and stale-state invalidation. Steering is a
    prerequisite that has now landed: adding autonomy on top of a loop that
    could not be corrected without cancelling was the wrong order.
-5. Add explicit combined-parent verification and conservative result-ranking
+4. Add explicit combined-parent verification and conservative result-ranking
    criteria without turning a score into permission.
-6. Continue Phase 8 security/reliability campaigns in parallel with every
+5. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave.
 
 ## Exit gates
