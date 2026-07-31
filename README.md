@@ -58,7 +58,15 @@ go build -o collo ./cmd/collo
 ./collo
 ```
 
-The default configuration connects to Ollama at `http://127.0.0.1:11434/v1` and selects `qwen3-coder`. Pull that model first, or create a configuration for another provider:
+The quickest way to get a working configuration is to let Collomia find one and prove it works:
+
+```sh
+collo setup
+```
+
+It looks for local runtimes that are actually running, notices provider API keys your environment already exports, offers the endpoint's own model catalog, and verifies your choice with two real requests — one plain completion and one carrying a tool definition — before writing anything. A model that answers ordinary prompts but rejects tools cannot drive a coding agent, and that is caught here rather than at your first prompt. Keys are never written into the configuration file.
+
+The manual path remains fully supported and is what scripted installs should use. The default configuration connects to Ollama at `http://127.0.0.1:11434/v1` and selects `qwen3-coder`:
 
 ```sh
 ollama pull qwen3-coder
@@ -179,6 +187,7 @@ Active configuration files are strict JSON. `collo config reference` prints an e
 collo [flags] [initial prompt]      start the interactive TUI
 collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
 collo run [flags] <prompt>          run once, or read a prompt from stdin
+collo setup                         find, verify, and configure a provider interactively
 collo init [--with-reference]       create project .collomia.json
 collo init --global [--with-reference]  create ~/.collomia/config.json
 collo config validate [--strict]    validate configuration with field-level errors

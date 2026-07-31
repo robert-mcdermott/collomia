@@ -964,9 +964,105 @@ claiming enforcement the policy layer does not provide.
   back. Environment variables keep precedence and remain fully supported;
   Linux has no backend by design, so headless hosts use `api_key_env`. MCP
   server credentials are covered separately by Phase 5's OAuth item.
-- [ ] **P1 — Provider discovery refinements:** Azure deployment/project
-  discovery and routing, tested sovereign presets, and clearer resolved AWS
-  identity/model-access diagnostics.
+- [ ] **P1 — First-run setup and provider discovery:** make the configuration
+  correct *before* it is written, by proving it with a real request — and take
+  Azure deployment/project discovery and routing, tested sovereign presets, and
+  clearer resolved AWS identity/model-access diagnostics as part of the same
+  work rather than beside it.
+
+  **`collo setup` has shipped**, covering the local-runtime and hosted-family
+  paths end to end: concurrent probing, catalog discovery, two-request
+  verification, diagnosis, and a writer that never puts a secret in a file. What
+  remains open here is the provider-discovery half — Azure deployment/project
+  enumeration (the wizard currently sends Azure and Bedrock down the manual
+  path, which is honest but not discovery), tested sovereign presets, and
+  resolved AWS identity diagnostics.
+
+  **Reclassified from P2, and merged with the former "Setup wizard" entry.**
+  The two were one item seen from opposite sides: the wizard's Azure branch
+  *is* deployment discovery, and its Bedrock branch *is* the model-access
+  diagnostic, so kept separate the Azure probe gets written twice. The parts
+  all exist — capability registry, model discovery, the four-state
+  `ProviderAvailability` that already distinguishes *unverified* from
+  *unavailable*, credential precedence, `credstore`, starter generation, and
+  `config validate --strict` as the final gate — so this is assembly and one
+  honest failure path rather than new machinery. It is P1 because the first
+  item in the recommended next sequence is real beta feedback, and the current
+  first-run path is: read the README, hand-write JSONC, set a credential, run
+  `doctor`, and guess which of those four steps was wrong.
+
+  **Nothing currently dials.** `collo init` writes a static starter file with
+  `ollama`/`qwen3-coder`/`127.0.0.1:11434` as literal values, and
+  `config.Defaults()` returns the same assumption for a machine that has never
+  been configured at all — so an install with no Ollama on it is, as far as the
+  configuration layer is concerned, correctly configured. `collo doctor` is
+  thorough about everything visible from the configuration and the
+  environment — which credential source won, the Entra scope and tenant,
+  whether Bedrock resolved bearer or SigV4 — and makes **no network request**,
+  so its best possible answer is `ok`. A dead port, a revoked key, a model the
+  endpoint does not have, an Azure model name written where a deployment name
+  belongs, a Bedrock region without model access, and a wrong `context` all
+  survive every existing check and surface identically: the interface opens,
+  the user types, and *then* it fails. That is the state in which someone
+  stops rather than reports.
+
+  - Probe, discover, then verify, in that order. Probe the default ports of the
+    local runtimes already supported (Ollama 11434, LM Studio 1234, vLLM 8000),
+    because "not installed" and "installed but not running" are different
+    sentences. Discover through `Runtime.ListModels`, which already constructs
+    the client, checks `CapabilitiesFor(...).ModelDiscovery`, and annotates
+    every result with its capabilities — so the model is chosen from what the
+    endpoint actually has rather than typed from memory.
+  - **Verify with real requests, not with the catalog call.** These are
+    different endpoints with different permissions: Azure lists *models* while
+    requests address *deployments*, and Bedrock will list a model the account
+    cannot invoke. A catalog response proves the host is reachable; only a
+    generation proves the thing being written down will answer.
+  - **Send two requests, the second carrying a tool definition.** The first
+    version sent no tools, reasoning that one request isolates one cause. It
+    does, and running it against a real Ollama showed what that costs:
+    `gemma3:270m` verified cleanly and then failed the first real prompt with
+    `does not support tools` — the exact failure the wizard exists to move
+    earlier, and not an edge case, since every embedding, vision, and small chat
+    model in a local catalog is in that position. Two requests keep the cause
+    isolated *and* keep the promise. Nothing needs to *call* the probe tool;
+    acceptance is the discriminator, because a capable model may reasonably
+    answer a trivial prompt with text.
+  - Write only fields that were verified — provider, type, base URL, and model —
+    with `context` from the capability registry instead of the current
+    hardcoded guess. **Always write a context window**, falling back to the
+    value `collo init` already uses and labelling it as assumed on the
+    confirmation screen. Leaving it out looks more honest and is worse:
+    `Agent.shouldCompact` returns false on a zero window, so automatic
+    compaction never runs and a long session ends at a provider
+    context-length error with no recovery.
+  - **Never write a secret into the file**, which is the rule `collo auth` was
+    built on. Prefer an already-exported variable and record `api_key_env`
+    pointing at it, so the wizard handles no secret at all; otherwise offer the
+    keychain through `internal/credstore`; on Linux say plainly that there is no
+    backend and write `api_key_env` to export. This also puts the macOS Keychain
+    backend on a real code path for the first time — see the Phase 8 coverage
+    item.
+  - Spend the effort on the failure branch, because that is the whole value. A
+    refused connection names the runtime and how to start it; a 404 on a model
+    prints the catalog that was actually returned; an Azure 404 says that the
+    field wants a deployment name. A wizard that only narrates success has
+    moved the original failure later, not removed it.
+  - Ship it as `collo setup`, its own verb, and have the interface offer it when
+    no provider has ever been verified. `collo init` keeps exactly its current
+    contract — write a starter file, refuse if one exists — because it is
+    documented, guarded by tests, and used from scripts; probe-verify-write is a
+    different operation and giving one verb two contracts is how a documented
+    behavior quietly becomes two. `collo setup` is re-runnable, since adding a
+    second provider is the next thing that happens after the first works.
+
+  **Behavior change:** `config.Defaults()` stops naming a provider it has never
+  contacted. An installation with no configuration reports that no provider is
+  configured and points at `collo setup`, rather than asserting Ollama on
+  localhost and failing at the first prompt. Anyone actually running Ollama on
+  the default port is unaffected in practice — `collo setup` finds it and
+  writes it down — but a machine that relied on the implicit default without a
+  configuration file now needs one.
 - [x] **P1 — Provider prompt caching:** the Anthropic Messages routes send two
   cache breakpoints — the stable tools/system prefix and a rolling
   conversation boundary held behind any volatile trailing content — and drop
@@ -986,8 +1082,6 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P1 — Usage and budgets:** normalized user-priced cost estimates and
   enforceable session/agent monetary budgets ship; an independently
   configurable per-turn dollar cap and richer provider billing caveats remain.
-- [ ] **P2 — Setup wizard:** discover local runtimes, validate endpoints and
-  credentials, test deployments, and write a minimal user provider profile.
 
 ### Phase 5 — MCP and extension ecosystem
 
@@ -1091,6 +1185,16 @@ claiming enforcement the policy layer does not provide.
   be a new clamped containment field with a fail-closed headless path. It stays
   unbuilt until someone wants it, because a posture nobody has asked for is how
   the original claim came to be written in the first place.
+- [ ] **P1 — Cover the credential store's actual backend:** `internal/credstore`
+  reads 40.8%, but the headline hides where the hole is — `backendGet`,
+  `backendSet`, and `backendDelete` in `store_darwin.go` are at **0.0%**, as are
+  `Delete` and `Verify`. The entire macOS Keychain path, and `collo auth rm`
+  along with it, has no test of its own on a platform that can run one. This is
+  the shape the audit wave already found once: a package at zero coverage whose
+  first real tests immediately surfaced two defects that unit review had missed,
+  in a package that holds provider API keys. Phase 4's first-run setup will put
+  this path under a user's hands for the first time, so the coverage is worth
+  having before that rather than after.
 - [ ] **P1 — Performance budgets:** idle memory, token overhead, compaction
   quality, monorepo fixtures, and same-hardware regression thresholds. The
   prompt-cache wave established the measurement discipline and the live-endpoint
@@ -1099,8 +1203,32 @@ claiming enforcement the policy layer does not provide.
   locally inspectable/deletable, and fully disabled by offline mode.
 - [ ] **P1 — Native release signing:** Apple signing/notarization, Windows
   Authenticode, and installer-enforced signature verification.
-- [ ] **P1 — Package managers:** Homebrew, Scoop/Winget, selected Linux flows,
-  and clean-machine install/update/rollback/uninstall testing.
+- [ ] **P1 — Package managers:** Homebrew and Scoop first, because neither
+  needs a signed binary — a Homebrew *formula* over the release tarball and a
+  Scoop manifest over the zip are both checksum-verified text, and the release
+  workflow already produces the artifacts, checksums, SBOMs, and attestations
+  they would reference. Publish both from `release.yml` so a manifest cannot
+  drift from `VERSION`. A Homebrew **cask** and a Winget manifest are blocked
+  on native release signing above and should not be started before it;
+  discovering that halfway through is how a distribution slice stalls with
+  nothing shipped. Selected Linux flows and clean-machine
+  install/update/rollback/uninstall testing follow each channel that ships.
+
+  Today the only routes to the binary are `curl | sh` and `irm | iex`. Both
+  work, and neither is how most developers install a tool they have just heard
+  about.
+- [ ] **P1 — A reporting path that does not require assembling a report:**
+  `collo feedback` opens a prefilled issue carrying `collo doctor`'s
+  environment facts and the opaque `err-…` identifier, and nothing else,
+  reusing the support bundle's existing privacy review rather than inventing a
+  second one. `collo support bundle` already covers a reproducible failure; it
+  is the wrong instrument for "this was confusing", which is most of what a
+  beta needs to hear and none of what it currently receives.
+
+  This is deliberately the zero-telemetry form of the optional telemetry
+  decision above and does not wait on it: nothing is collected, nothing is
+  transmitted in the background, and the user reads the whole report before it
+  leaves the machine.
 
 ## Recommended next sequence
 
@@ -1110,17 +1238,38 @@ independent assessment starts from — has been taken; Windows ConPTY closed the
 last platform-parity gap; and the publication wave closed the finding that
 assessment would most likely have opened with. The rest, in order:
 
-1. Gather real beta feedback on named primary profiles, cost estimates,
+1. Close the distance to a first successful session, because the beta feedback
+   this list has opened with for several waves is blocked on it rather than on
+   anyone's willingness. Three segments of the path from *hears about Collomia*
+   to *has a working session* are unbuilt, and all three were already on this
+   roadmap as deferred items: **getting the binary** (Phase 8 package
+   managers — no Homebrew, Scoop, or Winget; `curl | sh` and `irm | iex` are
+   the only routes), **trusting it** (Phase 8 native release signing — unsigned
+   on macOS and Windows, provenance-attested only), and **configuring a
+   provider** (Phase 4 first-run setup — `collo init` writes a static starter
+   file, `config.Defaults()` asserts a provider it has never contacted, and
+   `collo doctor` makes no network request, so nothing between installation and
+   the first prompt ever dials the endpoint being configured). Add
+   `collo feedback` beside them so that what comes back is cheap to send.
+
+   Native signing is the one segment with an external dependency —
+   certificates cost money and need CI secrets — so it is a decision to take
+   rather than work to schedule, and the other three do not wait on it. Every
+   wave since v0.1.7 has added depth to a product that is still meaningfully
+   hard to start using; this is the same asymmetry the publication wave fixed,
+   in a different place. A control nobody leaves on and a product nobody can
+   easily install fail for the same reason.
+2. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
    judged against real toolchains rather than predicted. This is the stated
-   prerequisite for item 2 and has not happened yet.
-2. Add opt-in plan-graph execution using verified results, write scopes,
+   prerequisite for item 3 and has not happened yet.
+3. Add opt-in plan-graph execution using verified results, write scopes,
    dependency readiness, and stale-state invalidation, then explicit
    combined-parent verification and conservative result-ranking criteria
    without turning a score into permission. `collo audit --actor` is now the
    surface that can say what each agent in such a graph was permitted to do.
-3. Continue Phase 8 security/reliability campaigns in parallel with every
+4. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave, and take the performance budgets while the prompt-cache wave's
    measurement harness is still warm. The reliability half — host-level
    filesystem exhaustion, power-loss durability, native terminal loss, longer

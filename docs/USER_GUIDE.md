@@ -204,6 +204,36 @@ should follow [Releasing Collomia](RELEASING.md).
 
 ## Five-minute setup
 
+### The short version: `collo setup`
+
+```sh
+collo setup
+```
+
+`collo setup` finds the local model runtimes that are actually running (Ollama,
+LM Studio, vLLM), notices provider API keys the environment already exports,
+lets you choose a model from the endpoint's own catalog, and then **verifies the
+choice with two real requests before writing anything**: one short completion,
+proving the endpoint answers as configured, and one carrying a tool definition,
+proving the model can be driven by a tool-calling agent at all. Only then does it
+write `~/.collomia/config.json`.
+
+That second request matters more than it sounds. Many local models — embedding,
+vision, and the smallest chat models — answer an ordinary prompt perfectly well
+and reject any request that carries tools. Without the tool check, such a model
+configures cleanly and then fails your first real prompt.
+
+If verification fails, nothing is written and the wizard says which of the
+endpoint, the credential, or the model is at fault, and what to do about it.
+
+`collo setup` never writes an API key into a configuration file. It prefers a
+variable your environment already exports and records only its name; otherwise
+it offers the operating-system credential store, or records a variable name for
+you to export. Run it again at any time to add another provider.
+
+The rest of this section is the manual path, which remains fully supported and
+is what you want for scripted or unattended installs.
+
 ### 1. Check the installation
 
 Run diagnostics from the project you intend to use:

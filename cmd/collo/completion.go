@@ -6,7 +6,7 @@ import (
 )
 
 var completionCommands = []string{
-	"tui", "run", "init", "config", "trust", "doctor", "capabilities",
+	"tui", "run", "init", "setup", "config", "trust", "doctor", "capabilities",
 	"support", "policy", "auth", "audit", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "replay", "version",
 }
 

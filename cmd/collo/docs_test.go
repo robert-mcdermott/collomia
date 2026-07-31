@@ -130,6 +130,25 @@ func TestEveryToolNameIsDocumented(t *testing.T) {
 	if len(names) < 15 {
 		t.Fatalf("found only %d tools; the registration shape changed and this guard needs updating", len(names))
 	}
+	// A ToolDefinition that is never offered to a model is not a tool a user
+	// can be told about, and documenting one would put a name in the tool list
+	// that no session can call. The exemption is deliberately not a bare
+	// allowlist: each name must also be absent from internal/tools, the package
+	// where every real tool lives, so this cannot be used to hide one.
+	unexposed := map[string]string{
+		"collomia_setup_probe": "sent once by `collo setup` to check that an endpoint accepts tool definitions at all; never registered, never visible to a model",
+	}
+	for name := range unexposed {
+		if !names[name] {
+			t.Errorf("exempted tool %q no longer exists; remove it from this guard rather than leaving a stale exemption", name)
+			continue
+		}
+		if registeredInToolsPackage(t, root, name) {
+			t.Errorf("tool %q is exempted as unexposed but is defined in internal/tools; document it instead", name)
+		}
+		delete(names, name)
+	}
+
 	docs := docFiles(t)
 	corpus := docs["README.md"] + docs["docs/USER_GUIDE.md"] + docs["docs/AUTOMATION.md"] + docs["docs/CAPABILITIES.md"]
 	for name := range names {
@@ -137,6 +156,30 @@ func TestEveryToolNameIsDocumented(t *testing.T) {
 			t.Errorf("tool %q is registered but never documented", name)
 		}
 	}
+}
+
+// registeredInToolsPackage reports whether a name appears in internal/tools,
+// which is where every tool a model can call is defined.
+func registeredInToolsPackage(t *testing.T, root, name string) bool {
+	t.Helper()
+	found := false
+	err := filepath.Walk(filepath.Join(root, "internal", "tools"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), name) {
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
 }
 
 // Every slash command the TUI accepts should be discoverable, either in the
