@@ -19,8 +19,13 @@ type Request struct {
 	Tool        string
 	Paths       []string
 	Executables []string
-	Hosts       []string
-	Server      string
+	// Operations name what each recognized invocation does, as
+	// "<executable> <verb…>". A command rule whose pattern contains a space
+	// is matched against these instead of against Executables, because an
+	// executable name cannot distinguish `npm install` from `npm publish`.
+	Operations []string
+	Hosts      []string
+	Server     string
 	// Network marks a request that reaches the network at all.
 	Network bool
 	// HostsUndetermined is true when the request reaches an endpoint it could
@@ -40,6 +45,9 @@ func (r Request) Resources() []string {
 	}
 	for _, e := range r.Executables {
 		out = append(out, "exec:"+e)
+	}
+	for _, o := range r.Operations {
+		out = append(out, "op:"+o)
 	}
 	for _, h := range r.Hosts {
 		out = append(out, "host:"+h)
@@ -107,7 +115,15 @@ func matches(rule appconfig.Rule, req Request) bool {
 		if requireAll && !req.Inspectable {
 			return false
 		}
-		if !matchSet(rule.Command, req.Executables, requireAll, glob) {
+		// A pattern containing a space names an operation, not an executable.
+		// Before this existed the whole pattern was matched against argv[0],
+		// so `{"command": "npm publish"}` matched nothing at all and validated
+		// clean — a rule that read as protection and was inert.
+		values := req.Executables
+		if NamesOperation(rule.Command) {
+			values = req.Operations
+		}
+		if !matchSet(rule.Command, values, requireAll, glob) {
 			return false
 		}
 	}
@@ -147,6 +163,12 @@ func matchSet(pattern string, values []string, requireAll bool, match func(strin
 	}
 	return matched > 0
 }
+
+// NamesOperation reports whether a command-rule pattern names an operation
+// (`npm publish`) rather than an executable (`npm`). The permission layer asks
+// the same question when deciding whether a rule is a deliberate publication
+// exception, so both sides read one definition rather than two spellings of it.
+func NamesOperation(pattern string) bool { return strings.Contains(strings.TrimSpace(pattern), " ") }
 
 func glob(pattern, value string) bool {
 	ok, err := filepath.Match(pattern, value)

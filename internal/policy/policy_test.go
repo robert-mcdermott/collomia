@@ -129,3 +129,78 @@ func TestResourcesReportUndeterminedEndpoints(t *testing.T) {
 		t.Fatalf("resources=%v", req.Resources())
 	}
 }
+
+// TestCommandRuleNamingAnOperation covers the matcher's second form. Before it
+// existed the whole pattern was matched against argv[0], so a rule written the
+// way a user would naturally write it matched nothing at all — and validated
+// clean, which is the part that made it dangerous rather than merely useless.
+func TestCommandRuleNamingAnOperation(t *testing.T) {
+	rules := []appconfig.Rule{
+		{Action: "deny", Tool: "run_command", Command: "npm publish"},
+		{Action: "allow", Tool: "run_command", Command: "npm"},
+	}
+	publish := Request{Tool: "run_command", Executables: []string{"npm"}, Operations: []string{"npm publish"}, Inspectable: true}
+	if d := Evaluate(rules, publish); d.Action != "deny" || d.Index != 0 {
+		t.Fatalf("npm publish decision = %+v, want deny from rules[0]", d)
+	}
+	install := Request{Tool: "run_command", Executables: []string{"npm"}, Operations: []string{"npm install"}, Inspectable: true}
+	if d := Evaluate(rules, install); d.Action != "allow" || d.Index != 1 {
+		t.Fatalf("npm install decision = %+v, want allow from rules[1]", d)
+	}
+}
+
+// An operation pattern must not fall back to matching the executable. If it
+// did, "npm publish" would deny every npm invocation.
+func TestOperationRuleDoesNotMatchAnExecutableOnly(t *testing.T) {
+	rules := []appconfig.Rule{{Action: "deny", Command: "npm publish"}}
+	req := Request{Tool: "run_command", Executables: []string{"npm"}, Inspectable: true}
+	if d := Evaluate(rules, req); d.Matched() {
+		t.Fatalf("operation rule matched a command with no operations: %+v", d)
+	}
+}
+
+// Allow rules must still cover the whole request. A pipeline that publishes
+// and installs is not covered by an allow rule naming only the install.
+func TestAllowRequiresEveryOperationToMatch(t *testing.T) {
+	rules := []appconfig.Rule{{Action: "allow", Command: "npm install"}}
+	req := Request{Tool: "run_command", Executables: []string{"npm", "npm"}, Operations: []string{"npm install", "npm publish"}, Inspectable: true}
+	if d := Evaluate(rules, req); d.Matched() {
+		t.Fatalf("allow rule covered an unmatched operation: %+v", d)
+	}
+}
+
+func TestGlobsWorkOnOperations(t *testing.T) {
+	rules := []appconfig.Rule{{Action: "prompt", Command: "gh pr *"}}
+	req := Request{Tool: "run_command", Executables: []string{"gh"}, Operations: []string{"gh pr create"}, Inspectable: true}
+	if d := Evaluate(rules, req); d.Action != "prompt" {
+		t.Fatalf("glob over an operation did not match: %+v", d)
+	}
+}
+
+func TestNamesOperationDistinguishesTheTwoForms(t *testing.T) {
+	for _, pattern := range []string{"npm publish", "gh pr create", "ssh build-host"} {
+		if !NamesOperation(pattern) {
+			t.Errorf("NamesOperation(%q) = false, want true", pattern)
+		}
+	}
+	for _, pattern := range []string{"npm", "g*", "", "  "} {
+		if NamesOperation(pattern) {
+			t.Errorf("NamesOperation(%q) = true, want false", pattern)
+		}
+	}
+}
+
+// Operations belong in the audit ledger's resource list: reconstructing an
+// incident from "exec:npm" cannot distinguish an install from a release.
+func TestResourcesIncludeOperations(t *testing.T) {
+	req := Request{Executables: []string{"npm"}, Operations: []string{"npm publish"}}
+	var found bool
+	for _, resource := range req.Resources() {
+		if resource == "op:npm publish" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("resources = %v, want an op: entry", req.Resources())
+	}
+}

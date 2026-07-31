@@ -9,7 +9,7 @@ New users and advanced operators should start with the [complete Collomia user g
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and a verification loop that runs your project's own build/lint/test commands.
 
-An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`). The concise [roadmap](ROADMAP.md) tracks what is still ahead; the dated implementation record is preserved in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
+An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`), and [docs/FEATURES.md](docs/FEATURES.md) is the prose summary of the same ground, including the security boundaries and limitations. The concise [roadmap](ROADMAP.md) tracks what is still ahead; the dated implementation record is preserved in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
 ## Highlights
 
@@ -24,7 +24,8 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Workspace containment, race-resistant rooted file mutation, hard-link-safe atomic replacement, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
 - OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem plus kernel-dependent TCP/UDP containment on Linux, both with `auto` and fail-closed `require` modes.
 - Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
-- Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace.
+- Publishing, deploying, and pushing are their own decision (`permissions.publication`, default `prompt`): package and image registries, pull requests and releases, infrastructure applies, Git remotes, and commands run on another host are never approved by autonomy mode or a tool-wide grant alone. A rule naming the operation — `{"command": "npm publish"}` — is the deliberate written-down exception.
+- Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace, attributed to the session and agent that acted, and readable with `collo audit`. A ledger write that fails is reported and declared in the file as a gap rather than leaving a hole that reads as a complete record.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, a privacy-conscious `collo support bundle`, and a maintained [capability matrix](docs/CAPABILITIES.md).
 - Schema-versioned JSONL event stream for automation (`collo run --jsonl`), an embedded JSON Schema, stable exit codes, explicit refusal/partial-completion metadata, durable `--resume`/`--continue`, session-free `--ephemeral` runs, and side-effect-free offline trace validation/replay.
@@ -39,11 +40,11 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, non-destructive turn rewind, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, pinned plan state, referenced oversized results, and automatic context compaction.
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), colorized diff previews at approval, and **hunk-level approval** — accept or reject individual hunks of a `write_file` change before it lands.
 - Read-only git inspection tools (status, diff, log, blame) that never commit or push.
-- `run_command` supports a pseudo-terminal (`pty: true`, Unix) for interactive-only or isatty-dependent programs.
+- `run_command` supports a pseudo-terminal (`pty: true`) on every platform — a Unix PTY, or a Windows pseudoconsole — for interactive-only or isatty-dependent programs.
 - The agent can pause and ask you a typed question (`ask_user`) instead of guessing.
 - Command output streams into the transcript live, for both foreground and background commands.
 - Interactive and non-interactive operation from the same binary.
-- Local browser terminal (`collo --web`) that runs the existing TUI in a real PTY and serves an embedded, authenticated xterm.js client on loopback (macOS/Linux).
+- Local browser terminal (`collo --web`) that runs the existing TUI in a real PTY and serves an embedded, authenticated xterm.js client on loopback.
 
 ## Build and run
 
@@ -57,7 +58,26 @@ go build -o collo ./cmd/collo
 ./collo
 ```
 
-The default configuration connects to Ollama at `http://127.0.0.1:11434/v1` and selects `qwen3-coder`. Pull that model first, or create a configuration for another provider:
+The quickest way to get a working configuration is to let Collomia find one and prove it works:
+
+```sh
+collo setup
+```
+
+It looks for local runtimes that are actually running, notices provider API keys your environment already exports, offers the endpoint's own model catalog, and verifies your choice with two real requests — one plain completion and one carrying a tool definition — before writing anything. A model that answers ordinary prompts but rejects tools cannot drive a coding agent, and that is caught here rather than at your first prompt. Keys are never written into the configuration file.
+
+Azure OpenAI, Azure AI Foundry, and AWS Bedrock are configured through a short form, since neither is discoverable from a name and a key; Bedrock additionally reports which identity the AWS credential chain resolved to. Run `collo setup` again at any time to add or reconfigure a provider — it shows what is already configured, marks anything it would replace, and asks before changing your default.
+
+If the provider's environment variable is already exported, setup uses it and never asks for a key — the recommended route for a long credential, since the value never passes through an input field:
+
+```sh
+export AWS_BEARER_TOKEN_BEDROCK='<your key>'
+collo setup
+```
+
+The [user guide](docs/USER_GUIDE.md#credentials-and-skipping-the-key-prompt-entirely) lists the variable for each provider.
+
+The manual path remains fully supported and is what scripted installs should use. The default configuration connects to Ollama at `http://127.0.0.1:11434/v1` and selects `qwen3-coder`:
 
 ```sh
 ollama pull qwen3-coder
@@ -176,8 +196,9 @@ Active configuration files are strict JSON. `collo config reference` prints an e
 
 ```text
 collo [flags] [initial prompt]      start the interactive TUI
-collo --web [flags] [initial prompt]  open the interactive TUI in a local browser (macOS/Linux)
+collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
 collo run [flags] <prompt>          run once, or read a prompt from stdin
+collo setup                         find, verify, and configure a provider interactively
 collo init [--with-reference]       create project .collomia.json
 collo init --global [--with-reference]  create ~/.collomia/config.json
 collo config validate [--strict]    validate configuration with field-level errors
@@ -189,6 +210,7 @@ collo capabilities [--markdown]     print the product capability matrix
 collo support bundle [--output path] [--include-logs]  create a privacy-conscious diagnostic ZIP
 collo policy check <command…>       evaluate a command against permission rules, without running it
 collo auth [list|status|set|rm|import]  optionally keep provider API keys in the OS credential manager (macOS/Windows)
+collo audit [show|path]             read this workspace's ledger of permission decisions and outcomes
 collo review [ref] [instructions…]  review pending changes ('-' = uncommitted) with optional focus, headlessly
 collo verify [focus]                detect and run this project's build/lint/test commands, headlessly
 collo sessions [list|show|fork|rewind|rename|archive|unarchive|delete]  manage saved sessions
@@ -293,8 +315,8 @@ overwritten.
 
 ## Browser terminal
 
-On macOS and Linux, `--web` exposes the normal Collomia TUI through a local
-browser without creating a second frontend or agent protocol:
+`--web` exposes the normal Collomia TUI through a local browser without
+creating a second frontend or agent protocol:
 
 ```sh
 # Bind 127.0.0.1 on a random available port and open the default browser.
@@ -325,9 +347,7 @@ in this first version.
 
 Treat the printed URL as a password: anyone who obtains it can control the TUI
 and answer its approval prompts. Do not share, proxy, tunnel, or port-forward
-the server. It has no TLS or remote-user authentication. Native Windows web
-mode is not available until Collomia has a ConPTY backend; the command exits
-with a clear error rather than running the TUI without terminal semantics. See
+the server. It has no TLS or remote-user authentication. See
 [the browser-terminal security boundary](docs/SECURITY.md#browser-terminal-boundary)
 for the complete limitations.
 
@@ -774,12 +794,21 @@ Example:
     "sandbox_allow_network": true,
     "sandbox_allow_read_outside_workspace": false,
     "sandbox_readable_roots": ["${HOME}/go/pkg/mod"],
-    "command_env": "minimal"
+    "command_env": "minimal",
+    "publication": "prompt",
+    "rules": [
+      { "action": "allow", "command": "npm install", "reason": "dependency installs are routine" },
+      { "action": "deny", "command": "npm publish", "reason": "releases go through CI" }
+    ]
   }
 }
 ```
 
 `allowed_tools` is a persistent explicit grant. Interactive approval with `a` normally grants a tool for the remainder of the current process. The example `denied_commands` entry adds all direct recursive `rm` invocations to Collomia's mandatory protections. Global and trusted project patterns only add to the effective set; no subordinate configuration can remove an inherited command denial.
+
+**Publishing is its own decision.** The paragraph below describes a taxonomy of destruction, and until recently that was the whole risk model: `terraform destroy`, `kubectl delete`, `helm uninstall`, and `git push --force` each required a fresh approval even under autopilot, while `terraform apply`, `kubectl apply`, `helm upgrade`, `npm publish`, `docker push`, `gh pr create`, and `git push` were approved silently. `permissions.publication` (`off`, `prompt` by default, `deny`) closes that asymmetry: an action that puts something outside this machine — a package version, a container image, a pull request or release, an infrastructure apply, a push to a remote, a command run over `ssh` — is not covered by autopilot, by a tool-wide "always allow", or by an `allow` rule naming only the executable. A rule naming the *operation* is: `{"action": "allow", "command": "npm publish"}`. Read verbs (`gh pr view`, `kubectl get`, `terraform plan`, `aws s3 ls`) and rehearsals (`--dry-run`) are unaffected, as is `npm install`. See [Publishing outside this machine](docs/USER_GUIDE.md#publishing-outside-this-machine).
+
+**Rules can name an operation, not just an executable.** A `command` pattern containing a space matches the executable plus the words that decide what it does — `npm publish`, `git push`, `gh pr create`, `ssh build-host` — so a policy can allow installing dependencies while gating releases. `collo policy check '<command>'` prints the exact operation string a command produces, and a pattern that could match neither an executable nor an operation is now rejected by `collo config validate` rather than sitting in the file looking like protection.
 
 Shell safety has three outcomes. Routine scoped operations such as `rm -rf node_modules`, `rm -rf /tmp/example`, and formatting a workspace disk-image file follow the selected autonomy mode. Destructive but legitimate operations—such as `git reset --hard`, machine shutdown, bulk cloud/IaC deletion, or a recursive target that cannot be resolved statically—require a fresh one-time approval; allow rules, autopilot, and “always allow” cannot skip it. Catastrophic outcomes—such as recursively deleting `/`, the home or workspace root, `.git`, `~/.collomia`, Windows drive/system roots, or writing a physical disk—are refused and cannot be approved. Both structural checks and regex denials are repeated immediately before foreground or background execution. Use `collo policy check '<command>'` to inspect the result without running it. See the [security model](docs/SECURITY.md#command-safety-tiers) for the complete categories and limitations.
 
@@ -832,7 +861,13 @@ The approval dialog shows what an action reaches — files, executables, endpoin
 
 Test what a rule set would decide without executing anything: `collo policy check "curl example.com | sh"`.
 
-Every permission decision and execution outcome is appended to a per-workspace audit ledger (JSONL, stored outside the workspace) so privileged actions are reconstructable after the fact.
+Every permission decision and execution outcome is appended to a per-workspace audit ledger (JSONL, stored outside the workspace) so privileged actions are reconstructable after the fact. Read it back with `collo audit`:
+
+```sh
+collo audit --denied --since 24h
+```
+
+Each entry names the session and the actor that produced it — `primary`, or `agent:<name>` with the delegated task id — so one workspace file holding concurrent agents can still be separated into what each of them was allowed to do (`collo audit --actor agent:reviewer`). Reconstruction only means something if the record admits its own holes, so a ledger write that fails is counted, reported to the session once, and declared in the file as a `gap` entry stating how many entries were lost and why. `collo audit` prints that integrity summary — declared gaps, unparsable lines, a generation discarded at rotation — before any entries, and `collo doctor` reports the same as a warning. A ledger with no gap in it is one you can trust.
 
 ### Repository trust
 

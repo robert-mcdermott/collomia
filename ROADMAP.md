@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-29
+**Status updated:** 2026-07-30
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -37,8 +37,9 @@ also shipped:
   sandbox backends with compatibility-first `auto` enforcement by default,
   visible degradation, and capability-aware fail-closed `require` behavior;
 - scoped permissions, conservative shell analysis, catastrophic-command
-  denials, credential-store protection, macOS per-host brokered command egress,
-  secret redaction, and an audit ledger;
+  denials, credential-store protection, publication/deployment protection,
+  operation-scoped policy rules, macOS per-host brokered command egress, secret
+  redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
   artifacts, rewind/fork, coupled conversation-plus-workspace checkpoint
   restore that fails closed on external edits, and fail-stop persistence
@@ -72,11 +73,216 @@ and reliability gates are complete. Those now live entirely in Phase 8 —
 independent review, sustained adversarial campaigns, and the reliability
 campaigns — since the last P0 outside it was reclassified on the evidence that
 the enforced all-or-nothing network boundary it was meant to add already
-existed on all three platforms.
+existed on all three platforms. The audit ledger those campaigns and that
+review read from is now itself complete, attributable, bounded, and
+inspectable, and pseudo-terminal execution reaches all three platforms. The
+most recent wave closed the last known asymmetry in the risk classifier: the
+safety taxonomy described destruction only, so publishing and deploying rode
+along with autopilot while their deletion counterparts required a decision.
 
-No wave is currently active. The completed waves below are the most recent
-work; see [Recommended next sequence](#recommended-next-sequence) for what the
-dependency order argues for next.
+No wave is currently active. See
+[Recommended next sequence](#recommended-next-sequence) for what the dependency
+order argues for next.
+
+## Completed wave — the actions that leave the machine
+
+**Goal:** give the risk classifier a publication shape to match the destruction
+shape it already had, and give the rule language enough resolution to say yes to
+`npm install` and no to `npm publish` — so the control is one people leave on
+rather than one they switch off.
+
+- [x] Classify publication at all. `internal/shell/safety.go` was, end to end, a
+  taxonomy of deletion, so under `autopilot` on a stock configuration
+  `terraform destroy` required a decision and `terraform apply -auto-approve`
+  did not; `kubectl delete` did and `kubectl apply` did not; `git push --force`
+  did and `git push origin main` did not. `npm publish`, `cargo publish`,
+  `docker push`, `gh pr create`, `gh release create`,
+  `aws lambda update-function-code`, and `ssh prod "systemctl restart app"` were
+  all approved silently. The asymmetry did not track reversibility — a published
+  version is harder to take back than a deployment a controller recreates — and
+  this roadmap's own deferred list already said these were not meant to be
+  autonomous.
+- [x] Fix the rule language first, because a tier with no expressible exception
+  is a tier people disable. `rules[].command` was an *executable-name* glob
+  while `denied_commands` in the same block was a full-command-line regex, so
+  `{"action":"deny","command":"npm publish"}` matched nothing and validated
+  clean — the third inert-matcher defect after the `host` matcher and the
+  hand-built action in `collo policy check`. A pattern containing a space now
+  matches an **operation**, one definition (`policy.NamesOperation`) decides
+  which form a pattern is, and a pattern that could match neither fails
+  validation.
+- [x] Print the vocabulary rather than making people guess it. `collo policy
+  check` gained an `operations:` line, because the discoverability failure is
+  what made the inert rule dangerous rather than merely useless.
+- [x] Model the setting on `protect_credentials`, not on tier 2. Tier 2 offers
+  no durable answer at all, which is right for `npm publish` and wrong for
+  `git push` on a feature branch; a control that is wrong half the time gets
+  switched off. `permissions.publication` (off/prompt/deny, default prompt) is
+  uncoverable by autopilot, a tool-wide "always", or an executable-only allow
+  rule, while a rule naming the operation and one narrow session grant scoped to
+  the exact operation both work.
+- [x] Stay quiet during ordinary work. Read verbs (`gh pr view`, `kubectl get`,
+  `terraform plan`, `aws s3 ls`), `npm install`, `docker pull`, a
+  download-direction `rsync`, and every `--dry-run` rehearsal are unaffected —
+  and `--dry-run=false` is an explicit request to act, so it is not.
+- [x] Find the classifier's own blind spots by widening the probe. `ssh` passed
+  because the publication check sat behind the operation lookup and ssh has no
+  subcommand, which silently exempted every verbless tool. And the subcommand
+  reader skipped unrecognized options without stopping, so
+  `aws lambda update-function-code --function-name f` named its operation
+  `aws lambda f` and `gh api -X POST` named it `gh api post` — plausible strings
+  that matched nothing, which is why neither failed loudly.
+- [x] State the rule/grant asymmetry instead of leaving it inferred. An
+  operation-naming rule outranks `deny` because it is written down and survives
+  review; an interactive grant never does. The credential gate had behaved this
+  way since it shipped without saying so; a test written against the opposite
+  assumption is what surfaced it.
+- [x] Carry it on the preset ladder, clamp it monotonically, and report it in
+  `collo doctor`, `collo policy check`, and the Session tab, with its own header
+  in the approval dialog.
+- [x] Test the property where it actually lives. Alongside the unit coverage, a
+  symmetry test fails when a tool gains a destructive classification without its
+  publishing counterpart, and three offline evaluations run a real autopilot
+  turn — a unit test proves the string is recognized, not that the mode whose
+  purpose is not asking actually stops.
+
+**Behavior change:** two. Publishing, deploying, and pushing prompt by default,
+including under `autopilot`, where a headless run fails closed;
+`"publication": "off"` restores the earlier behavior exactly. And a `command`
+rule pattern containing a space now matches an operation where it previously
+matched nothing, so an upgrade may activate a denial its author believed was
+already in force. See the
+[compatibility note](docs/COMPATIBILITY.md#publication-protection).
+
+**What it is not.** A policy layer, not enforcement — it reads what a command's
+text says it will do, so a build script that uploads without naming the
+operation is invisible to it, and it cannot tell `kubectl apply` against a local
+cluster from the same command against production. The catalogue of publishing
+tools is finite; `denied_commands` and `reviewer_command` remain the answer for
+anything specific to one organization.
+
+## Completed wave — a pseudo-terminal on the third platform
+
+**Goal:** stop one missing backend from withholding two advertised capabilities
+from a first-class platform.
+
+- [x] Add `internal/conpty`, a shared Windows pseudoconsole implementation.
+  Both `run_command` with `pty: true` and `collo --web` needed the same
+  primitive, and the part that is easy to get wrong is handle lifetime rather
+  than the API calls. Two copies would each have had to rediscover that the
+  parent's copy of the console's output handle must be closed before anyone
+  reads from it — otherwise the pipe still has a writer and a finished command
+  never reaches end-of-file, which presents as "the PTY command hangs after it
+  finishes".
+- [x] Build the process here rather than on `os/exec`.
+  `syscall.SysProcAttr` on Windows exposes no proc-thread attribute list, and a
+  pseudoconsole is attached only through `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
+  on a `STARTUPINFOEX`, so `os/exec` structurally cannot do it. Quoting still
+  goes through the same `exec.LookPath` and `syscall.EscapeArg` path `os/exec`
+  uses: a command quoted one way without a PTY and another way with one would
+  be a far worse surprise than either quoting rule on its own.
+- [x] Strengthen the cancellation contract instead of matching it. The child is
+  created suspended, joined to a job object, and only then resumed, so there is
+  no instant in which it could spawn a descendant outside the job — a window
+  the ordinary `taskkill /T` path does have. The existing descendant walk is
+  reused to wait for the kernel to finish the teardown, because returning
+  earlier leaves processes holding the workspace directory open.
+- [x] Say what Windows cannot do rather than implying parity. There is no
+  SIGTERM: `GenerateConsoleCtrlEvent` requires the sender to share the target's
+  console, which a pseudoconsole host by definition does not. The graceful step
+  for an interactive session is closing the child's console input, documented
+  as a request with a deadline rather than as an equivalent of the Unix path.
+- [x] Un-skip the two PTY tests instead of leaving them skipped. They said
+  "pty unsupported on windows", which was about to become false; the only
+  genuinely platform-specific part was the shell, so they now run everywhere
+  with a per-platform probe. Windows has no `test -t 0`, so the terminal
+  assertion is that a pseudoconsole renders its client through a virtual
+  terminal and a captured pipe does not — which is the difference programs
+  actually key on when they decide whether to colorize.
+- [x] Cover the mechanics with tests that fail informatively. A hang rather
+  than a wrong value is the expected failure for handle-ordering mistakes, so
+  the close and terminate tests carry explicit timeouts whose messages name the
+  ordering error that would cause them.
+
+**Behavior change:** `pty: true` is no longer refused on Windows and
+`collo --web` no longer exits with a platform error there. Windows 10 1809 or
+later is required for the pseudoconsole API; older releases report that rather
+than running without terminal semantics.
+
+## Completed wave — the record you can actually read
+
+**Goal:** make the audit ledger the thing the README already claimed it was —
+a complete, attributable, bounded, inspectable record of every privileged
+action — because the independent review that gates 1.0 starts from that record
+and it was the weakest durable stream in the project.
+
+- [x] Stop losing entries silently. `Append` discarded every write error, so an
+  unwritable ledger or a full disk produced a file that still read as
+  complete — the worst possible failure for a record. A failure is now counted,
+  reported to the session once (not once per authorized action, which a full
+  disk would turn into a flood), and **declared in the file**: the next entry
+  that reaches disk is preceded by a `gap` record naming how many entries were
+  lost, since when, and why. The gap and the resumed entry are written as one
+  buffer, because a gap marker that itself failed to persist would leave
+  exactly the hole it exists to prevent.
+- [x] Do not fail the turn over it. Refusing work the user already authorized
+  because a record could not be filed is the wrong trade — which is why this is
+  fail-visible rather than the session store's fail-stop. The distinction is
+  now stated in `docs/SECURITY.md` instead of the blanket "best-effort
+  diagnostic" that covered both the debug log and this.
+- [x] Name who acted. Entries carried no session, agent, or task identity, so
+  one workspace file receiving writes from the primary agent, several
+  concurrently scheduled delegated agents, and any other `collo` process on the
+  same directory interleaved into something no reader could separate. Every
+  entry now carries the session id, the actor (`primary` or `agent:<profile>`),
+  and the delegated task id. `collo audit --actor agent:reviewer` is the point
+  of the field.
+- [x] Stop dropping the child's ledger error. Both delegated-agent construction
+  sites did `if ledger, err := audit.Open(...); err == nil`, so a child whose
+  ledger could not be opened ran **completely unaudited** while the primary
+  session's identical failure was reported. One `Agent.attachLedger` now owns
+  redaction, the failure route, and identity together, and a source-scraping
+  test fails on a third caller of `audit.Open` — the same guard shape that
+  pinned single-site command-runner construction after the same defect.
+- [x] Ship a reader, because nothing read the ledger back. `collo replay`
+  excludes audit JSONL by documentation and support bundles exclude its
+  content, so "reconstructable after the fact" meant locating
+  `~/.collomia/audit/<name>-<hash>.jsonl` and parsing it by hand. `collo audit`
+  filters by session, actor, tool, time window, and refusals, emits JSONL for
+  external tooling, and prints a per-actor summary.
+- [x] Lead with completeness, not with entries. `collo audit` states any
+  declared gap, any unparsable line, and any generation discarded at rotation
+  *before* it prints anything, because someone reconstructing an incident has
+  to know the record has holes before drawing conclusions from what is in it.
+  `collo doctor` gained the same check — it previously verified only that the
+  directory could be created, which answers whether a ledger can be opened and
+  not whether the one on disk is intact.
+- [x] Bound the growth, and admit what the bound discards. The ledger grew
+  forever while every other retained artifact in the project is bounded. It now
+  rotates at 64 MiB keeping one previous generation, and the fresh file opens
+  with a `rotation` entry that says when an older generation had to be removed —
+  a record that quietly shortened itself would be the silent-hole defect again,
+  in a slower form.
+- [x] Latch the state where people look. A failure reported at startup has been
+  dismissed by the time it matters, so the session latches its own count and the
+  Session tab's Security block reports the record as recording or INCOMPLETE
+  alongside the settings that produced it, marked like degraded sandboxing
+  rather than as an ordinary row.
+- [x] Test the package at all. `internal/audit` had **no test of its own** — one
+  happy-path case written from `internal/permission` was the entire coverage,
+  and the profile read 0.0%. It is now 83%, covering redaction of every field
+  that can carry a secret, concurrent writers through separate handles,
+  declared and detected incompleteness, rotation, filters, and the failure and
+  recovery reports. The smoke test that followed found two more defects the
+  unit tests had not: a zero `since` timestamp emitted on every ordinary entry
+  because `omitempty` does not omit a zero `time.Time`, and ledger counts
+  printed without pluralization.
+
+**Behavior change:** none to permissions or execution. `collo audit` is new;
+ledger entries gained additive `session`, `actor`, and `task` fields and two
+new entry kinds (`gap`, `rotation`) that older readers can ignore; a ledger
+larger than 64 MiB now rotates rather than growing without bound. See the
+[compatibility note](docs/COMPATIBILITY.md).
 
 ## Completed wave — the bar that keeps its exit key
 
@@ -689,6 +895,27 @@ claiming enforcement the policy layer does not provide.
   all-or-nothing denial is the most complete of the three. Both refuse under
   `require` and degrade visibly under `auto`; with `sandbox: "off"` no broker
   starts anywhere, because a cooperative proxy is not presented as a boundary.
+- [x] **P1 — Publication and deployment as their own decision:**
+  `permissions.publication` (`off`/`prompt`/`deny`, default `prompt`) governs
+  the actions that put something outside this machine — package and container
+  registries, source remotes, code-forge writes, infrastructure applies, and
+  commands run on another host. It is not coverable by autopilot, a tool-wide
+  "always allow", or an allow rule naming only an executable; a rule naming the
+  operation is, and one narrow session grant covers exactly the operation shown.
+
+  **This was the last known asymmetry in the risk classifier.** The safety
+  taxonomy described destruction only, so every deletion in these tools required
+  a fresh decision even under autopilot while none of the publishing
+  counterparts did — a gap an independent assessment would have found by running
+  `collo policy check` for an afternoon. Like host rules it is a policy layer
+  and not egress enforcement, and the catalogue of recognized tools is finite.
+- [x] **P1 — Operation-scoped policy rules:** a `rules[].command` pattern
+  containing a space matches the executable plus the words that decide what it
+  does (`npm publish`, `gh pr create`, `ssh build-host`) rather than `argv[0]`.
+  Before this, such a pattern matched nothing and validated clean — the third
+  inert-matcher defect in this repository. An unmatchable pattern is now a
+  validation error, and `collo policy check` prints the exact operation string a
+  command produces so the vocabulary never has to be guessed.
 - [ ] **P2 — Windows scoped egress:** only reachable through a
   `CheckNetIsolation` loopback exemption (administrator, persistent machine
   state, documented by Microsoft as a debugging aid) or WFP/firewall filters
@@ -719,8 +946,15 @@ claiming enforcement the policy layer does not provide.
   not at all.
 - [ ] **P1 — Optional deeper review:** line-level pending-write selection and
   broader selective application for multi-file patches.
-- [ ] **P1 — Windows ConPTY:** add native PTY execution without weakening the
-  existing process-tree cancellation contract.
+- [x] **P1 — Windows ConPTY:** `run_command` with `pty: true` and `collo --web`
+  both work on Windows through a shared `internal/conpty` package. The child is
+  created suspended and joined to a job object before it runs, so the
+  process-tree cancellation contract is strengthened rather than weakened —
+  there is no instant in which a descendant could be spawned outside the job.
+  Command-line construction goes through the same `exec.LookPath` and
+  `syscall.EscapeArg` path `os/exec` uses, so a command is quoted identically
+  with and without a PTY. No new dependency: the whole API is already in
+  `golang.org/x/sys/windows`.
 
 ### Phase 4 — Provider platform
 
@@ -730,9 +964,113 @@ claiming enforcement the policy layer does not provide.
   back. Environment variables keep precedence and remain fully supported;
   Linux has no backend by design, so headless hosts use `api_key_env`. MCP
   server credentials are covered separately by Phase 5's OAuth item.
-- [ ] **P1 — Provider discovery refinements:** Azure deployment/project
-  discovery and routing, tested sovereign presets, and clearer resolved AWS
-  identity/model-access diagnostics.
+- [ ] **P1 — First-run setup and provider discovery:** make the configuration
+  correct *before* it is written, by proving it with a real request — and take
+  Azure deployment/project discovery and routing, tested sovereign presets, and
+  clearer resolved AWS identity/model-access diagnostics as part of the same
+  work rather than beside it.
+
+  **`collo setup` has shipped**, covering local runtimes, hosted families, and
+  form-configured Azure and Bedrock end to end: concurrent probing, catalog
+  discovery, two-request verification, diagnosis, a writer that never puts a
+  secret in a file, and `sts:GetCallerIdentity` reporting which AWS identity the
+  credential chain actually resolved — the "resolved AWS identity diagnostics"
+  half of this item. Re-running is a supported flow: it reads the file it writes
+  rather than the merged configuration, shows the current default, marks a
+  provider it would replace, and asks before repointing `default_provider`.
+
+  What remains open is **discovery** proper. Azure OpenAI and Bedrock are
+  configured by naming their fields, which is honest but not enumeration:
+  deployment listing needs the ARM management plane and Bedrock's
+  `ListFoundationModels` needs `aws-sdk-go-v2/service/bedrock`, neither of which
+  is a current dependency. Foundry already gets model selection free, since its
+  OpenAI v1 route publishes a catalog. Tested sovereign presets also remain.
+
+  **Reclassified from P2, and merged with the former "Setup wizard" entry.**
+  The two were one item seen from opposite sides: the wizard's Azure branch
+  *is* deployment discovery, and its Bedrock branch *is* the model-access
+  diagnostic, so kept separate the Azure probe gets written twice. The parts
+  all exist — capability registry, model discovery, the four-state
+  `ProviderAvailability` that already distinguishes *unverified* from
+  *unavailable*, credential precedence, `credstore`, starter generation, and
+  `config validate --strict` as the final gate — so this is assembly and one
+  honest failure path rather than new machinery. It is P1 because the first
+  item in the recommended next sequence is real beta feedback, and the current
+  first-run path is: read the README, hand-write JSONC, set a credential, run
+  `doctor`, and guess which of those four steps was wrong.
+
+  **Nothing currently dials.** `collo init` writes a static starter file with
+  `ollama`/`qwen3-coder`/`127.0.0.1:11434` as literal values, and
+  `config.Defaults()` returns the same assumption for a machine that has never
+  been configured at all — so an install with no Ollama on it is, as far as the
+  configuration layer is concerned, correctly configured. `collo doctor` is
+  thorough about everything visible from the configuration and the
+  environment — which credential source won, the Entra scope and tenant,
+  whether Bedrock resolved bearer or SigV4 — and makes **no network request**,
+  so its best possible answer is `ok`. A dead port, a revoked key, a model the
+  endpoint does not have, an Azure model name written where a deployment name
+  belongs, a Bedrock region without model access, and a wrong `context` all
+  survive every existing check and surface identically: the interface opens,
+  the user types, and *then* it fails. That is the state in which someone
+  stops rather than reports.
+
+  - Probe, discover, then verify, in that order. Probe the default ports of the
+    local runtimes already supported (Ollama 11434, LM Studio 1234, vLLM 8000),
+    because "not installed" and "installed but not running" are different
+    sentences. Discover through `Runtime.ListModels`, which already constructs
+    the client, checks `CapabilitiesFor(...).ModelDiscovery`, and annotates
+    every result with its capabilities — so the model is chosen from what the
+    endpoint actually has rather than typed from memory.
+  - **Verify with real requests, not with the catalog call.** These are
+    different endpoints with different permissions: Azure lists *models* while
+    requests address *deployments*, and Bedrock will list a model the account
+    cannot invoke. A catalog response proves the host is reachable; only a
+    generation proves the thing being written down will answer.
+  - **Send two requests, the second carrying a tool definition.** The first
+    version sent no tools, reasoning that one request isolates one cause. It
+    does, and running it against a real Ollama showed what that costs:
+    `gemma3:270m` verified cleanly and then failed the first real prompt with
+    `does not support tools` — the exact failure the wizard exists to move
+    earlier, and not an edge case, since every embedding, vision, and small chat
+    model in a local catalog is in that position. Two requests keep the cause
+    isolated *and* keep the promise. Nothing needs to *call* the probe tool;
+    acceptance is the discriminator, because a capable model may reasonably
+    answer a trivial prompt with text.
+  - Write only fields that were verified — provider, type, base URL, and model —
+    with `context` from the capability registry instead of the current
+    hardcoded guess. **Always write a context window**, falling back to the
+    value `collo init` already uses and labelling it as assumed on the
+    confirmation screen. Leaving it out looks more honest and is worse:
+    `Agent.shouldCompact` returns false on a zero window, so automatic
+    compaction never runs and a long session ends at a provider
+    context-length error with no recovery.
+  - **Never write a secret into the file**, which is the rule `collo auth` was
+    built on. Prefer an already-exported variable and record `api_key_env`
+    pointing at it, so the wizard handles no secret at all; otherwise offer the
+    keychain through `internal/credstore`; on Linux say plainly that there is no
+    backend and write `api_key_env` to export. This also puts the macOS Keychain
+    backend on a real code path for the first time — see the Phase 8 coverage
+    item.
+  - Spend the effort on the failure branch, because that is the whole value. A
+    refused connection names the runtime and how to start it; a 404 on a model
+    prints the catalog that was actually returned; an Azure 404 says that the
+    field wants a deployment name. A wizard that only narrates success has
+    moved the original failure later, not removed it.
+  - Ship it as `collo setup`, its own verb, and have the interface offer it when
+    no provider has ever been verified. `collo init` keeps exactly its current
+    contract — write a starter file, refuse if one exists — because it is
+    documented, guarded by tests, and used from scripts; probe-verify-write is a
+    different operation and giving one verb two contracts is how a documented
+    behavior quietly becomes two. `collo setup` is re-runnable, since adding a
+    second provider is the next thing that happens after the first works.
+
+  **Behavior change:** `config.Defaults()` stops naming a provider it has never
+  contacted. An installation with no configuration reports that no provider is
+  configured and points at `collo setup`, rather than asserting Ollama on
+  localhost and failing at the first prompt. Anyone actually running Ollama on
+  the default port is unaffected in practice — `collo setup` finds it and
+  writes it down — but a machine that relied on the implicit default without a
+  configuration file now needs one.
 - [x] **P1 — Provider prompt caching:** the Anthropic Messages routes send two
   cache breakpoints — the stable tools/system prefix and a rolling
   conversation boundary held behind any volatile trailing content — and drop
@@ -752,8 +1090,6 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P1 — Usage and budgets:** normalized user-priced cost estimates and
   enforceable session/agent monetary budgets ship; an independently
   configurable per-turn dollar cap and richer provider billing caveats remain.
-- [ ] **P2 — Setup wizard:** discover local runtimes, validate endpoints and
-  credentials, test deployments, and write a minimal user provider profile.
 
 ### Phase 5 — MCP and extension ecosystem
 
@@ -827,35 +1163,146 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P0 — Security program:** sustained fuzz/adversarial campaigns and an
   independent review.
 - [ ] **P0 — Reliability campaigns:** host-level filesystem exhaustion,
-  power-loss durability, native terminal loss, remaining diagnostic/audit
-  fail-stop policy, and longer cancellation stress.
+  power-loss durability, native terminal loss, and longer cancellation stress.
+  The diagnostic/audit half of this item is broken out below, because it turned
+  out to be a feature rather than a policy decision.
+- [x] **P0 — A trustworthy audit ledger:** every entry names the session and
+  actor that wrote it; a write failure is counted, reported once, and declared
+  in the file as a gap rather than leaving a hole that reads as complete; both
+  delegated-agent paths route through one attachment site that no longer drops
+  `audit.Open`'s error; `collo audit` reads the record back and leads with its
+  integrity; growth is bounded by rotation that admits what it discards; and
+  the package went from no test of its own to 83% coverage. What remains here
+  is a boundary rather than a gap: this records what Collomia's permission
+  layer decided, not what an approved process then did on its own, which is
+  sandbox read/write confinement's job and is documented as such.
+- [ ] **P2 — Decide whether a mandatory-audit posture should exist:**
+  `docs/FEATURES.md` claimed audit writes could be made mandatory by policy,
+  and listed "audit requirements" among the monotonically clamped containment
+  fields. Neither has ever existed: there is no such key in
+  `appconfig.Permissions` and `ContainmentFields()` does not include one. The
+  documentation has been corrected rather than the gap papered over, and the
+  claim is now blocked by `TestDocumentedPermissionSettingsAllExist`.
+
+  The question the false claim raises is still a fair one. The audit wave chose
+  fail-visible deliberately — refusing work the user already authorized because
+  a record could not be filed is the wrong default — but a regulated deployment
+  may genuinely want "no action proceeds unless it can be recorded" as an
+  opt-in posture, and the wave left the mechanism in place for it
+  (`Ledger.Degraded`, `OnFailure`, and the runtime's latched health). It would
+  be a new clamped containment field with a fail-closed headless path. It stays
+  unbuilt until someone wants it, because a posture nobody has asked for is how
+  the original claim came to be written in the first place.
+- [ ] **P1 — Cover the credential store's actual backend:** `internal/credstore`
+  reads 40.8%, but the headline hides where the hole is — `backendGet`,
+  `backendSet`, and `backendDelete` in `store_darwin.go` are at **0.0%**, as are
+  `Delete` and `Verify`. The entire macOS Keychain path, and `collo auth rm`
+  along with it, has no test of its own on a platform that can run one. This is
+  the shape the audit wave already found once: a package at zero coverage whose
+  first real tests immediately surfaced two defects that unit review had missed,
+  in a package that holds provider API keys. Phase 4's first-run setup will put
+  this path under a user's hands for the first time, so the coverage is worth
+  having before that rather than after.
 - [ ] **P1 — Performance budgets:** idle memory, token overhead, compaction
-  quality, monorepo fixtures, and same-hardware regression thresholds.
+  quality, monorepo fixtures, and same-hardware regression thresholds. The
+  prompt-cache wave established the measurement discipline and the live-endpoint
+  harness this needs, so it is cheapest to take while that work is still warm.
 - [ ] **P1 — Optional telemetry decision:** only opt-in, minimal, documented,
   locally inspectable/deletable, and fully disabled by offline mode.
 - [ ] **P1 — Native release signing:** Apple signing/notarization, Windows
   Authenticode, and installer-enforced signature verification.
-- [ ] **P1 — Package managers:** Homebrew, Scoop/Winget, selected Linux flows,
-  and clean-machine install/update/rollback/uninstall testing.
+- [ ] **P1 — Package managers:** Homebrew and Scoop first, because neither
+  needs a signed binary — a Homebrew *formula* over the release tarball and a
+  Scoop manifest over the zip are both checksum-verified text, and the release
+  workflow already produces the artifacts, checksums, SBOMs, and attestations
+  they would reference. Publish both from `release.yml` so a manifest cannot
+  drift from `VERSION`. A Homebrew **cask** and a Winget manifest are blocked
+  on native release signing above and should not be started before it;
+  discovering that halfway through is how a distribution slice stalls with
+  nothing shipped. Selected Linux flows and clean-machine
+  install/update/rollback/uninstall testing follow each channel that ships.
+
+  Today the only routes to the binary are `curl | sh` and `irm | iex`. Both
+  work, and neither is how most developers install a tool they have just heard
+  about.
+- [ ] **P1 — A reporting path that does not require assembling a report:**
+  `collo feedback` opens a prefilled issue carrying `collo doctor`'s
+  environment facts and the opaque `err-…` identifier, and nothing else,
+  reusing the support bundle's existing privacy review rather than inventing a
+  second one. `collo support bundle` already covers a reproducible failure; it
+  is the wrong instrument for "this was confusing", which is most of what a
+  beta needs to hear and none of what it currently receives.
+
+  This is deliberately the zero-telemetry form of the optional telemetry
+  decision above and does not wait on it: nothing is collected, nothing is
+  transmitted in the background, and the user reads the whole report before it
+  leaves the machine.
 
 ## Recommended next sequence
 
-1. Decide the one-hour cache TTL now that the mechanism is measured and
-   confirmed working. What is still unknown is only the gap behavior: the live
-   run measured back-to-back requests, not a session resumed after a pause,
-   which is the case the longer TTL exists for.
+Several waves in a row were P1 or P2 while the items that actually gate 1.0 did
+not move. The audit ledger — the cheapest of the remaining P0s, and the one an
+independent assessment starts from — has been taken; Windows ConPTY closed the
+last platform-parity gap; and the publication wave closed the finding that
+assessment would most likely have opened with. The rest, in order:
+
+1. Close the distance to a first successful session, because the beta feedback
+   this list has opened with for several waves is blocked on it rather than on
+   anyone's willingness. Three segments of the path from *hears about Collomia*
+   to *has a working session* are unbuilt, and all three were already on this
+   roadmap as deferred items: **getting the binary** (Phase 8 package
+   managers — no Homebrew, Scoop, or Winget; `curl | sh` and `irm | iex` are
+   the only routes), **trusting it** (Phase 8 native release signing — unsigned
+   on macOS and Windows, provenance-attested only), and **configuring a
+   provider** (Phase 4 first-run setup — `collo init` writes a static starter
+   file, `config.Defaults()` asserts a provider it has never contacted, and
+   `collo doctor` makes no network request, so nothing between installation and
+   the first prompt ever dials the endpoint being configured). Add
+   `collo feedback` beside them so that what comes back is cheap to send.
+
+   Native signing is the one segment with an external dependency —
+   certificates cost money and need CI secrets — so it is a decision to take
+   rather than work to schedule, and the other three do not wait on it. Every
+   wave since v0.1.7 has added depth to a product that is still meaningfully
+   hard to start using; this is the same asymmetry the publication wave fixed,
+   in a different place. A control nobody leaves on and a product nobody can
+   easily install fail for the same reason.
 2. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
-   judged against real toolchains rather than predicted.
+   judged against real toolchains rather than predicted. This is the stated
+   prerequisite for item 3 and has not happened yet.
 3. Add opt-in plan-graph execution using verified results, write scopes,
-   dependency readiness, and stale-state invalidation. Steering is a
-   prerequisite that has now landed: adding autonomy on top of a loop that
-   could not be corrected without cancelling was the wrong order.
-4. Add explicit combined-parent verification and conservative result-ranking
-   criteria without turning a score into permission.
-5. Continue Phase 8 security/reliability campaigns in parallel with every
-   feature wave.
+   dependency readiness, and stale-state invalidation, then explicit
+   combined-parent verification and conservative result-ranking criteria
+   without turning a score into permission. `collo audit --actor` is now the
+   surface that can say what each agent in such a graph was permitted to do.
+4. Continue Phase 8 security/reliability campaigns in parallel with every
+   feature wave, and take the performance budgets while the prompt-cache wave's
+   measurement harness is still warm. The reliability half — host-level
+   filesystem exhaustion, power-loss durability, native terminal loss, longer
+   cancellation stress — is now the largest untouched P0 and produces
+   confidence rather than a control, which is why it did not outrank the
+   publication gap but does outrank the next feature.
+
+Two small decisions can ride along with whichever wave ships next rather than
+becoming waves of their own:
+
+- The one-hour cache TTL. The mechanism is measured and confirmed working; what
+  is unknown is only gap behavior, since the live run measured back-to-back
+  requests rather than a session resumed after a pause. Instrument the real
+  gap between turns before paying a write premium that is 2x rather than 1.25x.
+- Git write tooling under approval. The agent reads Git but must drop to
+  `run_command` to commit, and `/restore`'s change tracking is in memory so it
+  does not survive a resume; a checkpoint commit would fix both. It was
+  considered for this slot and deferred deliberately: it *adds* an
+  outward-facing capability, and governing the outward-facing capability that
+  already existed had to come first. It now lands on top of the publication
+  tier rather than beside it.
+- Deliberately **not** another terminal-surface wave. Four of the last six
+  touched it, the width sweep now pins the property the golden screens had
+  recorded wrong, and the returns there are visibly smaller than a security
+  control with no tests.
 
 ## Exit gates
 
@@ -892,7 +1339,9 @@ until all of these are true:
 - Shared real-time team workspaces.
 - A public plugin marketplace.
 - Autonomous Git commits, pushes, pull requests, deployments, or issue updates
-  by default.
+  by default. This is now enforced rather than merely intended:
+  `permissions.publication` defaults to `prompt` and is not coverable by
+  autonomy mode or a tool-wide grant.
 - Persistent semantic memory across unrelated repositories.
 - Decorative features that do not improve coding safety, accessibility, or
   throughput.

@@ -132,14 +132,7 @@ type Model struct {
 }
 
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
-	theme := defaultTheme()
-	if t, ok := themeByName(runtime.Config.Options.Theme); ok {
-		theme = t
-	}
-	// NO_COLOR (https://no-color.org) wins over any configured theme.
-	if os.Getenv("NO_COLOR") != "" {
-		theme, _ = themeByName("plain")
-	}
+	theme := resolveTheme(runtime.Config.Options.Theme)
 	in := newComposer()
 	spin := spinner.New()
 	spin.Spinner = spinner.Points

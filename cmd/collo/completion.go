@@ -6,8 +6,8 @@ import (
 )
 
 var completionCommands = []string{
-	"tui", "run", "init", "config", "trust", "doctor", "capabilities",
-	"support", "policy", "auth", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "replay", "version",
+	"tui", "run", "init", "setup", "config", "trust", "doctor", "capabilities",
+	"support", "policy", "auth", "audit", "review", "verify", "sessions", "skills", "mcp", "completion", "schema", "replay", "version",
 }
 
 var completionFlags = []string{
@@ -16,6 +16,7 @@ var completionFlags = []string{
 	"--web-port", "--no-open", "--alt-screen", "--no-alt-screen", "--jsonl", "--ephemeral",
 	"--debug", "--global", "--strict", "--yes", "--with-reference",
 	"--check", "--output", "--include-logs",
+	"--session", "--actor", "--tool", "--since", "--limit", "--denied",
 }
 
 func runCompletionCommand(opts options) error {

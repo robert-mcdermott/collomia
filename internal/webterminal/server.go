@@ -75,7 +75,7 @@ type server struct {
 // exits or ctx is cancelled.
 func Run(ctx context.Context, opts Options) error {
 	if !platformPTYSupported {
-		return errors.New("web terminal mode requires a PTY; it is supported on macOS and Linux, but a Windows ConPTY backend is not implemented yet")
+		return errors.New("web terminal mode requires a pseudo-terminal, which this platform does not provide")
 	}
 	if strings.TrimSpace(opts.Executable) == "" {
 		return errors.New("web terminal executable is required")

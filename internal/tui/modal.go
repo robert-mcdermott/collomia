@@ -55,6 +55,13 @@ func (m Model) renderApproval() string {
 	// command run", so it does not wear the same chrome. Reading a key is not
 	// reversible by declining the next prompt.
 	header, accent := "Permission required", m.theme.Warning
+	// Publishing gets its own header for the same reason a credential does:
+	// "this leaves the machine" is a different question from "may I run a
+	// command", and a reader who sees the ordinary chrome answers the ordinary
+	// question. Credential access keeps precedence when an action is both.
+	if publicationCapability(req.Capabilities) != nil {
+		header, accent = "Publishing outside this machine", m.theme.Error
+	}
 	if credentialCapability(req.Capabilities) != nil {
 		header, accent = "Credential access", m.theme.Error
 	}
@@ -133,6 +140,11 @@ func approvalPreviewPath(req permission.Request) string {
 func (m Model) renderDurableHint(req permission.Request, inner int) string {
 	rule := ""
 	switch {
+	case publicationCapability(req.Capabilities) != nil && len(req.Action.Operations) > 0:
+		// The operation, never the executable: suggesting {"command": "npm"}
+		// here would hand out publishing rights in exchange for wanting to
+		// stop being asked about one release.
+		rule = fmt.Sprintf(`{ "action": "allow", "command": %q }`, publicationOperation(req))
 	case credentialCapability(req.Capabilities) != nil:
 		capability := credentialCapability(req.Capabilities)
 		if _, path := splitCredentialTarget(capability.Values[0]); path != "" {
@@ -150,8 +162,16 @@ func (m Model) renderDurableHint(req permission.Request, inner int) string {
 }
 
 func credentialCapability(capabilities []permission.Capability) *permission.Capability {
+	return capabilityOfKind(capabilities, permission.CapabilityCredential)
+}
+
+func publicationCapability(capabilities []permission.Capability) *permission.Capability {
+	return capabilityOfKind(capabilities, permission.CapabilityPublication)
+}
+
+func capabilityOfKind(capabilities []permission.Capability, kind string) *permission.Capability {
 	for i, capability := range capabilities {
-		if capability.Kind == permission.CapabilityCredential && len(capability.Values) > 0 {
+		if capability.Kind == kind && len(capability.Values) > 0 {
 			return &capabilities[i]
 		}
 	}
@@ -184,6 +204,20 @@ func (m Model) renderCapabilities(capabilities []permission.Capability, inner in
 		label += strings.Repeat(" ", max(1, labelWidth-len(label)))
 		value := summarizeValues(capability.Values)
 		style := m.styles.panelBody
+		if capability.Kind == permission.CapabilityPublication {
+			// Lead with the operation and keep the category as a suffix: the
+			// command is what the reader is deciding about.
+			named := make([]string, 0, len(capability.Values))
+			for _, target := range capability.Values {
+				if kind, operation := splitCredentialTarget(target); kind != "" {
+					named = append(named, operation+" ("+kind+")")
+				} else {
+					named = append(named, operation)
+				}
+			}
+			value = summarizeValues(named)
+			style = m.styles.errText
+		}
 		if capability.Kind == permission.CapabilityCredential {
 			// Lead with the path and keep the kind of secret as a suffix: the
 			// file is what the reader is deciding about.
@@ -226,8 +260,22 @@ func capabilityLabel(kind string) string {
 		return "server"
 	case permission.CapabilityCredential:
 		return "secret"
+	case permission.CapabilityPublication:
+		return "publish"
 	}
 	return kind
+}
+
+// publicationOperation names the operation a durable rule should cover. The
+// analysis carries the same operation inside each "label: operation" target,
+// and the rule needs the bare operation.
+func publicationOperation(req permission.Request) string {
+	if capability := publicationCapability(req.Capabilities); capability != nil {
+		if _, operation := splitCredentialTarget(capability.Values[0]); operation != "" {
+			return operation
+		}
+	}
+	return req.Action.Operations[0]
 }
 
 // describeGrant names exactly what a session grant would cover, so the button
@@ -241,6 +289,12 @@ func describeGrant(capabilities []permission.Capability) string {
 		// here because the full paths are listed directly above.
 		if capability.Kind == permission.CapabilityCredential {
 			parts = append(parts, credentialGrantLabel(capability.Values))
+			continue
+		}
+		// The operation alone, for the same reason: the category prefix is
+		// already in the Reach block above and only lengthens the button.
+		if capability.Kind == permission.CapabilityPublication {
+			parts = append(parts, publicationGrantLabel(capability.Values))
 			continue
 		}
 		parts = append(parts, capabilityLabel(capability.Kind)+" "+summarizeValues(capability.Values))
@@ -259,6 +313,17 @@ func credentialGrantLabel(values []string) string {
 		return path
 	}
 	return fmt.Sprintf("these %d files", len(values))
+}
+
+// publicationGrantLabel names what a publication grant covers.
+func publicationGrantLabel(values []string) string {
+	if len(values) == 1 {
+		if _, operation := splitCredentialTarget(values[0]); operation != "" {
+			return operation
+		}
+		return values[0]
+	}
+	return fmt.Sprintf("these %d operations", len(values))
 }
 
 func grantableCapabilities(capabilities []permission.Capability) []permission.Capability {

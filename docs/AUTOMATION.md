@@ -265,13 +265,136 @@ has `ephemeral: true` and no `session_id`.
 It does **not** make the run read-only or untracked:
 
 - workspace mutations still happen when policy allows them;
-- permission decisions and execution outcomes still go to the audit ledger;
+- permission decisions and execution outcomes still go to the audit ledger,
+  which is how you reconstruct an ephemeral run afterwards: its entries carry
+  no `session` field, so `collo audit --since <window>` is the way to find
+  them;
 - `--debug` still writes its explicitly requested redacted diagnostic log;
 - provider, MCP, hook, and command behavior is otherwise unchanged.
 
 `--ephemeral` is available only on `collo run` and cannot be combined with
 `--resume` or `--continue`. Use `--plan` as well when you want a read-only tool
 surface.
+
+## Publishing and deploying from an unattended run
+
+A headless run has no one to approve anything, so every prompt is a failure.
+That matters most for `permissions.publication`, which defaults to `prompt` and
+covers the operations a release or deploy job exists to perform: package and
+container registries, source remotes, code-forge writes, infrastructure
+applies, and commands run on another host. An unconfigured job that publishes
+will fail closed, and the refusal appears in `refused` on the final
+`run.result`.
+
+Note the exit code that comes with it. A denied tool request is *not* fatal on
+its own: the agent normally explains the refusal and finishes, so the run exits
+`0` with `status: "ok"` and `refused: true`. A release job that only checks the
+exit code will look like it succeeded while having published nothing. Check
+`refused` explicitly, as the examples below do:
+
+```sh
+jq -e '.result.refused != true' <<<"$result"
+```
+
+Ordinary CI work is unaffected. `npm install`, `go test`, `docker build`,
+`docker pull`, `terraform plan`, `kubectl get`, and `gh pr view` are not
+publications and need nothing configured.
+
+### The configuration has to be global, not in the repository
+
+`publication` is a monotonically clamped containment field, so a checked-in
+`.collomia.json` **cannot** turn it off. A repository may raise it to `deny`;
+lowering it is refused and reported:
+
+```
+permissions.publication: project asked for off; kept prompt
+  (a repository can tighten containment but never weaken it)
+```
+
+That is deliberate — cloning a repository must not be enough to disarm the
+control — so the setting belongs in the runner's own user-level configuration
+at `$HOME/.collomia/config.json` (`%USERPROFILE%\.collomia\config.json` on
+Windows), written as a setup step.
+
+Ordered `rules`, unlike containment settings, are *not* clamped, so a trusted
+project file may carry operation-scoped `allow` rules. That is the one part of
+this a repository can own.
+
+### Recommended: name the operations the job needs
+
+Prefer this to switching the control off. It keeps the job's authority
+enumerated, reviewable in the runner configuration, and narrow enough that an
+unrelated publish still fails:
+
+```bash
+mkdir -p "$HOME/.collomia"
+cat > "$HOME/.collomia/config.json" <<'JSON'
+{
+  "schema_version": 1,
+  "permissions": {
+    "mode": "autopilot",
+    "rules": [
+      { "action": "allow", "command": "npm publish", "reason": "release workflow" },
+      { "action": "allow", "command": "git push",    "reason": "release workflow" }
+    ]
+  }
+}
+JSON
+collo config validate --strict
+```
+
+A `command` pattern containing a space matches an **operation**; one without
+matches an executable name. `{"command": "npm"}` allows the package manager and
+deliberately does *not* cover publishing with it. Run `collo config validate
+--strict` in the setup step: it rejects a pattern that could match neither
+form, which is otherwise a rule that reads as configuration and does nothing.
+
+### The blunt alternative
+
+For a dedicated release runner where enumerating operations is not worth it:
+
+```json
+{ "schema_version": 1, "permissions": { "publication": "off" } }
+```
+
+This restores the behavior of releases before publication protection existed,
+for that environment only. It is a whole-environment decision, so prefer it on
+an isolated runner rather than on a shared one.
+
+### Verify before the job depends on it
+
+`collo policy check` evaluates a command against the effective configuration
+without executing it:
+
+```sh
+collo policy check --autonomy autopilot 'npm publish'
+```
+
+Expect `allow (source: rule; …)`. A `prompt (source: publication; …)` means no
+rule matched, and the `operations:` line in the same output names the exact
+string a rule has to carry:
+
+```
+executables:  npm
+operations:   npm publish
+publishes:    package registry: npm publish
+```
+
+Run it in the setup step against each operation the job performs. It is the
+difference between a misconfiguration surfacing in seconds and surfacing after
+the build, at the publish step, in a scheduled run nobody is watching.
+
+### Cron: confirm `HOME` explicitly
+
+Configuration resolves through `$HOME`, and cron starts with a minimal
+environment. A job whose `HOME` is not what the author assumed silently gets
+built-in defaults — which now means prompting, which headless turns into a hard
+failure. Set it explicitly, as the [cron example](#cron-scheduled-repository-maintenance-report)
+below does, and confirm the resolved layers with:
+
+```sh
+collo config show | head -n 40
+```
 
 ## Validating and replaying saved traces
 
@@ -319,9 +442,20 @@ while a successful result requires clean `turn.end` and tool completion.
 
 `collo replay` consumes completed headless run streams. Durable session JSONL
 and permission audit ledgers have different record envelopes and are not valid
-replay inputs. Replay verifies recorded structure; it does not prove that an
-upstream provider response was factually correct or that an external action
-actually had the claimed effect.
+replay inputs — the audit ledger has its own reader, `collo audit`, documented
+in the [user guide](USER_GUIDE.md#audit-ledger). Replay verifies recorded
+structure; it does not prove that an upstream provider response was factually
+correct or that an external action actually had the claimed effect.
+
+The two answer different questions, and an automated pipeline usually wants
+both. A run trace is one run's narrative, produced only when you asked for
+`--jsonl` and only as complete as that stream. The ledger is the durable
+per-workspace record of what was permitted, written whether or not anyone was
+capturing output, spanning every run and every delegated agent — and it states
+its own completeness, which a captured stream cannot. For a CI job that must
+prove what an agent was allowed to do, `collo audit --since <window> --jsonl`
+is the artifact to retain, after checking that
+`collo audit --since <window>` reports the record as complete.
 
 ## Complete automation examples
 

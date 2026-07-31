@@ -49,11 +49,26 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   catastrophic denials, policy, and OS sandboxing reduce risk but do not replace
   review, backups, source control, or host isolation. It also does not approve
   everything: actions classified as external risk, which includes MCP tool
-  calls and both web tools, still require a rule, a session grant, or a person.
+  calls and both web tools, still require a rule, a session grant, or a person —
+  and neither does it approve publishing.
+- Publishing, deploying, and pushing require their own decision by default
+  (`permissions.publication`), covering package and container registries,
+  source remotes, code-forge writes, infrastructure applies, and commands run
+  on another host. This is a policy layer, not enforcement: it reads what a
+  command's text says it will do, so a build script that uploads an artifact
+  without naming the operation is outside its view, its catalogue of publishing
+  tools is finite, and it cannot distinguish `kubectl apply` against a local
+  cluster from the same command against production. Set it to `off` to restore
+  the behavior of earlier releases exactly.
 - macOS and Windows release binaries are not yet platform code-signed or Apple
   notarized. Release provenance is signed through GitHub/Sigstore instead.
-- Windows has no ConPTY backend yet. `run_command` with `pty: true` is Unix
-  only, and `collo --web` runs on macOS and Linux but not Windows.
+- `run_command` with `pty: true` and `collo --web` now work on every supported
+  platform. Windows uses a pseudoconsole, which requires Windows 10 1809 or
+  later; on anything older the console cannot be created and the command
+  reports that rather than running without terminal semantics. Windows has no
+  signal equivalent to SIGTERM, so cancelling a pseudoconsole session closes
+  the child's console input and terminates the job after a short grace period
+  rather than asking politely first.
 - MCP OAuth, experimental tasks, resource subscriptions, audio passthrough,
   annotations, and argument-level permission matching remain incomplete.
 - LSP code actions are not implemented. Diagnostics, `find_definition`,
@@ -83,6 +98,20 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   qualified against a real deployment. An endpoint that rejects a cache
   breakpoint disables caching for the life of the process after one wasted
   request, which is correct but costs that request.
+- `collo setup` proves a provider configuration with two real requests before
+  writing it, but that is a reachability and tool-acceptance check rather than a
+  judgement about the model: one that answers a trivial prompt and accepts a
+  tool definition can still be too weak to drive an agent usefully. Azure
+  OpenAI and Bedrock are configured by naming their fields rather than by
+  enumeration — deployment listing needs the ARM management plane and Bedrock's
+  `ListFoundationModels` needs a dependency Collomia does not carry — so a
+  mistyped deployment or a region without model access is caught by the
+  verification step rather than prevented by a list, and sovereign-cloud
+  endpoints are untested. Setup writes the user-level configuration only, never
+  a repository's `.collomia.json`. It can store a key in the OS credential
+  manager on macOS and Windows; other platforms, including Linux, have no
+  supported backend, so a key there is referenced by environment-variable name
+  and must be exported by the user.
 - Provider behavior still depends on the selected model, account, deployment,
   regional availability, and upstream API changes. Use the capability display,
   `collo doctor`, and live provider qualification before relying on a hosted
@@ -96,6 +125,14 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   boundaries. An action already executing at the instant of a disk failure or
   process death may still have taken effect; resume marks it interrupted and
   requires inspection instead of replaying it.
+- The audit ledger records what Collomia's permission layer decided and what
+  the resulting execution returned; it is not a system-call audit, so a program
+  that was approved and then opened a socket or read a file on its own is
+  outside its view. A ledger write failure does not stop the agent loop, but it
+  is reported and declared in the file as a gap, so an incomplete record never
+  reads as a complete one — check with `collo audit` or `collo doctor`.
+  Redaction is best-effort pattern matching, so review a ledger before sharing
+  it.
 
 Do not advertise the beta as safe for unattended production changes,
 deployments, credential-bearing automation, or security-critical environments.

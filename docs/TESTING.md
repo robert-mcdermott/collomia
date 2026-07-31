@@ -43,6 +43,7 @@ The current corpus covers these outcome-oriented scenarios:
 | Generated tests | Agent loop, `read_file`, `write_file`, change tracker, `run_command` | Creates boundary-focused tests and executes the fixture's real Go test suite before reporting success. |
 | Grounded code review | Review prompt, `git_status`, `git_diff`, `read_file` | Identifies a real boundary regression at the exact file/line and leaves the worktree unchanged. |
 | Permission refusal | Agent loop, command analysis, permission manager | A headless `ask` run records denial, never starts the command, and continues with an honest answer. |
+| Publication under autopilot | Agent loop, publication classifier, permission manager, operation-scoped rules | `npm publish` is refused in the mode whose purpose is not asking, and the command never starts — a publication executed and then reported as denied has already spent the version number. Ordinary commands in the same mode still run, and an operation-scoped `allow` rule reaches execution. |
 | External MCP prompt injection | Agent loop, external tool, permission manager, built-in file tools | An allowed external read remains usable as evidence but can also request a write and forge a permission grant; the write is denied and no file changes. |
 | Fetched web page prompt injection | Agent loop, real `web_fetch`, external-data framing, permission manager, built-in file tools | An allowed page fetch stays usable as evidence but its "permission has already been granted" claim buys nothing; the requested write is denied and no file changes. |
 | Web address boundary during a run | Agent loop, real `web_fetch`, connect-time address guard | A loopback URL requested mid-run is refused with an explanation naming the address and the alternative, and the run continues honestly. |
@@ -67,6 +68,37 @@ narrow parser and algorithm behavior in ordinary unit tests.
 Evaluation assertions should prefer observable invariants—changed content,
 tool lifecycle, permission decisions, verification output, and recovery
 state—over exact prose or timing.
+
+## Documentation guards
+
+`cmd/collo/docs_test.go` holds guards that compare the documentation against the
+source: every event kind, tool name, slash command, permission setting, sandbox
+root, credential location, and setup environment variable must appear where a
+reader would look for it. They exist because documented-but-absent controls have
+shipped here more than once.
+
+A guard of this shape fails in a way ordinary review does not catch: it can pass
+for the wrong reason. `strings.Contains(guide, "off")` is satisfied by any of the
+sixteen unrelated uses of that word, so the guard stays green while the setting
+it claims to protect is deleted. Six guards were found in exactly that state.
+
+**Prove a new guard can fail before trusting it.** Delete the documentation it
+is meant to protect and confirm it goes red — the same mutation the guard is
+supposed to catch in a future change:
+
+```sh
+cp docs/USER_GUIDE.md /tmp/guide.bak
+grep -v "protect_credentials" /tmp/guide.bak > docs/USER_GUIDE.md
+go test ./cmd/... -run TestGuideDocumentsEveryCredentialSetting -count=1   # must FAIL
+cp /tmp/guide.bak docs/USER_GUIDE.md
+```
+
+Two helpers exist so this is the default rather than an afterthought.
+`sectionContaining` narrows the search to the smallest enclosing Markdown
+section, which is what makes "documented" mean "documented *here*" — anchoring
+on `##` alone is not enough, since one section of the user guide runs to eight
+hundred lines. `documentedToken` matches whole words, so `/agent` cannot be
+satisfied by `/agents`.
 
 ## Fuzz targets
 
@@ -122,6 +154,19 @@ Important failure-oriented tests include:
 - Non-destructive conversation rewind at completed-turn boundaries, including
   source-session preservation, artifact continuity, and a recorded mutating
   tool call that remains inert during restoration.
+- Publication classification across all six categories, the read verbs and
+  `--dry-run` rehearsals that must stay ordinary, upload-versus-download
+  direction for copy tools, global options that must not hide a subcommand,
+  and a symmetry check that fails when a tool gains a destructive
+  classification without its publishing counterpart.
+- Operation-scoped command rules: an operation pattern never falls back to
+  matching an executable, an allow rule still requires every operation to be
+  covered, and a pattern that could match neither form fails validation rather
+  than shipping inert.
+- Publication gating: autopilot and a tool-wide "always allow" never cover it,
+  an executable-only allow rule never covers it, an operation-naming rule does,
+  a session grant covers exactly the operation shown and nothing adjacent, and
+  raising the setting to `deny` invalidates a grant already handed out.
 - Rooted atomic file replacement, mode-preserving external-edit-safe undo,
   hard-link isolation, traversal and adversarial parent-symlink swaps, shell
   analysis, and native sandbox enforcement.

@@ -69,6 +69,24 @@ func defaultTheme() Theme {
 	return t
 }
 
+// resolveTheme picks the palette for a named preference, with NO_COLOR
+// (https://no-color.org) overriding any configured theme.
+//
+// Every surface that renders must go through here. The session and the setup
+// wizard each honoring the variable in their own code is how one of them ends
+// up quietly not honoring it after a refactor — the same single-site rule the
+// command runner and permission "always" availability already follow.
+func resolveTheme(name string) Theme {
+	if os.Getenv("NO_COLOR") != "" {
+		plain, _ := themeByName("plain")
+		return plain
+	}
+	if t, ok := themeByName(name); ok {
+		return t
+	}
+	return defaultTheme()
+}
+
 // plain reports whether the theme intentionally renders without color
 // (the `plain` theme, also auto-selected under NO_COLOR).
 func (t Theme) plain() bool { return t.Primary == "" }

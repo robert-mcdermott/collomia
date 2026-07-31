@@ -22,6 +22,7 @@ func classifySegment(tokens []string, cwd string, a *Analysis) string {
 	}
 	classifyNetwork(inv, a)
 	classifyCredentialTargets(inv, cwd, a)
+	classifyOperations(inv, a)
 	if isInlineInterpreter(inv.name) {
 		if payload, encoded := inlinePayload(inv.name, inv.args); payload != "" {
 			nested := analyzeAt(payload, a.workspace, cwd)
@@ -295,6 +296,15 @@ func mergeSafety(dst *Analysis, src Analysis) {
 	// launder the target that the nested analysis already read.
 	for _, target := range src.CredentialTargets {
 		dst.credential(target)
+	}
+	// The same reasoning covers publication: `sh -c "npm publish"` publishes,
+	// and the operation the nested analysis read is the one a rule must be
+	// able to name.
+	for _, operation := range src.Operations {
+		dst.operation(operation)
+	}
+	for _, target := range src.PublicationTargets {
+		dst.publication(target)
 	}
 	// Endpoints named inside an inline payload are endpoints of the outer
 	// command; losing them here would let an allow rule cover traffic the

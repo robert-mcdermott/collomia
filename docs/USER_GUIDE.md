@@ -204,6 +204,138 @@ should follow [Releasing Collomia](RELEASING.md).
 
 ## Five-minute setup
 
+### The short version: `collo setup`
+
+```sh
+collo setup
+```
+
+`collo setup` finds the local model runtimes that are actually running (Ollama,
+LM Studio, vLLM), notices provider API keys the environment already exports,
+lets you choose a model from the endpoint's own catalog, and then **verifies the
+choice with two real requests before writing anything**: one short completion,
+proving the endpoint answers as configured, and one carrying a tool definition,
+proving the model can be driven by a tool-calling agent at all. Only then does it
+write `~/.collomia/config.json`.
+
+That second request matters more than it sounds. Many local models — embedding,
+vision, and the smallest chat models — answer an ordinary prompt perfectly well
+and reject any request that carries tools. Without the tool check, such a model
+configures cleanly and then fails your first real prompt.
+
+Reasoning models are expected here and are allowed to take their time. A model
+that thinks before it answers can spend hundreds of tokens and many seconds
+reaching the word "ok", so verification allows room for that rather than reading
+a model still thinking as an endpoint that returned nothing. If the budget runs
+out before any visible answer, the wizard says so plainly — that is a statement
+about the verification limit, not about your endpoint or your credential, both
+of which have already proven themselves by that point.
+
+If verification fails, nothing is written and the wizard says which of the
+endpoint, the credential, or the model is at fault, and what to do about it. One
+case worth naming: local runtimes list embedding models in the same catalog as
+chat models, with nothing to distinguish them. Picking one is an easy mistake,
+and the runtime's own rejection rarely explains it, so the wizard does.
+
+Azure OpenAI, Azure AI Foundry (both the OpenAI and Anthropic routes), and AWS
+Bedrock are configured through a short form rather than offered as one-line
+choices, because neither is discoverable from a name and a key: Azure addresses
+a *deployment* inside a resource you name, and Bedrock resolves an identity
+through the AWS credential chain and grants model access per region. Both go
+through the same verification. For Bedrock the confirmation also reports which
+identity the credential chain actually resolved to, via `sts:GetCallerIdentity`,
+because "which of my six credential sources won?" is the usual reason a Bedrock
+permission error is misread as a Bedrock outage. Authentication modes that have
+nothing to store — Entra, which issues short-lived tokens through
+`DefaultAzureCredential`, and the SigV4 chain — never ask you for a key.
+
+### Credentials, and skipping the key prompt entirely
+
+`collo setup` never writes an API key into a configuration file. It prefers a
+variable your environment already exports and records only its name; otherwise
+it offers the operating-system credential store, or records a variable name for
+you to export.
+
+**If the variable is already exported when you start, setup uses it and never
+asks.** That is the recommended route for a long credential — nothing is typed,
+nothing is pasted, and the value never passes through an input field:
+
+```sh
+export AWS_BEARER_TOKEN_BEDROCK='<your key>'
+collo setup
+```
+
+These are the variables setup consults, per provider:
+
+| Provider | Variable |
+| --- | --- |
+| Anthropic | `ANTHROPIC_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| AWS Bedrock | `AWS_BEARER_TOKEN_BEDROCK` |
+| Azure OpenAI, Azure AI Foundry (both routes) | `AZURE_OPENAI_API_KEY` |
+
+The custom OpenAI-compatible path has no conventional variable, because the
+endpoint behind it is unknown; its key is stored or named explicitly instead.
+Authentication modes with nothing to store — Azure `entra` and the Bedrock
+SigV4 chain — never prompt for a key at all.
+
+#### Choosing between Bedrock's two credential families
+
+AWS Bedrock accepts two entirely different kinds of credential, and the setup
+form's `auth` field chooses between them:
+
+- **`sigv4`** — ordinary **IAM credentials**: an access key ID, a secret access
+  key, and a session token when they are temporary. SigV4 is AWS's request
+  signing scheme, the same one the AWS CLI uses, so this is the mode to pick if
+  you have IAM keys. Collomia never holds these values and setup never asks for
+  them: the AWS SDK resolves them the way every other AWS tool does, from
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, a named
+  profile in `~/.aws/credentials`, IAM Identity Center (SSO), an assumed role,
+  or an instance role. Name a profile in the form's profile field to select one
+  explicitly; leave it blank for the default chain.
+- **`bearer`** — a **Bedrock API key**, short- or long-term, which is a single
+  opaque token you paste or export as `AWS_BEARER_TOKEN_BEDROCK`. These are
+  region-scoped and are a newer, Bedrock-specific alternative to IAM.
+- **`auto`** (the default) picks `bearer` when a token is present and `sigv4`
+  otherwise. Choose explicitly when both families exist on the machine and you
+  want deterministic selection.
+
+So: if you have a key, a secret, and optionally a session token, that is
+`sigv4`. Export them before running setup —
+
+```sh
+export AWS_ACCESS_KEY_ID='...'
+export AWS_SECRET_ACCESS_KEY='...'
+export AWS_SESSION_TOKEN='...'   # only for temporary credentials
+collo setup
+```
+
+— or run `aws configure` once and let setup use the profile. Setup's
+confirmation screen reports which identity the chain actually resolved to via
+`sts:GetCallerIdentity`, so a key belonging to the wrong account is visible
+before anything is written rather than after a permission error. If nothing
+resolves, verification fails and says so, naming these sources rather than
+offering advice about an API key that does not exist in this mode.
+
+Whatever you paste is cleaned before use: surrounding quotes are removed, and so
+is all whitespace, including newlines picked up from a copy that wrapped across
+lines. The credential field shows a character count as you type, because it does
+not echo and a count is the only way to see that a long key arrived complete. A
+truncated Bedrock key is reported by AWS as `Missing required parameters in the
+API Key`, which reads like a permissions problem and is not one.
+
+**Running it again is expected.** It reads the file it is about to write, shows
+your current default on the first screen, marks any provider it would replace
+and with which model, and asks before changing `default_provider` — adding a
+second provider does not silently repoint your default at it. It reads only the
+file it writes, so a provider defined in a project's `.collomia.json` is never
+reported as something setup is replacing. Everything else in the file, including
+settings this release does not recognize, is preserved.
+
+The rest of this section is the manual path, which remains fully supported and
+is what you want for scripted or unattended installs.
+
 ### 1. Check the installation
 
 Run diagnostics from the project you intend to use:
@@ -768,6 +900,7 @@ layer is read at all; these rules decide what it may do once it is trusted.
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
 | `sandbox_writable_roots` | string list | Additional narrowly scoped read/write roots for sandboxed commands, resolved from the workspace when relative. Every writable root is implicitly readable. |
+| `publication` | string | `off`, `prompt` (default), or `deny`. Decides what happens when an action puts something outside this machine: publishing a package or image, opening a pull request or release, applying infrastructure, pushing to a Git remote, or running a command on another host. Under `prompt` it is not covered by autopilot or a tool-wide "always allow"; a rule naming the operation is. See [Publishing outside this machine](#publishing-outside-this-machine). |
 | `command_env` | string | `full` or `minimal`; if omitted while sandboxing is enabled, minimal is used. |
 | `reviewer_command` | string | Optional external policy reviewer for otherwise auto-approved non-read actions. |
 
@@ -778,7 +911,7 @@ Each rule supports:
 | `action` | Required: `allow`, `prompt`, or `deny`. |
 | `tool` | Tool-name glob, for example `run_command` or `mcp_*`. |
 | `path` | Glob matched against resolved native paths; a suffix of `/**` includes the directory and descendants. |
-| `command` | Executable-name glob such as `go`, `git`, or `npm`. |
+| `command` | Executable-name glob such as `go`, `git`, or `npm` — or, when the pattern contains a space, an **operation** glob such as `npm publish`, `git push`, or `gh pr create`. |
 | `host` | Network host/domain glob matched against the endpoints an action declares. |
 | `server` | MCP server-name glob. |
 | `reason` | Human-readable explanation shown with the rule decision. |
@@ -788,6 +921,48 @@ match. For an `allow` rule, every resource in the request must be covered;
 `deny` and `prompt` match when any resource in that category matches. An allow
 rule never vouches for a shell command the static analyzer could not fully
 inspect.
+
+### Operations: naming what a command does, not just what it runs
+
+An executable name cannot distinguish installing a dependency from publishing a
+package. Both are `npm`. So a `command` pattern containing a space is matched
+against the **operation** — the executable plus the leading words that decide
+what it does:
+
+```jsonc
+{ "action": "allow", "command": "npm install" }
+{ "action": "deny",  "command": "npm publish" }
+{ "action": "allow", "command": "gh pr view" }
+{ "action": "allow", "command": "ssh build-host" }
+```
+
+Operations are recognized for the tools whose subcommand changes what they do —
+package managers, `git`, `docker`/`podman`, `helm`, `kubectl`, `terraform`,
+`pulumi`, `gh`/`glab`, and the cloud CLIs — plus the `ssh` family, whose
+operation is the executable and its destination, so a rule can name one build
+host rather than every host. Everything else contributes no operation, and an
+operation pattern never falls back to matching an executable: `npm publish`
+does not deny every `npm` invocation.
+
+Collomia records the fullest form it recognizes rather than the deepest form
+the tool accepts, so `az webapp deployment source config` is reported as
+`az webapp deployment`. Globs work normally (`gh pr *`), and `collo policy
+check` prints the exact operation string a command produces:
+
+```sh
+collo policy check 'gh pr create --fill'
+```
+
+```
+executables:  gh
+operations:   gh pr create
+publishes:    code forge: gh pr create
+```
+
+Read that line rather than guessing the pattern. A `command` pattern with
+leading, trailing, or repeated spaces can match neither an executable nor an
+operation, so `collo config validate` rejects it instead of leaving a rule in
+the file that reads as protection and does nothing.
 
 ### Declared endpoints and host rules
 
@@ -1928,6 +2103,101 @@ that happens; it does not undo it.
 The current setting is shown in the Session tab's Security block, next to the
 sandbox and posture settings.
 
+### Publishing outside this machine
+
+`permissions.publication` (`off`, `prompt` by default, `deny`) governs actions
+that put something where other people — or production — can see it.
+
+It exists because the rest of Collomia's safety classifier is a taxonomy of
+*destruction*. Every deletion in these tools already required a fresh decision
+even under autopilot: `terraform destroy`, `kubectl delete`, `helm uninstall`,
+`aws s3 rm --recursive`, `git push --force`, `git reset --hard`. None of their
+publishing counterparts did. On a stock configuration under `autopilot`,
+`npm publish`, `cargo publish`, `docker push`, `gh pr create`, `gh release
+create`, `kubectl apply`, `helm upgrade`, `terraform apply -auto-approve`,
+`aws lambda update-function-code`, `git push`, and `ssh prod "systemctl restart
+app"` were all approved silently — even though a published package version is
+harder to take back than a deployment a controller will recreate.
+
+#### What counts as publishing
+
+| Category | Recognized operations |
+| --- | --- |
+| `package registry` | `npm`/`pnpm`/`yarn`/`bun publish`, `cargo publish`, `poetry publish`, `uv publish`, `gem push`, `twine upload`, `mvn deploy`, `gradle publish`, `nuget push`, `dotnet nuget push` |
+| `container registry` | `docker push`, `podman push`, `helm push` |
+| `source remote` | `git push`, `git send-email`, `git request-pull` |
+| `code forge` | `gh`/`glab`/`hub` verbs that create or change something visible — pull requests, releases, issues, repositories, workflows — and `gh api` with a non-GET method |
+| `infrastructure` | `terraform apply`/`import`/`state`, `pulumi up`, `kubectl apply`/`create`/`patch`/`replace`/`rollout`/`scale`/`drain`/…, `helm install`/`upgrade`/`rollback`, and the creating/updating verbs of `aws`, `az`, and `gcloud` |
+| `remote host` | `ssh`/`mosh` with a command to run on the far side, and `scp`/`rsync`/`sftp` whose *destination* is remote |
+
+Read verbs stay ordinary work. `gh pr view`, `kubectl get`, `terraform plan`,
+`helm list`, `aws s3 ls`, `docker pull`, `npm install`, and a download-direction
+`rsync` or `aws s3 sync` are not publications and never prompt for this reason.
+Neither is a rehearsal: `--dry-run`, `--server-dry-run`, `--what-if`, and
+`--noop` suppress the classification, while `--dry-run=false` is an explicit
+request to act and does not.
+
+#### What the setting does
+
+Under `prompt`, a publishing action is deliberately **not** covered by
+`autopilot`, by a tool-wide "always allow", or by an `allow` rule that names
+only the executable — allowing `npm` was a decision to use a package manager,
+not a decision to publish with it. In a headless run with no approver present,
+it fails closed.
+
+The approval dialog gives it its own header and offers one narrow session
+grant, scoped to the exact operation shown. That grant covers `npm publish` and
+nothing else: not `run_command`, not `npm`, not `cargo publish`, and not past
+this process. Publishing twenty packages from one monorepo release should not
+be twenty identical prompts, and a prompt with no durable answer is how people
+learn to approve without reading.
+
+Under `deny` nothing is grantable and no prompt is offered. The `hardened`
+preset selects it; `standard` selects `prompt`; `frictionless` selects `off`,
+which restores the behavior of earlier releases exactly.
+
+#### Making a deliberate exception
+
+A rule that *names the operation* is honored, exactly as a rule naming a path
+is honored for credential files:
+
+```jsonc
+"rules": [
+  { "action": "allow", "command": "npm publish", "reason": "release job" },
+  { "action": "allow", "command": "ssh build-host", "reason": "CI runner" }
+]
+```
+
+A rule naming only the executable (`{"command": "npm"}`) will not cover a
+publication. See [Operations](#operations-naming-what-a-command-does-not-just-what-it-runs)
+for how to read the exact operation string a command produces.
+
+Written rules and interactive grants are deliberately not equivalent. An
+operation-naming `allow` rule outranks even `publication: "deny"`, because it is
+written down, inspectable, and survives review — the same way a path-naming rule
+outranks `protect_credentials: "deny"`. An interactive session grant never does,
+and raising the setting to `deny` mid-session invalidates one already handed
+out.
+
+#### Three limits to know
+
+**It is a policy layer, not enforcement.** It reads what a command's text says
+it will do. A build script that uploads an artifact without naming the operation
+on a command line is invisible to it, exactly as it is to
+[host rules](#declared-endpoints-and-host-rules). Preventing traffic is the OS
+sandbox's job.
+
+**It classifies operations, not consequences.** `kubectl apply` against a local
+kind cluster and against production are the same string. Collomia cannot tell
+them apart; the prompt names the operation and you supply the context.
+
+**The catalogue is finite.** A publishing tool Collomia does not recognize is
+not classified. `permissions.denied_commands` (a full-command-line regex) and
+`reviewer_command` remain available for anything local to your organization.
+
+The current setting is shown in the Session tab's Security block and in
+`collo doctor`.
+
 ### Command analysis and hard denials
 
 Before a shell action reaches approval, Collomia extracts executables and
@@ -2205,8 +2475,136 @@ want an explicit trust boundary for them, include and review a project
 Every privileged permission decision and execution outcome is appended as
 redacted JSONL to a per-workspace ledger outside the repository. Records include
 the tool, risk, summary, normalized resources, allow/deny source, matched rule,
-and eventual result. Audit failures do not stop the agent loop; `collo doctor`
-helps identify state-directory problems.
+and eventual result.
+
+#### Reading it back
+
+```sh
+collo audit                        # everything, oldest first, with an integrity summary
+collo audit --denied --since 24h   # refusals and failed executions from the last day
+collo audit --actor agent:reviewer # only what one delegated agent was allowed to do
+collo audit --tool run_command --limit 50
+collo audit --jsonl                # matching entries as JSONL, for your own tooling
+collo audit path                   # print the ledger file location
+```
+
+`--cwd` selects the workspace whose ledger is read, exactly as it does
+elsewhere. `collo audit path` is the file to attach when someone asks you to
+prove what an agent did; review it first, because summaries and resource paths
+describe your repository.
+
+#### Who wrote each entry
+
+Every entry names three things: the durable session id, the actor, and the
+delegated task. The actor is `primary` for your own agent and `agent:<profile>`
+for a delegated one. One workspace ledger receives writes from the primary
+agent, from every concurrently scheduled delegated agent, and from any other
+`collo` process open on the same directory, so this identity is what makes the
+file separable again. Filter on it with `--session` and `--actor`.
+
+#### Whether the record is complete
+
+A ledger is only worth reading if it admits its own holes, so `collo audit`
+prints an integrity line before any entries:
+
+```
+integrity:  complete — no declared gaps, no unreadable lines
+```
+
+A write failure never stops the agent loop — refusing work you already
+authorized because a record could not be filed would be the wrong trade — but
+it is never silent either. Failures are counted, the first is reported to the
+session as a warning, and the next entry that reaches disk is preceded by a
+`gap` record naming how many entries were lost, when the loss began, and why.
+The session's own count is latched and shown in the Session tab's Security
+block, so you can ask "is this complete?" while the session is still running.
+`collo doctor` reports the same as a warning check. An incomplete record says
+so explicitly:
+
+```
+integrity:  INCOMPLETE
+            2 entries were lost across 1 declared gap (the ledger could not be written)
+```
+
+Three things make it incomplete: a declared gap, a line that will not parse (a
+torn write, or a file edited outside Collomia), and an older generation
+discarded at rotation.
+
+#### The record format
+
+`collo audit --jsonl` emits one JSON object per line. Unlike the event stream
+there is no `collo schema audit`, because the ledger is an operational record
+rather than a versioned public contract — but the fields are stable, additive,
+and documented here so external tooling has something to parse against.
+
+| Field | Present on | Meaning |
+| --- | --- | --- |
+| `time` | every entry | RFC 3339 UTC timestamp |
+| `kind` | every entry | `decision`, `outcome`, `gap`, or `rotation` |
+| `workspace` | every entry | absolute path of the workspace this ledger belongs to |
+| `session` | entries written by a durable session | session id; absent for `--ephemeral` runs |
+| `actor` | every entry written since this feature shipped | `primary`, or `agent:<profile>` for a delegated agent |
+| `task` | delegated entries | the delegated task id shown in `/agents` |
+| `tool` | `decision`, `outcome` | tool name, e.g. `run_command` |
+| `summary` | `decision`, `outcome` | the human-readable action, redacted |
+| `risk` | `decision`, `outcome` | `read`, `write`, `execute`, or `external` |
+| `resources` | `decision` | normalized reach: `path:…`, `exec:…`, `host:…`, `server:…`, or `uninspectable` |
+| `decision` | `decision` | `allow` or `deny` |
+| `source` | `decision` | what decided; see the table below |
+| `rule` | `decision`, when a rule matched | the matched rule, rendered |
+| `outcome` | `outcome` | `ok`, or `error: …` |
+| `dropped`, `since`, `reason` | `gap` | how many entries were lost, when the loss began, and the write error |
+| `reason`, `discarded` | `rotation` | which generation was rotated, and whether an older one was removed |
+
+`source` is the most useful field for answering "why was this allowed?", so its
+complete set is worth having:
+
+| `source` | The decision came from |
+| --- | --- |
+| `rule` | a scoped rule in `permissions.rules` |
+| `mode` | the autonomy mode alone |
+| `session` | a tool-wide "always allow" granted this session |
+| `session-scope` | a per-capability session grant covering exactly the reach shown |
+| `interactive` | a person answered the dialog |
+| `implicit-read` | the always-available in-workspace read path |
+| `denied-tool` | the tool is disabled by configuration |
+| `analysis` | command analysis, e.g. an uninspectable command |
+| `safety` | a built-in catastrophic denial or one-time confirmation |
+| `credentials` | `permissions.protect_credentials` |
+| `publication` | `permissions.publication` — the action puts something outside this machine |
+| `posture` | `permissions.network`/`permissions.commands` escalation |
+| `agent-profile` | an additive restriction on a delegated agent's profile |
+| `reviewer` | the external reviewer command vetoed an auto-approval |
+
+Treat unknown fields and unknown `source` values as additive and ignore them;
+an entry written by an older Collomia lacks `session`, `actor`, and `task` and
+reads as unattributed rather than as an error. See the
+[compatibility policy](COMPATIBILITY.md) for what may change.
+
+Two things a consumer should not assume. `resources` describes what the
+command's *text* named, not what the process opened — the limits under
+[declared endpoints](#declared-endpoints-and-host-rules) apply here too. And a
+`decision` is not evidence that the action then ran: pair it with the matching
+`outcome`, and treat a decision with no outcome as an execution that was
+interrupted.
+
+#### Size
+
+One generation rotates at 64 MiB and exactly one previous generation is kept as
+`<name>.1.jsonl`, so a workspace's audit history occupies at most 128 MiB.
+`collo audit` reads both. A rotation that had to discard an older generation
+records that in the new file, so a shortened history says so rather than
+leaving you to notice a missing file.
+
+#### What it is not
+
+The ledger records what Collomia's permission layer decided and what the
+resulting execution returned. It is not a system-call audit: a program that was
+approved and then opened a socket or read a file on its own does that outside
+Collomia's view, exactly as described under
+[declared endpoints](#declared-endpoints-and-host-rules). Redaction is
+best-effort pattern matching, so review a ledger before sharing it rather than
+assuming it is clean.
 
 ## Using the terminal interface
 
@@ -3043,7 +3441,7 @@ Common flags:
 --plan                               read-only plan tool surface
 --resume <id>                        resume a saved session
 --continue                           resume the most recently updated session
---web                                local browser terminal (macOS/Linux)
+--web                                local browser terminal
 --web-port <0..65535>                loopback port; 0/random by default
 --no-open                            print web URL without opening a browser
 --alt-screen                         force the alternate-screen TUI
@@ -3145,10 +3543,24 @@ Commands run from the workspace in their own process group. Timeout,
 cancellation, or session cleanup terminates descendants; a deliberately
 re-parented daemon remains a known residual risk.
 
-Unix commands that require a terminal can request `pty: true`. PTY execution
-is unavailable on native Windows. Use `start_process` for a server/watcher that
-should remain live while the agent continues; do not use shell backgrounding
-as a substitute.
+Commands that require a terminal can request `pty: true` on every platform. On
+Unix that is a PTY; on Windows it is a pseudoconsole, which needs Windows 10
+1809 or later and reports a clear error on anything older rather than running
+the command without terminal semantics. A command is quoted identically with
+and without `pty: true`, because the pseudoconsole path resolves and escapes
+its arguments exactly the way the ordinary path does.
+
+Cancellation reaches the whole process tree either way, but by different
+means. On Unix the child leads its own process group and the group is signalled.
+On Windows the child is created suspended and joined to a job object before it
+is allowed to run, so there is no instant in which it could spawn a descendant
+outside the job; cancelling terminates the job. Windows has no SIGTERM, so
+there is no graceful signal to send first — an interactive session closes the
+child's console input and gives it a short grace period, which a program
+blocked on input can act on and one that ignores input cannot.
+
+Use `start_process` for a server/watcher that should remain live while the
+agent continues; do not use shell backgrounding as a substitute.
 
 ### Background processes
 
@@ -4704,8 +5116,8 @@ protected like the transcript itself.
 
 ## Browser terminal
 
-On macOS and Linux, browser mode runs the same Bubble Tea TUI inside a real PTY
-and serves an embedded xterm.js client:
+Browser mode runs the same Bubble Tea TUI inside a real PTY — a pseudoconsole
+on Windows — and serves an embedded xterm.js client:
 
 ```sh
 collo --web
@@ -4766,7 +5178,7 @@ macOS/Linux and `%USERPROFILE%\.collomia\` on Windows:
 | --- | --- |
 | Sessions | `sessions/<workspace-name-and-hash>/*.jsonl` |
 | Oversized result artifacts | `sessions/<workspace-name-and-hash>/<session-id>.artifacts/*.json` |
-| Audit ledger | `audit/<workspace-name-and-hash>.jsonl` |
+| Audit ledger | `audit/<workspace-name-and-hash>.jsonl` (plus one retained `.1.jsonl` generation) |
 | Trust database | `trust.json` |
 | MCP pins | `mcp-pins.json` |
 | Debug logs | `logs/*.log` |
@@ -5051,6 +5463,33 @@ Headless mode has no approver. Use `--plan` for read-only work, add a narrowly
 scoped allow rule, or explicitly select autopilot. If the command is
 uninspectable, redesign it into a direct inspectable command; autopilot does
 not bypass that prompt.
+
+### `collo audit` or `collo doctor` reports an INCOMPLETE record
+
+The ledger is telling you it has holes rather than letting you read it as
+whole. Which repair applies depends on which of the three it names.
+
+**Declared gaps** mean Collomia could not write entries and said so. The cause
+is in the gap's own `reason` — most often a full disk or a `~/.collomia/audit`
+directory that stopped being writable mid-session. Free space or fix the
+permissions, then confirm with `collo doctor`. The actions covered by the gap
+were still governed by the permission pipeline; only the record of them is
+gone, and it cannot be reconstructed.
+
+**Unreadable lines** mean a line would not parse: a torn write from a process
+killed mid-append, or a file edited outside Collomia. Collomia never rewrites
+the ledger, so it will not repair this for you. The surrounding entries stay
+readable; if you need a clean file, move the damaged one aside and keep it —
+deleting the record of a period you are investigating defeats the purpose.
+
+**A discarded generation** means the ledger passed 64 MiB twice and the oldest
+history was removed to make room. If you need longer retention, copy
+`audit/<name>.jsonl` and `audit/<name>.1.jsonl` somewhere of your own on a
+schedule; Collomia does not archive them for you.
+
+If the ledger was never openable at all, `collo doctor` fails the `audit` check
+rather than warning, and the session reports it at startup — this is usually a
+`~/.collomia` that does not exist or is not writable by the current user.
 
 ### Reporting a problem
 

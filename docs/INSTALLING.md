@@ -238,9 +238,28 @@ After installation:
 
 ```sh
 collo --version
+collo setup
+```
+
+`collo setup` is the recommended way to configure a provider. It finds the local
+model runtimes that are actually running, notices provider API keys the
+environment already exports, lets you choose a model from the endpoint's own
+catalog, and proves the choice with two real requests before writing anything.
+If it cannot verify the configuration it writes nothing and says which of the
+endpoint, the credential, or the model is at fault.
+
+To write a configuration file by hand instead — or to get the annotated
+reference alongside it — use `collo init` and check the result:
+
+```sh
 collo init --global --with-reference
 collo doctor
 ```
+
+`collo init` writes a *static* starter file that assumes a local Ollama on port
+11434; it does not detect anything. `collo doctor` will then tell you whether
+that assumption holds. `collo setup` exists because that loop — write, check,
+guess which of the steps was wrong — is the part worth removing.
 
 Remove only the executable to uninstall while retaining user state. Delete
 `~/.collomia` (macOS/Linux) or `%USERPROFILE%\.collomia` (Windows) separately

@@ -1,6 +1,6 @@
 # Collomia — High-Level Feature and Security Summary
 
-_Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented unless identified as experimental or unsupported._
+_Reviewed against Collomia v0.2.1, commit `ecadfac`. Features are implemented unless identified as experimental or unsupported._
 
 - **Deployment and platform support**
 
@@ -31,7 +31,7 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - `collo --web` runs the same Bubble Tea interface through an embedded xterm.js client without requiring Node.js or npm.
   - The server binds only to loopback, creates a fresh 256-bit access token for each launch, requires the exact served origin, and permits one controlling connection.
   - Closing the browser connection terminates the PTY and child process group.
-  - Browser mode is available on macOS and Linux; native Windows support remains pending a ConPTY backend.
+  - Browser mode runs on macOS, Linux, and Windows; the Windows backend uses a pseudoconsole and requires Windows 10 1809 or later.
   - It is a local single-user interface, not a remote collaboration service: it has no TLS, remote identity, reconnect, or observer mode and should not be exposed through a proxy or tunnel.
 
 - **Headless operation and automation**
@@ -45,6 +45,8 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
 
 - **Configuration, instructions, and diagnostics**
 
+  - `collo setup` configures a provider interactively on first run: it probes the local runtimes that are actually listening, reads each endpoint's own model catalog, and offers Azure and Bedrock as forms because neither is discoverable from a name and a key. The choice is proved with two real requests before anything is written — one completion, and one carrying a tool definition, since a model that answers prose but refuses tools cannot run the agent — and a failure names the endpoint, credential, or model at fault rather than reporting a status code. Nothing is written unless both requests pass.
+  - `collo setup` is re-runnable rather than first-run-only: it reads the file it writes, shows the current default, marks a provider it would replace, and asks before repointing `default_provider`. It never writes an API key into a configuration file; keys go to the OS credential store or are referenced by environment-variable name.
   - Global and project configuration is schema-versioned, layered, origin-aware, and inspectable through `collo config show`.
   - Starter and commented reference configurations can be generated independently; reference JSONC files are documentation and are never loaded as active configuration.
   - `collo config validate --strict` detects unknown, misspelled, contradictory, and obsolete settings before a session starts.
@@ -93,12 +95,14 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
 
   - Foreground and background command execution with live output.
   - Timeouts, output limits, cancellation, and process-tree termination.
-  - Unix PTY support and Windows Job Object containment.
+  - Pseudo-terminal execution on every platform: a Unix PTY, or a Windows pseudoconsole whose child is created suspended and joined to a job object before it runs, so cancellation reaches the whole process tree with no window for a descendant to escape it.
   - Sandboxed commands default to a documented minimal environment that omits common API tokens, cloud credentials, proxy settings, and unrelated toolchain state.
   - Full parent-environment inheritance remains an explicit compatibility option, and individual values can instead be supplied narrowly through the command itself or a wrapper.
   - Background-process listing, output retrieval, and termination through the `/ps` interface.
   - Background processes use the same permission and sandbox rules as foreground commands and are stopped when the session exits.
   - Command analysis recognizes risk based on the command’s likely outcome, rather than relying only on executable names.
+  - Outcome classification covers both destruction and publication, so applying infrastructure, pushing an image, opening a pull request, or publishing a package is treated as consequential rather than ordinary.
+  - Read verbs and rehearsal switches such as `--dry-run` are excluded from publication classification, and a download-direction copy is distinguished from an upload.
 
 - **Code intelligence and LSP**
 
@@ -139,13 +143,15 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - A session grant covers only the exact declared capability; all required dimensions must be independently authorized.
   - Blanket tool approval and autopilot do not implicitly authorize protected credential access.
   - Catastrophic command protections include non-overridable denials and one-time confirmation for narrowly legitimate destructive actions.
+  - Publishing, deploying, and pushing are governed separately by `publication` (`off`, `prompt` by default, `deny`): package and container registries, source remotes, code-forge writes, infrastructure applies, and commands executed on another host are not covered by autonomy mode, a tool-wide approval, or an allow rule naming only an executable.
+  - Rule `command` patterns match either an executable name or, when the pattern contains a space, an operation such as `npm publish` or `gh pr create`, so a policy can permit dependency installation while gating releases.
   - Permission enforcement is shared across foreground commands, background commands, PTYs, delegated verification, hooks, and other execution paths.
 
 - **Monotonic containment policies**
 
   - Configuration is layered from built-in defaults through user, project, and environment settings.
   - Repository or project configuration may tighten containment but cannot weaken the user’s established security posture.
-  - Monotonic enforcement applies to sandbox policy, outside-workspace reads, command posture, network posture, credential protection, audit requirements, and containment presets.
+  - Monotonic enforcement applies to sandbox policy, sandbox network and outside-workspace reads, the command environment, outside-workspace access, command posture, network posture, scoped egress, credential protection, publication posture, and containment presets.
   - Attempts by project configuration to weaken containment are refused and reported.
   - Only the global configuration owner can explicitly disable the operating-system sandbox.
   - Configuration inspection reports both effective values and their origins.
@@ -156,7 +162,7 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - `frictionless`, `standard`, and `hardened` presets expand into ordinary, inspectable configuration fields.
   - Explicit settings override preset-derived values.
   - Presets do not silently change the selected autonomy mode.
-  - Hardened mode requires stronger sandbox, read, credential, command, and network postures.
+  - Hardened mode requires stronger sandbox, read, credential, publication, command, and network postures.
   - The current hardened preset does not itself disable all network access or enable the scoped-egress broker; those remain separate explicit choices.
 
 - **Operating-system sandbox** — _experimental_
@@ -203,8 +209,12 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
 
   - File changes are presented for review before approval where required.
   - Multi-hunk `write_file` changes support individual hunk acceptance; other edit mechanisms support file-level review.
-  - A JSONL audit ledger records relevant security and tool events outside the workspace.
-  - Audit storage is presently best-effort unless policy explicitly requires successful audit writes.
+  - A JSONL audit ledger records every permission decision and execution outcome outside the workspace, readable through `collo audit` with filters for session, actor, tool, time window, and refusals, plus JSONL output for external tooling.
+  - Every entry names the session and the actor that produced it — `primary`, or `agent:<profile>` with the delegated task id — so one workspace ledger holding concurrent delegated agents can still be separated into what each was permitted to do.
+  - A ledger write failure does not stop the agent loop, but it is never silent: failures are counted, reported to the session once, and declared in the file as a gap entry stating how many entries were lost, since when, and why.
+  - `collo audit` reports the record's integrity — declared gaps, unreadable lines, a generation discarded at rotation — before any entries, and `collo doctor` reports the same as a warning check, so an incomplete record is never read as a complete one.
+  - Ledger growth is bounded by rotation at 64 MiB with one retained previous generation, and a rotation that discarded older history records that fact.
+  - There is no configuration setting that makes a failed audit write stop an action; audit is fail-visible, not fail-stop, and is not one of the monotonically clamped containment fields.
   - The session status view exposes effective permissions, grants, sandbox state, network posture, and configuration origins.
   - Containment degradation is shown rather than silently hidden.
 
@@ -284,5 +294,6 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - The standard preset permits command network access and outside-workspace reads unless explicitly tightened.
   - Provider HTTP traffic, remote MCP connections, hooks, and LSP processes run in the Collomia process and are outside the command sandbox and command egress broker.
   - MCP and skills are governed by trust and integrity checks, but installing or enabling them still extends the trusted computing base.
-  - The audit ledger is best-effort under ordinary configuration.
+  - The audit ledger records what the permission layer decided and what the resulting execution returned. It is not a system-call audit: a program that was approved and then opened a socket or read a file on its own is outside its view. A ledger write failure is reported and declared rather than silently dropped, but no setting causes it to stop an action.
+  - Publication classification is a policy layer, not egress enforcement. It describes what a command's text says it will do, so a program that uploads an artifact without naming the operation on its command line is outside its view, and its catalogue of publishing tools is finite.
   - There is no hosted enterprise identity plane, centralized SSO/RBAC service, or remote policy administration layer.

@@ -1119,3 +1119,111 @@ func TestNoPresetEnablesSandboxEgress(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicationDefaultsToPrompt(t *testing.T) {
+	cfg := loadWithGlobal(t, "", "")
+	if got := cfg.Permissions.Publication; got != PublicationPrompt {
+		t.Fatalf("publication = %q, want %q", got, PublicationPrompt)
+	}
+}
+
+func TestPresetsCarryTheirPublicationSetting(t *testing.T) {
+	cases := map[string]string{
+		PresetFrictionless: PublicationOff,
+		PresetStandard:     PublicationPrompt,
+		PresetHardened:     PublicationDeny,
+	}
+	for name, want := range cases {
+		cfg := loadWithGlobal(t, `{"permissions":{"preset":"`+name+`"}}`, "")
+		if got := cfg.Permissions.Publication; got != want {
+			t.Errorf("preset %s: publication = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestExplicitPublicationSettingWinsOverThePreset(t *testing.T) {
+	cfg := loadWithGlobal(t, `{"permissions":{"preset":"hardened","publication":"prompt"}}`, "")
+	if got := cfg.Permissions.Publication; got != PublicationPrompt {
+		t.Fatalf("publication = %q, want prompt", got)
+	}
+}
+
+func TestProjectCanTightenPublicationButNotWeakenIt(t *testing.T) {
+	tightened := loadWithGlobal(t,
+		`{"permissions":{"publication":"off"}}`,
+		`{"permissions":{"publication":"deny"}}`)
+	if got := tightened.Permissions.Publication; got != PublicationDeny {
+		t.Fatalf("tightened publication = %q, want deny", got)
+	}
+	if len(tightened.Clamped) != 0 {
+		t.Fatalf("tightening should not be clamped: %v", tightened.Clamped)
+	}
+	weakened := loadWithGlobal(t,
+		`{"permissions":{"publication":"deny"}}`,
+		`{"permissions":{"publication":"off"}}`)
+	if got := weakened.Permissions.Publication; got != PublicationDeny {
+		t.Fatalf("weakened publication = %q, want deny", got)
+	}
+	found := false
+	for _, note := range weakened.Clamped {
+		if note.Field == "publication" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal was not reported: %v", weakened.Clamped)
+	}
+}
+
+func TestPublicationIsAClampedContainmentField(t *testing.T) {
+	for _, field := range ContainmentFields() {
+		if field == "publication" {
+			return
+		}
+	}
+	t.Fatal("publication is not listed as a containment field, so documentation checks will not cover it")
+}
+
+func TestInvalidPublicationSettingIsRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.Permissions.Publication = "sometimes"
+	errs := cfg.ValidateFields()
+	found := false
+	for _, err := range errs {
+		if err.Field == "permissions.publication" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("invalid publication setting was accepted: %v", errs)
+	}
+}
+
+// A command pattern is matched against an executable name or, when it contains
+// a space, against an operation. Both forms are single-spaced and untrimmed,
+// so a pattern that can match neither is a rule that reads as protection and
+// does nothing — the shape that let the host matcher ship inert.
+func TestUnmatchableCommandPatternIsRejected(t *testing.T) {
+	for _, pattern := range []string{"npm  publish", " npm publish", "npm publish "} {
+		cfg := Defaults()
+		cfg.Permissions.Rules = []Rule{{Action: "deny", Command: pattern}}
+		found := false
+		for _, err := range cfg.ValidateFields() {
+			if err.Field == "permissions.rules[0].command" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("pattern %q was accepted but can never match", pattern)
+		}
+	}
+	for _, pattern := range []string{"npm", "npm publish", "gh pr *", "g*"} {
+		cfg := Defaults()
+		cfg.Permissions.Rules = []Rule{{Action: "deny", Command: pattern}}
+		for _, err := range cfg.ValidateFields() {
+			if err.Field == "permissions.rules[0].command" {
+				t.Errorf("usable pattern %q was rejected: %v", pattern, err)
+			}
+		}
+	}
+}

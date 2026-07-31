@@ -49,6 +49,16 @@ type Analysis struct {
 	// itself a decision: what happens to an action that reaches one is
 	// configurable, so the analysis reports and the permission layer rules.
 	CredentialTargets []string
+	// Operations names the action each recognized subcommand-driven invocation
+	// takes, as "<executable> <verb…>" — `npm publish`, `git push`,
+	// `gh pr create`. Executables alone cannot express the difference between
+	// installing a dependency and publishing a package, so a rule that needs
+	// to say yes to one and no to the other matches against these.
+	Operations []string
+	// PublicationTargets names the operations that put something outside this
+	// machine, each as "label: operation". Like CredentialTargets this is a
+	// report rather than a decision; permissions.publication rules on it.
+	PublicationTargets []string
 }
 
 // wrappers run another command given as their arguments; the wrapped command
@@ -156,6 +166,24 @@ func (a *Analysis) credential(target string) {
 		}
 	}
 	a.CredentialTargets = append(a.CredentialTargets, target)
+}
+
+func (a *Analysis) operation(operation string) {
+	for _, existing := range a.Operations {
+		if existing == operation {
+			return
+		}
+	}
+	a.Operations = append(a.Operations, operation)
+}
+
+func (a *Analysis) publication(target string) {
+	for _, existing := range a.PublicationTargets {
+		if existing == target {
+			return
+		}
+	}
+	a.PublicationTargets = append(a.PublicationTargets, target)
 }
 
 func (a *Analysis) flag(reason string) {

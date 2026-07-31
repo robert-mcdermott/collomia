@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/egress"
 )
@@ -122,6 +123,7 @@ func (m Model) securityContent(width int) string {
 	b.WriteString(kv("network policy", orDefault(permissions.Network, "open")+" — declared endpoints only, not egress enforcement") + "\n")
 	b.WriteString(kv("command policy", orDefault(permissions.Commands, "open")) + "\n")
 	b.WriteString(kv("credentials", credentialSummary(permissions.ProtectCredentials)) + "\n")
+	b.WriteString(kv("publication", publicationSummary(permissions.Publication)) + "\n")
 	b.WriteString(kv("rules", fmt.Sprintf("%d scoped rule(s), %d regex denial(s)", len(permissions.Rules), len(permissions.DeniedCommands))) + "\n")
 	// A setting a repository asked for and did not get looks like a bug until
 	// it is named, so it is reported here rather than only by config show.
@@ -139,14 +141,41 @@ func (m Model) securityContent(width int) string {
 	b.WriteString(kv("command env", orDefault(permissions.CommandEnv, "minimal when sandboxed")) + "\n")
 	b.WriteString(kv("outside reads", fmt.Sprintf("%t (built-in file tools)", permissions.AllowOutsideWorkspace)) + "\n")
 
+	// The record of what was decided belongs beside the settings that decided
+	// it. A degraded ledger is reported as a warning row rather than an
+	// ordinary one, for the same reason degraded sandboxing is: a control that
+	// has quietly stopped working must not read like a control that is on.
+	b.WriteString(kv("audit record", auditSummary(m.runtime)) + "\n")
+	if failures, first, _ := m.runtime.AuditHealth(); failures > 0 {
+		detail := "unknown error"
+		if first != nil {
+			detail = first.Error()
+		}
+		b.WriteString(m.styles.warning.Render(fitLine("  ⚠ this session's permission record is incomplete: "+detail, max(1, width))) + "\n")
+	}
+
 	b.WriteString(group("This session"))
-	commands, hosts, credentials := m.runtime.Permissions.SessionGrants()
-	b.WriteString(kv("grants", describeGrants(commands, hosts, credentials)) + "\n")
-	if len(commands) > 0 || len(hosts) > 0 || len(credentials) > 0 {
+	commands, hosts, credentials, publications := m.runtime.Permissions.SessionGrants()
+	b.WriteString(kv("grants", describeGrants(commands, hosts, credentials, publications)) + "\n")
+	if len(commands) > 0 || len(hosts) > 0 || len(credentials) > 0 || len(publications) > 0 {
 		b.WriteString(m.styles.muted.Render("  grants last until this process exits; persistent policy belongs in configuration") + "\n")
 	}
 	b.WriteString(m.styles.muted.Render("  full reference: collo config reference · docs/SECURITY.md") + "\n\n")
 	return b.String()
+}
+
+// auditSummary states where the permission record for this workspace lives
+// and whether it is currently complete, so the answer to "can I reconstruct
+// what happened" is visible before it is needed rather than after.
+func auditSummary(runtime *app.Runtime) string {
+	failures, _, _ := runtime.AuditHealth()
+	if failures > 0 {
+		return fmt.Sprintf("INCOMPLETE — %d write failure(s) this session; read with collo audit", failures)
+	}
+	if runtime.Audit == nil {
+		return "unavailable — no ledger was opened, so this session is unrecorded"
+	}
+	return "recording — read with collo audit"
 }
 
 // egressSummary reports what a sandboxed command can actually reach, which is
@@ -184,7 +213,22 @@ func credentialSummary(setting string) string {
 	}
 }
 
-func describeGrants(commands, hosts, credentials []string) string {
+// publicationSummary states what happens when the agent tries to put
+// something outside this machine. It sits next to the credential row because
+// the two settings answer the same kind of question: what a broad approval is
+// not allowed to sweep in as a side effect.
+func publicationSummary(setting string) string {
+	switch strings.ToLower(strings.TrimSpace(setting)) {
+	case appconfig.PublicationOff:
+		return "off — publishing and deploying are ordinary commands"
+	case appconfig.PublicationDeny:
+		return "deny — publishing, pushing, and deploying are refused"
+	default:
+		return "prompt — publishing, pushing, or deploying always asks"
+	}
+}
+
+func describeGrants(commands, hosts, credentials, publications []string) string {
 	var parts []string
 	if len(commands) > 0 {
 		parts = append(parts, "commands "+strings.Join(commands, ", "))
@@ -194,6 +238,9 @@ func describeGrants(commands, hosts, credentials []string) string {
 	}
 	if len(credentials) > 0 {
 		parts = append(parts, fmt.Sprintf("credentials %d file(s)", len(credentials)))
+	}
+	if len(publications) > 0 {
+		parts = append(parts, "publication "+strings.Join(publications, ", "))
 	}
 	if len(parts) == 0 {
 		return "none"

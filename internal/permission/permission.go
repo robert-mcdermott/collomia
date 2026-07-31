@@ -60,6 +60,11 @@ const (
 	// exact target shown and nothing else — never the tool, never the
 	// directory, and never past this process.
 	CapabilityCredential = "credential"
+	// CapabilityPublication is the operation an action uses to put something
+	// outside this machine. Like a credential store it is grantable only under
+	// permissions.publication=prompt, and a grant covers the exact operation
+	// shown — never the executable, and never past this process.
+	CapabilityPublication = "publication"
 )
 
 // Capability is one dimension of an action's reach. Values are the normalized
@@ -116,6 +121,11 @@ type Manager struct {
 	// it can deny, because refusing to hand a private key to a model is a
 	// defensible default in a way that refusing an ordinary command is not.
 	protectCredentials string
+	// publication decides what an action that puts something outside this
+	// machine gets: off, prompt, or deny. It sits beside protectCredentials
+	// rather than among the postures for the same reason — refusing to publish
+	// on the agent's own initiative is a defensible default.
+	publication string
 	// allowedCommands and allowedHosts are session grants scoped to one
 	// executable or one endpoint, the narrow counterpart of "always allow
 	// this tool".
@@ -124,6 +134,9 @@ type Manager struct {
 	// allowedCredentials holds credential targets approved for this session,
 	// stored as the exact "label: path" string the user was shown.
 	allowedCredentials map[string]bool
+	// allowedPublications holds publication targets approved for this session,
+	// stored as the exact "label: operation" string the user was shown.
+	allowedPublications map[string]bool
 
 	profileDenied         map[string]bool
 	profileDeniedCommands []*regexp.Regexp
@@ -160,11 +173,17 @@ func New(cfg appconfig.Permissions, approver Approver) *Manager {
 	if protectCredentials == "" {
 		protectCredentials = appconfig.ProtectCredentialsPrompt
 	}
+	publication := strings.ToLower(strings.TrimSpace(cfg.Publication))
+	if publication == "" {
+		publication = appconfig.PublicationPrompt
+	}
 	return &Manager{
 		mode: cfg.Mode, baseMode: cfg.Mode, allowed: allowed, denied: denied,
 		network: network, commands: commands, protectCredentials: protectCredentials,
+		publication:     publication,
 		allowedCommands: map[string]bool{}, allowedHosts: map[string]bool{}, allowedCredentials: map[string]bool{},
-		profileDenied: map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace,
+		allowedPublications: map[string]bool{},
+		profileDenied:       map[string]bool{}, allowOutside: cfg.AllowOutsideWorkspace,
 		rules: cfg.Rules, reviewer: cfg.ReviewerCommand, approver: approver,
 	}
 }
@@ -267,7 +286,7 @@ func (m *Manager) decide(tool string, action tools.Action) (Grant, string, strin
 	if len(restrictions) == 0 {
 		return grant, outcome, reason
 	}
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Operations: action.Operations, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	restriction := policy.Evaluate(restrictions, request)
 	if !restriction.Matched() {
 		return grant, outcome, reason
@@ -296,9 +315,11 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 	networkPosture := m.network
 	commandPosture := m.commands
 	protectCredentials := m.protectCredentials
+	publicationSetting := m.publication
 	scopes := m.scopeSnapshotLocked()
 	m.mu.RUnlock()
 	credentials := credentialTargets(action, protectCredentials)
+	publications := publicationTargets(action, publicationSetting)
 
 	if denied || profileDenied {
 		return Grant{Source: "denied-tool"}, "deny", ""
@@ -314,7 +335,7 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 		reason := strings.Join(action.HardDenyReasons, "; ")
 		return Grant{Source: "safety", Rule: reason}, "deny", ""
 	}
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Operations: action.Operations, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	decision := policy.Evaluate(rules, request)
 	if decision.Matched() {
 		grant := Grant{Source: "rule", Rule: decision.Describe()}
@@ -329,7 +350,13 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 			// deliberate written-down exception and is honored, while a
 			// blanket rule covering a tool or a whole directory is not allowed
 			// to sweep a private key in as a side effect.
-			if len(action.ConfirmReasons) == 0 && !action.Uninspectable && (len(credentials) == 0 || namesSpecificPath(decision.Rule.Path)) {
+			// Publication is the same shape one dimension over: a rule that
+			// names the operation ("npm publish") is a deliberate exception,
+			// while one that names only the executable ("npm") allowed a
+			// package manager and is not a decision to publish with it.
+			if len(action.ConfirmReasons) == 0 && !action.Uninspectable &&
+				(len(credentials) == 0 || namesSpecificPath(decision.Rule.Path)) &&
+				(len(publications) == 0 || policy.NamesOperation(decision.Rule.Command)) {
 				return grant, "allow", ""
 			}
 		case "prompt":
@@ -357,6 +384,20 @@ func (m *Manager) decideBase(tool string, action tools.Action) (Grant, string, s
 				"approving lets this action read the file's contents into the conversation"
 		}
 		return Grant{Source: "session-scope", Rule: "credential granted this session: " + strings.Join(credentials, "; ")}, "allow", ""
+	}
+	// Publishing is gated on the same terms and for the same reason. A deny is
+	// evaluated against every target so raising the setting mid-session cannot
+	// be satisfied by a grant handed out while it was still prompt.
+	if len(publications) > 0 {
+		if publicationSetting == appconfig.PublicationDeny {
+			return Grant{Source: "publication", Rule: "action publishes: " + strings.Join(publications, "; ")}, "deny", ""
+		}
+		if outstanding := scopes.outstandingPublications(publications); len(outstanding) > 0 {
+			detail := "action publishes: " + strings.Join(outstanding, "; ")
+			return Grant{Source: "publication", Rule: detail}, "prompt",
+				"approving lets this action put something outside this machine, which it may not be able to take back"
+		}
+		return Grant{Source: "session-scope", Rule: "publication granted this session: " + strings.Join(publications, "; ")}, "allow", ""
 	}
 	if action.Risk == tools.RiskRead && !action.Outside {
 		return Grant{Source: "implicit-read"}, "allow", ""
@@ -431,11 +472,35 @@ func (m *Manager) credentialSetting() string {
 	return m.protectCredentials
 }
 
+// publicationTargets reports the operations this action uses to put something
+// outside this machine, or nil when the protection is off.
+//
+// Unlike credentialTargets there is nothing to derive from the action's
+// declared fields: publishing is something a command does, not a path a tool
+// touches, so the shell analysis is the only source.
+func publicationTargets(action tools.Action, setting string) []string {
+	if setting == appconfig.PublicationOff {
+		return nil
+	}
+	return action.PublicationTargets
+}
+
+// PublicationSetting reports the effective publication posture for diagnostics.
+func (m *Manager) PublicationSetting() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.publication
+}
+
 // oneTimeOnly reports whether an action must be approved on its own, with no
 // tool-wide "always allow". Every caller asks this function rather than
 // restating the rule; see Request.AllowsAlways for why.
-func oneTimeOnly(action tools.Action, credentials []string) bool {
-	return action.Uninspectable || len(action.ConfirmReasons) > 0 || len(credentials) > 0
+//
+// A publication is included for the same reason a credential store is: a
+// tool-wide "always allow run_command" must not be the thing that authorized a
+// release. The narrower per-operation grant below stays available.
+func oneTimeOnly(action tools.Action, credentials, publications []string) bool {
+	return action.Uninspectable || len(action.ConfirmReasons) > 0 || len(credentials) > 0 || len(publications) > 0
 }
 
 // namesSpecificPath reports whether a rule's path pattern identifies a
@@ -452,16 +517,18 @@ func namesSpecificPath(pattern string) bool {
 
 // scopeGrants is a point-in-time copy of the session's per-capability grants.
 type scopeGrants struct {
-	commands    map[string]bool
-	hosts       map[string]bool
-	credentials map[string]bool
+	commands     map[string]bool
+	hosts        map[string]bool
+	credentials  map[string]bool
+	publications map[string]bool
 }
 
 func (m *Manager) scopeSnapshotLocked() scopeGrants {
 	snapshot := scopeGrants{
-		commands:    make(map[string]bool, len(m.allowedCommands)),
-		hosts:       make(map[string]bool, len(m.allowedHosts)),
-		credentials: make(map[string]bool, len(m.allowedCredentials)),
+		commands:     make(map[string]bool, len(m.allowedCommands)),
+		hosts:        make(map[string]bool, len(m.allowedHosts)),
+		credentials:  make(map[string]bool, len(m.allowedCredentials)),
+		publications: make(map[string]bool, len(m.allowedPublications)),
 	}
 	for name := range m.allowedCommands {
 		snapshot.commands[name] = true
@@ -471,6 +538,9 @@ func (m *Manager) scopeSnapshotLocked() scopeGrants {
 	}
 	for target := range m.allowedCredentials {
 		snapshot.credentials[target] = true
+	}
+	for target := range m.allowedPublications {
+		snapshot.publications[target] = true
 	}
 	return snapshot
 }
@@ -495,6 +565,30 @@ func (g scopeGrants) outstandingCredentials(targets []string) []string {
 	var outstanding []string
 	for _, target := range targets {
 		if !g.credentials[target] {
+			outstanding = append(outstanding, target)
+		}
+	}
+	return outstanding
+}
+
+// coversPublications reports whether every publication target is granted.
+func (g scopeGrants) coversPublications(targets []string) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for _, target := range targets {
+		if !g.publications[target] {
+			return false
+		}
+	}
+	return true
+}
+
+// outstandingPublications returns the targets this session has not granted.
+func (g scopeGrants) outstandingPublications(targets []string) []string {
+	var outstanding []string
+	for _, target := range targets {
+		if !g.publications[target] {
 			outstanding = append(outstanding, target)
 		}
 	}
@@ -583,9 +677,11 @@ func (m *Manager) Capabilities(action tools.Action) []Capability {
 	m.mu.RLock()
 	scopes := m.scopeSnapshotLocked()
 	protectCredentials := m.protectCredentials
+	publicationSetting := m.publication
 	m.mu.RUnlock()
 	credentials := credentialTargets(action, protectCredentials)
-	oneTime := oneTimeOnly(action, credentials)
+	publications := publicationTargets(action, publicationSetting)
+	oneTime := oneTimeOnly(action, credentials, publications)
 	var out []Capability
 	if len(action.Paths) > 0 {
 		out = append(out, Capability{Kind: CapabilityFilesystem, Values: action.Paths})
@@ -606,6 +702,20 @@ func (m *Manager) Capabilities(action tools.Action) []Capability {
 			Grantable: protectCredentials == appconfig.ProtectCredentialsPrompt && !action.Uninspectable && len(action.ConfirmReasons) == 0,
 		}
 		capability.Granted = capability.Grantable && scopes.coversCredentials(credentials)
+		out = append(out, capability)
+	}
+	if len(publications) > 0 {
+		// The narrow grant is the whole point. Publishing twenty packages from
+		// one monorepo release is ordinary work, and a prompt with no durable
+		// answer is how people learn to press approve without reading. The
+		// grant covers the exact operation shown, so it is a decision about
+		// `npm publish` rather than about run_command.
+		capability := Capability{
+			Kind:      CapabilityPublication,
+			Values:    publications,
+			Grantable: publicationSetting == appconfig.PublicationPrompt && !action.Uninspectable && len(action.ConfirmReasons) == 0,
+		}
+		capability.Granted = capability.Grantable && scopes.coversPublications(publications)
 		out = append(out, capability)
 	}
 	if len(action.Executables) > 0 || action.Uninspectable {
@@ -639,7 +749,7 @@ func (m *Manager) Capabilities(action tools.Action) []Capability {
 // SessionGrants reports the per-capability grants accumulated this process,
 // sorted, so the user can see what they have handed out without reading the
 // audit ledger.
-func (m *Manager) SessionGrants() (commands, hosts, credentials []string) {
+func (m *Manager) SessionGrants() (commands, hosts, credentials, publications []string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for name := range m.allowedCommands {
@@ -651,10 +761,14 @@ func (m *Manager) SessionGrants() (commands, hosts, credentials []string) {
 	for target := range m.allowedCredentials {
 		credentials = append(credentials, target)
 	}
+	for target := range m.allowedPublications {
+		publications = append(publications, target)
+	}
 	sort.Strings(commands)
 	sort.Strings(hosts)
 	sort.Strings(credentials)
-	return commands, hosts, credentials
+	sort.Strings(publications)
+	return commands, hosts, credentials, publications
 }
 
 // GrantableKinds lists the dimensions an approver may hand a session grant
@@ -705,13 +819,20 @@ func (m *Manager) applyGrants(action tools.Action, kinds []string) {
 			for _, target := range credentialTargets(action, m.protectCredentials) {
 				m.allowedCredentials[target] = true
 			}
+		case CapabilityPublication:
+			if action.Uninspectable || len(action.ConfirmReasons) > 0 || m.publication != appconfig.PublicationPrompt {
+				continue
+			}
+			for _, target := range publicationTargets(action, m.publication) {
+				m.allowedPublications[target] = true
+			}
 		}
 	}
 }
 
 func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Action) (Grant, error) {
 	grant, outcome, reason := m.decide(tool, action)
-	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
+	request := policy.Request{Tool: tool, Paths: action.Paths, Executables: action.Executables, Operations: action.Operations, Hosts: action.Hosts, Network: action.Network, HostsUndetermined: action.HostsUndetermined, Server: action.Server, Inspectable: !action.Uninspectable}
 	record := func(allowed bool) {
 		decision := "deny"
 		if allowed {
@@ -754,10 +875,11 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 	}
 	postureGated := grant.Source == "posture"
 	credentials := credentialTargets(action, m.credentialSetting())
+	publications := publicationTargets(action, m.PublicationSetting())
 	decision, err := approver(ctx, Request{
 		Tool: tool, Action: action, Reason: reason,
 		Capabilities: m.Capabilities(action), PostureGated: postureGated,
-		AllowsAlways: !oneTimeOnly(action, credentials) && !postureGated,
+		AllowsAlways: !oneTimeOnly(action, credentials, publications) && !postureGated,
 	})
 	if err != nil {
 		record(false)
@@ -772,7 +894,7 @@ func (m *Manager) Authorize(ctx context.Context, tool string, action tools.Actio
 	// carry a mandatory confirmation, or that reach a credential store; each
 	// must be approved on its own. The narrower per-capability grants below
 	// remain available and are the intended answer for a recurring action.
-	if decision.Always && !oneTimeOnly(action, credentials) {
+	if decision.Always && !oneTimeOnly(action, credentials, publications) {
 		m.mu.Lock()
 		m.allowed[tool] = true
 		m.mu.Unlock()

@@ -39,6 +39,328 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-31 — Phase 4 first-run setup, and verification that actually verifies
+
+- **The first-run path was four manual steps and a guess.** Read the README,
+  hand-write JSONC, set a credential, run `doctor`, and work out which of the
+  four was wrong. `collo init` wrote a *static* starter naming
+  `ollama`/`qwen3-coder`/`127.0.0.1:11434` as literal values, and
+  `config.Defaults()` returned the same assumption for a machine that had never
+  run Ollama. Nothing dialled anything. `collo setup` now probes the runtimes
+  that are actually listening, reads each endpoint's own catalog, and offers
+  Azure and Bedrock as forms, because neither is discoverable from a name and a
+  key: Azure addresses a *deployment* inside a resource you name, and Bedrock
+  resolves an identity through the AWS credential chain and grants model access
+  per region. Both go through the same verification.
+- **Verifying without tools verified the wrong thing.** The first design sent
+  one request, reasoning that a single request isolates a single cause. It does,
+  and it also let `gemma3:270m` verify cleanly and then fail the user's first
+  real prompt with "does not support tools" — the exact failure the package
+  exists to move earlier. Found by running the wizard against a real Ollama and
+  then running a real session, not by a fixture. Verification is now two
+  requests: one plain completion, and one carrying a tool definition. The cause
+  stays isolated *and* the promise holds. Requiring an actual tool *call* would
+  have been worse — a capable model may answer a trivial prompt with text.
+- **An omitted context window silently disables compaction.** The design said to
+  leave `context_window` out when the endpoint does not publish one. There is no
+  adapter default, and `Agent.shouldCompact` returns false on a zero window, so
+  the omission would have written a configuration whose auto-compaction never
+  ran. It now assumes 32768 and labels the assumption on the confirmation screen
+  rather than presenting a guess as a measurement.
+- **A silent input truncation was diagnosed as a permissions problem.** A
+  reported Bedrock failure — "Missing required parameters in the API Key", with
+  a correct key, region, and model — traced to `CharLimit = 512` on the wizard's
+  own text input, which truncates on both `SetValue` and paste. In a field that
+  deliberately does not echo, a cut-off key is indistinguishable from a whole
+  one. Alongside it, the 403 branch asserted "the credential is valid, but not
+  allowed to use this model" while printing AWS's contradicting message directly
+  beneath it. Both fixed: no character limit, `SanitizeSecret` for whitespace
+  and quotes acquired in copying, a visible character count (a length is not a
+  secret), and a 403 that reads the endpoint's own message before deciding which
+  of the two quite different causes to name.
+- **SigV4 failures were answered with API-key advice.** Bedrock's two credential
+  families fail for unrelated reasons, and a chain that resolves nothing never
+  reaches AWS at all — so "the endpoint rejected the credential" was wrong about
+  where the failure happened, and there is no key to check in that mode. The
+  diagnosis now names IAM variables, profiles, `aws sso login` for an expired
+  Identity Center session, and `aws sts get-caller-identity`. `auto` with no
+  token counts as the chain, since the user never typed the word "sigv4" and
+  would not connect the failure to it.
+- **The documentation guards were passing vacuously.** Writing a new guard
+  exposed that it passed against deliberately broken documentation, because the
+  token it searched for appeared incidentally elsewhere in the file. Six
+  existing guards had the same defect. All are now scoped to the smallest
+  enclosing heading section and matched on whole words, and each was verified by
+  mutation — breaking the documentation and confirming the guard fails. The
+  recipe is written down in `docs/TESTING.md`, because a guard nobody has seen
+  fail is not evidence of anything. Section anchors are unique headings rather
+  than body strings: the first attempt anchored on `~/.aws/credentials`, which a
+  later section legitimately mentioned, and the guard then failed against
+  correct documentation.
+- **A 32-token verification budget failed every reasoning model.** Reported
+  against LM Studio serving `qwen/qwen3.5-9b`: the model spent the whole budget
+  thinking, returned an empty visible answer, and the wizard reported a model
+  LM Studio was actively serving as "not actually served behind" the gateway. It
+  needs about 170 tokens to reach the word "ok". The budget is now 1024, which
+  costs nothing on a model that answers directly, and an empty reply is read
+  rather than assumed: reasoning present means the route is proven, truncation
+  at the ceiling is stated as a limit rather than blamed on the model, and only
+  a complete, genuinely empty 200 keeps the original diagnosis.
+- **One parameterless tool broke every request against LM Studio.**
+  `git_status` declared `{"type":"object","additionalProperties":false}` — valid
+  and complete JSON Schema. LM Studio requires `properties` regardless and
+  rejects the whole request rather than the one tool, so a single tool made the
+  entire session unusable, identified only by a numeric index. The declaration
+  is fixed and a guard covers every builtin, but the durable fix is in the
+  adapters: tools arriving over MCP are written by somebody else and cannot be
+  corrected at the source, so an object schema is normalized before it goes on
+  the wire. The normalization only ever adds an absent key, never modifies a
+  declared one, and a cross-adapter test asserts an ordinary tool reaches every
+  provider byte-identical to what it declared — the guard against a fix for one
+  strict server damaging the others.
+
+### 2026-07-30 — Phase 1 publication and deployment as their own decision
+
+- **The risk model was destruction-shaped.** `internal/shell/safety.go` is, end
+  to end, a taxonomy of things that delete: `classifyRM`, the Git
+  reset/clean/reflog/gc branches, `classifyAWS`'s `s3 rm`, and the
+  Terraform/Kubernetes/Helm destruction branches. Nothing in it classified an
+  action that *puts something out into the world*. Measured against the built
+  binary at `4abdb9a` with `collo policy check --autonomy autopilot`, on a stock
+  configuration: `terraform destroy` → confirm but `terraform apply
+  -auto-approve` → **allow**; `kubectl delete` → confirm but `kubectl apply` →
+  **allow**; `helm uninstall` → confirm but `helm upgrade` → **allow**;
+  `git push --force` → confirm but `git push origin main` → **allow**. Also
+  allowed silently: `npm publish`, `cargo publish`, `twine upload`,
+  `docker push`, `gh pr create`, `gh pr merge`, `gh release create`,
+  `aws lambda update-function-code`, and `ssh prod "systemctl restart app"`.
+- **The asymmetry did not track reversibility.** A published package version is
+  harder to take back than a Kubernetes deployment a controller will recreate.
+  And `ROADMAP.md`'s own "Explicitly deferred" list already said "Autonomous Git
+  commits, pushes, pull requests, deployments, or issue updates by default" —
+  the documented intent and the binary disagreed, which is the same shape as the
+  audit ledger the previous wave fixed.
+- **The analyzer already knew.** `npm publish` reported `endpoints:
+  UNDETERMINED (npm publish contacts endpoints chosen by configuration)`;
+  `publish` and `push` sat in `fetchingSubcommands` beside `install`. The
+  knowledge was being spent on endpoint reporting rather than on risk.
+- **Nothing a user could adopt closed it.** `permissions.network: "scoped"`
+  does catch every case — and also prompts on `npm install`, `pip install`, and
+  `go mod tidy`, with no rule able to buy those back. That is the same
+  all-or-nothing ergonomics problem the scoped-egress wave was written to escape
+  one layer down.
+- **The rule language could not express the exception, and lied about it.**
+  `permissions.rules[].command` is an *executable-name* glob while
+  `permissions.denied_commands` in the same block is a full-command-line regex.
+  `{"action":"deny","command":"npm publish"}` therefore matched **nothing**,
+  and `collo config validate --strict` reported "Configuration is valid" — the
+  third instance of the inert-matcher defect, after the `host` matcher and the
+  hand-built action in `collo policy check`.
+- **Operations came first, because a tier with no expressible exception is a
+  tier people switch off.** A `command` pattern containing a space is now
+  matched against the operation — the executable plus the leading words that
+  decide what it does. `internal/shell/publication.go` derives one operation per
+  recognized invocation for the subcommand-driven tools, plus `<executable>
+  <host>` for the ssh family so a rule can name one build host rather than every
+  host. `policy.NamesOperation` is the single definition of which form a pattern
+  is, read by both the matcher and the permission layer. A pattern that could
+  match neither form now fails validation.
+- **`collo policy check` prints the vocabulary.** An `operations:` line was
+  added because the discoverability failure is what made the inert rule
+  dangerous: a user who has to guess the pattern writes one that silently
+  matches nothing.
+- **`permissions.publication` (off/prompt/deny, default prompt)** classifies six
+  categories — package registry, container registry, source remote, code forge,
+  infrastructure, remote host. It is modeled on `protect_credentials` rather
+  than on tier 2: straight tier 2 offers no durable answer at all, which is
+  right for `npm publish` and wrong for `git push` on a feature branch, and a
+  control that is wrong half the time gets disabled. Autopilot, a tool-wide
+  "always allow", and an executable-only allow rule never cover it; a rule
+  naming the operation does, and one narrow session grant covers exactly the
+  operation shown.
+- **Read verbs and rehearsals stay ordinary.** `gh pr view`, `kubectl get`,
+  `terraform plan`, `aws s3 ls`, `docker pull`, `npm install`, and a
+  download-direction `rsync` or `aws s3 sync` are not publications;
+  `--dry-run`/`--what-if`/`--noop` suppress the classification and
+  `--dry-run=false` does not. The control is only worth having if it is quiet
+  during the work an agent does all day.
+- **Two defects the first implementation shipped with, both found by widening
+  the probe rather than by reading the code.** `ssh prod "systemctl restart
+  app"` passed because the publication check sat *behind* the operation lookup,
+  and ssh has no subcommand — so every tool without a verb was silently exempt.
+  And `operationWords` skipped unrecognized options without stopping, so
+  `aws lambda update-function-code --function-name f` read the flag's value as
+  the verb and produced the operation `aws lambda f`, while `gh api -X POST`
+  produced `gh api post`. Both yielded plausible-looking operation strings that
+  matched nothing, which is why neither failed loudly. The subcommand path now
+  ends at the first unrecognized option, and `kubectl -n prod apply` no longer
+  reports its verb as `prod`.
+- **Rules and grants are deliberately not equivalent, and that was already
+  true.** An operation-naming `allow` rule outranks `publication: "deny"`,
+  because it is written down, inspectable, and survives review; an interactive
+  grant never does. The credential gate has behaved this way since it shipped
+  and it was undocumented — a test written against the opposite assumption is
+  what surfaced it. Both are now stated in `docs/SECURITY.md` rather than
+  inferred.
+- **Carried on the preset ladder and clamped like every other containment
+  field:** frictionless off, standard prompt, hardened deny; a project may raise
+  it and never lower it, and a refusal is reported. Reported in `collo doctor`,
+  `collo policy check`, and the Session tab's Security block, with its own
+  header and accent in the approval dialog.
+- **Tested where the property actually lives.** 8 classifier tests including a
+  symmetry check that fails when a tool gains a destructive classification
+  without its publishing counterpart; 6 policy tests pinning that an operation
+  pattern never falls back to an executable; 12 permission tests; 5 config
+  tests; and 3 offline evaluations, because a unit test proves the string is
+  recognized while only an end-to-end autopilot turn proves the mode whose
+  purpose is not asking actually stops.
+
+**Behavior change:** two, both documented in
+[COMPATIBILITY.md](COMPATIBILITY.md). Publishing, deploying, and pushing now
+prompt by default including under `autopilot`, where a headless run fails
+closed; `"publication": "off"` restores the earlier behavior exactly. And a
+`command` rule pattern containing a space, which previously matched nothing,
+now matches an operation — so an upgrade may activate a denial its author
+believed was already in force.
+
+### 2026-07-30 — Phase 3/7 Windows pseudoconsole
+
+- **One backend was withholding two advertised capabilities.** `ptySupported`
+  was false in `internal/tools/command_pty_windows.go`, so `run_command` with
+  `pty: true` was refused; the same absence in
+  `internal/webterminal/session_windows.go` made `collo --web` unavailable on
+  Windows entirely. The roadmap had listed this once, under Phase 3, as though
+  it were a single tool flag.
+- **os/exec structurally cannot do it.** `syscall.SysProcAttr` on Windows
+  exposes `CreationFlags`, `Token`, `AdditionalInheritedHandles`, and
+  `ParentProcess` — but no proc-thread attribute list, and a pseudoconsole is
+  attached only through `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` on a
+  `STARTUPINFOEX`. `creack/pty`, already a dependency, returns `ErrUnsupported`
+  from its `start_windows.go`. So process creation, waiting, cancellation, and
+  job assignment all had to be written directly against
+  `golang.org/x/sys/windows`, which already exports the entire API —
+  `CreatePseudoConsole`, `ResizePseudoConsole`, `ClosePseudoConsole`, and the
+  attribute constant — so no new module was added.
+- **Shared rather than duplicated, because the risk is handle lifetime.** Both
+  callers needed the same primitive, and the API calls are the easy part.
+  `internal/conpty` owns the ordering that two copies would each have had to
+  rediscover: the parent's copies of the console's input-read and output-write
+  handles must be closed immediately after `CreatePseudoConsole` duplicates
+  them, or the output pipe still has a writer and a finished command never
+  reaches end-of-file — which presents as a PTY command that hangs after it
+  has already printed everything.
+- **The cancellation contract came out stronger than the one it matched.** The
+  child is created with `CREATE_SUSPENDED`, assigned to a job object carrying
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and only then resumed, so no descendant
+  can be spawned before the job exists. The ordinary `taskkill /T` path does
+  have that window. The existing `openDescendants`/`waitAllExited` walk is
+  reused unchanged to wait out the teardown, because returning before the
+  kernel has released those processes leaves them holding the workspace
+  directory open — the defect that walk was written for.
+- **Windows has no SIGTERM, and the docs say so instead of implying parity.**
+  `GenerateConsoleCtrlEvent` requires the sender to share the target's console,
+  which a pseudoconsole host by definition does not, so there is no signal to
+  send. The graceful step for an interactive session is closing the child's
+  console input; a program blocked on input can act on it and one that ignores
+  input cannot. It is documented as a request with a deadline.
+- **`go vet` shaped one line of the implementation, and the comment says which
+  part is presentation.** `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` takes the
+  console handle by value in the `lpValue` slot — Microsoft's own sample passes
+  `hPC`, not `&hPC` — so the natural spelling is a `uintptr`-to-
+  `unsafe.Pointer` conversion, which vet rejects and CI vets on the Windows
+  runner. The bits move through the handle's own address instead. That is
+  presentation, not extra safety: the result is still an `unsafe.Pointer`
+  holding a non-pointer, sound only because a HANDLE is a small integer the
+  collector will never mistake for a heap address.
+- **Two tests were skipped for a reason that was about to become false.**
+  `TestRunCommandPTY` and `TestRunCommandPTYTimeoutKillsGroup` said "pty
+  unsupported on windows"; the only genuinely platform-specific part was the
+  shell. They now run everywhere. Windows has no `test -t 0`, so the terminal
+  assertion is that a pseudoconsole renders its client through a virtual
+  terminal while a captured pipe does not — the difference programs actually
+  key on when deciding whether to colorize. That was the assertion least
+  certain to hold without a Windows machine, and it passed on first run.
+- **Verified on Windows 11, not only in CI.** The eleven `internal/conpty`
+  integration tests and both tool-level PTY tests passed on a real VM. The
+  close and terminate tests carry explicit timeouts whose failure messages name
+  the ordering mistake that would cause them, because a hang rather than a
+  wrong value is how handle-lifetime errors present; both finished in
+  hundredths of a second.
+
+### 2026-07-30 — Phase 8 a trustworthy audit ledger
+
+- **A write-only file with no reader, no test, no bound, and no failure
+  signal.** `internal/audit` was 5 functions and 116 lines carrying the claim
+  the README leads with — "every permission decision and execution outcome…
+  so privileged actions are reconstructable" — and the coverage profile read
+  0.0%. Its only test was one happy-path case written from
+  `internal/permission`. Nothing in the product read the file back: `collo
+  replay` excludes audit JSONL by documentation, support bundles exclude its
+  content, and there was no `collo audit`. Reconstruction meant locating
+  `~/.collomia/audit/<name>-<12-hex>.jsonl` and parsing JSONL by hand.
+- **The silent hole was the defect that mattered.** `Append` ended with
+  `_, _ = file.Write(...)` after an `if err != nil { return }` on the open, so
+  an unwritable ledger, a full disk, or a short write produced a file that
+  still read as complete — the worst failure mode a record has, because a
+  reader cannot distinguish it from nothing having happened. The fix is not
+  fail-stop: refusing work the user already authorized because a record could
+  not be filed is the wrong trade, and the session store's guarantee is not the
+  right one here. It is fail-visible. Failures are counted; the first is
+  reported to the session once (not once per authorized action, which a full
+  disk would turn into a flood of identical warnings); and the next entry that
+  reaches disk is preceded by a `gap` record naming how many entries were lost,
+  when the loss began, and why. The gap and the resumed entry are written as
+  one buffer — a gap marker that itself failed to persist would leave exactly
+  the hole it exists to prevent. `docs/SECURITY.md` previously grouped this
+  with the debug log as a "best-effort diagnostic"; the two are now described
+  separately, because they no longer behave the same way.
+- **Nobody could tell which agent acted.** Entries carried no session, actor,
+  or task field. One workspace ledger receives writes from the primary agent,
+  from every concurrently scheduled delegated agent, and from any other `collo`
+  process open on that directory, so those streams interleaved into something
+  no reader could separate again. The approval dialog did prefix "delegated
+  agent X (id)" — but onto a *display copy* of the request, so what the ledger
+  recorded was the unprefixed summary, indistinguishable from the primary's.
+  Identity now lives on the `Ledger` (`Identify(session, actor, task)`) rather
+  than on each `Append` call, so the two `Append` sites in the permission layer
+  did not have to change and cannot forget it.
+- **A child could run completely unaudited.** Both delegated-agent construction
+  sites did `if ledger, ledgerErr := audit.Open(workspace); ledgerErr == nil`
+  and dropped the error, while the primary path at `app.go` turned the same
+  failure into a startup warning. `Agent.attachLedger` is now the single site
+  owning redaction, the failure route, and the three identity fields together,
+  and `TestAuditLedgerHasOneAttachmentSite` fails on a third caller of
+  `audit.Open` — the same source-scraping guard shape that pinned single-site
+  command-runner construction after the same defect produced a containment
+  field present in the primary session and silently absent for delegates.
+- **Completeness is printed before the entries, not after.** `collo audit`
+  states any declared gap, any line that would not parse, and any generation
+  discarded at rotation ahead of the first entry, because someone
+  reconstructing an incident has to know the record has holes before drawing
+  conclusions from what is in it. `collo doctor` gained the matching check: it
+  previously verified only that the ledger *directory* could be created, which
+  answers whether a ledger can be opened and not whether the one already on
+  disk is intact. The session latches its own failure count on the runtime and
+  the Session tab's Security block reports it, marked like degraded sandboxing
+  rather than as an ordinary row — a startup warning has been dismissed by the
+  time the question is asked.
+- **Bounded, and honest about the bound.** The ledger grew without limit while
+  every other retained artifact in the project is bounded. It now rotates at
+  64 MiB keeping exactly one previous generation, and the new file opens with a
+  `rotation` entry that says when an older generation had to be discarded. A
+  record that quietly shortened itself would be the silent-hole defect again in
+  a slower form; `Report.Complete()` is false when a generation was dropped.
+- **From 0.0% to 83%, and the smoke test still found two more.** The new suite
+  covers redaction of every field that can carry a secret (and that redaction
+  no longer rewrites the caller's `Resources` slice, which the approval dialog
+  shares), four concurrent writers through separate handles producing zero torn
+  lines, declared and detected incompleteness, rotation, the filters, and the
+  failure and recovery reports. Running the real binary against a fixture
+  afterwards found two defects the unit tests had not: `omitempty` does not
+  omit a zero `time.Time`, so every ordinary entry was emitting
+  `"since":"0001-01-01T00:00:00Z"` (the field is now `*time.Time`), and the
+  integrity summary printed "1 declared gaps".
+
 ### 2026-07-29 — Phase 2 coupled conversation-plus-workspace checkpoints
 
 - **Two halves that never met:** `session.Store.Rewind` branched the

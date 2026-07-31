@@ -37,6 +37,8 @@ started them.
 - Commands matching `permissions.denied_commands` are always refused.
 - Commands with a classified catastrophic outcome are always refused.
 - Destructive commands classified for one-time confirmation always prompt.
+- Commands classified as publication always prompt (or are refused) under
+  `permissions.publication`, whose default is `prompt`.
 - Commands the static analyzer cannot fully read (substitutions, `eval`,
   inline interpreter payloads, variable commands) always require an
   interactive approval.
@@ -143,6 +145,62 @@ a new human decision—even in autopilot and even when an allow rule matches:
 The approval dialog does not offer a persistent grant for this tier. In a
 headless run, the operation fails closed because no human approver is present.
 
+### Publication sits alongside tier 2
+
+Tier 2 above is a taxonomy of *destruction*, and for a long time that was the
+whole of the risk model. Every deletion in the cloud and packaging tools
+required a fresh decision even under autopilot — `terraform destroy`,
+`kubectl delete`, `helm uninstall`, `aws s3 rm --recursive`, forced push,
+`git reset --hard` — while none of their publishing counterparts did. On a
+stock configuration under `autopilot`, `npm publish`, `cargo publish`,
+`twine upload`, `docker push`, `gh pr create`, `gh pr merge`, `gh release
+create`, `kubectl apply`, `helm upgrade`, `terraform apply -auto-approve`,
+`aws lambda update-function-code`, `git push origin main`, and `ssh prod
+"systemctl restart app"` were all approved silently.
+
+That asymmetry did not reflect reversibility. A published package version is
+harder to take back than a Kubernetes deployment a controller will recreate.
+
+`permissions.publication` (`off`, `prompt` by default, `deny`) governs an
+action that puts something outside this machine, in six categories: package
+registry, container registry, source remote, code forge, infrastructure, and
+remote host. The complete catalogue, the read verbs that stay ordinary, and
+the rehearsal switches that suppress it are documented under
+[Publishing outside this machine](USER_GUIDE.md#publishing-outside-this-machine).
+
+Under the default it behaves like tier 2 in the way that matters: a blanket
+allow rule naming only an executable, a tool-wide "always allow", and
+`autopilot` all decline to cover it, and a headless run with no approver fails
+closed. It differs in the same three respects credential protection does. A
+rule that names the *operation* is honored, so an intentional exception stays
+expressible and written down; the setting can be raised to `deny`, which the
+`hardened` preset selects; and the approval dialog offers one narrow session
+grant scoped to the exact operation shown.
+
+That grant covers that operation and nothing else — never the tool, never the
+executable, never a sibling operation of the same tool, and never past this
+process. Raising the setting to `deny` mid-session invalidates a grant handed
+out while it was `prompt`.
+
+**Rules and grants are deliberately not equivalent.** An `allow` rule naming
+the operation outranks even `publication: "deny"`, because a rule is written
+down, inspectable, reviewable, and survives the session. An interactive grant
+never outranks `deny`, because it is a decision made under time pressure with
+the work half-finished. The same asymmetry already governs
+`protect_credentials`, where a rule naming a path outranks `deny` and a grant
+does not.
+
+**What this is not.** Like host rules, it is a policy layer and not
+enforcement. It reads what a command's text says it will do; a build script
+that uploads an artifact without naming the operation on a command line is
+invisible to it, and preventing that traffic is the OS sandbox's job. It also
+classifies operations rather than consequences: `kubectl apply` against a local
+cluster and against production are the same string, so the prompt names the
+operation and the person supplies the context. Finally, the catalogue is
+finite — a publishing tool Collomia does not recognize is not classified, and
+`permissions.denied_commands` and `reviewer_command` remain the answer for
+anything specific to one organization.
+
 ### Credential stores sit alongside tier 2
 
 Reaching a well-known credential store — an SSH or GPG private key, a cloud
@@ -152,10 +210,12 @@ CLI token cache, a registry authentication file, a `.env` — is governed by
 Under the default it behaves like tier 2 in the way that matters: a blanket
 allow rule, a tool-wide "always allow", and `autopilot` all decline to cover
 it. It differs from tier 2 in three respects. A rule that names the path is
-honored, so an intentional exception is expressible and stays written down;
-the setting can be raised to `deny`, which the `hardened` preset selects; and
-the approval dialog offers one narrow session grant, scoped to the exact
-credential target shown.
+honored, so an intentional exception is expressible and stays written down —
+and it is honored even under `deny`, for the same reason a rule outranks
+`publication: "deny"`: it is written down and reviewable in a way an
+interactive answer is not. The setting can be raised to `deny`, which the
+`hardened` preset selects; and the approval dialog offers one narrow session
+grant, scoped to the exact credential target shown.
 
 That grant covers that target and nothing else — never the tool, never the
 directory, never a sibling file that classifies the same way, and never past
@@ -292,6 +352,33 @@ to a prompt; it never allows, denies, or blocks a socket. `permissions.commands:
 "allowlist"` does the same for executables. Both default to `open`, which is
 the behavior of earlier releases, and both are monotonic across configuration
 layers: a project file can tighten them but cannot loosen them.
+
+### Rules can name an operation
+
+A rule's `command` matcher has two forms. Without a space it is an
+executable-name glob (`npm`, `git`, `g*`), matched against every `argv[0]` the
+command runs. With a space it is an **operation** glob (`npm publish`,
+`git push`, `gh pr create`, `ssh build-host`), matched against the executable
+plus the leading words that decide what it does.
+
+The second form exists because an executable name cannot distinguish
+installing a dependency from publishing a package — both are `npm` — so the
+only expressible policies were "allow the package manager entirely" or "prompt
+for every use of it". Neither is a policy anyone keeps.
+
+Two properties keep this honest, both learned from the `host` matcher shipping
+inert:
+
+- An operation pattern never falls back to matching an executable. `{"action":
+  "deny", "command": "npm publish"}` does not deny `npm install`.
+- A pattern that could match neither form — leading, trailing, or repeated
+  spaces — is rejected by `collo config validate`. Before operations existed,
+  a `command` value containing a space was matched against `argv[0]`, matched
+  nothing, and validated clean: a rule that read as protection and was inert.
+  That failure mode is now a validation error rather than a silent one.
+
+Run `collo policy check '<command>'` to see the exact operation string a
+command produces. Do not guess it.
 
 ### Built-in web tools: a real address boundary
 
@@ -609,9 +696,35 @@ not model-visible or executable and may be removed after confirming no active
 Collomia operation owns it.
 
 This fail-stop guard covers the durable conversation/session store. The debug
-log and permission audit ledger remain best-effort diagnostics; their
-availability is checked by `collo doctor`, but a later I/O failure in those
-diagnostic streams does not currently stop a tool.
+log remains a best-effort diagnostic: its availability is checked by
+`collo doctor`, but a later I/O failure in it does not stop a tool.
+
+The permission audit ledger is deliberately neither of those. A ledger write
+failure does not stop a tool — refusing work the user already authorized
+because a record could not be filed would be the wrong trade — but it is never
+silent either. Each failure is counted, the first is reported to the session as
+a warning, and the next entry that does reach disk is preceded by a `gap`
+record naming how many entries were lost, when the loss began, and why. The
+count is latched for the life of the session and shown in the Session tab's
+Security block, so "is this record complete?" is answerable while the session
+is still running rather than only afterwards.
+
+That property is what lets a reader trust a ledger with no gap records in it.
+`collo audit` leads with an integrity line stating any declared gap, any line
+that would not parse, and any older generation discarded at rotation, before it
+prints a single entry — a damaged record must not be read as an intact one.
+`collo doctor` reports the same thing as a warning check.
+
+Every entry names the session that produced it, the actor (`primary`, or
+`agent:<profile>` for a delegated agent), and the delegated task id. One
+workspace file receives writes from the primary agent, from every concurrently
+scheduled delegated agent, and from any other Collomia process open on that
+directory; without that identity those streams could not be separated again.
+
+The ledger is bounded: one generation rotates at 64 MiB and exactly one
+previous generation is retained, so a workspace's history occupies at most
+128 MiB. A rotation that had to discard an older generation records that fact
+in the new file rather than leaving it to be inferred from a missing one.
 
 ## Delegated-agent boundary
 
@@ -624,7 +737,12 @@ child cannot enable outside-workspace access, network access, user-data reads,
 or a weaker sandbox policy that the parent did not have. Disabled tools are
 checked again at execution time, not merely hidden from the model's tool list.
 
-Every child gets a distinct permission manager and audit ledger. A child
+Every child gets a distinct permission manager and its own ledger handle,
+writing to the workspace ledger under its own actor and task identity — so
+`collo audit --actor agent:<name>` reconstructs exactly what one delegated
+agent was allowed to do. A child whose ledger cannot be opened is reported as a
+session warning naming that actor, because a delegated agent acting with no
+record is precisely the case that must not pass unmentioned. A child
 approval is shown through the normal themed approval dialog with the delegated
 task name and ID, and approval affects only that proposed action. Write-capable
 children get independent Git worktrees; Collomia records their changed files
@@ -746,18 +864,33 @@ Cancellation is honored while a child is queued, calling a provider, or waiting
 for approval. A cancelled approval returns no permission and cannot publish the
 proposed mutation; late child updates cannot revive a cancelling task.
 
-**PTY commands** (`run_command` with `pty: true`, Unix only) run in their
-own session (`setsid`) rather than merely a process group, because a
-pseudo-terminal's child processes attach to the session leader; killing the
-session on timeout or cancellation still reaches every descendant. Windows
-has no PTY support yet and reports a clear error rather than silently
-running without one.
+**PTY commands** (`run_command` with `pty: true`) reach every descendant on
+cancellation, by a different mechanism on each platform.
+
+On Unix the child runs in its own session (`setsid`) rather than merely a
+process group, because a pseudo-terminal's child processes attach to the
+session leader; killing the session on timeout or cancellation reaches the
+whole tree.
+
+On Windows the child is attached to a pseudoconsole, created suspended, and
+assigned to a job object before it is resumed, so there is no instant in which
+it could spawn a descendant outside the job; cancellation terminates the job
+and then waits for the kernel to release each process. Creating the child
+suspended is what makes this stronger than the non-PTY path's `taskkill /T`,
+which has that window. The pseudoconsole API requires Windows 10 1809 or
+later; an older release reports that rather than running without terminal
+semantics. There is no SIGTERM to send first — `GenerateConsoleCtrlEvent`
+requires the sender to share the target's console, which a pseudoconsole host
+does not — so a one-shot command is terminated directly, and only the
+interactive browser-terminal session has a graceful step (closing the child's
+console input, with a short deadline before the job is terminated).
 
 ## Browser-terminal boundary
 
 `collo --web` is a terminal transport around the same TUI, not a separate
-agent service. On macOS and Linux it starts a child `collo tui` in a real PTY,
-so the child has the same workspace, environment, provider credentials,
+agent service. It starts a child `collo tui` in a real PTY — a pseudoconsole
+on Windows — so the child has the same workspace, environment, provider
+credentials,
 configuration, tools, and permission policy as a normal terminal session.
 The browser receives and sends terminal bytes; it cannot choose a different
 executable, working directory, or environment through HTTP.

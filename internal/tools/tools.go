@@ -26,6 +26,12 @@ type Action struct {
 	// Normalized resources for scoped policy rules and the audit ledger.
 	Paths       []string
 	Executables []string
+	// Operations name what each recognized invocation does, as
+	// "<executable> <verb…>" — `npm publish`, `git push`, `gh pr create`. A
+	// permission rule whose command pattern contains a space matches these, so
+	// a policy can say yes to installing a dependency and no to publishing a
+	// package with the same tool.
+	Operations []string
 	// Command is the original immutable command text for additive agent-profile
 	// denial regexes. It is populated only by command-bearing built-ins.
 	Command string
@@ -58,6 +64,12 @@ type Action struct {
 	// later is covered without having to remember. Command-shaped tools set it
 	// from their shell analysis, which sees targets no path field carries.
 	CredentialTargets []string
+	// PublicationTargets names the operations that put something outside this
+	// machine, each as "label: operation" — "package registry: npm publish",
+	// "infrastructure: terraform apply". Populating it is a report rather than
+	// a decision: permissions.publication decides what an action carrying one
+	// gets, exactly as protect_credentials does for CredentialTargets.
+	PublicationTargets []string
 	// Preview carries a human-reviewable rendering of the proposed change
 	// (typically a unified diff) for approval prompts.
 	Preview string
