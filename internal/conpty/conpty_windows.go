@@ -140,6 +140,17 @@ func Start(cfg Config) (proc *Process, err error) {
 	var startup windows.StartupInfoEx
 	startup.ProcThreadAttributeList = attributes.List()
 	startup.Cb = uint32(unsafe.Sizeof(startup))
+	// STARTF_USESTDHANDLES with all three handles left null is what stops the
+	// child from being given the parent's standard handles.
+	//
+	// Without it, the child ran and wrote its output somewhere other than the
+	// pseudoconsole: CI collected "CONPTY-HELLO" on the job's own console while
+	// the console pipe carried only ConPTY's startup and teardown sequences with
+	// nothing in between. The pseudoconsole attribute supplies the child's
+	// handles, so naming none here is not leaving them unset — it is declining
+	// to hand over the parent's, which is the only other thing they could have
+	// been.
+	startup.Flags |= windows.STARTF_USESTDHANDLES
 
 	executable, err := exec.LookPath(cfg.Argv[0])
 	if err != nil {
