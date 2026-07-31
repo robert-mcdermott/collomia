@@ -749,6 +749,49 @@ func TestCapabilityMatrixDocIsRegenerated(t *testing.T) {
 // feature only its author can use — and the exported-variable route is the
 // recommended one for a long credential, since the value never passes through
 // an input field.
+// Every top-level command must be documented where a user actually looks.
+//
+// `collo setup` shipped documented in the README and the user guide and absent
+// from docs/FEATURES.md, docs/CAPABILITIES.md, docs/INSTALLING.md, and the
+// roadmap history — found by measuring coverage across files by hand, because
+// nothing checked it. This guard covers the baseline that every command does
+// meet: the README introduces it and the user guide explains it.
+//
+// It deliberately does not require the feature docs or the capability matrix.
+// Those are organized by capability rather than by command, and several
+// commands (`completion`, `schema`) are plumbing that does not belong in a
+// matrix of what the product can do. A guard demanding every command appear in
+// every file would be satisfied by writing filler, which is worse than the gap
+// it closes.
+func TestEveryTopLevelCommandIsDocumented(t *testing.T) {
+	root := repoRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, "cmd", "collo", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Scraped from the dispatch switch rather than a hand-kept list, so a new
+	// command is covered the moment it becomes reachable.
+	matches := regexp.MustCompile(`(?m)^\tcase "([a-z]+)":`).FindAllStringSubmatch(string(source), -1)
+	commands := make([]string, 0, len(matches))
+	for _, match := range matches {
+		commands = append(commands, match[1])
+	}
+	if len(commands) < 10 {
+		t.Fatalf("scraped only %d commands from the dispatch switch (%v); the shape changed and this guard needs updating", len(commands), commands)
+	}
+
+	docs := docFiles(t)
+	for _, command := range commands {
+		usage := "collo " + command
+		if !strings.Contains(docs["README.md"], usage) {
+			t.Errorf("`%s` is a top-level command but the README never mentions it", usage)
+		}
+		if !strings.Contains(docs["docs/USER_GUIDE.md"], usage) {
+			t.Errorf("`%s` is a top-level command but docs/USER_GUIDE.md never mentions it", usage)
+		}
+	}
+}
+
 func TestSetupCredentialEnvironmentVariablesAreDocumented(t *testing.T) {
 	guide := docFiles(t)["docs/USER_GUIDE.md"]
 

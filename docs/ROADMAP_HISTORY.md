@@ -39,6 +39,86 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-31 — Phase 4 first-run setup, and verification that actually verifies
+
+- **The first-run path was four manual steps and a guess.** Read the README,
+  hand-write JSONC, set a credential, run `doctor`, and work out which of the
+  four was wrong. `collo init` wrote a *static* starter naming
+  `ollama`/`qwen3-coder`/`127.0.0.1:11434` as literal values, and
+  `config.Defaults()` returned the same assumption for a machine that had never
+  run Ollama. Nothing dialled anything. `collo setup` now probes the runtimes
+  that are actually listening, reads each endpoint's own catalog, and offers
+  Azure and Bedrock as forms, because neither is discoverable from a name and a
+  key: Azure addresses a *deployment* inside a resource you name, and Bedrock
+  resolves an identity through the AWS credential chain and grants model access
+  per region. Both go through the same verification.
+- **Verifying without tools verified the wrong thing.** The first design sent
+  one request, reasoning that a single request isolates a single cause. It does,
+  and it also let `gemma3:270m` verify cleanly and then fail the user's first
+  real prompt with "does not support tools" — the exact failure the package
+  exists to move earlier. Found by running the wizard against a real Ollama and
+  then running a real session, not by a fixture. Verification is now two
+  requests: one plain completion, and one carrying a tool definition. The cause
+  stays isolated *and* the promise holds. Requiring an actual tool *call* would
+  have been worse — a capable model may answer a trivial prompt with text.
+- **An omitted context window silently disables compaction.** The design said to
+  leave `context_window` out when the endpoint does not publish one. There is no
+  adapter default, and `Agent.shouldCompact` returns false on a zero window, so
+  the omission would have written a configuration whose auto-compaction never
+  ran. It now assumes 32768 and labels the assumption on the confirmation screen
+  rather than presenting a guess as a measurement.
+- **A silent input truncation was diagnosed as a permissions problem.** A
+  reported Bedrock failure — "Missing required parameters in the API Key", with
+  a correct key, region, and model — traced to `CharLimit = 512` on the wizard's
+  own text input, which truncates on both `SetValue` and paste. In a field that
+  deliberately does not echo, a cut-off key is indistinguishable from a whole
+  one. Alongside it, the 403 branch asserted "the credential is valid, but not
+  allowed to use this model" while printing AWS's contradicting message directly
+  beneath it. Both fixed: no character limit, `SanitizeSecret` for whitespace
+  and quotes acquired in copying, a visible character count (a length is not a
+  secret), and a 403 that reads the endpoint's own message before deciding which
+  of the two quite different causes to name.
+- **SigV4 failures were answered with API-key advice.** Bedrock's two credential
+  families fail for unrelated reasons, and a chain that resolves nothing never
+  reaches AWS at all — so "the endpoint rejected the credential" was wrong about
+  where the failure happened, and there is no key to check in that mode. The
+  diagnosis now names IAM variables, profiles, `aws sso login` for an expired
+  Identity Center session, and `aws sts get-caller-identity`. `auto` with no
+  token counts as the chain, since the user never typed the word "sigv4" and
+  would not connect the failure to it.
+- **The documentation guards were passing vacuously.** Writing a new guard
+  exposed that it passed against deliberately broken documentation, because the
+  token it searched for appeared incidentally elsewhere in the file. Six
+  existing guards had the same defect. All are now scoped to the smallest
+  enclosing heading section and matched on whole words, and each was verified by
+  mutation — breaking the documentation and confirming the guard fails. The
+  recipe is written down in `docs/TESTING.md`, because a guard nobody has seen
+  fail is not evidence of anything. Section anchors are unique headings rather
+  than body strings: the first attempt anchored on `~/.aws/credentials`, which a
+  later section legitimately mentioned, and the guard then failed against
+  correct documentation.
+- **A 32-token verification budget failed every reasoning model.** Reported
+  against LM Studio serving `qwen/qwen3.5-9b`: the model spent the whole budget
+  thinking, returned an empty visible answer, and the wizard reported a model
+  LM Studio was actively serving as "not actually served behind" the gateway. It
+  needs about 170 tokens to reach the word "ok". The budget is now 1024, which
+  costs nothing on a model that answers directly, and an empty reply is read
+  rather than assumed: reasoning present means the route is proven, truncation
+  at the ceiling is stated as a limit rather than blamed on the model, and only
+  a complete, genuinely empty 200 keeps the original diagnosis.
+- **One parameterless tool broke every request against LM Studio.**
+  `git_status` declared `{"type":"object","additionalProperties":false}` — valid
+  and complete JSON Schema. LM Studio requires `properties` regardless and
+  rejects the whole request rather than the one tool, so a single tool made the
+  entire session unusable, identified only by a numeric index. The declaration
+  is fixed and a guard covers every builtin, but the durable fix is in the
+  adapters: tools arriving over MCP are written by somebody else and cannot be
+  corrected at the source, so an object schema is normalized before it goes on
+  the wire. The normalization only ever adds an absent key, never modifies a
+  declared one, and a cross-adapter test asserts an ordinary tool reaches every
+  provider byte-identical to what it declared — the guard against a fix for one
+  strict server damaging the others.
+
 ### 2026-07-30 — Phase 1 publication and deployment as their own decision
 
 - **The risk model was destruction-shaped.** `internal/shell/safety.go` is, end
