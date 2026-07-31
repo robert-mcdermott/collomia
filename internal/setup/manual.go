@@ -56,7 +56,7 @@ type Manual struct {
 }
 
 const (
-	azureAuthHint  = "api-key uses a key from the resource. entra uses DefaultAzureCredential and refreshes automatically. bearer is a token you supply and Collomia cannot refresh."
+	azureAuthHint = "api-key uses a key from the resource. entra uses DefaultAzureCredential and refreshes automatically. bearer is a token you supply and Collomia cannot refresh."
 	// Named in full, because "SigV4" is the one term on any of these screens
 	// that assumes knowledge a first-time user may not have. It is AWS's
 	// request-signing scheme, and choosing it means Collomia asks for no key

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,35 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 )
+
+func TestEveryBuiltinToolSchemaDeclaresItsProperties(t *testing.T) {
+	// `git_status` shipped as {"type":"object","additionalProperties":false},
+	// which is complete JSON Schema and which LM Studio rejects outright — and
+	// because a rejected tool definition fails the whole request, one such tool
+	// breaks every prompt in the session against that server.
+	//
+	// The adapters normalize this now, so a tool arriving over MCP cannot
+	// reintroduce it. This guard covers the tools Collomia does own, where the
+	// right place to be correct is the declaration rather than the wire.
+	registry, _, _, err := Builtins(t.TempDir(), appconfig.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, def := range registry.Definitions(nil) {
+		var schema map[string]any
+		if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
+			t.Errorf("%s: schema does not parse: %v", def.Name, err)
+			continue
+		}
+		if schema["type"] != "object" {
+			t.Errorf("%s: tool parameters must be an object schema, got %v", def.Name, schema["type"])
+			continue
+		}
+		if _, present := schema["properties"]; !present {
+			t.Errorf("%s: schema omits \"properties\"; declare {} for a tool that takes no arguments", def.Name)
+		}
+	}
+}
 
 func TestBuiltinsUseCompatibilityFirstSandboxDefault(t *testing.T) {
 	registry, _, _, err := Builtins(t.TempDir(), appconfig.Defaults())

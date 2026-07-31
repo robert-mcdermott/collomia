@@ -161,9 +161,9 @@ func (c *OpenAIClient) chatBody(in Request) (map[string]any, error) {
 	if len(in.Tools) > 0 {
 		tools := make([]any, 0, len(in.Tools))
 		for _, tool := range in.Tools {
-			var schema any
-			if err := json.Unmarshal(rawObject(tool.InputSchema), &schema); err != nil {
-				return nil, fmt.Errorf("tool %s schema: %w", tool.Name, err)
+			schema, err := toolParameterSchema(tool.Name, tool.InputSchema)
+			if err != nil {
+				return nil, err
 			}
 			tools = append(tools, map[string]any{"type": "function", "function": map[string]any{
 				"name": tool.Name, "description": tool.Description, "parameters": schema,

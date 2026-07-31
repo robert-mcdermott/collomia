@@ -52,7 +52,7 @@ func safeGitArg(value, what string) (string, error) {
 type GitStatusTool struct{ Workspace string }
 
 func (t GitStatusTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "git_status", Description: "Show the repository status: current branch, ahead/behind, and changed files (git status --porcelain=v1 -b).", InputSchema: schema(`{"type":"object","additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "git_status", Description: "Show the repository status: current branch, ahead/behind, and changed files (git status --porcelain=v1 -b).", InputSchema: schema(`{"type":"object","properties":{},"additionalProperties":false}`)}
 }
 func (t GitStatusTool) Assess(json.RawMessage) (Action, error) {
 	return Action{Risk: RiskRead, Summary: "git status"}, nil

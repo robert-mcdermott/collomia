@@ -127,8 +127,8 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if len(in.Tools) > 0 {
 		defs := make([]any, 0, len(in.Tools))
 		for _, tool := range in.Tools {
-			var schema any
-			if err := json.Unmarshal(rawObject(tool.InputSchema), &schema); err != nil {
+			schema, err := toolParameterSchema(tool.Name, tool.InputSchema)
+			if err != nil {
 				return Response{}, err
 			}
 			defs = append(defs, map[string]any{"name": tool.Name, "description": tool.Description, "input_schema": schema})

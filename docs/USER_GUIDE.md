@@ -223,8 +223,19 @@ vision, and the smallest chat models — answer an ordinary prompt perfectly wel
 and reject any request that carries tools. Without the tool check, such a model
 configures cleanly and then fails your first real prompt.
 
+Reasoning models are expected here and are allowed to take their time. A model
+that thinks before it answers can spend hundreds of tokens and many seconds
+reaching the word "ok", so verification allows room for that rather than reading
+a model still thinking as an endpoint that returned nothing. If the budget runs
+out before any visible answer, the wizard says so plainly — that is a statement
+about the verification limit, not about your endpoint or your credential, both
+of which have already proven themselves by that point.
+
 If verification fails, nothing is written and the wizard says which of the
-endpoint, the credential, or the model is at fault, and what to do about it.
+endpoint, the credential, or the model is at fault, and what to do about it. One
+case worth naming: local runtimes list embedding models in the same catalog as
+chat models, with nothing to distinguish them. Picking one is an easy mistake,
+and the runtime's own rejection rarely explains it, so the wizard does.
 
 Azure OpenAI, Azure AI Foundry (both the OpenAI and Anthropic routes), and AWS
 Bedrock are configured through a short form rather than offered as one-line

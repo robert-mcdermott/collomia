@@ -28,6 +28,15 @@ type fakeEndpoint struct {
 	// rejectTools reproduces the runtime that answers a plain completion and
 	// refuses the same request once tool definitions are attached.
 	rejectTools bool
+	// reasoning makes the endpoint answer the way a reasoning model does, with
+	// hidden reasoning tokens and a visible answer only if chatBody is set.
+	// Streamed, because that is the shape a real runtime sends and the shape in
+	// which reasoning is surfaced at all.
+	reasoning string
+	// finishReason overrides "stop". "length" is truncation at the ceiling.
+	finishReason string
+	// maxTokens records the ceiling the last chat request actually carried.
+	maxTokens *int
 }
 
 func (f fakeEndpoint) start(t *testing.T) string {
@@ -50,20 +59,42 @@ func (f fakeEndpoint) start(t *testing.T) string {
 				fmt.Fprint(w, `{"error":{"message":"upstream said no"}}`)
 				return
 			}
-			if f.rejectTools {
-				body, _ := io.ReadAll(r.Body)
-				if strings.Contains(string(body), "tools") {
-					w.WriteHeader(http.StatusBadRequest)
-					fmt.Fprint(w, `{"error":{"message":"registry.ollama.ai/library/tiny does not support tools"}}`)
-					return
+			raw, _ := io.ReadAll(r.Body)
+			if f.maxTokens != nil {
+				var sent struct {
+					MaxTokens int `json:"max_tokens"`
 				}
+				_ = json.Unmarshal(raw, &sent)
+				*f.maxTokens = sent.MaxTokens
+			}
+			if f.rejectTools && strings.Contains(string(raw), "tools") {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"error":{"message":"registry.ollama.ai/library/tiny does not support tools"}}`)
+				return
+			}
+			finish := f.finishReason
+			if finish == "" {
+				finish = "stop"
+			}
+			if f.reasoning != "" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				reasoning, _ := json.Marshal(f.reasoning)
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":%s}}]}\n\n", reasoning)
+				if f.chatBody != "" {
+					content, _ := json.Marshal(f.chatBody)
+					fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", content)
+				}
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":%q}]}\n\n", finish)
+				fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":170,\"completion_tokens_details\":{\"reasoning_tokens\":170}}}\n\n")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				return
 			}
 			body := f.chatBody
-			if body == "" {
+			if body == "" && finish == "stop" {
 				body = "ok"
 			}
 			encoded, _ := json.Marshal(body)
-			fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%s},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":1}}`, encoded)
+			fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%s},"finish_reason":%q}],"usage":{"prompt_tokens":9,"completion_tokens":1}}`, encoded, finish)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -172,6 +203,120 @@ func TestVerifyTreatsAnEmptyCompletionAsFailure(t *testing.T) {
 	}
 	if !containsSubstring(result.Diagnosis.Fixes, "real-model") {
 		t.Errorf("the diagnosis must print the catalog it read, got %v", result.Diagnosis.Fixes)
+	}
+}
+
+func TestVerifyAcceptsAReasoningModelThatSpendsTheBudgetThinking(t *testing.T) {
+	// The LM Studio regression, reported against a real qwen/qwen3.5-9b. The
+	// budget was 32 tokens; the model spent about 170 reasoning before its first
+	// visible word, so the visible answer came back empty and the wizard told the
+	// user a model LM Studio was actively serving was "not actually served
+	// behind" the gateway — a confident diagnosis of entirely the wrong thing.
+	//
+	// Tokens came back, so the route, the model, and the credential are all
+	// proven. The absence of a visible answer within a deliberately small
+	// verification budget says nothing about a real session, which sets a
+	// working limit.
+	url := fakeEndpoint{models: []string{"qwen3.5"}, reasoning: "Thinking Process: the user wants one word.", finishReason: "length"}.start(t)
+	p := appconfig.Provider{Type: "openai-compatible", BaseURL: url + "/v1"}
+	result := Verify(context.Background(), "local", p, "qwen3.5", nil)
+	if !result.OK {
+		t.Fatalf("a reasoning model that reasons must verify: %v — %q", result.Err, result.Diagnosis.Summary)
+	}
+	if !result.Reasoned {
+		t.Error("Reasoned must record why the visible reply is empty")
+	}
+	if strings.Contains(result.Describe(), `""`) {
+		t.Errorf("the confirmation must not report an empty string as the model's reply: %q", result.Describe())
+	}
+}
+
+func TestVerifyDoesNotBlameTheModelForHittingTheTokenCeiling(t *testing.T) {
+	// Truncation with nothing visible and no reasoning reported. The endpoint
+	// answered and was cut off, which is not evidence that the model is missing,
+	// so it must not be offered the catalog as though it had chosen a bad name.
+	url := fakeEndpoint{models: []string{"real-model"}, chatBody: "", finishReason: "length"}.start(t)
+	p := appconfig.Provider{Type: "openai-compatible", BaseURL: url + "/v1"}
+	catalog, err := Discover(context.Background(), "local", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := Verify(context.Background(), "local", p, "real-model", catalog)
+	if result.OK {
+		t.Fatal("no visible output must not verify")
+	}
+	if !strings.Contains(result.Diagnosis.Summary, "token limit") {
+		t.Errorf("summary must name the ceiling, got %q", result.Diagnosis.Summary)
+	}
+	if strings.Contains(result.Diagnosis.Detail, "not actually served") {
+		t.Errorf("truncation is not evidence the model is missing: %q", result.Diagnosis.Detail)
+	}
+	if !containsSubstring(result.Diagnosis.Fixes, "nothing is wrong with either") {
+		t.Errorf("the diagnosis must say the endpoint and credential are proven, got %v", result.Diagnosis.Fixes)
+	}
+}
+
+func TestVerificationBudgetLeavesRoomForReasoning(t *testing.T) {
+	// A guard on the constant itself, because the failure it prevents is
+	// invisible from the wizard's own tests: shrinking it back toward a
+	// "trivial prompt needs a trivial budget" value breaks only against real
+	// reasoning models. 170 tokens was one small model on the simplest possible
+	// prompt, so the floor here is well above it.
+	var sent int
+	url := fakeEndpoint{models: []string{"m"}, maxTokens: &sent}.start(t)
+	Verify(context.Background(), "local", appconfig.Provider{Type: "openai-compatible", BaseURL: url + "/v1"}, "m", nil)
+	if sent < 512 {
+		t.Errorf("verification asked for %d tokens; a reasoning model exhausts that before answering", sent)
+	}
+}
+
+func TestDiagnoseReadsARefusedRequestBeforeAnsweringIt(t *testing.T) {
+	// LM Studio's real message when a model in its catalog cannot serve chat.
+	// This used to produce Azure deployment-name and API-version advice for a
+	// local runtime, while withholding the one thing that helps: the list of
+	// models the wizard had just read off that same endpoint.
+	detail := `Invalid model identifier "text-embedding-nomic-embed-text-v1.5". Please specify a valid downloaded model (e.g., qwen/qwen3.5-9b).`
+	err := &provider.Error{Kind: provider.ErrorInvalidRequest, StatusCode: 400, Message: detail}
+	p := appconfig.Provider{Type: "openai-compatible", BaseURL: "http://localhost:1234/v1"}
+	catalog := []provider.ModelInfo{{ID: "qwen/qwen3.5-9b"}, {ID: "text-embedding-nomic-embed-text-v1.5"}}
+
+	d := Diagnose(p, "text-embedding-nomic-embed-text-v1.5", catalog, err)
+	if !strings.Contains(d.Summary, "will not serve that model") {
+		t.Errorf("summary = %q", d.Summary)
+	}
+	if !containsSubstring(d.Fixes, "qwen/qwen3.5-9b") {
+		t.Errorf("must print the catalog it read, got %v", d.Fixes)
+	}
+	if !containsSubstring(d.Fixes, "embedding model") {
+		t.Errorf("an embedding model chosen for chat should be named as such, got %v", d.Fixes)
+	}
+	if containsSubstring(d.Fixes, "Azure") || containsSubstring(d.Fixes, "deployment") {
+		t.Errorf("a local endpoint must not be given Azure advice, got %v", d.Fixes)
+	}
+}
+
+func TestDiagnoseWithholdsAzureAdviceFromEndpointsThatAreNotAzure(t *testing.T) {
+	// The other half of the refused-request branch: a rejection that says
+	// nothing about the model still must not send a local-runtime user looking
+	// for a deployment name they will never find.
+	err := &provider.Error{Kind: provider.ErrorInvalidRequest, StatusCode: 400, Message: "unsupported parameter: top_k"}
+	d := Diagnose(appconfig.Provider{Type: "openai-compatible", BaseURL: "http://localhost:1234/v1"}, "qwen3.5", nil, err)
+	if containsSubstring(d.Fixes, "deployment") {
+		t.Errorf("a non-Azure endpoint must not be given deployment advice, got %v", d.Fixes)
+	}
+	if len(d.Fixes) == 0 {
+		t.Error("dropping the Azure line must not leave the diagnosis with no advice at all")
+	}
+}
+
+func TestDiagnoseStillGivesAzureDeploymentAdviceOnAzure(t *testing.T) {
+	// The Azure hint was worth keeping, just not worth giving to everyone: the
+	// deployment-versus-model mistake is Azure's commonest, and this failure
+	// does not quote the model back.
+	err := &provider.Error{Kind: provider.ErrorInvalidRequest, StatusCode: 400, Message: "unsupported parameter for this API version"}
+	d := Diagnose(appconfig.Provider{Type: "azure-openai", BaseURL: "https://r.openai.azure.com"}, "my-deployment", nil, err)
+	if !containsSubstring(d.Fixes, "deployment name") {
+		t.Errorf("fixes = %v", d.Fixes)
 	}
 }
 

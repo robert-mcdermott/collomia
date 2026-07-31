@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"net"
@@ -217,6 +218,43 @@ func rawObject(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return raw
+}
+
+// toolParameterSchema decodes a tool's declared input schema into the form an
+// adapter puts on the wire, guaranteeing that an object schema carries a
+// `properties` key.
+//
+// JSON Schema does not require it: `{"type":"object"}` is complete and means
+// "any object". Some servers validate tool definitions more strictly than the
+// spec does, and reject the whole request rather than the one tool — LM Studio
+// answers a parameterless tool with `invalid_type` at
+// `[n, "function", "parameters", "properties"]`, which fails every request in
+// the session and names only a numeric index to find it by.
+//
+// Adding the key changes nothing semantically in either direction: with
+// `additionalProperties: false` the schema already admits no properties, and
+// without it, additional properties are still permitted. It is applied here
+// rather than at each tool because tools arriving over MCP are written by
+// somebody else and cannot be fixed at the source.
+func toolParameterSchema(name string, raw json.RawMessage) (any, error) {
+	var decoded any
+	if err := json.Unmarshal(rawObject(raw), &decoded); err != nil {
+		return nil, fmt.Errorf("tool %s schema: %w", name, err)
+	}
+	object, ok := decoded.(map[string]any)
+	if !ok {
+		return decoded, nil
+	}
+	// Only object schemas get the key. A tool declaring a non-object parameter
+	// schema is unusual, but adding `properties` to it would be meaningless at
+	// best and misleading at worst.
+	if kind, present := object["type"]; present && kind != "object" {
+		return decoded, nil
+	}
+	if _, present := object["properties"]; !present {
+		object["properties"] = map[string]any{}
+	}
+	return object, nil
 }
 
 type idleTimeoutTransport struct {

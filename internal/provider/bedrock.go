@@ -255,8 +255,8 @@ func bedrockRequest(in Request) (map[string]any, error) {
 	if len(in.Tools) > 0 {
 		tools := make([]any, 0, len(in.Tools))
 		for _, tool := range in.Tools {
-			var schema any
-			if err := json.Unmarshal(rawObject(tool.InputSchema), &schema); err != nil {
+			schema, err := toolParameterSchema(tool.Name, tool.InputSchema)
+			if err != nil {
 				return nil, err
 			}
 			tools = append(tools, map[string]any{"toolSpec": map[string]any{"name": tool.Name, "description": tool.Description, "inputSchema": map[string]any{"json": schema}}})

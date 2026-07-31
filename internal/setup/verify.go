@@ -19,11 +19,22 @@ import (
 // keep waiting on.
 const verifyTimeout = 90 * time.Second
 
-// verifyMaxTokens is small but not one. A single token is enough to prove the
-// route answers, but some models emit a leading reasoning or whitespace token
-// and would hit the limit before producing anything, turning a working
-// endpoint into an empty reply that reads like a failure.
-const verifyMaxTokens = 32
+// verifyMaxTokens has to accommodate a reasoning model, which is why it is not
+// the handful of tokens the prompt itself needs.
+//
+// This was 32, on the reasoning that a trivial prompt needs a trivial budget.
+// That is true only of models that answer directly. A reasoning model spends
+// the budget thinking before it emits anything visible, and 32 tokens is not
+// close: qwen3.5-9b takes about 170 to decide how to say "ok". The whole budget
+// went to hidden reasoning, the visible answer came back empty, and the wizard
+// reported a working local endpoint as a model that was "not actually served"
+// — a confident diagnosis of the wrong thing.
+//
+// Costs nothing on a model that does not reason, since max_tokens is a ceiling
+// and a direct answer stops after a word. Models that reason past even this are
+// handled by the truncation branch in Verify rather than by raising it further,
+// because there is no budget that satisfies every reasoning model.
+const verifyMaxTokens = 1024
 
 // verifyPrompt is deliberately trivial. This step is proving that the
 // configured route answers, not evaluating the model.
@@ -40,9 +51,14 @@ type Verification struct {
 	// which of the two steps did not pass.
 	ToolsOK bool
 	Reply   string
-	Usage   provider.Usage
-	Elapsed time.Duration
-	Err     error
+	// Reasoned records that the model produced hidden reasoning. When Reply is
+	// empty this is what separates a working reasoning model from an endpoint
+	// that returned nothing at all, and the confirmation says so rather than
+	// reporting an empty answer as if it were the model's reply.
+	Reasoned bool
+	Usage    provider.Usage
+	Elapsed  time.Duration
+	Err      error
 	// Diagnosis is populated on failure and is the reason this step exists.
 	Diagnosis Diagnosis
 }
@@ -102,9 +118,10 @@ func Verify(ctx context.Context, name string, p appconfig.Provider, model string
 		Messages:  []provider.Message{{Role: "user", Content: verifyPrompt}},
 		MaxTokens: verifyMaxTokens,
 	}
-	var text strings.Builder
+	var text, reasoning strings.Builder
 	response, err := client.Chat(callCtx, request, func(delta provider.Delta) {
 		text.WriteString(delta.Text)
+		reasoning.WriteString(delta.Reasoning)
 	})
 	result.Elapsed = time.Since(started)
 	if err != nil {
@@ -120,19 +137,47 @@ func Verify(ctx context.Context, name string, p appconfig.Provider, model string
 		reply = strings.TrimSpace(response.Content)
 	}
 	result.Reply, result.Usage = reply, response.Usage
+	result.Reasoned = strings.TrimSpace(reasoning.String()) != "" || response.Usage.ReasoningTokens > 0
 
-	// An empty 200 is its own failure. Several compatible gateways answer a
-	// request for a model they do not have with a well-formed, entirely empty
-	// completion, and treating that as success would write a configuration
-	// that produces silence at the first real prompt.
+	// An empty reply has three quite different causes, and the wizard used to
+	// report all of them as the last one.
 	if reply == "" {
-		result.Err = errors.New("the endpoint answered successfully but returned no text")
-		result.Diagnosis = Diagnosis{
-			Summary: "The endpoint answered, but produced no output.",
-			Detail:  "A well-formed but empty completion usually means the model name is accepted by the gateway and not actually served behind it.",
-			Fixes:   modelFixes(p, model, catalog),
+		switch {
+		case result.Reasoned:
+			// The model reasoned but never reached a visible answer. Tokens came
+			// back, so the route works and the credential is good — the budget
+			// was simply spent thinking. A real session sets a working limit, so
+			// this is not a reason to refuse to write the configuration.
+
+		case truncatedByBudget(response.Stop):
+			// Cut off at the ceiling without emitting anything at all. Still not
+			// evidence the model is missing: the request was answered and then
+			// truncated.
+			result.Err = errors.New("the endpoint stopped at the token limit before producing any text")
+			result.Diagnosis = Diagnosis{
+				Summary: "The model hit the verification token limit before answering.",
+				Detail:  strings.TrimSpace(response.Stop),
+				Fixes: []string{
+					fmt.Sprintf("Verification allows %d tokens, which a model that reasons at length can exhaust before its first visible word.", verifyMaxTokens),
+					"The endpoint and credential are working — this says nothing is wrong with either.",
+					"Try a model that answers more directly, or set this one up by editing the configuration file.",
+				},
+			}
+			return result
+
+		default:
+			// A well-formed, complete, entirely empty 200. Several compatible
+			// gateways answer a request for a model they do not have exactly
+			// this way, and treating it as success would write a configuration
+			// that produces silence at the first real prompt.
+			result.Err = errors.New("the endpoint answered successfully but returned no text")
+			result.Diagnosis = Diagnosis{
+				Summary: "The endpoint answered, but produced no output.",
+				Detail:  "A well-formed but empty completion usually means the model name is accepted by the gateway and not actually served behind it.",
+				Fixes:   modelFixes(p, model, catalog),
+			}
+			return result
 		}
-		return result
 	}
 
 	// Second request: the same trivial prompt, now carrying a tool definition.
@@ -180,6 +225,43 @@ func diagnoseTools(p appconfig.Provider, model string, catalog []provider.ModelI
 		base.Summary = "The endpoint answered a plain request but failed once tools were included. " + base.Summary
 	}
 	return base
+}
+
+// truncatedByBudget reports whether a response stopped because it reached the
+// token ceiling rather than because the model finished.
+//
+// The vocabulary is per-provider and there is no normalized form to consult:
+// OpenAI says "length", Anthropic and Bedrock say "max_tokens", and the
+// Responses API reports the whole response as "incomplete". All three are
+// listed because guessing wrong here reinstates exactly the misdiagnosis this
+// branch exists to prevent.
+func truncatedByBudget(stop string) bool {
+	switch strings.ToLower(strings.TrimSpace(stop)) {
+	case "length", "max_tokens", "incomplete":
+		return true
+	}
+	return false
+}
+
+// Describe states what verification actually observed, for the confirmation.
+//
+// A reasoning model that never reached a visible answer must not be described
+// as having replied "", which reads like the endpoint failed and the wizard
+// wrote the configuration anyway.
+func (v Verification) Describe() string {
+	elapsed := v.Elapsed.Round(time.Millisecond)
+	if v.Reply == "" && v.Reasoned {
+		return fmt.Sprintf("reasoned but produced no visible answer within %d tokens, in %s, and accepted tools", verifyMaxTokens, elapsed)
+	}
+	return fmt.Sprintf("replied %q in %s, and accepted tools", truncateRunes(v.Reply, 20), elapsed)
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func firstN(values []string, n int) []string {
@@ -326,14 +408,22 @@ func Diagnose(p appconfig.Provider, model string, catalog []provider.ModelInfo, 
 			Fixes:   []string{"Wait and try again — this says the credential works, not that it is wrong."},
 		}
 	case provider.ErrorInvalidRequest:
-		return Diagnosis{
-			Summary: "The endpoint refused the request.",
-			Detail:  detail,
-			Fixes: []string{
-				"If this is an Azure endpoint, the model field wants the deployment name you created, not the model's published name.",
-				"Check the API version and the base URL against the provider's documentation.",
-			},
+		// A refused request has to be read before it is answered. This branch
+		// used to give Azure deployment-name and API-version advice to everyone,
+		// which is noise to someone whose local runtime just said, in plain
+		// words, that it will not serve the model they picked.
+		if blamesModel(detail, model) {
+			return Diagnosis{
+				Summary: "The endpoint will not serve that model.",
+				Detail:  detail,
+				Fixes:   modelFixes(p, model, catalog),
+			}
 		}
+		fixes := []string{"Check the API version and the base URL against the provider's documentation."}
+		if isAzure(p.Type) {
+			fixes = append([]string{"The model field wants the deployment name you created, not the model's published name."}, fixes...)
+		}
+		return Diagnosis{Summary: "The endpoint refused the request.", Detail: detail, Fixes: fixes}
 	case provider.ErrorTimeout:
 		return Diagnosis{
 			Summary: "The endpoint timed out.",
@@ -385,6 +475,12 @@ func modelFixes(p appconfig.Provider, model string, catalog []provider.ModelInfo
 		}
 		fixes = append(fixes, "This endpoint reports: "+strings.Join(shown, ", ")+suffix+".")
 	}
+	if looksLikeEmbeddingModel(model) {
+		// Local catalogs list embedding models beside chat models with nothing
+		// to tell them apart, so choosing one is an ordinary mistake rather than
+		// a careless one, and the runtime's own message rarely says why.
+		fixes = append(fixes, "This looks like an embedding model. Those serve /v1/embeddings only and cannot answer a chat completion; choose an instruct or chat model.")
+	}
 	if isAzure(p.Type) {
 		fixes = append(fixes, "Azure addresses deployments, not models: use the deployment name from your Azure resource.")
 	}
@@ -392,6 +488,33 @@ func modelFixes(p appconfig.Provider, model string, catalog []provider.ModelInfo
 		fixes = append(fixes, "For Ollama, pull it first: ollama pull "+orPlaceholder(model, "<model>")+".")
 	}
 	return fixes
+}
+
+// blamesModel reports whether an endpoint's own rejection points at the model
+// rather than at the rest of the request.
+//
+// Matching the model id in the message is the strongest signal available:
+// provider.Error keeps only the message text, not the `param` or `code` fields
+// that would say so directly. Inside an invalid-request failure, a message that
+// quotes the model back is about the model essentially every time.
+func blamesModel(detail, model string) bool {
+	lowered := strings.ToLower(detail)
+	if id := strings.ToLower(strings.TrimSpace(model)); id != "" && strings.Contains(lowered, id) {
+		return true
+	}
+	for _, marker := range []string{"model_not_found", "invalid model", "unknown model", "model not found", "no such model"} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeEmbeddingModel guesses from the id, because no catalog this wizard
+// reads reliably declares it.
+func looksLikeEmbeddingModel(model string) bool {
+	lowered := strings.ToLower(model)
+	return strings.Contains(lowered, "embed") || strings.Contains(lowered, "-rerank")
 }
 
 // mentionsCredentialShape reports whether an endpoint's own message is about

@@ -369,7 +369,7 @@ func (m setupModel) confirmView() string {
 		rows = append(rows, [2]string{"aws identity", m.awsIdentity.Describe()})
 	}
 	rows = append(rows,
-		[2]string{"verified", fmt.Sprintf("replied %q in %s, and accepted tools", truncate(m.verification.Reply, 20), m.verification.Elapsed.Round(1e6))},
+		[2]string{"verified", m.verification.Describe()},
 		[2]string{"default", m.defaultRow()},
 	)
 
