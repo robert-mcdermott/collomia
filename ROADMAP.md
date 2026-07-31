@@ -37,8 +37,9 @@ also shipped:
   sandbox backends with compatibility-first `auto` enforcement by default,
   visible degradation, and capability-aware fail-closed `require` behavior;
 - scoped permissions, conservative shell analysis, catastrophic-command
-  denials, credential-store protection, macOS per-host brokered command egress,
-  secret redaction, and an audit ledger;
+  denials, credential-store protection, publication/deployment protection,
+  operation-scoped policy rules, macOS per-host brokered command egress, secret
+  redaction, and an audit ledger;
 - durable resumable sessions, crash recovery, compaction, bounded retained
   artifacts, rewind/fork, coupled conversation-plus-workspace checkpoint
   restore that fails closed on external edits, and fail-stop persistence
@@ -74,12 +75,91 @@ campaigns — since the last P0 outside it was reclassified on the evidence that
 the enforced all-or-nothing network boundary it was meant to add already
 existed on all three platforms. The audit ledger those campaigns and that
 review read from is now itself complete, attributable, bounded, and
-inspectable, and pseudo-terminal execution reaches all three platforms; those
-were the two most recent waves.
+inspectable, and pseudo-terminal execution reaches all three platforms. The
+most recent wave closed the last known asymmetry in the risk classifier: the
+safety taxonomy described destruction only, so publishing and deploying rode
+along with autopilot while their deletion counterparts required a decision.
 
 No wave is currently active. See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — the actions that leave the machine
+
+**Goal:** give the risk classifier a publication shape to match the destruction
+shape it already had, and give the rule language enough resolution to say yes to
+`npm install` and no to `npm publish` — so the control is one people leave on
+rather than one they switch off.
+
+- [x] Classify publication at all. `internal/shell/safety.go` was, end to end, a
+  taxonomy of deletion, so under `autopilot` on a stock configuration
+  `terraform destroy` required a decision and `terraform apply -auto-approve`
+  did not; `kubectl delete` did and `kubectl apply` did not; `git push --force`
+  did and `git push origin main` did not. `npm publish`, `cargo publish`,
+  `docker push`, `gh pr create`, `gh release create`,
+  `aws lambda update-function-code`, and `ssh prod "systemctl restart app"` were
+  all approved silently. The asymmetry did not track reversibility — a published
+  version is harder to take back than a deployment a controller recreates — and
+  this roadmap's own deferred list already said these were not meant to be
+  autonomous.
+- [x] Fix the rule language first, because a tier with no expressible exception
+  is a tier people disable. `rules[].command` was an *executable-name* glob
+  while `denied_commands` in the same block was a full-command-line regex, so
+  `{"action":"deny","command":"npm publish"}` matched nothing and validated
+  clean — the third inert-matcher defect after the `host` matcher and the
+  hand-built action in `collo policy check`. A pattern containing a space now
+  matches an **operation**, one definition (`policy.NamesOperation`) decides
+  which form a pattern is, and a pattern that could match neither fails
+  validation.
+- [x] Print the vocabulary rather than making people guess it. `collo policy
+  check` gained an `operations:` line, because the discoverability failure is
+  what made the inert rule dangerous rather than merely useless.
+- [x] Model the setting on `protect_credentials`, not on tier 2. Tier 2 offers
+  no durable answer at all, which is right for `npm publish` and wrong for
+  `git push` on a feature branch; a control that is wrong half the time gets
+  switched off. `permissions.publication` (off/prompt/deny, default prompt) is
+  uncoverable by autopilot, a tool-wide "always", or an executable-only allow
+  rule, while a rule naming the operation and one narrow session grant scoped to
+  the exact operation both work.
+- [x] Stay quiet during ordinary work. Read verbs (`gh pr view`, `kubectl get`,
+  `terraform plan`, `aws s3 ls`), `npm install`, `docker pull`, a
+  download-direction `rsync`, and every `--dry-run` rehearsal are unaffected —
+  and `--dry-run=false` is an explicit request to act, so it is not.
+- [x] Find the classifier's own blind spots by widening the probe. `ssh` passed
+  because the publication check sat behind the operation lookup and ssh has no
+  subcommand, which silently exempted every verbless tool. And the subcommand
+  reader skipped unrecognized options without stopping, so
+  `aws lambda update-function-code --function-name f` named its operation
+  `aws lambda f` and `gh api -X POST` named it `gh api post` — plausible strings
+  that matched nothing, which is why neither failed loudly.
+- [x] State the rule/grant asymmetry instead of leaving it inferred. An
+  operation-naming rule outranks `deny` because it is written down and survives
+  review; an interactive grant never does. The credential gate had behaved this
+  way since it shipped without saying so; a test written against the opposite
+  assumption is what surfaced it.
+- [x] Carry it on the preset ladder, clamp it monotonically, and report it in
+  `collo doctor`, `collo policy check`, and the Session tab, with its own header
+  in the approval dialog.
+- [x] Test the property where it actually lives. Alongside the unit coverage, a
+  symmetry test fails when a tool gains a destructive classification without its
+  publishing counterpart, and three offline evaluations run a real autopilot
+  turn — a unit test proves the string is recognized, not that the mode whose
+  purpose is not asking actually stops.
+
+**Behavior change:** two. Publishing, deploying, and pushing prompt by default,
+including under `autopilot`, where a headless run fails closed;
+`"publication": "off"` restores the earlier behavior exactly. And a `command`
+rule pattern containing a space now matches an operation where it previously
+matched nothing, so an upgrade may activate a denial its author believed was
+already in force. See the
+[compatibility note](docs/COMPATIBILITY.md#publication-protection).
+
+**What it is not.** A policy layer, not enforcement — it reads what a command's
+text says it will do, so a build script that uploads without naming the
+operation is invisible to it, and it cannot tell `kubectl apply` against a local
+cluster from the same command against production. The catalogue of publishing
+tools is finite; `denied_commands` and `reviewer_command` remain the answer for
+anything specific to one organization.
 
 ## Completed wave — a pseudo-terminal on the third platform
 
@@ -815,6 +895,27 @@ claiming enforcement the policy layer does not provide.
   all-or-nothing denial is the most complete of the three. Both refuse under
   `require` and degrade visibly under `auto`; with `sandbox: "off"` no broker
   starts anywhere, because a cooperative proxy is not presented as a boundary.
+- [x] **P1 — Publication and deployment as their own decision:**
+  `permissions.publication` (`off`/`prompt`/`deny`, default `prompt`) governs
+  the actions that put something outside this machine — package and container
+  registries, source remotes, code-forge writes, infrastructure applies, and
+  commands run on another host. It is not coverable by autopilot, a tool-wide
+  "always allow", or an allow rule naming only an executable; a rule naming the
+  operation is, and one narrow session grant covers exactly the operation shown.
+
+  **This was the last known asymmetry in the risk classifier.** The safety
+  taxonomy described destruction only, so every deletion in these tools required
+  a fresh decision even under autopilot while none of the publishing
+  counterparts did — a gap an independent assessment would have found by running
+  `collo policy check` for an afternoon. Like host rules it is a policy layer
+  and not egress enforcement, and the catalogue of recognized tools is finite.
+- [x] **P1 — Operation-scoped policy rules:** a `rules[].command` pattern
+  containing a space matches the executable plus the words that decide what it
+  does (`npm publish`, `gh pr create`, `ssh build-host`) rather than `argv[0]`.
+  Before this, such a pattern matched nothing and validated clean — the third
+  inert-matcher defect in this repository. An unmatchable pattern is now a
+  validation error, and `collo policy check` prints the exact operation string a
+  command produces so the vocabulary never has to be guessed.
 - [ ] **P2 — Windows scoped egress:** only reachable through a
   `CheckNetIsolation` loopback exemption (administrator, persistent machine
   state, documented by Microsoft as a debugging aid) or WFP/firewall filters
@@ -1005,8 +1106,9 @@ claiming enforcement the policy layer does not provide.
 
 Several waves in a row were P1 or P2 while the items that actually gate 1.0 did
 not move. The audit ledger — the cheapest of the remaining P0s, and the one an
-independent assessment starts from — has been taken, and Windows ConPTY closed
-the last platform-parity gap. The rest, in order:
+independent assessment starts from — has been taken; Windows ConPTY closed the
+last platform-parity gap; and the publication wave closed the finding that
+assessment would most likely have opened with. The rest, in order:
 
 1. Gather real beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
@@ -1020,7 +1122,11 @@ the last platform-parity gap. The rest, in order:
    surface that can say what each agent in such a graph was permitted to do.
 3. Continue Phase 8 security/reliability campaigns in parallel with every
    feature wave, and take the performance budgets while the prompt-cache wave's
-   measurement harness is still warm.
+   measurement harness is still warm. The reliability half — host-level
+   filesystem exhaustion, power-loss durability, native terminal loss, longer
+   cancellation stress — is now the largest untouched P0 and produces
+   confidence rather than a control, which is why it did not outrank the
+   publication gap but does outrank the next feature.
 
 Two small decisions can ride along with whichever wave ships next rather than
 becoming waves of their own:
@@ -1029,6 +1135,13 @@ becoming waves of their own:
   is unknown is only gap behavior, since the live run measured back-to-back
   requests rather than a session resumed after a pause. Instrument the real
   gap between turns before paying a write premium that is 2x rather than 1.25x.
+- Git write tooling under approval. The agent reads Git but must drop to
+  `run_command` to commit, and `/restore`'s change tracking is in memory so it
+  does not survive a resume; a checkpoint commit would fix both. It was
+  considered for this slot and deferred deliberately: it *adds* an
+  outward-facing capability, and governing the outward-facing capability that
+  already existed had to come first. It now lands on top of the publication
+  tier rather than beside it.
 - Deliberately **not** another terminal-surface wave. Four of the last six
   touched it, the width sweep now pins the property the golden screens had
   recorded wrong, and the returns there are visibly smaller than a security
@@ -1069,7 +1182,9 @@ until all of these are true:
 - Shared real-time team workspaces.
 - A public plugin marketplace.
 - Autonomous Git commits, pushes, pull requests, deployments, or issue updates
-  by default.
+  by default. This is now enforced rather than merely intended:
+  `permissions.publication` defaults to `prompt` and is not coverable by
+  autonomy mode or a tool-wide grant.
 - Persistent semantic memory across unrelated repositories.
 - Decorative features that do not improve coding safety, accessibility, or
   throughput.

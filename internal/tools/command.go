@@ -138,19 +138,21 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 // Analysis should require changing one function, not finding every caller.
 func ActionFromAnalysis(summary, command string, analysis shell.Analysis) Action {
 	return Action{
-		Risk:              RiskExecute,
-		Summary:           summary,
-		Command:           command,
-		Executables:       analysis.Executables,
-		Hosts:             analysis.Hosts,
-		Network:           analysis.NetworkCommand,
-		HostsUndetermined: analysis.UndeterminedHosts,
-		HostReasons:       analysis.HostReasons,
-		Uninspectable:     !analysis.Inspectable,
-		AnalysisReasons:   analysis.Reasons,
-		HardDenyReasons:   analysis.HardDenyReasons,
-		ConfirmReasons:    analysis.ConfirmReasons,
-		CredentialTargets: analysis.CredentialTargets,
+		Risk:               RiskExecute,
+		Summary:            summary,
+		Command:            command,
+		Executables:        analysis.Executables,
+		Operations:         analysis.Operations,
+		Hosts:              analysis.Hosts,
+		Network:            analysis.NetworkCommand,
+		HostsUndetermined:  analysis.UndeterminedHosts,
+		HostReasons:        analysis.HostReasons,
+		Uninspectable:      !analysis.Inspectable,
+		AnalysisReasons:    analysis.Reasons,
+		HardDenyReasons:    analysis.HardDenyReasons,
+		ConfirmReasons:     analysis.ConfirmReasons,
+		CredentialTargets:  analysis.CredentialTargets,
+		PublicationTargets: analysis.PublicationTargets,
 	}
 }
 func (t RunCommandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {

@@ -49,7 +49,17 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   catastrophic denials, policy, and OS sandboxing reduce risk but do not replace
   review, backups, source control, or host isolation. It also does not approve
   everything: actions classified as external risk, which includes MCP tool
-  calls and both web tools, still require a rule, a session grant, or a person.
+  calls and both web tools, still require a rule, a session grant, or a person —
+  and neither does it approve publishing.
+- Publishing, deploying, and pushing require their own decision by default
+  (`permissions.publication`), covering package and container registries,
+  source remotes, code-forge writes, infrastructure applies, and commands run
+  on another host. This is a policy layer, not enforcement: it reads what a
+  command's text says it will do, so a build script that uploads an artifact
+  without naming the operation is outside its view, its catalogue of publishing
+  tools is finite, and it cannot distinguish `kubectl apply` against a local
+  cluster from the same command against production. Set it to `off` to restore
+  the behavior of earlier releases exactly.
 - macOS and Windows release binaries are not yet platform code-signed or Apple
   notarized. Release provenance is signed through GitHub/Sigstore instead.
 - `run_command` with `pty: true` and `collo --web` now work on every supported

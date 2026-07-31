@@ -37,6 +37,8 @@ started them.
 - Commands matching `permissions.denied_commands` are always refused.
 - Commands with a classified catastrophic outcome are always refused.
 - Destructive commands classified for one-time confirmation always prompt.
+- Commands classified as publication always prompt (or are refused) under
+  `permissions.publication`, whose default is `prompt`.
 - Commands the static analyzer cannot fully read (substitutions, `eval`,
   inline interpreter payloads, variable commands) always require an
   interactive approval.
@@ -143,6 +145,62 @@ a new human decision—even in autopilot and even when an allow rule matches:
 The approval dialog does not offer a persistent grant for this tier. In a
 headless run, the operation fails closed because no human approver is present.
 
+### Publication sits alongside tier 2
+
+Tier 2 above is a taxonomy of *destruction*, and for a long time that was the
+whole of the risk model. Every deletion in the cloud and packaging tools
+required a fresh decision even under autopilot — `terraform destroy`,
+`kubectl delete`, `helm uninstall`, `aws s3 rm --recursive`, forced push,
+`git reset --hard` — while none of their publishing counterparts did. On a
+stock configuration under `autopilot`, `npm publish`, `cargo publish`,
+`twine upload`, `docker push`, `gh pr create`, `gh pr merge`, `gh release
+create`, `kubectl apply`, `helm upgrade`, `terraform apply -auto-approve`,
+`aws lambda update-function-code`, `git push origin main`, and `ssh prod
+"systemctl restart app"` were all approved silently.
+
+That asymmetry did not reflect reversibility. A published package version is
+harder to take back than a Kubernetes deployment a controller will recreate.
+
+`permissions.publication` (`off`, `prompt` by default, `deny`) governs an
+action that puts something outside this machine, in six categories: package
+registry, container registry, source remote, code forge, infrastructure, and
+remote host. The complete catalogue, the read verbs that stay ordinary, and
+the rehearsal switches that suppress it are documented under
+[Publishing outside this machine](USER_GUIDE.md#publishing-outside-this-machine).
+
+Under the default it behaves like tier 2 in the way that matters: a blanket
+allow rule naming only an executable, a tool-wide "always allow", and
+`autopilot` all decline to cover it, and a headless run with no approver fails
+closed. It differs in the same three respects credential protection does. A
+rule that names the *operation* is honored, so an intentional exception stays
+expressible and written down; the setting can be raised to `deny`, which the
+`hardened` preset selects; and the approval dialog offers one narrow session
+grant scoped to the exact operation shown.
+
+That grant covers that operation and nothing else — never the tool, never the
+executable, never a sibling operation of the same tool, and never past this
+process. Raising the setting to `deny` mid-session invalidates a grant handed
+out while it was `prompt`.
+
+**Rules and grants are deliberately not equivalent.** An `allow` rule naming
+the operation outranks even `publication: "deny"`, because a rule is written
+down, inspectable, reviewable, and survives the session. An interactive grant
+never outranks `deny`, because it is a decision made under time pressure with
+the work half-finished. The same asymmetry already governs
+`protect_credentials`, where a rule naming a path outranks `deny` and a grant
+does not.
+
+**What this is not.** Like host rules, it is a policy layer and not
+enforcement. It reads what a command's text says it will do; a build script
+that uploads an artifact without naming the operation on a command line is
+invisible to it, and preventing that traffic is the OS sandbox's job. It also
+classifies operations rather than consequences: `kubectl apply` against a local
+cluster and against production are the same string, so the prompt names the
+operation and the person supplies the context. Finally, the catalogue is
+finite — a publishing tool Collomia does not recognize is not classified, and
+`permissions.denied_commands` and `reviewer_command` remain the answer for
+anything specific to one organization.
+
 ### Credential stores sit alongside tier 2
 
 Reaching a well-known credential store — an SSH or GPG private key, a cloud
@@ -152,10 +210,12 @@ CLI token cache, a registry authentication file, a `.env` — is governed by
 Under the default it behaves like tier 2 in the way that matters: a blanket
 allow rule, a tool-wide "always allow", and `autopilot` all decline to cover
 it. It differs from tier 2 in three respects. A rule that names the path is
-honored, so an intentional exception is expressible and stays written down;
-the setting can be raised to `deny`, which the `hardened` preset selects; and
-the approval dialog offers one narrow session grant, scoped to the exact
-credential target shown.
+honored, so an intentional exception is expressible and stays written down —
+and it is honored even under `deny`, for the same reason a rule outranks
+`publication: "deny"`: it is written down and reviewable in a way an
+interactive answer is not. The setting can be raised to `deny`, which the
+`hardened` preset selects; and the approval dialog offers one narrow session
+grant, scoped to the exact credential target shown.
 
 That grant covers that target and nothing else — never the tool, never the
 directory, never a sibling file that classifies the same way, and never past
@@ -292,6 +352,33 @@ to a prompt; it never allows, denies, or blocks a socket. `permissions.commands:
 "allowlist"` does the same for executables. Both default to `open`, which is
 the behavior of earlier releases, and both are monotonic across configuration
 layers: a project file can tighten them but cannot loosen them.
+
+### Rules can name an operation
+
+A rule's `command` matcher has two forms. Without a space it is an
+executable-name glob (`npm`, `git`, `g*`), matched against every `argv[0]` the
+command runs. With a space it is an **operation** glob (`npm publish`,
+`git push`, `gh pr create`, `ssh build-host`), matched against the executable
+plus the leading words that decide what it does.
+
+The second form exists because an executable name cannot distinguish
+installing a dependency from publishing a package — both are `npm` — so the
+only expressible policies were "allow the package manager entirely" or "prompt
+for every use of it". Neither is a policy anyone keeps.
+
+Two properties keep this honest, both learned from the `host` matcher shipping
+inert:
+
+- An operation pattern never falls back to matching an executable. `{"action":
+  "deny", "command": "npm publish"}` does not deny `npm install`.
+- A pattern that could match neither form — leading, trailing, or repeated
+  spaces — is rejected by `collo config validate`. Before operations existed,
+  a `command` value containing a space was matched against `argv[0]`, matched
+  nothing, and validated clean: a rule that read as protection and was inert.
+  That failure mode is now a validation error rather than a silent one.
+
+Run `collo policy check '<command>'` to see the exact operation string a
+command produces. Do not guess it.
 
 ### Built-in web tools: a real address boundary
 

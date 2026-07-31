@@ -368,6 +368,37 @@ func TestGuideDocumentsEveryCredentialSetting(t *testing.T) {
 	}
 }
 
+func TestGuideDocumentsEveryPublicationSetting(t *testing.T) {
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	for _, setting := range appconfig.PublicationSettings() {
+		if !strings.Contains(guide, "`"+setting+"`") {
+			t.Errorf("permissions.publication accepts %q but the user guide does not document it", setting)
+		}
+	}
+}
+
+// Every publication category the classifier can emit must be documented, so a
+// tool added to the taxonomy cannot start prompting without an explanation of
+// why. The categories are read out of the classifier rather than from a
+// hand-kept list, which is what makes this a guard rather than a second copy.
+func TestGuideDocumentsEveryPublicationCategory(t *testing.T) {
+	root := repoRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, "internal", "shell", "publication.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	categories := regexp.MustCompile(`publish[A-Za-z]+ +=  *"([a-z ]+)"`).FindAllStringSubmatch(string(source), -1)
+	if len(categories) < 5 {
+		t.Fatalf("found only %d publication categories; the classifier's shape changed and this guard needs updating", len(categories))
+	}
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	for _, m := range categories {
+		if !strings.Contains(guide, "`"+m[1]+"`") {
+			t.Errorf("the classifier emits the publication category %q but the user guide does not document it", m[1])
+		}
+	}
+}
+
 // Command-shaped actions must be built in exactly one place.
 //
 // This guard exists because the bug it prevents has now happened twice: the

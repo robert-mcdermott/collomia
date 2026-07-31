@@ -148,6 +148,59 @@ The protected and exempt locations are listed in the
 environment or add a rule naming the file, and verify with `collo policy check`
 before relying on the run.
 
+### Publication protection
+
+`permissions.publication` is new and defaults to `prompt`, so an action that
+puts something outside this machine now always asks. Like credential-file
+protection this is an intentional security behavior change within schema
+version 1, and it is the one most likely to interrupt an existing automation:
+
+- an existing file that omits the field begins using `prompt` after upgrade;
+- under `autopilot`, `npm publish`, `cargo publish`, `docker push`,
+  `gh pr create`, `gh release create`, `kubectl apply`, `helm upgrade`,
+  `terraform apply`, `aws lambda update-function-code`, `git push`, and
+  `ssh host <command>` used to run without asking and now stop for approval; a
+  headless run fails closed because no approver is present;
+- a tool-wide `allowed_tools` entry, a session "always allow", and an `allow`
+  rule naming only an executable no longer cover such an action; a rule naming
+  the *operation* (`{"action": "allow", "command": "npm publish"}`) does;
+- read verbs, rehearsals (`--dry-run`), `npm install`, `go mod tidy`,
+  `docker pull`, `terraform plan`, and download-direction copies are
+  unaffected;
+- `"publication": "off"` restores the earlier behavior exactly, and
+  `"preset": "frictionless"` selects it; `"preset": "hardened"` selects
+  `deny`;
+- the setting is clamped like every other containment field: a project may
+  raise it but never lower it;
+- Collomia does not edit an existing file during the transition.
+
+The complete catalogue is in the
+[user guide](USER_GUIDE.md#publishing-outside-this-machine). If a scheduled
+automation publishes or deploys, either set `publication` to `off` for that
+environment or add rules naming the operations it needs, and verify with
+`collo policy check '<command>'` before relying on the run — it prints the
+exact operation string a rule has to name.
+
+### Operation-scoped command rules
+
+A rule's `command` matcher now has two forms: without a space it remains an
+executable-name glob, and with a space it matches an operation such as
+`npm publish` or `gh pr create`.
+
+Every existing rule keeps its meaning, because a space in that field previously
+matched nothing at all. That is the compatibility note worth reading: a rule
+written as `{"action": "deny", "command": "npm publish"}` used to be **silently
+inert** and validated clean, so an upgrade may activate a denial an author
+believed was already in force. Two changes make that visible:
+
+- `collo config validate` now rejects a `command` pattern that could match
+  neither form (leading, trailing, or repeated spaces);
+- `collo policy check` prints an `operations:` line naming exactly what a
+  command declares.
+
+Review any existing `command` patterns containing a space before upgrading an
+unattended deployment.
+
 ### Scoped egress
 
 `permissions.sandbox_egress` is new and defaults to `off`, so no existing

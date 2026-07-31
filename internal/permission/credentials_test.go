@@ -305,7 +305,7 @@ func TestCredentialRequestNeverAllowsAlways(t *testing.T) {
 		t.Error("a tool-wide always was recorded for a credential action")
 	}
 	// The narrow grant it did ask for must have stuck.
-	if _, _, credentials := m.SessionGrants(); len(credentials) != 1 {
+	if _, _, credentials, _ := m.SessionGrants(); len(credentials) != 1 {
 		t.Fatalf("session credential grants = %v, want exactly one", credentials)
 	}
 }

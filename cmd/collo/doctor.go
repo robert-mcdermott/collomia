@@ -111,11 +111,12 @@ func runDoctorCommand(opts options) error {
 	if err == nil {
 		p := cfg.Permissions
 		stance := "preset=" + orDefaultString(p.Preset, "none")
-		stance += fmt.Sprintf("; autonomy=%s; network=%s; commands=%s; credentials=%s",
+		stance += fmt.Sprintf("; autonomy=%s; network=%s; commands=%s; credentials=%s; publication=%s",
 			orDefaultString(p.Mode, "ask"),
 			orDefaultString(p.Network, "open"),
 			orDefaultString(p.Commands, "open"),
-			orDefaultString(p.ProtectCredentials, appconfig.ProtectCredentialsPrompt))
+			orDefaultString(p.ProtectCredentials, appconfig.ProtectCredentialsPrompt),
+			orDefaultString(p.Publication, appconfig.PublicationPrompt))
 		stance += fmt.Sprintf("; %d rule(s)", len(p.Rules))
 		status := "ok"
 		if len(cfg.Clamped) > 0 {

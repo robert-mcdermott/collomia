@@ -39,6 +39,110 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-07-30 — Phase 1 publication and deployment as their own decision
+
+- **The risk model was destruction-shaped.** `internal/shell/safety.go` is, end
+  to end, a taxonomy of things that delete: `classifyRM`, the Git
+  reset/clean/reflog/gc branches, `classifyAWS`'s `s3 rm`, and the
+  Terraform/Kubernetes/Helm destruction branches. Nothing in it classified an
+  action that *puts something out into the world*. Measured against the built
+  binary at `4abdb9a` with `collo policy check --autonomy autopilot`, on a stock
+  configuration: `terraform destroy` → confirm but `terraform apply
+  -auto-approve` → **allow**; `kubectl delete` → confirm but `kubectl apply` →
+  **allow**; `helm uninstall` → confirm but `helm upgrade` → **allow**;
+  `git push --force` → confirm but `git push origin main` → **allow**. Also
+  allowed silently: `npm publish`, `cargo publish`, `twine upload`,
+  `docker push`, `gh pr create`, `gh pr merge`, `gh release create`,
+  `aws lambda update-function-code`, and `ssh prod "systemctl restart app"`.
+- **The asymmetry did not track reversibility.** A published package version is
+  harder to take back than a Kubernetes deployment a controller will recreate.
+  And `ROADMAP.md`'s own "Explicitly deferred" list already said "Autonomous Git
+  commits, pushes, pull requests, deployments, or issue updates by default" —
+  the documented intent and the binary disagreed, which is the same shape as the
+  audit ledger the previous wave fixed.
+- **The analyzer already knew.** `npm publish` reported `endpoints:
+  UNDETERMINED (npm publish contacts endpoints chosen by configuration)`;
+  `publish` and `push` sat in `fetchingSubcommands` beside `install`. The
+  knowledge was being spent on endpoint reporting rather than on risk.
+- **Nothing a user could adopt closed it.** `permissions.network: "scoped"`
+  does catch every case — and also prompts on `npm install`, `pip install`, and
+  `go mod tidy`, with no rule able to buy those back. That is the same
+  all-or-nothing ergonomics problem the scoped-egress wave was written to escape
+  one layer down.
+- **The rule language could not express the exception, and lied about it.**
+  `permissions.rules[].command` is an *executable-name* glob while
+  `permissions.denied_commands` in the same block is a full-command-line regex.
+  `{"action":"deny","command":"npm publish"}` therefore matched **nothing**,
+  and `collo config validate --strict` reported "Configuration is valid" — the
+  third instance of the inert-matcher defect, after the `host` matcher and the
+  hand-built action in `collo policy check`.
+- **Operations came first, because a tier with no expressible exception is a
+  tier people switch off.** A `command` pattern containing a space is now
+  matched against the operation — the executable plus the leading words that
+  decide what it does. `internal/shell/publication.go` derives one operation per
+  recognized invocation for the subcommand-driven tools, plus `<executable>
+  <host>` for the ssh family so a rule can name one build host rather than every
+  host. `policy.NamesOperation` is the single definition of which form a pattern
+  is, read by both the matcher and the permission layer. A pattern that could
+  match neither form now fails validation.
+- **`collo policy check` prints the vocabulary.** An `operations:` line was
+  added because the discoverability failure is what made the inert rule
+  dangerous: a user who has to guess the pattern writes one that silently
+  matches nothing.
+- **`permissions.publication` (off/prompt/deny, default prompt)** classifies six
+  categories — package registry, container registry, source remote, code forge,
+  infrastructure, remote host. It is modeled on `protect_credentials` rather
+  than on tier 2: straight tier 2 offers no durable answer at all, which is
+  right for `npm publish` and wrong for `git push` on a feature branch, and a
+  control that is wrong half the time gets disabled. Autopilot, a tool-wide
+  "always allow", and an executable-only allow rule never cover it; a rule
+  naming the operation does, and one narrow session grant covers exactly the
+  operation shown.
+- **Read verbs and rehearsals stay ordinary.** `gh pr view`, `kubectl get`,
+  `terraform plan`, `aws s3 ls`, `docker pull`, `npm install`, and a
+  download-direction `rsync` or `aws s3 sync` are not publications;
+  `--dry-run`/`--what-if`/`--noop` suppress the classification and
+  `--dry-run=false` does not. The control is only worth having if it is quiet
+  during the work an agent does all day.
+- **Two defects the first implementation shipped with, both found by widening
+  the probe rather than by reading the code.** `ssh prod "systemctl restart
+  app"` passed because the publication check sat *behind* the operation lookup,
+  and ssh has no subcommand — so every tool without a verb was silently exempt.
+  And `operationWords` skipped unrecognized options without stopping, so
+  `aws lambda update-function-code --function-name f` read the flag's value as
+  the verb and produced the operation `aws lambda f`, while `gh api -X POST`
+  produced `gh api post`. Both yielded plausible-looking operation strings that
+  matched nothing, which is why neither failed loudly. The subcommand path now
+  ends at the first unrecognized option, and `kubectl -n prod apply` no longer
+  reports its verb as `prod`.
+- **Rules and grants are deliberately not equivalent, and that was already
+  true.** An operation-naming `allow` rule outranks `publication: "deny"`,
+  because it is written down, inspectable, and survives review; an interactive
+  grant never does. The credential gate has behaved this way since it shipped
+  and it was undocumented — a test written against the opposite assumption is
+  what surfaced it. Both are now stated in `docs/SECURITY.md` rather than
+  inferred.
+- **Carried on the preset ladder and clamped like every other containment
+  field:** frictionless off, standard prompt, hardened deny; a project may raise
+  it and never lower it, and a refusal is reported. Reported in `collo doctor`,
+  `collo policy check`, and the Session tab's Security block, with its own
+  header and accent in the approval dialog.
+- **Tested where the property actually lives.** 8 classifier tests including a
+  symmetry check that fails when a tool gains a destructive classification
+  without its publishing counterpart; 6 policy tests pinning that an operation
+  pattern never falls back to an executable; 12 permission tests; 5 config
+  tests; and 3 offline evaluations, because a unit test proves the string is
+  recognized while only an end-to-end autopilot turn proves the mode whose
+  purpose is not asking actually stops.
+
+**Behavior change:** two, both documented in
+[COMPATIBILITY.md](COMPATIBILITY.md). Publishing, deploying, and pushing now
+prompt by default including under `autopilot`, where a headless run fails
+closed; `"publication": "off"` restores the earlier behavior exactly. And a
+`command` rule pattern containing a space, which previously matched nothing,
+now matches an operation — so an upgrade may activate a denial its author
+believed was already in force.
+
 ### 2026-07-30 — Phase 3/7 Windows pseudoconsole
 
 - **One backend was withholding two advertised capabilities.** `ptySupported`

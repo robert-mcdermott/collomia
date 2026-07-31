@@ -768,6 +768,7 @@ layer is read at all; these rules decide what it may do once it is trusted.
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
 | `sandbox_writable_roots` | string list | Additional narrowly scoped read/write roots for sandboxed commands, resolved from the workspace when relative. Every writable root is implicitly readable. |
+| `publication` | string | `off`, `prompt` (default), or `deny`. Decides what happens when an action puts something outside this machine: publishing a package or image, opening a pull request or release, applying infrastructure, pushing to a Git remote, or running a command on another host. Under `prompt` it is not covered by autopilot or a tool-wide "always allow"; a rule naming the operation is. See [Publishing outside this machine](#publishing-outside-this-machine). |
 | `command_env` | string | `full` or `minimal`; if omitted while sandboxing is enabled, minimal is used. |
 | `reviewer_command` | string | Optional external policy reviewer for otherwise auto-approved non-read actions. |
 
@@ -778,7 +779,7 @@ Each rule supports:
 | `action` | Required: `allow`, `prompt`, or `deny`. |
 | `tool` | Tool-name glob, for example `run_command` or `mcp_*`. |
 | `path` | Glob matched against resolved native paths; a suffix of `/**` includes the directory and descendants. |
-| `command` | Executable-name glob such as `go`, `git`, or `npm`. |
+| `command` | Executable-name glob such as `go`, `git`, or `npm` — or, when the pattern contains a space, an **operation** glob such as `npm publish`, `git push`, or `gh pr create`. |
 | `host` | Network host/domain glob matched against the endpoints an action declares. |
 | `server` | MCP server-name glob. |
 | `reason` | Human-readable explanation shown with the rule decision. |
@@ -788,6 +789,48 @@ match. For an `allow` rule, every resource in the request must be covered;
 `deny` and `prompt` match when any resource in that category matches. An allow
 rule never vouches for a shell command the static analyzer could not fully
 inspect.
+
+### Operations: naming what a command does, not just what it runs
+
+An executable name cannot distinguish installing a dependency from publishing a
+package. Both are `npm`. So a `command` pattern containing a space is matched
+against the **operation** — the executable plus the leading words that decide
+what it does:
+
+```jsonc
+{ "action": "allow", "command": "npm install" }
+{ "action": "deny",  "command": "npm publish" }
+{ "action": "allow", "command": "gh pr view" }
+{ "action": "allow", "command": "ssh build-host" }
+```
+
+Operations are recognized for the tools whose subcommand changes what they do —
+package managers, `git`, `docker`/`podman`, `helm`, `kubectl`, `terraform`,
+`pulumi`, `gh`/`glab`, and the cloud CLIs — plus the `ssh` family, whose
+operation is the executable and its destination, so a rule can name one build
+host rather than every host. Everything else contributes no operation, and an
+operation pattern never falls back to matching an executable: `npm publish`
+does not deny every `npm` invocation.
+
+Collomia records the fullest form it recognizes rather than the deepest form
+the tool accepts, so `az webapp deployment source config` is reported as
+`az webapp deployment`. Globs work normally (`gh pr *`), and `collo policy
+check` prints the exact operation string a command produces:
+
+```sh
+collo policy check 'gh pr create --fill'
+```
+
+```
+executables:  gh
+operations:   gh pr create
+publishes:    code forge: gh pr create
+```
+
+Read that line rather than guessing the pattern. A `command` pattern with
+leading, trailing, or repeated spaces can match neither an executable nor an
+operation, so `collo config validate` rejects it instead of leaving a rule in
+the file that reads as protection and does nothing.
 
 ### Declared endpoints and host rules
 
@@ -1928,6 +1971,101 @@ that happens; it does not undo it.
 The current setting is shown in the Session tab's Security block, next to the
 sandbox and posture settings.
 
+### Publishing outside this machine
+
+`permissions.publication` (`off`, `prompt` by default, `deny`) governs actions
+that put something where other people — or production — can see it.
+
+It exists because the rest of Collomia's safety classifier is a taxonomy of
+*destruction*. Every deletion in these tools already required a fresh decision
+even under autopilot: `terraform destroy`, `kubectl delete`, `helm uninstall`,
+`aws s3 rm --recursive`, `git push --force`, `git reset --hard`. None of their
+publishing counterparts did. On a stock configuration under `autopilot`,
+`npm publish`, `cargo publish`, `docker push`, `gh pr create`, `gh release
+create`, `kubectl apply`, `helm upgrade`, `terraform apply -auto-approve`,
+`aws lambda update-function-code`, `git push`, and `ssh prod "systemctl restart
+app"` were all approved silently — even though a published package version is
+harder to take back than a deployment a controller will recreate.
+
+#### What counts as publishing
+
+| Category | Recognized operations |
+| --- | --- |
+| `package registry` | `npm`/`pnpm`/`yarn`/`bun publish`, `cargo publish`, `poetry publish`, `uv publish`, `gem push`, `twine upload`, `mvn deploy`, `gradle publish`, `nuget push`, `dotnet nuget push` |
+| `container registry` | `docker push`, `podman push`, `helm push` |
+| `source remote` | `git push`, `git send-email`, `git request-pull` |
+| `code forge` | `gh`/`glab`/`hub` verbs that create or change something visible — pull requests, releases, issues, repositories, workflows — and `gh api` with a non-GET method |
+| `infrastructure` | `terraform apply`/`import`/`state`, `pulumi up`, `kubectl apply`/`create`/`patch`/`replace`/`rollout`/`scale`/`drain`/…, `helm install`/`upgrade`/`rollback`, and the creating/updating verbs of `aws`, `az`, and `gcloud` |
+| `remote host` | `ssh`/`mosh` with a command to run on the far side, and `scp`/`rsync`/`sftp` whose *destination* is remote |
+
+Read verbs stay ordinary work. `gh pr view`, `kubectl get`, `terraform plan`,
+`helm list`, `aws s3 ls`, `docker pull`, `npm install`, and a download-direction
+`rsync` or `aws s3 sync` are not publications and never prompt for this reason.
+Neither is a rehearsal: `--dry-run`, `--server-dry-run`, `--what-if`, and
+`--noop` suppress the classification, while `--dry-run=false` is an explicit
+request to act and does not.
+
+#### What the setting does
+
+Under `prompt`, a publishing action is deliberately **not** covered by
+`autopilot`, by a tool-wide "always allow", or by an `allow` rule that names
+only the executable — allowing `npm` was a decision to use a package manager,
+not a decision to publish with it. In a headless run with no approver present,
+it fails closed.
+
+The approval dialog gives it its own header and offers one narrow session
+grant, scoped to the exact operation shown. That grant covers `npm publish` and
+nothing else: not `run_command`, not `npm`, not `cargo publish`, and not past
+this process. Publishing twenty packages from one monorepo release should not
+be twenty identical prompts, and a prompt with no durable answer is how people
+learn to approve without reading.
+
+Under `deny` nothing is grantable and no prompt is offered. The `hardened`
+preset selects it; `standard` selects `prompt`; `frictionless` selects `off`,
+which restores the behavior of earlier releases exactly.
+
+#### Making a deliberate exception
+
+A rule that *names the operation* is honored, exactly as a rule naming a path
+is honored for credential files:
+
+```jsonc
+"rules": [
+  { "action": "allow", "command": "npm publish", "reason": "release job" },
+  { "action": "allow", "command": "ssh build-host", "reason": "CI runner" }
+]
+```
+
+A rule naming only the executable (`{"command": "npm"}`) will not cover a
+publication. See [Operations](#operations-naming-what-a-command-does-not-just-what-it-runs)
+for how to read the exact operation string a command produces.
+
+Written rules and interactive grants are deliberately not equivalent. An
+operation-naming `allow` rule outranks even `publication: "deny"`, because it is
+written down, inspectable, and survives review — the same way a path-naming rule
+outranks `protect_credentials: "deny"`. An interactive session grant never does,
+and raising the setting to `deny` mid-session invalidates one already handed
+out.
+
+#### Three limits to know
+
+**It is a policy layer, not enforcement.** It reads what a command's text says
+it will do. A build script that uploads an artifact without naming the operation
+on a command line is invisible to it, exactly as it is to
+[host rules](#declared-endpoints-and-host-rules). Preventing traffic is the OS
+sandbox's job.
+
+**It classifies operations, not consequences.** `kubectl apply` against a local
+kind cluster and against production are the same string. Collomia cannot tell
+them apart; the prompt names the operation and you supply the context.
+
+**The catalogue is finite.** A publishing tool Collomia does not recognize is
+not classified. `permissions.denied_commands` (a full-command-line regex) and
+`reviewer_command` remain available for anything local to your organization.
+
+The current setting is shown in the Session tab's Security block and in
+`collo doctor`.
+
 ### Command analysis and hard denials
 
 Before a shell action reaches approval, Collomia extracts executables and
@@ -2301,6 +2439,7 @@ complete set is worth having:
 | `analysis` | command analysis, e.g. an uninspectable command |
 | `safety` | a built-in catastrophic denial or one-time confirmation |
 | `credentials` | `permissions.protect_credentials` |
+| `publication` | `permissions.publication` — the action puts something outside this machine |
 | `posture` | `permissions.network`/`permissions.commands` escalation |
 | `agent-profile` | an additive restriction on a delegated agent's profile |
 | `reviewer` | the external reviewer command vetoed an auto-approval |

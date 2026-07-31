@@ -99,6 +99,8 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - Background-process listing, output retrieval, and termination through the `/ps` interface.
   - Background processes use the same permission and sandbox rules as foreground commands and are stopped when the session exits.
   - Command analysis recognizes risk based on the command’s likely outcome, rather than relying only on executable names.
+  - Outcome classification covers both destruction and publication, so applying infrastructure, pushing an image, opening a pull request, or publishing a package is treated as consequential rather than ordinary.
+  - Read verbs and rehearsal switches such as `--dry-run` are excluded from publication classification, and a download-direction copy is distinguished from an upload.
 
 - **Code intelligence and LSP**
 
@@ -139,13 +141,15 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - A session grant covers only the exact declared capability; all required dimensions must be independently authorized.
   - Blanket tool approval and autopilot do not implicitly authorize protected credential access.
   - Catastrophic command protections include non-overridable denials and one-time confirmation for narrowly legitimate destructive actions.
+  - Publishing, deploying, and pushing are governed separately by `publication` (`off`, `prompt` by default, `deny`): package and container registries, source remotes, code-forge writes, infrastructure applies, and commands executed on another host are not covered by autonomy mode, a tool-wide approval, or an allow rule naming only an executable.
+  - Rule `command` patterns match either an executable name or, when the pattern contains a space, an operation such as `npm publish` or `gh pr create`, so a policy can permit dependency installation while gating releases.
   - Permission enforcement is shared across foreground commands, background commands, PTYs, delegated verification, hooks, and other execution paths.
 
 - **Monotonic containment policies**
 
   - Configuration is layered from built-in defaults through user, project, and environment settings.
   - Repository or project configuration may tighten containment but cannot weaken the user’s established security posture.
-  - Monotonic enforcement applies to sandbox policy, sandbox network and outside-workspace reads, the command environment, outside-workspace access, command posture, network posture, scoped egress, credential protection, and containment presets.
+  - Monotonic enforcement applies to sandbox policy, sandbox network and outside-workspace reads, the command environment, outside-workspace access, command posture, network posture, scoped egress, credential protection, publication posture, and containment presets.
   - Attempts by project configuration to weaken containment are refused and reported.
   - Only the global configuration owner can explicitly disable the operating-system sandbox.
   - Configuration inspection reports both effective values and their origins.
@@ -156,7 +160,7 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - `frictionless`, `standard`, and `hardened` presets expand into ordinary, inspectable configuration fields.
   - Explicit settings override preset-derived values.
   - Presets do not silently change the selected autonomy mode.
-  - Hardened mode requires stronger sandbox, read, credential, command, and network postures.
+  - Hardened mode requires stronger sandbox, read, credential, publication, command, and network postures.
   - The current hardened preset does not itself disable all network access or enable the scoped-egress broker; those remain separate explicit choices.
 
 - **Operating-system sandbox** — _experimental_
@@ -289,4 +293,5 @@ _Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented un
   - Provider HTTP traffic, remote MCP connections, hooks, and LSP processes run in the Collomia process and are outside the command sandbox and command egress broker.
   - MCP and skills are governed by trust and integrity checks, but installing or enabling them still extends the trusted computing base.
   - The audit ledger records what the permission layer decided and what the resulting execution returned. It is not a system-call audit: a program that was approved and then opened a socket or read a file on its own is outside its view. A ledger write failure is reported and declared rather than silently dropped, but no setting causes it to stop an action.
+  - Publication classification is a policy layer, not egress enforcement. It describes what a command's text says it will do, so a program that uploads an artifact without naming the operation on its command line is outside its view, and its catalogue of publishing tools is finite.
   - There is no hosted enterprise identity plane, centralized SSO/RBAC service, or remote policy administration layer.

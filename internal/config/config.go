@@ -210,6 +210,25 @@ type Permissions struct {
 	// a private key. A rule naming the path is still honored, so an
 	// intentional exception stays possible and stays written down.
 	ProtectCredentials string `json:"protect_credentials,omitempty"`
+	// Publication decides what happens when an action puts something outside
+	// this machine — a package version, a container image, a pull request, a
+	// release, an infrastructure apply, a push to a Git remote, a command run
+	// on another host: "prompt" (the default) always asks, "deny" refuses, and
+	// "off" treats those operations as ordinary commands.
+	//
+	// It exists for the same reason protect_credentials does. The safety
+	// classifier is a taxonomy of destruction, so every deletion in these
+	// tools required a fresh decision while the publishing counterpart did
+	// not — and publishing a package version is less reversible than deleting
+	// a deployment a controller will recreate.
+	//
+	// Under "prompt" it is deliberately not coverable by autopilot or a
+	// tool-wide session grant. A rule that names the operation
+	// (`{"command": "npm publish"}`) is honored, because an intentional
+	// exception should stay possible and stay written down; a rule that names
+	// only the executable (`{"command": "npm"}`) is not, because allowing a
+	// package manager is not a decision to publish with it.
+	Publication string `json:"publication,omitempty"`
 	// CommandEnv controls the environment passed to agent commands: "full"
 	// (inherit everything, the default) or "minimal" (PATH, HOME, and other
 	// basics only, keeping parent secrets out of child processes).
@@ -386,6 +405,7 @@ func Defaults() Config {
 			SandboxAllowNetwork:              true,
 			SandboxAllowReadOutsideWorkspace: true,
 			ProtectCredentials:               ProtectCredentialsPrompt,
+			Publication:                      PublicationPrompt,
 			DeniedCommands: []string{
 				`(?i)(^|[;&|]\s*)(rm\s+-[^\s]*(rf|fr)[^\s]*|rmdir\s+/s)\s+([/~]|\.{1,2}|\*|[a-z]:\\)($|\s)`,
 				`(?i)(^|[;&|]\s*)(del|erase)\s+(?:/[^\s]+\s+)*[a-z]:\\(?:\*|\.\*)?($|\s)`,
@@ -561,10 +581,22 @@ const (
 	SandboxEgressScoped = "scoped"
 )
 
+// Settings for permissions.publication, from weakest to strongest.
+const (
+	PublicationOff    = "off"
+	PublicationPrompt = "prompt"
+	PublicationDeny   = "deny"
+)
+
 // ProtectCredentialsSettings lists the selectable settings in increasing
 // strictness.
 func ProtectCredentialsSettings() []string {
 	return []string{ProtectCredentialsOff, ProtectCredentialsPrompt, ProtectCredentialsDeny}
+}
+
+// PublicationSettings lists the selectable settings in increasing strictness.
+func PublicationSettings() []string {
+	return []string{PublicationOff, PublicationPrompt, PublicationDeny}
 }
 
 // preset is one named containment bundle. Every field it sets is an ordinary
@@ -579,6 +611,7 @@ type preset struct {
 	Commands                         string
 	CommandEnv                       string
 	ProtectCredentials               string
+	Publication                      string
 	AllowOutsideWorkspace            bool
 }
 
@@ -602,6 +635,7 @@ var presets = map[string]preset{
 		Commands:                         "open",
 		CommandEnv:                       "minimal",
 		ProtectCredentials:               ProtectCredentialsPrompt,
+		Publication:                      PublicationPrompt,
 	},
 	PresetHardened: {
 		// The strongest bundle an ordinary toolchain can still work under.
@@ -616,6 +650,7 @@ var presets = map[string]preset{
 		Commands:                         "allowlist",
 		CommandEnv:                       "minimal",
 		ProtectCredentials:               ProtectCredentialsDeny,
+		Publication:                      PublicationDeny,
 	},
 	PresetFrictionless: {
 		// An explicit opt-out for users whose toolchain fights containment.
@@ -628,6 +663,7 @@ var presets = map[string]preset{
 		Commands:                         "open",
 		CommandEnv:                       "full",
 		ProtectCredentials:               ProtectCredentialsOff,
+		Publication:                      PublicationOff,
 	},
 }
 
@@ -667,6 +703,7 @@ func (c *Config) applyPreset(name, layer string, declared map[string]bool) {
 	set("commands", func() { c.Permissions.Commands = bundle.Commands })
 	set("command_env", func() { c.Permissions.CommandEnv = bundle.CommandEnv })
 	set("protect_credentials", func() { c.Permissions.ProtectCredentials = bundle.ProtectCredentials })
+	set("publication", func() { c.Permissions.Publication = bundle.Publication })
 }
 
 // ClampedField records a containment setting a repository asked for and did
@@ -691,6 +728,7 @@ var containmentRank = map[string]map[string]int{
 	"commands":            {"open": 0, "allowlist": 1},
 	"sandbox_egress":      {"": 0, SandboxEgressOff: 0, SandboxEgressScoped: 1},
 	"protect_credentials": {"off": 0, "": 1, ProtectCredentialsPrompt: 1, ProtectCredentialsDeny: 2},
+	"publication":         {"off": 0, "": 1, PublicationPrompt: 1, PublicationDeny: 2},
 }
 
 // ContainmentFields lists the settings subject to monotonic clamping, sorted.
@@ -740,6 +778,7 @@ func tightenContainment(inherited, declared Permissions) (Permissions, []Clamped
 	enum("protect_credentials", inherited.ProtectCredentials, declared.ProtectCredentials, func(v string) {
 		result.ProtectCredentials = v
 	})
+	enum("publication", inherited.Publication, declared.Publication, func(v string) { result.Publication = v })
 	boolean("sandbox_allow_network", inherited.SandboxAllowNetwork, declared.SandboxAllowNetwork, func(v bool) { result.SandboxAllowNetwork = v })
 	boolean("sandbox_allow_read_outside_workspace", inherited.SandboxAllowReadOutsideWorkspace, declared.SandboxAllowReadOutsideWorkspace, func(v bool) {
 		result.SandboxAllowReadOutsideWorkspace = v
@@ -1002,6 +1041,11 @@ func (c Config) ValidateFields() []FieldError {
 	default:
 		errs = append(errs, FieldError{"permissions.protect_credentials", fmt.Sprintf("must be %s (got %q)", strings.Join(ProtectCredentialsSettings(), ", "), c.Permissions.ProtectCredentials)})
 	}
+	switch c.Permissions.Publication {
+	case "", PublicationOff, PublicationPrompt, PublicationDeny:
+	default:
+		errs = append(errs, FieldError{"permissions.publication", fmt.Sprintf("must be %s (got %q)", strings.Join(PublicationSettings(), ", "), c.Permissions.Publication)})
+	}
 	for i, root := range c.Permissions.SandboxWritableRoots {
 		if strings.TrimSpace(root) == "" {
 			errs = append(errs, FieldError{fmt.Sprintf("permissions.sandbox_writable_roots.%d", i), "must not be empty"})
@@ -1119,6 +1163,14 @@ func (c Config) ValidateFields() []FieldError {
 			if _, err := filepath.Match(glob, ""); err != nil {
 				errs = append(errs, FieldError{field, fmt.Sprintf("invalid pattern %q: %v", glob, err)})
 			}
+		}
+		// A command pattern is matched either against an executable name or,
+		// when it contains a space, against an operation such as
+		// "npm publish". Both forms are single-spaced and untrimmed patterns
+		// can match neither, so a rule that could never fire is reported here
+		// rather than sitting in the file looking like protection.
+		if trimmed := strings.TrimSpace(rule.Command); rule.Command != "" && (trimmed != rule.Command || strings.Contains(trimmed, "  ")) {
+			errs = append(errs, FieldError{field + ".command", fmt.Sprintf("pattern %q cannot match: use an executable such as \"npm\" or a single-spaced operation such as \"npm publish\"", rule.Command)})
 		}
 	}
 	for name, server := range c.MCP {

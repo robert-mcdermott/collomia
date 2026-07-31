@@ -400,6 +400,29 @@ const configReferenceJSONC = `
     //
     //   { "action": "allow", "path": "/work/repo/.env", "reason": "app config" }
     "protect_credentials": "prompt",
+    // off | prompt | deny. Decides what happens when an action puts something
+    // outside this machine: a package version, a container image, a pull
+    // request or release, an infrastructure apply, a push to a Git remote, a
+    // command run on another host. prompt (the default) always asks, deny
+    // refuses outright, off treats those operations as ordinary commands.
+    //
+    // The rest of the safety classifier is a taxonomy of destruction, so
+    // "terraform destroy" and "kubectl delete" always required a fresh
+    // decision while "terraform apply" and "npm publish" did not — even though
+    // a published version is harder to take back than a deployment a
+    // controller recreates. This closes that asymmetry.
+    //
+    // Like protect_credentials it is not coverable by autopilot or a
+    // tool-wide "always allow". A rule naming the operation is honored, which
+    // is what makes "install freely, ask before publishing" expressible:
+    //
+    //   { "action": "allow", "command": "npm install" }
+    //   { "action": "deny",  "command": "npm publish" }
+    //
+    // A command pattern containing a space matches an operation; one without
+    // matches an executable name. Run "collo policy check <command>" to print
+    // the exact operation string a command produces.
+    "publication": "prompt",
     // Optional executable receiving approval requests as JSON on stdin.
     "reviewer_command": ""
   },

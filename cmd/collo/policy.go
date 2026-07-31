@@ -40,9 +40,16 @@ func runPolicyCommand(opts options) error {
 
 	fmt.Printf("command:      %s\n", command)
 	fmt.Printf("autonomy:     %s\n", manager.Mode())
-	fmt.Printf("postures:     network=%s commands=%s protect_credentials=%s sandbox_egress=%s\n", cfg.Permissions.Network, cfg.Permissions.Commands, cfg.Permissions.ProtectCredentials, orDefaultString(cfg.Permissions.SandboxEgress, appconfig.SandboxEgressOff))
+	fmt.Printf("postures:     network=%s commands=%s protect_credentials=%s publication=%s sandbox_egress=%s\n", cfg.Permissions.Network, cfg.Permissions.Commands, cfg.Permissions.ProtectCredentials, orDefaultString(cfg.Permissions.Publication, appconfig.PublicationPrompt), orDefaultString(cfg.Permissions.SandboxEgress, appconfig.SandboxEgressOff))
 	if len(analysis.Executables) > 0 {
 		fmt.Printf("executables:  %s\n", strings.Join(analysis.Executables, ", "))
+	}
+	// The operation strings are printed because they are the vocabulary a rule
+	// has to use. A user who wants to allow `npm install` and gate
+	// `npm publish` should be able to read the exact pattern here rather than
+	// guess it and get a rule that silently matches nothing.
+	if len(analysis.Operations) > 0 {
+		fmt.Printf("operations:   %s\n", strings.Join(analysis.Operations, ", "))
 	}
 	if analysis.NetworkCommand {
 		endpoints := strings.Join(analysis.Hosts, ", ")
@@ -67,6 +74,9 @@ func runPolicyCommand(opts options) error {
 	}
 	if len(analysis.CredentialTargets) > 0 {
 		fmt.Printf("credentials:  %s\n", strings.Join(analysis.CredentialTargets, "; "))
+	}
+	if len(analysis.PublicationTargets) > 0 {
+		fmt.Printf("publishes:    %s\n", strings.Join(analysis.PublicationTargets, "; "))
 	}
 	if len(analysis.HardDenyReasons) > 0 {
 		fmt.Printf("safety:       catastrophic (%s)\n", strings.Join(analysis.HardDenyReasons, "; "))

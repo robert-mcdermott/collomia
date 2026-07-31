@@ -24,6 +24,7 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Workspace containment, race-resistant rooted file mutation, hard-link-safe atomic replacement, symlink escape checks, hard command denials, timeouts, output limits, and process-group termination of every command's descendants.
 - OS sandbox enforcement: Seatbelt write/network containment on macOS, Landlock filesystem plus kernel-dependent TCP/UDP containment on Linux, both with `auto` and fail-closed `require` modes.
 - Repository trust: when a project `.collomia.json` exists, that configuration and the project's MCP servers, skills, and instructions are quarantined until approved with `collo trust`.
+- Publishing, deploying, and pushing are their own decision (`permissions.publication`, default `prompt`): package and image registries, pull requests and releases, infrastructure applies, Git remotes, and commands run on another host are never approved by autonomy mode or a tool-wide grant alone. A rule naming the operation — `{"command": "npm publish"}` — is the deliberate written-down exception.
 - Persistent audit ledger of every permission decision and execution outcome, stored outside the workspace, attributed to the session and agent that acted, and readable with `collo audit`. A ledger write that fails is reported and declared in the file as a gap rather than leaving a hole that reads as a complete record.
 - Layered, schema-versioned configuration (defaults → user → project → environment) with `collo config validate` and `collo config show`.
 - Diagnostics: `collo doctor`, redacted `--debug` logging, a privacy-conscious `collo support bundle`, and a maintained [capability matrix](docs/CAPABILITIES.md).
@@ -773,12 +774,21 @@ Example:
     "sandbox_allow_network": true,
     "sandbox_allow_read_outside_workspace": false,
     "sandbox_readable_roots": ["${HOME}/go/pkg/mod"],
-    "command_env": "minimal"
+    "command_env": "minimal",
+    "publication": "prompt",
+    "rules": [
+      { "action": "allow", "command": "npm install", "reason": "dependency installs are routine" },
+      { "action": "deny", "command": "npm publish", "reason": "releases go through CI" }
+    ]
   }
 }
 ```
 
 `allowed_tools` is a persistent explicit grant. Interactive approval with `a` normally grants a tool for the remainder of the current process. The example `denied_commands` entry adds all direct recursive `rm` invocations to Collomia's mandatory protections. Global and trusted project patterns only add to the effective set; no subordinate configuration can remove an inherited command denial.
+
+**Publishing is its own decision.** The paragraph below describes a taxonomy of destruction, and until recently that was the whole risk model: `terraform destroy`, `kubectl delete`, `helm uninstall`, and `git push --force` each required a fresh approval even under autopilot, while `terraform apply`, `kubectl apply`, `helm upgrade`, `npm publish`, `docker push`, `gh pr create`, and `git push` were approved silently. `permissions.publication` (`off`, `prompt` by default, `deny`) closes that asymmetry: an action that puts something outside this machine — a package version, a container image, a pull request or release, an infrastructure apply, a push to a remote, a command run over `ssh` — is not covered by autopilot, by a tool-wide "always allow", or by an `allow` rule naming only the executable. A rule naming the *operation* is: `{"action": "allow", "command": "npm publish"}`. Read verbs (`gh pr view`, `kubectl get`, `terraform plan`, `aws s3 ls`) and rehearsals (`--dry-run`) are unaffected, as is `npm install`. See [Publishing outside this machine](docs/USER_GUIDE.md#publishing-outside-this-machine).
+
+**Rules can name an operation, not just an executable.** A `command` pattern containing a space matches the executable plus the words that decide what it does — `npm publish`, `git push`, `gh pr create`, `ssh build-host` — so a policy can allow installing dependencies while gating releases. `collo policy check '<command>'` prints the exact operation string a command produces, and a pattern that could match neither an executable nor an operation is now rejected by `collo config validate` rather than sitting in the file looking like protection.
 
 Shell safety has three outcomes. Routine scoped operations such as `rm -rf node_modules`, `rm -rf /tmp/example`, and formatting a workspace disk-image file follow the selected autonomy mode. Destructive but legitimate operations—such as `git reset --hard`, machine shutdown, bulk cloud/IaC deletion, or a recursive target that cannot be resolved statically—require a fresh one-time approval; allow rules, autopilot, and “always allow” cannot skip it. Catastrophic outcomes—such as recursively deleting `/`, the home or workspace root, `.git`, `~/.collomia`, Windows drive/system roots, or writing a physical disk—are refused and cannot be approved. Both structural checks and regex denials are repeated immediately before foreground or background execution. Use `collo policy check '<command>'` to inspect the result without running it. See the [security model](docs/SECURITY.md#command-safety-tiers) for the complete categories and limitations.
 
