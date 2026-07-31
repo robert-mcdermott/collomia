@@ -75,6 +75,15 @@ func TestConsoleOutputIsRenderedThroughAVirtualTerminal(t *testing.T) {
 	_, _ = process.Wait()
 	_ = process.Close()
 	out := awaitOutput(t, collected)
+	// The child's own output has to be present before the escape sequences
+	// mean anything. This test asserted only that an ESC byte appeared
+	// somewhere, and the pseudoconsole emits its own initialization and repaint
+	// sequences whether or not the child is ever heard from — so it passed
+	// green in the same CI run where the child's output was being discarded,
+	// which is the one failure it should have been most likely to catch.
+	if !strings.Contains(out, "VT-PROBE") {
+		t.Fatalf("child output did not reach the parent, so there is nothing to have rendered:\n%q", out)
+	}
 	if !strings.ContainsRune(out, 0x1b) {
 		t.Errorf("no escape sequence in pseudoconsole output; it is not behaving as a terminal:\n%q", out)
 	}

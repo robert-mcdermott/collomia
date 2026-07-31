@@ -516,13 +516,7 @@ func TestApplyCreatesAFileWhenNoneExists(t *testing.T) {
 	if document["schema_version"] == nil {
 		t.Error("a fresh file must carry the schema version")
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("configuration must be owner-only, got %o", perm)
-	}
+	assertOwnerOnly(t, path)
 }
 
 func TestBuildTakesContextFromTheCapabilityRegistry(t *testing.T) {

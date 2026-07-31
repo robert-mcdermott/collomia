@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -61,6 +62,10 @@ type Process struct {
 	waitErr  error
 
 	closeOnce sync.Once
+	// outOnce guards the output handle, which Close must not take away from a
+	// reader still draining it. See Close.
+	outOnce     sync.Once
+	readStarted atomic.Bool
 }
 
 // Start creates a pseudoconsole and launches the child attached to it.
@@ -220,7 +225,21 @@ func (p *Process) Pid() int { return p.pid }
 
 // Read returns bytes the child wrote to its console. It reports io.EOF once
 // the console has been closed and the child's output is drained.
-func (p *Process) Read(data []byte) (int, error) { return p.out.Read(data) }
+//
+// The read handle is released here, on the terminal read, rather than by
+// Close: end-of-file means the console is gone and everything it rendered has
+// been handed over, which is the only moment at which closing cannot discard
+// output.
+func (p *Process) Read(data []byte) (int, error) {
+	p.readStarted.Store(true)
+	n, err := p.out.Read(data)
+	if err != nil {
+		p.closeOutput()
+	}
+	return n, err
+}
+
+func (p *Process) closeOutput() { p.outOnce.Do(func() { _ = p.out.Close() }) }
 
 // Write delivers input to the child as if typed.
 func (p *Process) Write(data []byte) (int, error) { return p.in.Write(data) }
@@ -309,10 +328,23 @@ func (p *Process) Close() error {
 		// polite end-of-input signal for anything still reading.
 		_ = p.in.Close()
 		windows.ClosePseudoConsole(p.console)
-		// Output last: closing the console releases the pipe's writer, so a
-		// reader blocked in Read now sees end-of-file rather than a closed
-		// descriptor mid-read.
-		_ = p.out.Close()
+		// The output handle is deliberately left alone when anyone has read
+		// from it.
+		//
+		// Closing the console releases the pipe's last writer, which is what
+		// walks a blocked reader to end-of-file — but ConPTY renders
+		// asynchronously, so at this instant the pipe still holds bytes the
+		// child wrote and the reader has not yet collected. Closing the read
+		// handle here took those bytes away mid-drain: the reader got
+		// ErrClosed instead of EOF and returned whatever had already arrived,
+		// which on a fast child was the console's own initialization sequences
+		// and none of its output. It failed as a race, so it passed locally
+		// and failed under CI load. Read closes the handle when it reaches
+		// end-of-file instead; this covers only the case where nothing ever
+		// read, which would otherwise leak the handle until finalization.
+		if !p.readStarted.Load() {
+			p.closeOutput()
+		}
 		windows.CloseHandle(p.thread)
 		windows.CloseHandle(p.process)
 		// Closing the job is what would kill the tree if anything above left
