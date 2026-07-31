@@ -98,6 +98,20 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   qualified against a real deployment. An endpoint that rejects a cache
   breakpoint disables caching for the life of the process after one wasted
   request, which is correct but costs that request.
+- `collo setup` proves a provider configuration with two real requests before
+  writing it, but that is a reachability and tool-acceptance check rather than a
+  judgement about the model: one that answers a trivial prompt and accepts a
+  tool definition can still be too weak to drive an agent usefully. Azure
+  OpenAI and Bedrock are configured by naming their fields rather than by
+  enumeration — deployment listing needs the ARM management plane and Bedrock's
+  `ListFoundationModels` needs a dependency Collomia does not carry — so a
+  mistyped deployment or a region without model access is caught by the
+  verification step rather than prevented by a list, and sovereign-cloud
+  endpoints are untested. Setup writes the user-level configuration only, never
+  a repository's `.collomia.json`. It can store a key in the OS credential
+  manager on macOS and Windows; other platforms, including Linux, have no
+  supported backend, so a key there is referenced by environment-variable name
+  and must be exported by the user.
 - Provider behavior still depends on the selected model, account, deployment,
   regional availability, and upstream API changes. Use the capability display,
   `collo doctor`, and live provider qualification before relying on a hosted

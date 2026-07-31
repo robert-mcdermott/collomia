@@ -1,6 +1,6 @@
 # Collomia — High-Level Feature and Security Summary
 
-_Reviewed against Collomia v0.2.0, commit `5cbc97f`. Features are implemented unless identified as experimental or unsupported._
+_Reviewed against Collomia v0.2.1, commit `ecadfac`. Features are implemented unless identified as experimental or unsupported._
 
 - **Deployment and platform support**
 
