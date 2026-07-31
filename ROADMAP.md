@@ -970,13 +970,21 @@ claiming enforcement the policy layer does not provide.
   clearer resolved AWS identity/model-access diagnostics as part of the same
   work rather than beside it.
 
-  **`collo setup` has shipped**, covering the local-runtime and hosted-family
-  paths end to end: concurrent probing, catalog discovery, two-request
-  verification, diagnosis, and a writer that never puts a secret in a file. What
-  remains open here is the provider-discovery half — Azure deployment/project
-  enumeration (the wizard currently sends Azure and Bedrock down the manual
-  path, which is honest but not discovery), tested sovereign presets, and
-  resolved AWS identity diagnostics.
+  **`collo setup` has shipped**, covering local runtimes, hosted families, and
+  form-configured Azure and Bedrock end to end: concurrent probing, catalog
+  discovery, two-request verification, diagnosis, a writer that never puts a
+  secret in a file, and `sts:GetCallerIdentity` reporting which AWS identity the
+  credential chain actually resolved — the "resolved AWS identity diagnostics"
+  half of this item. Re-running is a supported flow: it reads the file it writes
+  rather than the merged configuration, shows the current default, marks a
+  provider it would replace, and asks before repointing `default_provider`.
+
+  What remains open is **discovery** proper. Azure OpenAI and Bedrock are
+  configured by naming their fields, which is honest but not enumeration:
+  deployment listing needs the ARM management plane and Bedrock's
+  `ListFoundationModels` needs `aws-sdk-go-v2/service/bedrock`, neither of which
+  is a current dependency. Foundry already gets model selection free, since its
+  OpenAI v1 route publishes a catalog. Tested sovereign presets also remain.
 
   **Reclassified from P2, and merged with the former "Setup wizard" entry.**
   The two were one item seen from opposite sides: the wizard's Azure branch

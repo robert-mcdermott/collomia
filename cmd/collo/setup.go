@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/setup"
@@ -31,18 +30,24 @@ func runSetupCommand(opts options) error {
 		return err
 	}
 
-	// The existing provider names are read for one purpose: so the
-	// confirmation screen can say that writing replaces something, rather than
-	// the user discovering it afterwards. A configuration that cannot be
-	// loaded is not fatal here — an unconfigured machine is the expected case,
-	// and setup is also the reasonable thing to reach for when a file is
-	// broken.
-	existing := existingProviderNames(opts.cwd)
+	// What the file already contains is read from that one file, not from the
+	// merged configuration. `appconfig.Load` composes defaults, user, and a
+	// trusted project layer, so a provider defined in a repository's
+	// `.collomia.json` would appear here — and setup writes the global file.
+	// Warning about a collision with an entry setup will not touch is
+	// misleading, and the project layer would shadow the write besides.
+	existing, err := setup.ReadExisting(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w\nFix or move that file before running setup; it is not being overwritten", path, err)
+	}
 
 	outcome, err := tui.RunSetup(context.Background(), tui.SetupOptions{
 		ConfigPath: path,
-		ThemeName:  themePreference(opts.cwd),
-		Existing:   existing,
+		// The theme is deliberately taken from the merged configuration: it
+		// governs how the wizard looks, not what it writes, and a project's
+		// chosen theme should still apply.
+		ThemeName: themePreference(opts.cwd),
+		Existing:  existing,
 	})
 	if err != nil {
 		return err
@@ -58,19 +63,6 @@ func runSetupCommand(opts options) error {
 	}
 	fmt.Println("Start a session with `collo`, or inspect everything with `collo doctor`.")
 	return nil
-}
-
-func existingProviderNames(cwd string) []string {
-	cfg, err := appconfig.Load(cwd)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(cfg.Providers))
-	for name := range cfg.Providers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // themePreference reads the configured theme so the wizard matches the

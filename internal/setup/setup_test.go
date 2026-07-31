@@ -425,3 +425,227 @@ func containsSubstring(values []string, needle string) bool {
 	}
 	return false
 }
+
+func TestReadExistingReadsOnlyTheTargetFile(t *testing.T) {
+	// The defect this replaced: existing provider names came from
+	// appconfig.Load, which composes defaults, user, and a trusted project
+	// layer. Setup writes the global file, so a provider defined in a
+	// repository's .collomia.json produced a warning about something setup
+	// would not touch — and the project layer would shadow the write besides,
+	// making the wizard look like it had done nothing.
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+  "schema_version": 1,
+  "default_provider": "ollama",
+  "default_model": "qwen2.5-coder",
+  "providers": {
+    "ollama": {"type": "openai-compatible", "model": "qwen2.5-coder"},
+    "work": {"type": "anthropic", "model": "claude-sonnet-5"}
+  }
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	existing, err := ReadExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existing.DefaultProvider != "ollama" || existing.DefaultModel != "qwen2.5-coder" {
+		t.Errorf("default = %s / %s", existing.DefaultProvider, existing.DefaultModel)
+	}
+	if !existing.Has("ollama") || !existing.Has("work") {
+		t.Errorf("providers = %v", existing.Providers)
+	}
+	if existing.Has("bedrock") {
+		t.Error("a provider absent from this file must not be reported as present")
+	}
+	if existing.Describes("ollama") != "qwen2.5-coder" {
+		t.Errorf("describes = %q", existing.Describes("ollama"))
+	}
+	if !existing.HasDefault() {
+		t.Error("HasDefault must be true when a default is recorded")
+	}
+}
+
+func TestReadExistingTreatsAMissingFileAsEmptyAndABrokenFileAsAnError(t *testing.T) {
+	// Absent is the ordinary first-run case. Unparsable is not: silently
+	// treating a broken file as empty would let the merge destroy settings the
+	// user still has.
+	absent, err := ReadExisting(filepath.Join(t.TempDir(), "nothing.json"))
+	if err != nil {
+		t.Fatalf("a missing file must not be an error: %v", err)
+	}
+	if absent.HasDefault() || len(absent.Providers) != 0 {
+		t.Error("a missing file must read as empty")
+	}
+
+	broken := filepath.Join(t.TempDir(), "broken.json")
+	if err := os.WriteFile(broken, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadExisting(broken); err == nil {
+		t.Fatal("an unparsable configuration must be reported, not silently treated as empty")
+	}
+}
+
+func TestApplyLeavesTheDefaultAloneWhenNotAsked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+  "schema_version": 1,
+  "default_provider": "ollama",
+  "default_model": "qwen2.5-coder",
+  "providers": {"ollama": {"type": "openai-compatible", "model": "qwen2.5-coder"}}
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := Build("anthropic", appconfig.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}, "claude-sonnet-5", CredentialEnv, "ANTHROPIC_API_KEY", "")
+	result.MakeDefault = false
+	if err := Apply(path, result); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["default_provider"] != "ollama" || document["default_model"] != "qwen2.5-coder" {
+		t.Errorf("adding a provider must not repoint the default: %v / %v", document["default_provider"], document["default_model"])
+	}
+	providers := document["providers"].(map[string]any)
+	if _, ok := providers["anthropic"]; !ok {
+		t.Error("the new provider must still be added")
+	}
+}
+
+func TestSanitizeSecretHandlesRealPasteDamage(t *testing.T) {
+	// A field that does not echo cannot show the user that their key arrived
+	// wrapped, quoted, or with a trailing newline.
+	cases := map[string]string{
+		"  ABSKkey123  ":     "ABSKkey123",
+		"\"ABSKkey123\"":     "ABSKkey123",
+		"'ABSKkey123'":       "ABSKkey123",
+		"ABSK\nkey\r\n123":   "ABSKkey123",
+		"ABSK key 123":       "ABSKkey123",
+		"\"ABSK\nkey123\"\n": "ABSKkey123",
+		"ABSKkey123":         "ABSKkey123",
+	}
+	for input, want := range cases {
+		if got := SanitizeSecret(input); got != want {
+			t.Errorf("SanitizeSecret(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestDiagnoseDoesNotClaimTheCredentialIsValidWhenTheEndpointSaysOtherwise(t *testing.T) {
+	// Reported from a real Bedrock run: the panel asserted "The credential is
+	// valid, but not allowed to use this model" directly above AWS's own
+	// "Missing required parameters in the API Key". The summary contradicted
+	// the evidence printed beneath it and sent the reader to the model-access
+	// console instead of to the key.
+	d := Diagnose(
+		appconfig.Provider{Type: "bedrock", Region: "us-east-1"},
+		"us.anthropic.claude-opus-5", nil,
+		&provider.Error{Kind: provider.ErrorPermission, StatusCode: 403, Message: "Missing required parameters in the API Key"},
+	)
+	if strings.Contains(d.Summary, "credential is valid") {
+		t.Errorf("summary must not assert a valid credential against a message about the key: %q", d.Summary)
+	}
+	if !strings.Contains(d.Summary, "rejected the credential") {
+		t.Errorf("summary = %q", d.Summary)
+	}
+	if !containsSubstring(d.Fixes, "incomplete") {
+		t.Errorf("truncation must lead the fixes, since it is invisible in a field that does not echo: %v", d.Fixes)
+	}
+	if !containsSubstring(d.Fixes, "AWS_BEARER_TOKEN_BEDROCK") {
+		t.Errorf("the env-var route avoids the text field entirely and should be offered: %v", d.Fixes)
+	}
+	if !containsSubstring(d.Fixes, "per region") {
+		t.Errorf("region-scoped Bedrock keys should be named: %v", d.Fixes)
+	}
+}
+
+func TestDiagnoseStillReportsRealModelAccessDenials(t *testing.T) {
+	// The credential-shape branch must not swallow the genuine entitlement
+	// case, which is what a Bedrock 403 usually is.
+	d := Diagnose(
+		appconfig.Provider{Type: "bedrock", Region: "us-east-1"},
+		"us.anthropic.claude-opus-5", nil,
+		&provider.Error{Kind: provider.ErrorPermission, StatusCode: 403, Message: "You don't have access to the model with the specified model ID."},
+	)
+	if !strings.Contains(d.Summary, "not allowed to use this model") {
+		t.Errorf("summary = %q", d.Summary)
+	}
+	if !containsSubstring(d.Fixes, "request model access") {
+		t.Errorf("fixes = %v", d.Fixes)
+	}
+}
+
+func TestDiagnoseSigV4FailureNamesTheAWSChainNotAnAPIKey(t *testing.T) {
+	// SigV4 signs with ordinary IAM credentials that Collomia never holds, so
+	// advice about a revoked or mistyped API key is useless — the real cause is
+	// an unset AWS_ACCESS_KEY_ID, a missing profile, or an expired SSO session.
+	d := Diagnose(
+		appconfig.Provider{Type: "bedrock", Region: "us-east-1", Auth: "sigv4"},
+		"anthropic.claude-sonnet-4-20250514-v1:0", nil,
+		&provider.Error{Kind: provider.ErrorAuthentication, Message: "retrieve AWS credentials: no EC2 IMDS role found"},
+	)
+	if !strings.Contains(d.Summary, "No AWS credentials could be resolved") {
+		t.Errorf("summary = %q", d.Summary)
+	}
+	if !containsSubstring(d.Fixes, "AWS_ACCESS_KEY_ID") {
+		t.Errorf("fixes must name the IAM variables: %v", d.Fixes)
+	}
+	if !containsSubstring(d.Fixes, "aws sso login") {
+		t.Errorf("an expired Identity Center session is the usual cause and should be named: %v", d.Fixes)
+	}
+	if containsSubstring(d.Fixes, "revoked") {
+		t.Error("a chain failure must not offer API-key advice; there is no key to check")
+	}
+}
+
+func TestDiagnoseTreatsBedrockAutoWithNoTokenAsTheAWSChain(t *testing.T) {
+	// `auto` with no token resolves to SigV4, so the user never chose the word
+	// "sigv4" and would not connect the failure to it on their own.
+	d := Diagnose(
+		appconfig.Provider{Type: "bedrock", Region: "us-east-1"},
+		"model", nil,
+		&provider.Error{Kind: provider.ErrorAuthentication, Message: "retrieve AWS credentials"},
+	)
+	if !containsSubstring(d.Fixes, "AWS_ACCESS_KEY_ID") {
+		t.Errorf("auto-without-token is the AWS chain and must be diagnosed as such: %v", d.Fixes)
+	}
+
+	// But an explicit bearer configuration is a key problem, not a chain one.
+	bearer := Diagnose(
+		appconfig.Provider{Type: "bedrock", Region: "us-east-1", Auth: "bearer", APIKeyEnv: "AWS_BEARER_TOKEN_BEDROCK"},
+		"model", nil,
+		&provider.Error{Kind: provider.ErrorAuthentication, Message: "invalid token"},
+	)
+	if containsSubstring(bearer.Fixes, "AWS_ACCESS_KEY_ID") {
+		t.Errorf("a bearer failure must not send the user to IAM variables: %v", bearer.Fixes)
+	}
+}
+
+func TestBedrockAuthHintExplainsSigV4(t *testing.T) {
+	// "SigV4" is the one term on these screens that assumes AWS knowledge.
+	var bedrock Manual
+	for _, candidate := range ManualCandidates() {
+		if candidate.Key == "bedrock" {
+			bedrock = candidate
+		}
+	}
+	var hint string
+	for _, field := range bedrock.Fields {
+		if field.Key == "auth" {
+			hint = field.Hint
+		}
+	}
+	for _, want := range []string{"AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN", "profile", "No key is entered here"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("the authentication hint should mention %q; got %q", want, hint)
+		}
+	}
+}

@@ -69,6 +69,37 @@ Evaluation assertions should prefer observable invariants—changed content,
 tool lifecycle, permission decisions, verification output, and recovery
 state—over exact prose or timing.
 
+## Documentation guards
+
+`cmd/collo/docs_test.go` holds guards that compare the documentation against the
+source: every event kind, tool name, slash command, permission setting, sandbox
+root, credential location, and setup environment variable must appear where a
+reader would look for it. They exist because documented-but-absent controls have
+shipped here more than once.
+
+A guard of this shape fails in a way ordinary review does not catch: it can pass
+for the wrong reason. `strings.Contains(guide, "off")` is satisfied by any of the
+sixteen unrelated uses of that word, so the guard stays green while the setting
+it claims to protect is deleted. Six guards were found in exactly that state.
+
+**Prove a new guard can fail before trusting it.** Delete the documentation it
+is meant to protect and confirm it goes red — the same mutation the guard is
+supposed to catch in a future change:
+
+```sh
+cp docs/USER_GUIDE.md /tmp/guide.bak
+grep -v "protect_credentials" /tmp/guide.bak > docs/USER_GUIDE.md
+go test ./cmd/... -run TestGuideDocumentsEveryCredentialSetting -count=1   # must FAIL
+cp /tmp/guide.bak docs/USER_GUIDE.md
+```
+
+Two helpers exist so this is the default rather than an afterthought.
+`sectionContaining` narrows the search to the smallest enclosing Markdown
+section, which is what makes "documented" mean "documented *here*" — anchoring
+on `##` alone is not enough, since one section of the user guide runs to eight
+hundred lines. `documentedToken` matches whole words, so `/agent` cannot be
+satisfied by `/agents`.
+
 ## Fuzz targets
 
 Short fuzz smoke tests run in the Linux CI quality job. Run the same targets

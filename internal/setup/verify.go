@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -198,6 +199,31 @@ func without(values []string, exclude string) []string {
 	return kept
 }
 
+// SanitizeSecret cleans a pasted credential.
+//
+// The diagnosis text has always said that a key pasted with surrounding
+// whitespace or quotes is the common cause; handling it is better than warning
+// about it. Every credential Collomia accepts is base64 or an alphanumeric
+// token, so no interior whitespace is ever meaningful — and a key copied out of
+// a console or a wrapped terminal line arrives with newlines in the middle of
+// it, which is invisible in a field that does not echo.
+func SanitizeSecret(value string) string {
+	var cleaned strings.Builder
+	for _, r := range value {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		cleaned.WriteRune(r)
+	}
+	trimmed := cleaned.String()
+	for _, quote := range []string{`"`, `'`, "`"} {
+		if len(trimmed) >= 2 && strings.HasPrefix(trimmed, quote) && strings.HasSuffix(trimmed, quote) {
+			trimmed = trimmed[1 : len(trimmed)-1]
+		}
+	}
+	return trimmed
+}
+
 // Diagnosis turns a provider failure into something a user can act on.
 //
 // This is the wizard's actual product. Moving a failure from the first prompt
@@ -251,12 +277,34 @@ func Diagnose(p appconfig.Provider, model string, catalog []provider.ModelInfo, 
 	detail := strings.TrimSpace(providerErr.Message)
 	switch providerErr.Kind {
 	case provider.ErrorAuthentication:
+		if usesAWSChain(p) {
+			// Distinguished from a rejected key: an unresolved chain never
+			// reached the endpoint at all, so saying the endpoint rejected
+			// something would be wrong about where the failure happened.
+			return Diagnosis{
+				Summary: "No AWS credentials could be resolved for SigV4 signing.",
+				Detail:  detail,
+				Fixes:   awsChainFixes(p),
+			}
+		}
 		return Diagnosis{
 			Summary: "The endpoint rejected the credential.",
 			Detail:  detail,
 			Fixes:   credentialFixes(p),
 		}
 	case provider.ErrorPermission:
+		// A 403 has two quite different causes, and guessing the wrong one
+		// sends the user to the wrong console. When the endpoint's own message
+		// is about the credential itself, saying "the credential is valid"
+		// above that message is not merely unhelpful — it contradicts the
+		// evidence printed directly beneath it.
+		if mentionsCredentialShape(detail) {
+			return Diagnosis{
+				Summary: "The endpoint rejected the credential itself, not your access to the model.",
+				Detail:  detail,
+				Fixes:   append(credentialShapeFixes(p), credentialFixes(p)...),
+			}
+		}
 		return Diagnosis{
 			Summary: "The credential is valid, but not allowed to use this model.",
 			Detail:  detail,
@@ -346,7 +394,86 @@ func modelFixes(p appconfig.Provider, model string, catalog []provider.ModelInfo
 	return fixes
 }
 
+// mentionsCredentialShape reports whether an endpoint's own message is about
+// the credential rather than about entitlement to a model.
+func mentionsCredentialShape(detail string) bool {
+	lowered := strings.ToLower(detail)
+	for _, marker := range []string{"api key", "apikey", "api-key", "token", "signature", "credential"} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialShapeFixes answers a credential the endpoint could not parse.
+//
+// Truncation leads, because it is invisible: the field does not echo, so a key
+// that was cut off looks exactly like one that was not, and the resulting AWS
+// message ("Missing required parameters in the API Key") names the key without
+// suggesting that it is incomplete.
+func credentialShapeFixes(p appconfig.Provider) []string {
+	fixes := []string{
+		"The key may be incomplete. Re-copy it in full and paste it again — a partial key produces this rather than a plain rejection.",
+	}
+	if p.Type == "bedrock" {
+		fixes = append(fixes,
+			"A Bedrock short-term API key is base64-encoded session credentials and can run to well over a thousand characters; confirm the whole value arrived.",
+			"Bedrock API keys are issued per region. A key generated for another region fails here even when model access is granted in "+orPlaceholder(p.Region, "this region")+".",
+			"As an alternative, export AWS_BEARER_TOKEN_BEDROCK and run `collo setup` again — it uses the exported value and never passes through a text field.",
+		)
+	}
+	return fixes
+}
+
+// usesAWSChain reports whether this provider authenticates through the AWS
+// credential chain rather than a pasted key.
+//
+// It matters for diagnosis: the two Bedrock credential families fail for
+// completely different reasons, and advice about a revoked API key is useless
+// to someone whose real problem is an unset AWS_ACCESS_KEY_ID or an expired SSO
+// session. `auto` is included, because with no token present it resolves to
+// SigV4 — so the user never chose the word "sigv4" and would not connect the
+// failure to it.
+func usesAWSChain(p appconfig.Provider) bool {
+	if p.Type != "bedrock" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Auth)) {
+	case "sigv4":
+		return true
+	case "bearer":
+		return false
+	}
+	return strings.TrimSpace(p.APIKey) == "" && strings.TrimSpace(p.APIKeyEnv) == ""
+}
+
+// awsChainFixes answers a SigV4 failure by naming the credential sources the
+// AWS SDK actually consults, in the order it consults them.
+func awsChainFixes(p appconfig.Provider) []string {
+	fixes := []string{
+		"SigV4 signs with ordinary IAM credentials; Collomia does not hold them, the AWS SDK resolves them.",
+		"Export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, adding AWS_SESSION_TOKEN if they are temporary credentials.",
+	}
+	if profile := strings.TrimSpace(p.Profile); profile != "" {
+		fixes = append(fixes, "This provider names profile "+profile+"; confirm it exists in ~/.aws/credentials or ~/.aws/config.")
+	} else {
+		fixes = append(fixes, "Or configure a profile with `aws configure` and name it in the profile field.")
+	}
+	fixes = append(fixes,
+		"For IAM Identity Center, an expired session is the usual cause — run `aws sso login` and try again.",
+		"`aws sts get-caller-identity` confirms whether the chain resolves outside Collomia.",
+		"To use a Bedrock API key instead, choose bearer authentication.",
+	)
+	return fixes
+}
+
 func credentialFixes(p appconfig.Provider) []string {
+	// A provider signing through the AWS chain has no key to check, so the
+	// ordinary credential advice would send the user looking for one.
+	if usesAWSChain(p) {
+		return awsChainFixes(p)
+	}
 	fixes := make([]string, 0, 3)
 	switch {
 	case p.CredentialSource != "":
@@ -354,10 +481,11 @@ func credentialFixes(p appconfig.Provider) []string {
 	case p.APIKeyEnv != "":
 		fixes = append(fixes, "The credential came from $"+p.APIKeyEnv+"; check that value.")
 	}
-	fixes = append(fixes,
-		"Confirm the key has not been revoked and belongs to the right organization or project.",
-		"A key pasted with surrounding whitespace or quotes is the common cause.",
-	)
+	// Deliberately no longer advises checking for surrounding whitespace or
+	// quotes: SanitizeSecret removes those before the request is made, and
+	// telling someone to check what the tool already handled sends them to
+	// look at the one thing that cannot be wrong.
+	fixes = append(fixes, "Confirm the key has not been revoked and belongs to the right organization or project.")
 	return fixes
 }
 

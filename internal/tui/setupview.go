@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/robert-mcdermott/collomia/internal/credstore"
@@ -38,8 +39,8 @@ func (m setupModel) View() string {
 		sections = append(sections, m.scanView())
 	case stageChooseProvider:
 		sections = append(sections, m.providerView())
-	case stageManualURL:
-		sections = append(sections, m.promptView("Endpoint", "The API root of an OpenAI-compatible server, including any /v1 the provider expects."))
+	case stageForm:
+		sections = append(sections, m.formView())
 	case stageChooseModel:
 		sections = append(sections, m.modelView())
 	case stageManualModel:
@@ -109,9 +110,17 @@ func (m setupModel) scanView() string {
 }
 
 func (m setupModel) providerView() string {
+	// A re-run must show what is already configured. Choosing without seeing
+	// the current selection is how someone replaces a working provider by
+	// accident.
+	subtitle := "Nothing is written until a real request to the endpoint succeeds."
+	if m.opts.Existing.HasDefault() {
+		subtitle = "Currently: " + m.opts.Existing.DefaultProvider + " / " + m.opts.Existing.DefaultModel +
+			". Nothing is written until a real request to the endpoint succeeds."
+	}
 	lines := []string{
 		m.title("Which provider should Collomia use?"),
-		m.hint("Nothing is written until a real request to the endpoint succeeds."),
+		m.hint(subtitle),
 		"",
 	}
 	for i, choice := range m.choices {
@@ -153,6 +162,97 @@ func capabilityNote(model provider.ModelInfo) string {
 	return strings.Join(notes, " · ")
 }
 
+// formView renders the multi-field screen for a provider that has to be
+// described rather than discovered.
+func (m setupModel) formView() string {
+	lines := []string{m.title(m.form.spec.Name), m.hint(m.form.spec.Detail), ""}
+	labelWidth := 0
+	for _, field := range m.form.spec.Fields {
+		labelWidth = max(labelWidth, len(field.Label))
+	}
+	for i, field := range m.form.spec.Fields {
+		focused := i == m.form.focus
+		label := m.styles.muted.Render(pad(field.Label, labelWidth))
+		if focused {
+			label = m.styles.accent.Render(pad(field.Label, labelWidth))
+		}
+
+		var value string
+		switch {
+		case field.Kind == setup.FieldChoice:
+			value = m.choiceValue(field, m.form.values[field.Key], focused)
+		case focused:
+			value = m.input.View()
+		default:
+			// An unfilled field shows its placeholder prefixed with "e.g.".
+			// Colour alone cannot carry this: the plain theme has none, and
+			// even in a colour theme a suggested value that looks like an
+			// entered one leaves the user unable to tell what they have
+			// actually filled in.
+			shown := m.form.values[field.Key]
+			if strings.TrimSpace(shown) == "" {
+				placeholder := "required"
+				if field.Optional {
+					placeholder = "optional"
+				}
+				if field.Placeholder != "" {
+					placeholder = "e.g. " + field.Placeholder
+				}
+				shown = m.styles.muted.Render(placeholder)
+			} else {
+				shown = m.styles.panelBody.Render(shown)
+			}
+			value = "  " + shown
+		}
+
+		marker := "  "
+		if focused {
+			marker = m.styles.accent.Render("▸ ")
+		}
+		lines = append(lines, marker+label+" "+value)
+		if focused && field.Hint != "" {
+			lines = append(lines, m.styles.muted.Render(indentLines(wrapText(field.Hint, m.contentWidth()-labelWidth-6), labelWidth+4)))
+		}
+	}
+	if m.form.err != "" {
+		lines = append(lines, "", m.styles.errText.Render(m.form.err))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// choiceValue renders a cycling option field, showing every option so the
+// alternatives are visible without pressing anything.
+func (m setupModel) choiceValue(field setup.Field, selected string, focused bool) string {
+	parts := make([]string, 0, len(field.Options))
+	for _, option := range field.Options {
+		switch {
+		case option == selected && focused:
+			parts = append(parts, m.styles.paletteSel.Render(" "+option+" "))
+		case option == selected:
+			parts = append(parts, m.styles.paletteCmd.Render(" "+option+" "))
+		default:
+			parts = append(parts, m.styles.muted.Render(" "+option+" "))
+		}
+	}
+	return "  " + strings.Join(parts, m.styles.muted.Render("·"))
+}
+
+func pad(value string, width int) string {
+	if len(value) >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-len(value))
+}
+
+func indentLines(text string, by int) string {
+	prefix := strings.Repeat(" ", by)
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = prefix + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m setupModel) promptView(title, hint string) string {
 	return strings.Join([]string{
 		m.title(title), m.hint(hint), "", "  " + m.input.View(),
@@ -160,10 +260,26 @@ func (m setupModel) promptView(title, hint string) string {
 }
 
 func (m setupModel) credentialView() string {
+	// Echo is forced here rather than trusted from whichever transition led in.
+	// Every path currently sets it, but the cost of one that forgets is a
+	// provider key rendered in clear text on a screen someone may be sharing,
+	// so the guarantee belongs at the point of rendering. The receiver is a
+	// value, so this cannot leak back into the model.
+	m.input.EchoMode = textinput.EchoPassword
+
+	// The character count is the only feedback a field that does not echo can
+	// give, and it is the difference between noticing a key that arrived
+	// truncated and discovering it from an endpoint's error several screens
+	// later. It reveals nothing: a length is not a secret.
+	counter := ""
+	if n := len([]rune(m.input.Value())); n > 0 {
+		counter = m.styles.muted.Render(fmt.Sprintf("   %d characters", n))
+	}
 	return strings.Join([]string{
 		m.title("API key"),
 		m.hint("Typed without echo. Collomia never writes a key into a configuration file — the next screen chooses where it goes."),
-		"", "  " + m.input.View(),
+		"", "  " + m.input.View() + counter,
+		"", m.styles.muted.Render(wrapText("Paste the whole value. Surrounding quotes and any whitespace are removed for you, including newlines from a wrapped copy.", m.contentWidth())),
 	}, "\n")
 }
 
@@ -206,6 +322,12 @@ func (m setupModel) failedView() string {
 	if d.Detail != "" {
 		body = append(body, "", m.styles.muted.Render(wrapText(d.Detail, m.contentWidth()-4)))
 	}
+	// On a Bedrock failure the resolved identity is evidence, not decoration:
+	// it separates "the chain produced nothing" from "it produced the wrong
+	// account", which are different fixes, and it is already known by now.
+	if m.awsIdentity != nil {
+		body = append(body, "", m.styles.muted.Render(wrapText("AWS identity: "+m.awsIdentity.Describe(), m.contentWidth()-4)))
+	}
 	if len(d.Fixes) > 0 {
 		body = append(body, "")
 		for _, fix := range d.Fixes {
@@ -241,14 +363,24 @@ func (m setupModel) confirmView() string {
 		}
 		rows = append(rows, [2]string{"context", context})
 	}
-	rows = append(rows, [2]string{"verified", fmt.Sprintf("replied %q in %s", truncate(m.verification.Reply, 24), m.verification.Elapsed.Round(1e6))})
+	if m.awsIdentity != nil {
+		// The commonest Bedrock confusion is not a missing credential but not
+		// knowing which of several sources won.
+		rows = append(rows, [2]string{"aws identity", m.awsIdentity.Describe()})
+	}
+	rows = append(rows,
+		[2]string{"verified", fmt.Sprintf("replied %q in %s, and accepted tools", truncate(m.verification.Reply, 20), m.verification.Elapsed.Round(1e6))},
+		[2]string{"default", m.defaultRow()},
+	)
 
-	body := make([]string, 0, len(rows)+2)
+	body := make([]string, 0, len(rows)+3)
 	for _, row := range rows {
-		body = append(body, m.styles.muted.Render(fmt.Sprintf("%-11s", row[0]))+" "+m.styles.panelBody.Render(row[1]))
+		body = append(body, m.styles.muted.Render(fmt.Sprintf("%-13s", row[0]))+" "+m.styles.panelBody.Render(row[1]))
 	}
 	if m.overwrites() {
-		body = append(body, "", m.styles.warning.Render("This replaces the existing provider named "+m.name+"."))
+		body = append(body, "", m.styles.warning.Render(wrapText(
+			"This replaces the provider named "+m.name+" in this file, currently "+
+				m.opts.Existing.Describes(m.name)+".", m.contentWidth()-4)))
 	}
 	return strings.Join([]string{
 		m.title("Ready to write"),
@@ -273,15 +405,25 @@ func (m setupModel) doneView() string {
 }
 
 // overwrites reports whether confirming replaces a provider that already
-// exists, so the confirmation can say so rather than the user finding out by
-// losing a configuration.
-func (m setupModel) overwrites() bool {
-	for _, name := range m.opts.Existing {
-		if name == m.name {
-			return true
-		}
+// exists *in the file being written*, so the confirmation can say so rather
+// than the user finding out by losing a configuration.
+func (m setupModel) overwrites() bool { return m.opts.Existing.Has(m.name) }
+
+// defaultRow states what will happen to default_provider, including what it is
+// being changed from. Adding a provider and silently repointing the default at
+// it is the behavior this row exists to make impossible.
+func (m setupModel) defaultRow() string {
+	current := m.opts.Existing.DefaultProvider
+	switch {
+	case m.makeDefault && current != "" && current != m.name:
+		return "yes — changed from " + current + " / " + m.opts.Existing.DefaultModel + "   (d to keep " + current + ")"
+	case m.makeDefault:
+		return "yes — sessions will use this unless told otherwise   (d to change)"
+	case current != "":
+		return "no — " + current + " / " + m.opts.Existing.DefaultModel + " stays the default   (d to change)"
+	default:
+		return "no — nothing else is configured, so no default will be set   (d to change)"
 	}
-	return false
 }
 
 // choiceLine renders one selectable row in the same idiom as the command
@@ -373,12 +515,14 @@ func (m setupModel) footer() string {
 		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "quit"}}
 	case stageChooseModel, stageStorage:
 		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "back"}}
-	case stageManualURL, stageManualModel, stageCredential:
+	case stageManualModel, stageCredential:
 		keys = [][2]string{{"enter", "continue"}, {"esc", "back"}}
+	case stageForm:
+		keys = [][2]string{{"↑↓", "field"}, {"←→", "option"}, {"enter", "continue"}, {"esc", "back"}}
 	case stageFailed:
 		keys = [][2]string{{"r", "retry"}, {"b", "back"}, {"q", "quit"}}
 	case stageConfirm:
-		keys = [][2]string{{"enter", "write"}, {"b", "back"}, {"q", "quit"}}
+		keys = [][2]string{{"enter", "write"}, {"d", "default"}, {"b", "back"}, {"q", "quit"}}
 	case stageDone:
 		keys = [][2]string{{"enter", "close"}}
 	}

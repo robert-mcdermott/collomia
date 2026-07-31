@@ -96,9 +96,51 @@ func TestSetupListsRunningRuntimesAboveOnesThatAreNot(t *testing.T) {
 	if m.choices[0].label != "Ollama" {
 		t.Errorf("a running runtime must come first, got %q", m.choices[0].label)
 	}
-	last := m.choices[len(m.choices)-1]
-	if !last.manual {
-		t.Errorf("the manual escape hatch must come last, got %q", last.label)
+
+	// Ordering contract: everything selectable, then the informational rows for
+	// runtimes that are not running. "Something else" is the last selectable
+	// entry, because it is the fallback rather than a peer of the named
+	// providers.
+	lastSelectable := -1
+	for i, choice := range m.choices {
+		if !choice.disabled {
+			lastSelectable = i
+		}
+	}
+	if lastSelectable < 0 {
+		t.Fatal("no selectable rows")
+	}
+	if m.choices[lastSelectable].manual == nil || m.choices[lastSelectable].label != "Something else" {
+		t.Errorf("the manual fallback must be the last selectable row, got %q", m.choices[lastSelectable].label)
+	}
+	for _, choice := range m.choices[lastSelectable+1:] {
+		if !choice.disabled {
+			t.Error("no selectable row may appear after the informational rows")
+		}
+	}
+}
+
+func TestSetupOffersAzureAndBedrockAsForms(t *testing.T) {
+	// Neither is configurable from a name and a key: Azure addresses a
+	// deployment inside a resource, and Bedrock resolves an identity and grants
+	// model access per region. Offering either as a one-line choice produces a
+	// selection that dead-ends one screen later.
+	m := withProbes(newTestSetupModel(t), nil)
+	want := map[string]bool{"azure-openai": false, "azure-foundry": false, "azure-foundry-anthropic": false, "bedrock": false}
+	for _, choice := range m.choices {
+		if choice.manual != nil {
+			if _, ok := want[choice.manual.Key]; ok {
+				want[choice.manual.Key] = true
+				if len(choice.manual.Fields) == 0 {
+					t.Errorf("%s must declare form fields", choice.manual.Key)
+				}
+			}
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("provider %q is not offered", key)
+		}
 	}
 }
 
@@ -155,7 +197,7 @@ func TestSetupNeverHidesTheWayOut(t *testing.T) {
 	// key they just typed.
 	m := newTestSetupModel(t)
 	stages := []setupStage{
-		stageScanning, stageChooseProvider, stageManualURL, stageChooseModel,
+		stageScanning, stageChooseProvider, stageForm, stageChooseModel,
 		stageManualModel, stageCredential, stageStorage, stageVerifying,
 		stageFailed, stageConfirm, stageDone,
 	}
@@ -237,13 +279,13 @@ func TestSetupConfirmStatesWhatWillBeWritten(t *testing.T) {
 
 func TestSetupWarnsBeforeReplacingAnExistingProvider(t *testing.T) {
 	m := newTestSetupModel(t)
-	m.opts.Existing = []string{"ollama"}
+	m.opts.Existing = setup.Existing{Providers: []string{"ollama"}, Models: map[string]string{"ollama": "old-model"}}
 	m.stage = stageConfirm
 	m.name = "ollama"
 	m.model = "m"
 	m.verification = setup.Verification{OK: true, Reply: "ok"}
 	m.result = setup.Build("ollama", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://x/v1"}, "m", setup.CredentialNone, "", "")
-	if !strings.Contains(stripANSI(m.View()), "replaces the existing provider") {
+	if !strings.Contains(stripANSI(m.View()), "replaces the provider named") {
 		t.Error("overwriting a configured provider must be stated before it happens, not after")
 	}
 }
@@ -278,4 +320,277 @@ func stripANSI(s string) string {
 		out.WriteByte(s[i])
 	}
 	return out.String()
+}
+
+func TestSetupDoesNotStealTheDefaultFromAnotherProvider(t *testing.T) {
+	// The defect this replaced: MakeDefault was hardcoded true, so adding a
+	// second provider silently repointed default_provider at it. Adding
+	// Anthropic beside a working Ollama must not change which one runs.
+	m := newTestSetupModel(t)
+	m.opts.Existing = setup.Existing{
+		Providers: []string{"ollama"}, Models: map[string]string{"ollama": "qwen2.5-coder"},
+		DefaultProvider: "ollama", DefaultModel: "qwen2.5-coder",
+	}
+	m.name, m.model = "anthropic", "claude-sonnet-5"
+	m.provider = appconfig.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}
+
+	next, _ := m.onVerified(verifiedMsg{verification: setup.Verification{OK: true, ToolsOK: true, Reply: "ok"}})
+	updated := next.(setupModel)
+	if updated.makeDefault {
+		t.Fatal("a new provider must not take the default while another provider holds it")
+	}
+	if updated.result.MakeDefault {
+		t.Fatal("the written result must not repoint default_provider")
+	}
+	if !strings.Contains(stripANSI(updated.View()), "ollama / qwen2.5-coder stays the default") {
+		t.Error("the confirmation must state what stays the default")
+	}
+
+	// And it must remain the user's call.
+	toggled, _ := updated.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if !toggled.(setupModel).makeDefault {
+		t.Error("d must toggle the default decision")
+	}
+}
+
+func TestSetupTakesTheDefaultWhenNothingHoldsIt(t *testing.T) {
+	m := newTestSetupModel(t)
+	m.name, m.model = "ollama", "qwen2.5-coder"
+	m.provider = appconfig.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1"}
+	next, _ := m.onVerified(verifiedMsg{verification: setup.Verification{OK: true, ToolsOK: true, Reply: "ok"}})
+	if !next.(setupModel).makeDefault {
+		t.Error("a first provider must become the default")
+	}
+}
+
+func TestSetupReconfiguringTheDefaultProviderKeepsItDefault(t *testing.T) {
+	// Changing the model on the provider that is already default must repoint
+	// default_model with it; leaving it aimed at a model this provider may no
+	// longer serve would be worse than changing it.
+	m := newTestSetupModel(t)
+	m.opts.Existing = setup.Existing{
+		Providers: []string{"ollama"}, Models: map[string]string{"ollama": "old"},
+		DefaultProvider: "ollama", DefaultModel: "old",
+	}
+	m.name, m.model = "ollama", "new"
+	m.provider = appconfig.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1"}
+	next, _ := m.onVerified(verifiedMsg{verification: setup.Verification{OK: true, ToolsOK: true, Reply: "ok"}})
+	if !next.(setupModel).makeDefault {
+		t.Error("reconfiguring the current default provider must keep it default")
+	}
+}
+
+func TestSetupShowsWhatIsAlreadyConfigured(t *testing.T) {
+	m := newTestSetupModel(t)
+	m.opts.Existing = setup.Existing{
+		Providers: []string{"ollama"}, Models: map[string]string{"ollama": "qwen2.5-coder"},
+		DefaultProvider: "ollama", DefaultModel: "qwen2.5-coder",
+	}
+	m = withProbes(m, []setup.Probe{readyProbe("Ollama", "a")})
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Currently: ollama / qwen2.5-coder") {
+		t.Error("a re-run must show the current selection before asking for a new one")
+	}
+	if !strings.Contains(view, "configured: qwen2.5-coder") {
+		t.Error("a row that would replace an existing provider must say so while choosing")
+	}
+}
+
+func TestSetupFormCyclesChoicesAndValidatesBeforeLeaving(t *testing.T) {
+	var azure setup.Manual
+	for _, candidate := range setup.ManualCandidates() {
+		if candidate.Key == "azure-openai" {
+			azure = candidate
+		}
+	}
+	m := newTestSetupModel(t)
+	m.stage = stageForm
+	m.form = newSetupForm(azure)
+	m.input = m.form.syncInto(m.input)
+
+	// Submitting an incomplete form must refuse with a specific field, not
+	// fail later inside an adapter.
+	next, _ := m.onFormKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := next.(setupModel)
+	if updated.stage != stageForm {
+		t.Fatal("an incomplete form must not advance")
+	}
+	if !strings.Contains(updated.form.err, "required") {
+		t.Errorf("form error = %q", updated.form.err)
+	}
+
+	// The authentication field cycles in place.
+	for i, field := range azure.Fields {
+		if field.Kind == setup.FieldChoice {
+			updated.form.focus = i
+		}
+	}
+	before := updated.form.values["auth"]
+	cycled := updated.form.cycle(1)
+	if cycled.values["auth"] == before {
+		t.Error("a choice field must cycle")
+	}
+	if !contains(azure.Fields[len(azure.Fields)-1].Options, cycled.values["auth"]) {
+		t.Errorf("cycling produced %q, which is not an option", cycled.values["auth"])
+	}
+}
+
+func TestSetupAzureFormBuildsADeploymentScopedProvider(t *testing.T) {
+	var azure setup.Manual
+	for _, candidate := range setup.ManualCandidates() {
+		if candidate.Key == "azure-openai" {
+			azure = candidate
+		}
+	}
+	name, p := azure.Build(map[string]string{
+		"base_url": "https://r.openai.azure.com/", "deployment": "my-deploy",
+		"api_version": "2024-10-21", "auth": "entra",
+	})
+	if name != "azure-openai" {
+		t.Errorf("name = %q", name)
+	}
+	if p.Deployment != "my-deploy" || p.APIVersion != "2024-10-21" || p.Auth != "entra" {
+		t.Errorf("provider = %+v", p)
+	}
+	if strings.HasSuffix(p.BaseURL, "/") {
+		t.Error("a trailing slash must be trimmed so URL joining stays predictable")
+	}
+	// entra issues short-lived tokens through DefaultAzureCredential; asking
+	// for a key would invite one that is never consulted.
+	if azure.NeedsCredential(map[string]string{"auth": "entra"}) {
+		t.Error("entra must not ask for an API key")
+	}
+	if !azure.NeedsCredential(map[string]string{"auth": "api-key"}) {
+		t.Error("api-key must ask for a key")
+	}
+}
+
+func TestSetupBedrockFormRejectsEntraAndSkipsTheKeyForSigV4(t *testing.T) {
+	var bedrock setup.Manual
+	for _, candidate := range setup.ManualCandidates() {
+		if candidate.Key == "bedrock" {
+			bedrock = candidate
+		}
+	}
+	if problem := bedrock.Validate(map[string]string{"region": "us-west-2", "auth": "entra"}); problem == "" {
+		t.Error("entra is not an AWS authentication mode and must be refused")
+	}
+	if problem := bedrock.Validate(map[string]string{"auth": "sigv4"}); problem == "" {
+		t.Error("a missing region must be refused")
+	}
+	if bedrock.NeedsCredential(map[string]string{"auth": "sigv4"}) {
+		t.Error("the SigV4 chain has nothing to store, so no key should be requested")
+	}
+	_, p := bedrock.Build(map[string]string{"region": "us-west-2", "auth": "sigv4", "profile": "work"})
+	if p.Region != "us-west-2" || p.Profile != "work" || p.Auth != "sigv4" {
+		t.Errorf("provider = %+v", p)
+	}
+}
+
+func TestSetupOmitsImplicitAuthModesFromWhatItWrites(t *testing.T) {
+	// A configuration that states a default the adapter would have taken
+	// anyway is noise a reader has to check against the reference.
+	for _, candidate := range setup.ManualCandidates() {
+		switch candidate.Key {
+		case "azure-openai":
+			if _, p := candidate.Build(map[string]string{"auth": "api-key"}); p.Auth != "" {
+				t.Errorf("azure api-key should stay implicit, got %q", p.Auth)
+			}
+		case "bedrock":
+			if _, p := candidate.Build(map[string]string{"auth": "auto"}); p.Auth != "" {
+				t.Errorf("bedrock auto should stay implicit, got %q", p.Auth)
+			}
+		}
+	}
+}
+
+func contains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSetupFormDistinguishesSuggestionsFromEnteredValues(t *testing.T) {
+	// Colour cannot carry this: the plain theme has none, and a suggested
+	// value that reads like an entered one leaves the user unable to tell what
+	// they have actually filled in.
+	var azure setup.Manual
+	for _, candidate := range setup.ManualCandidates() {
+		if candidate.Key == "azure-openai" {
+			azure = candidate
+		}
+	}
+	plain, _ := themeByName("plain")
+	m := newTestSetupModel(t)
+	m.theme, m.styles = plain, newStyles(plain)
+	m.stage = stageForm
+	m.form = newSetupForm(azure)
+	m.form.values["base_url"] = "https://real.openai.azure.com"
+	m.form.focus = 1
+	m.input = m.form.syncInto(m.input)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "https://real.openai.azure.com") {
+		t.Error("an entered value must be shown")
+	}
+	if strings.Contains(view, "e.g. https://real.openai.azure.com") {
+		t.Error("an entered value must not be labelled as a suggestion")
+	}
+	// api_version carries a real default, so it is entered, not suggested.
+	if strings.Contains(view, "e.g. 2024-10-21") {
+		t.Error("a field with a default holds a value, not a suggestion")
+	}
+}
+
+func TestSetupCredentialFieldHasNoLengthLimit(t *testing.T) {
+	// The defect behind a real Bedrock failure. bubbles truncates silently on
+	// both SetValue and paste when CharLimit > 0, and a Bedrock short-term API
+	// key is base64-encoded session credentials that runs well past any limit
+	// worth setting. The truncated key decoded to a structure with fields
+	// missing, and AWS answered "Missing required parameters in the API Key" —
+	// a correct key, reported as a malformed one.
+	in := newSetupInput(defaultTheme())
+	if in.CharLimit != 0 {
+		t.Fatalf("CharLimit = %d; a credential field must not truncate", in.CharLimit)
+	}
+	long := strings.Repeat("A", 4096)
+	in.SetValue(long)
+	if got := in.Value(); len(got) != len(long) {
+		t.Errorf("a %d-character credential was truncated to %d", len(long), len(got))
+	}
+}
+
+func TestSetupCredentialScreenShowsLengthSoTruncationIsVisible(t *testing.T) {
+	// A field that does not echo gives no other feedback that a paste arrived
+	// short. A length is not a secret.
+	m := newTestSetupModel(t)
+	m.stage = stageCredential
+	m.input.SetValue(strings.Repeat("x", 137))
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "137 characters") {
+		t.Error("the credential screen must show how much was entered")
+	}
+	if strings.Contains(view, strings.Repeat("x", 20)) {
+		t.Error("the key itself must never be rendered")
+	}
+}
+
+func TestSetupSanitizesAPastedCredential(t *testing.T) {
+	m := newTestSetupModel(t)
+	m.stage = stageCredential
+	m.provider = appconfig.Provider{Type: "bedrock", Region: "us-east-1"}
+	m.form = setupForm{spec: setup.Manual{Type: "bedrock"}}
+	m.input.SetValue("  \"ABSK\nsecret123\"  ")
+
+	next, _ := m.onSubmit()
+	updated := next.(setupModel)
+	if updated.secret != "ABSKsecret123" {
+		t.Errorf("secret = %q; quotes and embedded whitespace must be removed", updated.secret)
+	}
+	if updated.provider.APIKey != "ABSKsecret123" {
+		t.Errorf("the sanitized value must be what verification uses, got %q", updated.provider.APIKey)
+	}
 }

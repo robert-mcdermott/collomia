@@ -226,10 +226,101 @@ configures cleanly and then fails your first real prompt.
 If verification fails, nothing is written and the wizard says which of the
 endpoint, the credential, or the model is at fault, and what to do about it.
 
+Azure OpenAI, Azure AI Foundry (both the OpenAI and Anthropic routes), and AWS
+Bedrock are configured through a short form rather than offered as one-line
+choices, because neither is discoverable from a name and a key: Azure addresses
+a *deployment* inside a resource you name, and Bedrock resolves an identity
+through the AWS credential chain and grants model access per region. Both go
+through the same verification. For Bedrock the confirmation also reports which
+identity the credential chain actually resolved to, via `sts:GetCallerIdentity`,
+because "which of my six credential sources won?" is the usual reason a Bedrock
+permission error is misread as a Bedrock outage. Authentication modes that have
+nothing to store — Entra, which issues short-lived tokens through
+`DefaultAzureCredential`, and the SigV4 chain — never ask you for a key.
+
+### Credentials, and skipping the key prompt entirely
+
 `collo setup` never writes an API key into a configuration file. It prefers a
 variable your environment already exports and records only its name; otherwise
 it offers the operating-system credential store, or records a variable name for
-you to export. Run it again at any time to add another provider.
+you to export.
+
+**If the variable is already exported when you start, setup uses it and never
+asks.** That is the recommended route for a long credential — nothing is typed,
+nothing is pasted, and the value never passes through an input field:
+
+```sh
+export AWS_BEARER_TOKEN_BEDROCK='<your key>'
+collo setup
+```
+
+These are the variables setup consults, per provider:
+
+| Provider | Variable |
+| --- | --- |
+| Anthropic | `ANTHROPIC_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| AWS Bedrock | `AWS_BEARER_TOKEN_BEDROCK` |
+| Azure OpenAI, Azure AI Foundry (both routes) | `AZURE_OPENAI_API_KEY` |
+
+The custom OpenAI-compatible path has no conventional variable, because the
+endpoint behind it is unknown; its key is stored or named explicitly instead.
+Authentication modes with nothing to store — Azure `entra` and the Bedrock
+SigV4 chain — never prompt for a key at all.
+
+#### Choosing between Bedrock's two credential families
+
+AWS Bedrock accepts two entirely different kinds of credential, and the setup
+form's `auth` field chooses between them:
+
+- **`sigv4`** — ordinary **IAM credentials**: an access key ID, a secret access
+  key, and a session token when they are temporary. SigV4 is AWS's request
+  signing scheme, the same one the AWS CLI uses, so this is the mode to pick if
+  you have IAM keys. Collomia never holds these values and setup never asks for
+  them: the AWS SDK resolves them the way every other AWS tool does, from
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`, a named
+  profile in `~/.aws/credentials`, IAM Identity Center (SSO), an assumed role,
+  or an instance role. Name a profile in the form's profile field to select one
+  explicitly; leave it blank for the default chain.
+- **`bearer`** — a **Bedrock API key**, short- or long-term, which is a single
+  opaque token you paste or export as `AWS_BEARER_TOKEN_BEDROCK`. These are
+  region-scoped and are a newer, Bedrock-specific alternative to IAM.
+- **`auto`** (the default) picks `bearer` when a token is present and `sigv4`
+  otherwise. Choose explicitly when both families exist on the machine and you
+  want deterministic selection.
+
+So: if you have a key, a secret, and optionally a session token, that is
+`sigv4`. Export them before running setup —
+
+```sh
+export AWS_ACCESS_KEY_ID='...'
+export AWS_SECRET_ACCESS_KEY='...'
+export AWS_SESSION_TOKEN='...'   # only for temporary credentials
+collo setup
+```
+
+— or run `aws configure` once and let setup use the profile. Setup's
+confirmation screen reports which identity the chain actually resolved to via
+`sts:GetCallerIdentity`, so a key belonging to the wrong account is visible
+before anything is written rather than after a permission error. If nothing
+resolves, verification fails and says so, naming these sources rather than
+offering advice about an API key that does not exist in this mode.
+
+Whatever you paste is cleaned before use: surrounding quotes are removed, and so
+is all whitespace, including newlines picked up from a copy that wrapped across
+lines. The credential field shows a character count as you type, because it does
+not echo and a count is the only way to see that a long key arrived complete. A
+truncated Bedrock key is reported by AWS as `Missing required parameters in the
+API Key`, which reads like a permissions problem and is not one.
+
+**Running it again is expected.** It reads the file it is about to write, shows
+your current default on the first screen, marks any provider it would replace
+and with which model, and asks before changing `default_provider` — adding a
+second provider does not silently repoint your default at it. It reads only the
+file it writes, so a provider defined in a project's `.collomia.json` is never
+reported as something setup is replacing. Everything else in the file, including
+settings this release does not recognize, is preserved.
 
 The rest of this section is the manual path, which remains fully supported and
 is what you want for scripted or unattended installs.

@@ -10,6 +10,7 @@ import (
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/secrets"
+	"github.com/robert-mcdermott/collomia/internal/setup"
 )
 
 // These tests keep the documentation honest about the surfaces users script
@@ -63,6 +64,78 @@ func docFiles(t *testing.T) map[string]string {
 }
 
 var markdownLink = regexp.MustCompile(`\[[^\]]*\]\(([^)#\s]+)(#[^)\s]*)?\)`)
+
+// sectionContaining returns the smallest Markdown section holding the first
+// occurrence of anchor, ending at the next heading of the same or higher level,
+// or "" when the anchor is absent.
+//
+// Guards that assert "X is documented" by searching a whole document pass
+// vacuously whenever X is a token that also appears elsewhere, and these
+// documents are long enough that most tokens do. Two guards here checked that
+// `off`, `prompt`, and `deny` appeared in docs/USER_GUIDE.md — words that occur
+// eleven to sixteen times each across the sandbox, network, and publication
+// material — so deleting every line documenting `protect_credentials` left both
+// green. Scoping the search to the section about the setting is what makes the
+// assertion mean what it says.
+//
+// Smallest, not `##`-level: that guide's "Permissions and safety" runs to eight
+// hundred lines and mentions `PATH` in three unrelated places, so a guard scoped
+// to it would still not notice `PATH` leaving the minimal-environment table.
+//
+// Anchor on a heading rather than on body text. Anchoring the credential-location
+// guard on `~/.aws/credentials` broke the moment a later section mentioned that
+// path in passing: the search found the new section and the guard failed against
+// documentation that was perfectly correct.
+func sectionContaining(doc, anchor string) string {
+	lines := strings.Split(doc, "\n")
+	target := -1
+	for i, line := range lines {
+		if strings.Contains(line, anchor) {
+			target = i
+			break
+		}
+	}
+	if target < 0 {
+		return ""
+	}
+	level, start := 0, 0
+	for i := target; i >= 0; i-- {
+		if depth := headingLevel(lines[i]); depth > 0 {
+			level, start = depth, i
+			break
+		}
+	}
+	end := len(lines)
+	if level > 0 {
+		for i := start + 1; i < len(lines); i++ {
+			if depth := headingLevel(lines[i]); depth > 0 && depth <= level {
+				end = i
+				break
+			}
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+func headingLevel(line string) int {
+	depth := 0
+	for depth < len(line) && line[depth] == '#' {
+		depth++
+	}
+	if depth == 0 || depth >= len(line) || line[depth] != ' ' {
+		return 0
+	}
+	return depth
+}
+
+// documentedToken reports whether a token appears as its own word, rather than
+// as the prefix of a longer one. `/agent` is a prefix of `/agents`, `/attach`
+// of `/attachments`, and `/model` of `/models`, so a plain substring search
+// would let any of the three ship undocumented behind its longer sibling.
+func documentedToken(corpus, token string) bool {
+	pattern := regexp.MustCompile(regexp.QuoteMeta(token) + `([^a-zA-Z0-9_-]|$)`)
+	return pattern.MatchString(corpus)
+}
 
 // A relative link that does not resolve is a broken document, and the docs
 // cross-reference each other heavily.
@@ -152,8 +225,11 @@ func TestEveryToolNameIsDocumented(t *testing.T) {
 	docs := docFiles(t)
 	corpus := docs["README.md"] + docs["docs/USER_GUIDE.md"] + docs["docs/AUTOMATION.md"] + docs["docs/CAPABILITIES.md"]
 	for name := range names {
-		if !strings.Contains(corpus, name) {
-			t.Errorf("tool %q is registered but never documented", name)
+		// Backticked, not bare. `diagnostics` is also an ordinary English word
+		// that occurs twenty-one times in this corpus, so a bare search would
+		// have reported that tool as documented no matter what.
+		if !strings.Contains(corpus, "`"+name+"`") {
+			t.Errorf("tool %q is registered but never documented as a tool (expected it in backticks)", name)
 		}
 	}
 }
@@ -204,7 +280,11 @@ func TestEverySlashCommandIsDiscoverable(t *testing.T) {
 	docs := docFiles(t)
 	corpus := string(palette) + docs["README.md"] + docs["docs/USER_GUIDE.md"]
 	for command := range commands {
-		if !strings.Contains(corpus, command) {
+		// Matched as a whole word: `/agent` is a prefix of `/agents`,
+		// `/attach` of `/attachments`, and `/model` of `/models`, so a
+		// substring search would let any of the three ship undiscoverable
+		// behind its longer sibling.
+		if !documentedToken(corpus, command) {
 			t.Errorf("slash command %q is accepted but appears in neither the palette nor the documentation", command)
 		}
 	}
@@ -289,16 +369,26 @@ func TestGuideListsEveryMinimalEnvironmentVariable(t *testing.T) {
 	if len(kept) < 15 {
 		t.Fatalf("found only %d kept variables; minimalEnv's shape changed and this guard needs updating", len(kept))
 	}
-	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	// Scoped to the table that documents the allowlist. `PATH` appears
+	// fourteen times across the guide — installer instructions, language-server
+	// detection, troubleshooting — so a document-wide search reported it as
+	// documented even with its row deleted from this very table.
+	section := sectionContaining(docFiles(t)["docs/USER_GUIDE.md"], "### Command environment")
+	if section == "" {
+		t.Fatal("docs/USER_GUIDE.md no longer contains the minimal-environment table this guard reads")
+	}
 	for _, name := range kept {
-		if !strings.Contains(guide, "`"+name+"`") {
-			t.Errorf("minimal environment keeps %s but the user guide does not list it", name)
+		if !strings.Contains(section, "`"+name+"`") {
+			t.Errorf("minimal environment keeps %s but the guide's command-environment table does not list it", name)
 		}
 	}
 }
 
 func TestGuideListsEveryReadableSystemRoot(t *testing.T) {
-	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	guide := sectionContaining(docFiles(t)["docs/USER_GUIDE.md"], "#### Exactly what read confinement denies")
+	if guide == "" {
+		t.Fatal("docs/USER_GUIDE.md no longer contains the read-confinement section this guard reads")
+	}
 	for _, source := range []struct{ path, decl string }{
 		{filepath.Join("internal", "sandbox", "sandbox_darwin.go"), "func darwinSystemReadableRoots() []string {\n\t// These roots"},
 		{filepath.Join("internal", "sandbox", "sandbox_linux.go"), "func linuxSystemReadableRoots() []string {\n\t// Keep system"},
@@ -318,7 +408,16 @@ func TestGuideListsEveryReadableSystemRoot(t *testing.T) {
 // Unlike the sandbox roots above, internal/secrets compiles on every platform,
 // so this guard calls the implementation instead of scraping its source.
 func TestGuideListsEveryProtectedCredentialLocation(t *testing.T) {
-	guide := docFiles(t)["docs/USER_GUIDE.md"]
+	// The protected and exempt lists live in adjacent sections of their own
+	// ("Exactly which locations are protected" and "What is deliberately not
+	// protected"), and each must be checked against its own — an exclusion
+	// documented only in the protected list would be exactly backwards.
+	full := docFiles(t)["docs/USER_GUIDE.md"]
+	guide := sectionContaining(full, "#### Exactly which locations are protected")
+	exemptSection := sectionContaining(full, "#### What is deliberately not protected")
+	if guide == "" || exemptSection == "" {
+		t.Fatal("docs/USER_GUIDE.md no longer contains the credential-location sections this guard reads")
+	}
 	locations := secrets.Locations()
 	if len(locations) < 30 {
 		t.Fatalf("found only %d credential locations; the tables shrank and this guard needs updating", len(locations))
@@ -333,8 +432,8 @@ func TestGuideListsEveryProtectedCredentialLocation(t *testing.T) {
 		t.Fatalf("found only %d exempt locations; the exclusions shrank and this guard needs updating", len(exempt))
 	}
 	for _, location := range exempt {
-		if !strings.Contains(guide, "`"+location+"`") {
-			t.Errorf("%s is exempt from credential protection but the user guide does not say so", location)
+		if !strings.Contains(exemptSection, "`"+location+"`") {
+			t.Errorf("%s is exempt from credential protection but the guide's exclusions section does not say so", location)
 		}
 	}
 }
@@ -402,20 +501,32 @@ func TestGuideDocumentsEveryAuditDecisionSource(t *testing.T) {
 
 // Every selectable setting must be documented, so a new one cannot ship
 // unexplained.
+//
+// Scoped to the section that documents the setting, not to the whole guide.
+// The values are `off`, `prompt`, and `deny`, which appear throughout the
+// sandbox, network, and publication material as well; searching the document
+// made both of these guards pass with every line about the setting deleted.
 func TestGuideDocumentsEveryCredentialSetting(t *testing.T) {
-	guide := docFiles(t)["docs/USER_GUIDE.md"]
-	for _, setting := range appconfig.ProtectCredentialsSettings() {
-		if !strings.Contains(guide, "`"+setting+"`") {
-			t.Errorf("permissions.protect_credentials accepts %q but the user guide does not document it", setting)
-		}
-	}
+	assertSettingValuesDocumented(t, "permissions.protect_credentials", "protect_credentials", appconfig.ProtectCredentialsSettings())
 }
 
 func TestGuideDocumentsEveryPublicationSetting(t *testing.T) {
+	assertSettingValuesDocumented(t, "permissions.publication", "permissions.publication", appconfig.PublicationSettings())
+}
+
+func assertSettingValuesDocumented(t *testing.T, setting, anchor string, values []string) {
+	t.Helper()
 	guide := docFiles(t)["docs/USER_GUIDE.md"]
-	for _, setting := range appconfig.PublicationSettings() {
-		if !strings.Contains(guide, "`"+setting+"`") {
-			t.Errorf("permissions.publication accepts %q but the user guide does not document it", setting)
+	section := sectionContaining(guide, anchor)
+	if section == "" {
+		t.Fatalf("docs/USER_GUIDE.md has no section mentioning %q, so %s is undocumented entirely", anchor, setting)
+	}
+	if len(values) == 0 {
+		t.Fatalf("%s reports no accepted values; its shape changed and this guard needs updating", setting)
+	}
+	for _, value := range values {
+		if !strings.Contains(section, "`"+value+"`") {
+			t.Errorf("%s accepts %q but the guide section documenting it does not list that value", setting, value)
 		}
 	}
 }
@@ -630,5 +741,43 @@ func TestCapabilityMatrixDocIsRegenerated(t *testing.T) {
 		if _, ok := want[capability]; !ok {
 			t.Errorf("docs/CAPABILITIES.md carries %q, which the matrix no longer produces", capability)
 		}
+	}
+}
+
+// Every environment variable `collo setup` consults before prompting must be
+// documented. The wizard silently honoring a variable nobody wrote down is a
+// feature only its author can use — and the exported-variable route is the
+// recommended one for a long credential, since the value never passes through
+// an input field.
+func TestSetupCredentialEnvironmentVariablesAreDocumented(t *testing.T) {
+	guide := docFiles(t)["docs/USER_GUIDE.md"]
+
+	// Scoped to the section that documents setup, not to the whole guide. A
+	// whole-file search passes vacuously: AZURE_OPENAI_API_KEY already appears
+	// in the Azure provider section, so deleting its row from the setup table
+	// left this guard green. What must be documented is that *setup* consults
+	// the variable, which only the setup section can say.
+	const heading = "### Credentials, and skipping the key prompt entirely"
+	start := strings.Index(guide, heading)
+	if start < 0 {
+		t.Fatalf("the setup credential section (%q) is missing; this guard cannot verify anything", heading)
+	}
+	section := guide[start+len(heading):]
+	if end := strings.Index(section, "\n## "); end >= 0 {
+		section = section[:end]
+	}
+
+	vars := setup.CredentialEnvVars()
+	if len(vars) < 4 {
+		t.Fatalf("found only %d setup credential variables; the shape changed and this guard needs updating", len(vars))
+	}
+	for name, provider := range vars {
+		if !strings.Contains(section, name) {
+			t.Errorf("setup reads %s for %s, but the setup section of docs/USER_GUIDE.md does not list it", name, provider)
+		}
+	}
+	// The route itself has to be discoverable, not just the variable names.
+	if !strings.Contains(section, "export AWS_BEARER_TOKEN_BEDROCK") {
+		t.Error("the setup section should show exporting a variable beforehand as the way to avoid pasting a long key")
 	}
 }

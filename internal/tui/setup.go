@@ -2,7 +2,7 @@ package tui
 
 import (
 	"context"
-
+	"os"
 	"strings"
 	"time"
 
@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/credstore"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -23,6 +22,9 @@ import (
 // have yet. It shares this package for the theme, the wordmark, and the panel
 // vocabulary, so it looks like Collomia rather than like a generic form.
 
+// osGetenv is indirected so tests can present a controlled environment.
+var osGetenv = os.Getenv
+
 // SetupOptions configures one wizard run.
 type SetupOptions struct {
 	// ConfigPath is the file that will be written.
@@ -30,9 +32,9 @@ type SetupOptions struct {
 	// ThemeName selects the palette; empty uses the default, and NO_COLOR
 	// still forces the plain theme through the same path the session uses.
 	ThemeName string
-	// Existing is the currently configured provider names, used to warn before
-	// overwriting one rather than after.
-	Existing []string
+	// Existing is what ConfigPath already contains. It is read from that one
+	// file rather than from the merged configuration — see setup.Existing.
+	Existing setup.Existing
 }
 
 // SetupOutcome reports what a completed wizard did, so the caller can print a
@@ -48,7 +50,7 @@ type setupStage int
 const (
 	stageScanning setupStage = iota
 	stageChooseProvider
-	stageManualURL
+	stageForm
 	stageChooseModel
 	stageManualModel
 	stageCredential
@@ -66,7 +68,7 @@ type setupChoice struct {
 	disabled bool
 	local    *setup.Probe
 	hosted   *setup.Hosted
-	manual   bool
+	manual   *setup.Manual
 }
 
 type setupModel struct {
@@ -81,6 +83,7 @@ type setupModel struct {
 	input   textinput.Model
 	choices []setupChoice
 	cursor  int
+	form    setupForm
 
 	probes  []setup.Probe
 	catalog []provider.ModelInfo
@@ -91,6 +94,12 @@ type setupModel struct {
 	secret   string
 	envVar   string
 	credPlan setup.CredentialPlan
+
+	// makeDefault is a decision, not a constant. An earlier version always
+	// wrote default_provider and default_model, so adding a second provider
+	// silently repointed the default at it without ever asking.
+	makeDefault bool
+	awsIdentity *setup.AWSIdentity
 
 	verification setup.Verification
 	result       setup.Result
@@ -106,6 +115,7 @@ type catalogMsg struct {
 }
 type verifiedMsg struct{ verification setup.Verification }
 type wroteMsg struct{ err error }
+type awsIdentityMsg struct{ identity setup.AWSIdentity }
 
 // RunSetup runs the interactive first-run wizard and reports what it wrote.
 func RunSetup(ctx context.Context, opts SetupOptions) (SetupOutcome, error) {
@@ -144,7 +154,14 @@ func newSetupSpinner(t Theme) spinner.Model {
 func newSetupInput(t Theme) textinput.Model {
 	in := textinput.New()
 	in.Prompt = "› "
-	in.CharLimit = 512
+	// No character limit. bubbles truncates silently on both SetValue and
+	// paste, and provider credentials have no bounded length: a Bedrock
+	// short-term API key is base64-encoded session credentials including a
+	// session token and routinely runs past a thousand characters. A limit of
+	// 512 cost exactly one symptom — AWS answering "Missing required
+	// parameters in the API Key" for a key the user pasted correctly, because
+	// the truncated base64 decoded to a structure with fields missing.
+	in.CharLimit = 0
 	if !t.plain() {
 		in.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Primary))
 		in.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Accent))
@@ -176,9 +193,16 @@ func (m setupModel) discoverCmd(name string, p appconfig.Provider) tea.Cmd {
 func (m setupModel) verifyCmd() tea.Cmd {
 	name, p, model, catalog := m.name, m.provider, m.model, m.catalog
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		return verifiedMsg{verification: setup.Verify(ctx, name, p, model, catalog)}
+	}
+}
+
+func (m setupModel) awsIdentityCmd() tea.Cmd {
+	p := m.provider
+	return func() tea.Msg {
+		return awsIdentityMsg{identity: setup.ResolveAWSIdentity(context.Background(), p)}
 	}
 }
 
@@ -200,10 +224,15 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case probesDoneMsg:
 		m.probes = msg.probes
 		m.choices = m.buildChoices()
+		m.cursor = m.firstSelectable()
 		m.stage = stageChooseProvider
 		return m, nil
 	case catalogMsg:
 		return m.onCatalog(msg)
+	case awsIdentityMsg:
+		identity := msg.identity
+		m.awsIdentity = &identity
+		return m, nil
 	case verifiedMsg:
 		return m.onVerified(msg)
 	case wroteMsg:
@@ -222,26 +251,18 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m setupModel) onCatalog(msg catalogMsg) (tea.Model, tea.Cmd) {
-	if msg.err != nil {
+	if msg.err != nil || len(msg.models) == 0 {
 		// No catalog is not a failure. Bedrock publishes none at all, and a
 		// gateway may withhold one; the model is typed instead of chosen, and
 		// the verification step still has to pass either way.
 		m.stage = stageManualModel
 		m.input.SetValue("")
-		m.input.Placeholder = "model identifier"
+		m.input.Placeholder = manualModelPlaceholder(m.provider.Type)
 		m.input.EchoMode = textinput.EchoNormal
 		m.input.Focus()
 		return m, textinput.Blink
 	}
 	m.catalog = msg.models
-	if len(m.catalog) == 0 {
-		m.stage = stageManualModel
-		m.input.SetValue("")
-		m.input.Placeholder = "model identifier"
-		m.input.EchoMode = textinput.EchoNormal
-		m.input.Focus()
-		return m, textinput.Blink
-	}
 	m.stage, m.cursor = stageChooseModel, 0
 	return m, nil
 }
@@ -253,14 +274,30 @@ func (m setupModel) onVerified(msg verifiedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.result = setup.Build(m.name, m.provider, m.model, m.credPlan, m.envVar, m.secret)
-	m.result.MakeDefault = true
+	m.makeDefault = m.defaultProposal()
+	m.result.MakeDefault = m.makeDefault
 	m.stage = stageConfirm
 	return m, nil
 }
 
+// defaultProposal decides what the confirmation screen proposes for
+// default_provider, which the user can then toggle.
+//
+// Making it the default is right when nothing is configured yet, and when this
+// run is reconfiguring the provider that is already the default — that is a
+// model change, and leaving default_model pointing at a model this provider may
+// no longer serve would be worse than repointing it. It is wrong when another
+// provider currently holds the default: adding Anthropic beside a working
+// Ollama should not silently switch which one runs.
+func (m setupModel) defaultProposal() bool {
+	if !m.opts.Existing.HasDefault() {
+		return true
+	}
+	return m.opts.Existing.DefaultProvider == m.name
+}
+
 func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -268,7 +305,9 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.stage {
 	case stageChooseProvider, stageChooseModel, stageStorage:
 		return m.onListKey(msg)
-	case stageManualURL, stageManualModel, stageCredential:
+	case stageForm:
+		return m.onFormKey(msg)
+	case stageManualModel, stageCredential:
 		return m.onInputKey(msg)
 	case stageFailed:
 		switch msg.String() {
@@ -276,7 +315,7 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.stage = stageVerifying
 			return m, tea.Batch(m.spin.Tick, m.verifyCmd())
 		case "b", "esc":
-			m.stage, m.cursor = stageChooseProvider, 0
+			m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
 			return m, nil
 		case "q":
 			m.quitting = true
@@ -285,9 +324,13 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case stageConfirm:
 		switch msg.String() {
 		case "enter", "y":
+			m.result.MakeDefault = m.makeDefault
 			return m, m.writeCmd()
+		case "d":
+			m.makeDefault = !m.makeDefault
+			return m, nil
 		case "esc", "b":
-			m.stage, m.cursor = stageChooseProvider, 0
+			m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
 			return m, nil
 		case "q":
 			m.quitting = true
@@ -317,7 +360,7 @@ func (m setupModel) onListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		m.stage, m.cursor = stageChooseProvider, 0
+		m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
 		return m, nil
 	case "enter":
 		return m.onSelect()
@@ -329,7 +372,7 @@ func (m setupModel) onInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.input.Blur()
-		m.stage, m.cursor = stageChooseProvider, 0
+		m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
 		return m, nil
 	case "enter":
 		return m.onSubmit()
@@ -352,10 +395,11 @@ func (m setupModel) onSelect() (tea.Model, tea.Cmd) {
 			m.provider = appconfig.Provider{Type: choice.local.Candidate.Type, BaseURL: choice.local.Candidate.BaseURL}
 			m.credPlan, m.envVar, m.secret = setup.CredentialNone, "", ""
 			m.catalog = choice.local.Models
+			m.form = setupForm{}
 			if len(m.catalog) == 0 {
 				m.stage = stageManualModel
 				m.input.SetValue("")
-				m.input.Placeholder = "model identifier"
+				m.input.Placeholder = manualModelPlaceholder(m.provider.Type)
 				m.input.EchoMode = textinput.EchoNormal
 				m.input.Focus()
 				return m, textinput.Blink
@@ -366,12 +410,16 @@ func (m setupModel) onSelect() (tea.Model, tea.Cmd) {
 			hosted := *choice.hosted
 			m.name = hosted.Key
 			m.provider = appconfig.Provider{Type: hosted.Type, BaseURL: hosted.BaseURL}
+			m.form = setupForm{spec: setup.Manual{Discovers: true}}
 			if key, variable, ok := hosted.EnvKey(); ok {
 				// The environment already has it. This is the path where the
 				// wizard never touches a secret at all: it records the
-				// variable name and moves on.
-				m.secret, m.envVar, m.credPlan = key, variable, setup.CredentialEnv
-				m.provider.APIKey = key
+				// variable name and moves on. Sanitized like a typed key,
+				// because a variable exported from a shell profile can carry
+				// the same quotes and stray newlines a paste does.
+				cleaned := setup.SanitizeSecret(key)
+				m.secret, m.envVar, m.credPlan = cleaned, variable, setup.CredentialEnv
+				m.provider.APIKey = cleaned
 				m.stage = stageScanning
 				return m, tea.Batch(m.spin.Tick, m.discoverCmd(m.name, m.provider))
 			}
@@ -382,13 +430,11 @@ func (m setupModel) onSelect() (tea.Model, tea.Cmd) {
 			m.input.EchoMode = textinput.EchoPassword
 			m.input.Focus()
 			return m, textinput.Blink
-		case choice.manual:
-			m.name = "custom"
-			m.provider = appconfig.Provider{Type: "openai-compatible"}
-			m.stage = stageManualURL
-			m.input.SetValue("http://")
-			m.input.Placeholder = "http://host:port/v1"
+		case choice.manual != nil:
+			m.form = newSetupForm(*choice.manual)
+			m.stage = stageForm
 			m.input.EchoMode = textinput.EchoNormal
+			m.input = m.form.syncInto(m.input)
 			m.input.Focus()
 			return m, textinput.Blink
 		}
@@ -402,8 +448,7 @@ func (m setupModel) onSelect() (tea.Model, tea.Cmd) {
 		} else {
 			m.credPlan = setup.CredentialManual
 		}
-		m.stage = stageScanning
-		return m, tea.Batch(m.spin.Tick, m.discoverCmd(m.name, m.provider))
+		return m.afterCredential()
 	}
 	return m, nil
 }
@@ -414,19 +459,17 @@ func (m setupModel) onSubmit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch m.stage {
-	case stageManualURL:
-		m.provider.BaseURL = value
-		m.input.Blur()
-		m.stage = stageScanning
-		return m, tea.Batch(m.spin.Tick, m.discoverCmd(m.name, m.provider))
 	case stageManualModel:
 		m.model = value
 		m.input.Blur()
 		m.stage = stageVerifying
 		return m, tea.Batch(m.spin.Tick, m.verifyCmd())
 	case stageCredential:
-		m.secret = value
-		m.provider.APIKey = value
+		// Sanitized once, here, so every downstream consumer — verification,
+		// the credential store, and the environment-variable path — sees the
+		// same value.
+		m.secret = setup.SanitizeSecret(value)
+		m.provider.APIKey = m.secret
 		m.input.Blur()
 		m.stage, m.cursor = stageStorage, 0
 		return m, nil
@@ -474,6 +517,17 @@ func (m setupModel) moveCursor(step int) int {
 	return m.cursor
 }
 
+// firstSelectable is where the cursor rests on entering or returning to the
+// provider list.
+func (m setupModel) firstSelectable() int {
+	for i := range m.choices {
+		if !m.choices[i].disabled {
+			return i
+		}
+	}
+	return 0
+}
+
 // disabledAt reports whether a row is present for information only. Only the
 // provider list has such rows; the model and storage lists are all selectable.
 func (m setupModel) disabledAt(index int) bool {
@@ -489,12 +543,12 @@ func (m setupModel) disabledAt(index int) bool {
 // below a hosted API the user has no key for is a list that makes the easy
 // path look unavailable.
 func (m setupModel) buildChoices() []setupChoice {
-	choices := make([]setupChoice, 0, len(m.probes)+len(setup.HostedCandidates())+1)
+	choices := make([]setupChoice, 0, len(m.probes)+8)
 	for i := range m.probes {
 		probe := m.probes[i]
 		if probe.State == setup.ProbeReady && len(probe.Models) > 0 {
 			choices = append(choices, setupChoice{
-				label: probe.Candidate.Name, detail: probe.Detail(), local: &m.probes[i],
+				label: probe.Candidate.Name, detail: m.withExisting(probe.Candidate.Key, probe.Detail()), local: &m.probes[i],
 			})
 		}
 	}
@@ -504,7 +558,11 @@ func (m setupModel) buildChoices() []setupChoice {
 		if _, variable, ok := hosted.EnvKey(); ok {
 			detail = "$" + variable + " is already set"
 		}
-		choices = append(choices, setupChoice{label: hosted.Name, detail: detail, hosted: &entry})
+		choices = append(choices, setupChoice{label: hosted.Name, detail: m.withExisting(hosted.Key, detail), hosted: &entry})
+	}
+	for _, manual := range setup.ManualCandidates() {
+		entry := manual
+		choices = append(choices, setupChoice{label: manual.Name, detail: m.withExisting(manual.Key, manual.Summary), manual: &entry})
 	}
 	for i := range m.probes {
 		probe := m.probes[i]
@@ -514,10 +572,15 @@ func (m setupModel) buildChoices() []setupChoice {
 			})
 		}
 	}
-	choices = append(choices, setupChoice{
-		label:  "Something else",
-		detail: "any OpenAI-compatible endpoint — you supply the URL",
-		manual: true,
-	})
 	return choices
+}
+
+// withExisting annotates a row that would replace something already in the
+// file, so the collision is visible while choosing rather than only at the
+// confirmation.
+func (m setupModel) withExisting(key, detail string) string {
+	if !m.opts.Existing.Has(key) {
+		return detail
+	}
+	return detail + " · configured: " + m.opts.Existing.Describes(key)
 }

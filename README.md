@@ -66,6 +66,17 @@ collo setup
 
 It looks for local runtimes that are actually running, notices provider API keys your environment already exports, offers the endpoint's own model catalog, and verifies your choice with two real requests — one plain completion and one carrying a tool definition — before writing anything. A model that answers ordinary prompts but rejects tools cannot drive a coding agent, and that is caught here rather than at your first prompt. Keys are never written into the configuration file.
 
+Azure OpenAI, Azure AI Foundry, and AWS Bedrock are configured through a short form, since neither is discoverable from a name and a key; Bedrock additionally reports which identity the AWS credential chain resolved to. Run `collo setup` again at any time to add or reconfigure a provider — it shows what is already configured, marks anything it would replace, and asks before changing your default.
+
+If the provider's environment variable is already exported, setup uses it and never asks for a key — the recommended route for a long credential, since the value never passes through an input field:
+
+```sh
+export AWS_BEARER_TOKEN_BEDROCK='<your key>'
+collo setup
+```
+
+The [user guide](docs/USER_GUIDE.md#credentials-and-skipping-the-key-prompt-entirely) lists the variable for each provider.
+
 The manual path remains fully supported and is what scripted installs should use. The default configuration connects to Ollama at `http://127.0.0.1:11434/v1` and selects `qwen3-coder`:
 
 ```sh
