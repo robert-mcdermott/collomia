@@ -336,3 +336,37 @@ that are not. Both cover the same class of risk: the offline suite proves the
 parsers handle the documents this project expects, and cannot prove those are
 the documents the far side still sends. A native API key renamed upstream would
 return limit discovery to writing assumptions while every unit test passed.
+
+### The macOS Keychain suite
+
+```sh
+COLLO_KEYCHAIN_TESTS=1 go test ./internal/credstore -run Keychain -v
+```
+
+This covers `backendGet`, `backendSet`, and `backendDelete` — the code behind
+`collo auth set` and `collo auth rm` — by driving Apple's `security(1)` for
+real. It is opt-in because it is the only suite in the project that touches a
+resource shared with the developer's own account, and it is written so that
+sharing cannot become damage:
+
+- **Each test creates its own keychain** in a temporary directory and points
+  the backend at it explicitly, so `security(1)` never resolves a default. The
+  login keychain is not named and never enters the search list; the test
+  asserts that, and deletes the temporary keychain when it ends.
+- **The credential index is redirected** by moving `HOME`, and one test proves
+  the real `~/.collomia/credentials.json` is byte-identical afterwards.
+- **Account names carry a `collo-selftest-` prefix and 8 random bytes**, and
+  the helper refuses to return a name without that prefix. `security(1)`
+  matches on service *and* account with no wildcard form, so a guarded name
+  provably cannot reach a configured provider's entry.
+
+The first of those is not belt-and-braces, it is the load-bearing one, and it
+was added after the obvious design failed badly. Isolating `HOME` alone looks
+sufficient — it is what every other test in this project does — but macOS
+resolves the login keychain through `$HOME/Library/Keychains`, so `security(1)`
+found no keychain to write to and raised a modal dialog offering **Reset To
+Defaults**. Nothing was read, written, or lost, but a test run that puts a
+keychain-reset button in front of the user is a worse outcome than the coverage
+gap it was closing. Naming the keychain explicitly removes the default
+resolution path and the dialog with it; `credstore.keychainFile` exists for
+that and is empty in every shipping path.
