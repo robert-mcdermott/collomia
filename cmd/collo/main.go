@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,6 +21,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
+	"github.com/robert-mcdermott/collomia/internal/shutdown"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -245,7 +244,7 @@ func run(args []string) error {
 			Stderr:      os.Stderr,
 		})
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdown.NotifyContext(context.Background())
 	defer stop()
 	if opts.command == "review" {
 		ref, instructions := "", ""
@@ -287,10 +286,37 @@ func run(args []string) error {
 	if runtime.Config.Options.Mouse {
 		programOptions = append(programOptions, tea.WithMouseCellMotion())
 	}
+	// The program must watch the shutdown context, not only its own signals.
+	//
+	// Bubble Tea installs a handler for SIGINT and SIGTERM and quits on them,
+	// which is why those two always worked. It does not handle SIGHUP. Before
+	// Collomia registered SIGHUP the runtime's default disposition killed the
+	// process — badly, with no teardown, but it did exit. Registering the
+	// signal without wiring the context would have been strictly worse: the
+	// signal would be swallowed and the interface would keep running against a
+	// terminal that no longer exists. WithContext is what turns a cancelled
+	// shutdown context into a returned Run, and a returned Run is what reaches
+	// the deferred Close above.
+	programOptions = append(programOptions, tea.WithContext(ctx))
 	program := tea.NewProgram(tui.New(runtime, broker, initial), programOptions...)
 	_, err = program.Run()
 	tui.ResetTerminalBackground()
+	if shutdownRequested(err, ctx) {
+		return nil
+	}
 	return err
+}
+
+// shutdownRequested reports whether Run ended because a shutdown signal
+// arrived, rather than because something went wrong.
+//
+// A hangup is how an interactive session normally ends when the terminal goes
+// away, so reporting it as a program failure would put an error on the way out
+// of an ordinary exit and make the status say the session failed when it was
+// simply over. Both halves are required: a kill with no shutdown request is a
+// real fault and must still surface.
+func shutdownRequested(err error, ctx context.Context) bool {
+	return errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil
 }
 
 // usagePtr converts session usage to the event payload shape, omitting the

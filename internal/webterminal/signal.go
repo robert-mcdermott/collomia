@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+
+	"github.com/robert-mcdermott/collomia/internal/shutdown"
 )
 
 type terminationCause struct {
@@ -18,7 +20,7 @@ func (e *terminationCause) Error() string { return "received " + e.signal.String
 func withTerminationSignals(parent context.Context) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(parent)
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(signals, shutdown.Signals()...)
 	go func() {
 		select {
 		case received := <-signals:

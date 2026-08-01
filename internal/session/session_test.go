@@ -29,6 +29,7 @@ func (f *shortRecordFile) Write(data []byte) (int, error) {
 	return f.file.Write(data[:max(1, len(data)/2)])
 }
 
+func (f *shortRecordFile) Sync() error  { return f.file.Sync() }
 func (f *shortRecordFile) Close() error { return f.file.Close() }
 
 type failedRecordFile struct {
@@ -42,6 +43,7 @@ func (f *failedRecordFile) Write([]byte) (int, error) {
 	return 0, f.err
 }
 
+func (f *failedRecordFile) Sync() error  { return f.err }
 func (f *failedRecordFile) Close() error { return f.file.Close() }
 
 func TestSessionLatchesShortWriteAndLeavesRecoverableTornTail(t *testing.T) {

@@ -97,7 +97,13 @@ is strict JSON and structurally cannot carry the comments the reference is made
 of, so the documentation had nowhere to be at the moment it was needed. It now
 reaches the editor as a generated schema.
 
-The most recent wave closed the last gap between what the agent could do and
+The most recent wave took the reliability P0 by running the failures rather
+than reasoning about them, and each one was a defect rather than a
+confirmation: terminal loss orphaned every background process, the session was
+never flushed to stable storage at all, and the first exhaustion harness passed
+against an implementation that destroyed the file it was replacing.
+
+The wave before it closed the last gap between what the agent could do and
 what the permission layer could see it doing. Committing was never impossible —
 `run_command "git commit"` worked and was approved silently under autopilot —
 but it was invisible, because the safety taxonomy classifies destruction and a
@@ -108,6 +114,93 @@ same code that classifies the equivalent command string.
 No wave is currently active. See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — the failures nobody had run
+
+**Goal:** take the largest untouched P0 by running the failures the project had
+only ever reasoned about — a terminal that goes away, a power cut, a full
+disk — instead of adding another test that injects the error it expects.
+
+- [x] Find that terminal loss was unhandled, and that it was not a cosmetic
+  gap. `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` appeared at
+  three sites and none of them named SIGHUP, so a closed window or a dropped
+  ssh connection hit the Go runtime's default disposition: the process died
+  instantly and `defer runtime.Close()` never ran. Because `ProcessManager`
+  gives every background process its own group with `Setpgid`, and a hangup
+  reaches only the foreground group, **every background process the agent had
+  started was orphaned** and kept running against the workspace. The session
+  was never closed and the log never flushed. Confirmed by building a program
+  with the same wiring, sending it a real SIGHUP, and watching the child
+  survive its parent.
+- [x] Fix it in one place rather than three. `internal/shutdown` owns the set,
+  which is the same three-copies-of-one-vocabulary shape the completion table
+  had — and here the drift had already cost the signal that mattered.
+- [x] Discover that registering the signal alone would have made things
+  **worse**, which is the finding that justified reading the dependency rather
+  than trusting it. Bubble Tea installs its own handler for SIGINT and SIGTERM
+  and quits on them, which is why those two always reached teardown; it does
+  not handle SIGHUP, and it never sees Collomia's context. Registering SIGHUP
+  without `tea.WithContext` would have captured the signal, suppressed the
+  default disposition that at least ended the process, and left the interface
+  running against a terminal that no longer exists. A hang is worse than a
+  crash. The contract is now pinned by its own test so an upgrade cannot
+  silently remove it, and a shutdown-caused exit is reported as a clean one
+  rather than as a program failure.
+- [x] Separate what survives a crash from what survives a power cut, because
+  they had been one word. Process death loses nothing — the records are already
+  in the page cache — and that is what the existing tests covered. Power loss
+  discards whatever was not written back, and `Session.append` **never called
+  Sync**, so a cut could take the whole session.
+- [x] Choose the flush boundary by measuring it. An fsync costs about four
+  milliseconds on a local SSD against tens of records in an ordinary turn, so
+  per-record flushing buys a guarantee finer than anyone can act on — nobody
+  resumes into the middle of a turn — at a cost paid on every tool call. The
+  session flushes at turn boundaries and on close, supporting a claim a user can
+  act on: a turn that finished is on disk. A failed flush is latched exactly as
+  a failed write is, because an fsync error is not retryable — Linux may have
+  already discarded the pages it could not write.
+- [x] Flush the audit ledger per entry instead, and say why the two differ. A
+  session is the user's own conversation; the ledger is the record of what an
+  agent was permitted to do, read by someone reconstructing an incident and by
+  the review that gates 1.0. A record that quietly loses its last entries during
+  the event worth investigating is not that record.
+- [x] Sweep recovery across every byte offset rather than at chosen record
+  boundaries, since power loss can lose any suffix. That immediately found the
+  boundary the design actually has: a final line whose newline never reached
+  disk still loads, a partially written record is discarded rather than
+  half-decoded, and a session whose metadata never reached disk is refused
+  rather than resumed as an anonymous one. The first version of the sweep
+  asserted "always loads" and was wrong — refusing is correct there.
+- [x] Run the durable writers against a filesystem that is genuinely full.
+  `internal/reliability` builds an 8 MiB image with `hdiutil`, which needs no
+  privileges on macOS; Linux has no unprivileged equivalent, so the suite skips
+  unless an operator supplies a prepared mount rather than pretending to cover
+  the platform.
+- [x] Discover that the first version of that harness proved nothing, which is
+  the whole argument for running real failures. Filling the disk completely and
+  then attempting a write **passed against a `safefile.Replace` rewritten to
+  truncate the destination in place** — precisely the data loss
+  temporary-plus-rename exists to prevent. With nothing left, creating the
+  temporary file fails first, so the interesting code never runs. A real disk
+  fills while a program is running, and the write that fails is the one that had
+  somewhere to start and nowhere to finish. Filling completely and then handing
+  a known amount back reproduces that, and the same mutation now destroys the
+  file and fails both tests. Sizes come from `statfs` rather than from a
+  constant, which had guessed wrong in both directions.
+- [x] Raise the cancellation gate from five iterations to twenty and add the new
+  reliability tests to it. A race that reproduces one run in ten passes a
+  five-run gate most of the time, which is the same as not having one.
+
+**Behavior change:** SIGHUP now begins an orderly shutdown instead of killing
+the process, so background processes are stopped and the session is flushed and
+closed. Nothing configurable changed.
+
+**What it is not.** Not a claim that a power cut is free: an interrupted turn
+may still be lost back to the previous boundary, and that is stated rather than
+implied. The exhaustion suite covers the durable writers, not every path that
+touches a file. And the reliability P0 is not finished — an independent security
+assessment and the sustained adversarial campaigns remain, and those are the
+items that actually gate 1.0.
 
 ## Completed wave — the commit that says what is in it
 
@@ -1557,10 +1650,23 @@ claiming enforcement the policy layer does not provide.
 
 - [ ] **P0 — Security program:** sustained fuzz/adversarial campaigns and an
   independent review.
-- [ ] **P0 — Reliability campaigns:** host-level filesystem exhaustion,
-  power-loss durability, native terminal loss, and longer cancellation stress.
-  The diagnostic/audit half of this item is broken out below, because it turned
-  out to be a feature rather than a policy decision.
+- [x] **P0 — Reliability campaigns:** all four are now run rather than
+  reasoned about. Native terminal loss was a live defect — SIGHUP was unhandled
+  at three signal sites, so a closed window killed the process before teardown
+  and orphaned every background process, each of which sits in its own process
+  group and never sees a hangup. Power-loss durability had no flush at all: the
+  session now flushes at turn boundaries and on close, the audit ledger flushes
+  per entry, and recovery is swept across every byte offset of a real log.
+  Filesystem exhaustion runs the durable writers against a genuinely full
+  filesystem through `internal/reliability`. Cancellation stress went from five
+  iterations to twenty.
+
+  **What remains under this heading is confidence built by others, not code.**
+  The suite proves the failures it reproduces; an independent assessment and
+  the sustained adversarial campaigns above are what actually close the 1.0
+  gate, and neither is something this project can perform on itself. See the
+  [completed wave](#completed-wave--the-failures-nobody-had-run) for what
+  running the failures found that reasoning about them had not.
 - [x] **P0 — A trustworthy audit ledger:** every entry names the session and
   actor that wrote it; a write failure is counted, reported once, and declared
   in the file as a gap rather than leaving a hole that reads as complete; both
@@ -1695,13 +1801,15 @@ assessment would most likely have opened with. The rest, in order:
    combined-parent verification and conservative result-ranking criteria
    without turning a score into permission. `collo audit --actor` is now the
    surface that can say what each agent in such a graph was permitted to do.
-4. Continue Phase 8 security/reliability campaigns in parallel with every
-   feature wave, and take the performance budgets while the prompt-cache wave's
-   measurement harness is still warm. The reliability half — host-level
-   filesystem exhaustion, power-loss durability, native terminal loss, longer
-   cancellation stress — is now the largest untouched P0 and produces
-   confidence rather than a control, which is why it did not outrank the
-   publication gap but does outrank the next feature.
+4. Continue Phase 8 security campaigns in parallel with every feature wave,
+   and take the performance budgets while the prompt-cache wave's measurement
+   harness is still warm. **The reliability half has now shipped** — terminal
+   loss, power-loss durability, filesystem exhaustion, and a cancellation gate
+   raised from five iterations to twenty — so what is left under Phase 8's P0s
+   is the part no amount of self-testing closes: sustained adversarial
+   campaigns and an independent security assessment. That is now the only P0
+   between here and 1.0, and it is a decision to commission rather than work to
+   schedule.
 
 Two small decisions can ride along with whichever wave ships next rather than
 becoming waves of their own:

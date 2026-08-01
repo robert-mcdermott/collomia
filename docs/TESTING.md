@@ -129,6 +129,20 @@ Important failure-oriented tests include:
   Responses-style inputs, and Bedrock Converse; MCP image bytes survive the
   typed tool boundary and are session-retained before the following request.
 - Process timeout/cancellation and descendant cleanup.
+- Terminal loss. A real child process wires itself the way Collomia does — the
+  shutdown context, a background process started through the real
+  `ProcessManager` — is sent a real `SIGHUP`, and is checked for whether
+  teardown ran and whether the background process was reaped. Before SIGHUP was
+  handled this failed on both counts: the runtime's default disposition killed
+  the process instantly, and `Setpgid` meant a hangup never reached the
+  children. A companion test in `cmd/collo` pins the Bubble Tea contract the
+  fix rests on, because registering the signal without also giving the program
+  the shutdown context would swallow it and leave the interface running against
+  a terminal that no longer exists — worse than the crash it replaced.
+- Power-loss durability. The session is flushed at turn boundaries and on
+  close, and a failed flush is latched exactly as a failed write is. Recovery
+  is swept across *every byte offset* of a real session log rather than at
+  chosen record boundaries, since power loss can lose any suffix.
 - Session torn-tail recovery, dangling tool-call interruption, injected
   short/disk writes, and an actual subprocess exit with an incomplete final
   record. A failed write is latched so a later record cannot turn the
@@ -336,6 +350,51 @@ that are not. Both cover the same class of risk: the offline suite proves the
 parsers handle the documents this project expects, and cannot prove those are
 the documents the far side still sends. A native API key renamed upstream would
 return limit discovery to writing assumptions while every unit test passed.
+
+### The filesystem exhaustion campaign
+
+```sh
+COLLO_DISK_EXHAUSTION_TESTS=1 go test ./internal/reliability -v
+```
+
+This runs the real durable writers — `safefile`, the session store, the audit
+ledger — against a filesystem that genuinely has no space left, rather than
+against an injected `ENOSPC`. On macOS the harness builds an 8 MiB disk image
+with `hdiutil`, which needs no privileges; on Linux there is no unprivileged
+equivalent, so the suite skips unless an operator supplies a prepared mount:
+
+```sh
+sudo mount -t tmpfs -o size=4m tmpfs /mnt/collo-full
+COLLO_DISK_EXHAUSTION_TESTS=1 COLLO_FULL_FS_DIR=/mnt/collo-full go test ./internal/reliability
+```
+
+Injected faults are the right tool for asserting that a specific error is
+handled at a specific call, and the durable writers already have those. What
+they cannot show is *where* the errors arrive: a real full filesystem fails at
+write, at fsync, at the directory update behind a rename, and at mkdir, in an
+order no fixture author would have guessed.
+
+**Two details make the difference between a harness and a prop**, and both were
+found by mutation rather than by reasoning:
+
+- **Fill until a one-byte write fails.** A single large filler that fails
+  partway leaves a few kilobytes of slack behind it, so the next small write
+  succeeds and the test believes it exercised an exhausted filesystem when it
+  did not.
+- **Then hand a little space back.** The first version of these tests filled
+  the disk completely and passed even when `safefile.Replace` was rewritten to
+  truncate the destination in place — exactly the data loss the
+  temporary-plus-rename design exists to prevent. With nothing left, creating
+  the temporary file fails first, so the interesting code never runs. A real
+  disk fills up while a program is running, and the write that fails is the one
+  that had somewhere to start and nowhere to finish. `fillNearly` reproduces
+  that by filling completely and then deleting a known amount, because
+  stopping the fill early only stops once the slack is already gone.
+
+Test sizes are taken from `statfs` rather than from a constant. A fixed "surely
+too big" value guessed wrong in both directions during development: far more
+than a full disk would accept, and comfortably less than the slack left by a
+partial fill.
 
 ### The macOS Keychain suite
 

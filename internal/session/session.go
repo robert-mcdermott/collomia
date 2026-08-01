@@ -617,6 +617,7 @@ const recentEventLimit = 2048
 
 type recordFile interface {
 	Write([]byte) (int, error)
+	Sync() error
 	Close() error
 }
 
@@ -756,6 +757,47 @@ func (sess *Session) append(record Record) error {
 	return nil
 }
 
+// syncLocked flushes the session file to stable storage.
+//
+// A failure is latched exactly as a write failure is. An fsync that returns an
+// error is not a retryable inconvenience: on Linux the kernel may have already
+// dropped the dirty pages it could not write, so the records this call was
+// meant to make durable can be gone with no further notice. Continuing to
+// append after that would keep producing a file that reads as complete, which
+// is the failure the fail-stop design exists to prevent.
+func (sess *Session) syncLocked() error {
+	if sess.file == nil {
+		return errors.New("session is closed")
+	}
+	if sess.writeErr != nil {
+		return sess.writeErr
+	}
+	if err := sess.file.Sync(); err != nil {
+		sess.writeErr = fmt.Errorf("sync durable session to disk: %w", err)
+		return sess.writeErr
+	}
+	return nil
+}
+
+// Sync flushes completed records to stable storage.
+//
+// It is called at turn boundaries and on Close rather than after every record.
+// The boundary is a deliberate trade measured rather than guessed: an fsync
+// costs about four milliseconds on a local SSD and considerably more on
+// network or encrypted storage, while an ordinary turn appends on the order of
+// tens of records. Syncing each one would add that cost to every tool call for
+// a guarantee finer than anyone can act on — nobody resumes into the middle of
+// a turn. Syncing at the boundary costs one flush per turn and supports a claim
+// a user can reason about: a turn that finished is on disk.
+//
+// See docs/COMPATIBILITY.md for the guarantee this provides and the one it
+// deliberately does not.
+func (sess *Session) Sync() error {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.syncLocked()
+}
+
 // Err reports the first durable-write failure observed by this session. The
 // error is latched so callers can fail visibly instead of claiming a turn was
 // persisted when the disk returned an error or short write.
@@ -824,6 +866,13 @@ func (sess *Session) AppendEvent(e event.Event) {
 		_ = sess.append(Record{Type: "meta", Meta: &meta})
 	}
 	_ = sess.append(Record{Type: "event", Event: &e})
+	// The turn is over, so this is the point the durability claim is made
+	// about. Syncing after the records rather than before is what makes the
+	// claim true: a flush that ran first would leave the very records it was
+	// meant to protect in the page cache.
+	if e.Kind == event.KindTurnEnd {
+		_ = sess.Sync()
+	}
 }
 
 // Usage returns cumulative provider usage reconstructed from durable events.
@@ -871,6 +920,11 @@ func (sess *Session) Close() {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if sess.file != nil {
+		// An orderly close is the other point worth a flush, and it is the one
+		// that makes terminal loss survivable: SIGHUP now reaches teardown, and
+		// teardown reaching a Close that did not flush would still lose the
+		// records written since the last turn ended.
+		_ = sess.syncLocked()
 		_ = sess.file.Close()
 		sess.file = nil
 	}

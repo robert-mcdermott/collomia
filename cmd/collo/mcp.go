@@ -7,15 +7,14 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"unicode"
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	mcpclient "github.com/robert-mcdermott/collomia/internal/mcp"
+	"github.com/robert-mcdermott/collomia/internal/shutdown"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 	"github.com/robert-mcdermott/collomia/internal/trust"
 )
@@ -498,7 +497,7 @@ func testMCPServer(workspace string, layers mcpLayers, name string, globalOnly b
 	if errs := appconfig.ValidateMCPServer(name, server); len(errs) > 0 {
 		return appconfig.ValidationError{Errors: errs}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdown.NotifyContext(context.Background())
 	defer stop()
 	manager, connectErrors := mcpclient.ConnectAll(ctx, map[string]appconfig.MCPServer{name: server}, tools.NewRegistry(), mcpclient.Options{Workspace: workspace, DisablePinning: true})
 	defer manager.Close()

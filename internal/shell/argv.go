@@ -90,7 +90,7 @@ func QuoteArgv(argv []string) string {
 }
 
 // quoteToken single-quotes anything that is not plainly safe, using the
-// POSIX '\'' idiom for an embedded single quote.
+// POSIX '\” idiom for an embedded single quote.
 func quoteToken(token string) string {
 	if token == "" {
 		return "''"
