@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"golang.org/x/term"
 )
@@ -347,4 +349,28 @@ func cacheSummary(usage provider.Usage, caps provider.Capabilities) string {
 	share := 100 * float64(read) / float64(usage.InputTokens)
 	return fmt.Sprintf("%s read, %s written — %.0f%% of prompt tokens served from cache",
 		formatTokens(read), formatTokens(written), share)
+}
+
+// cacheLifetimeSummary reports what this session's pace says about the
+// five-minute cache lifetime, or "" when it has not paused often enough to say
+// anything.
+//
+// This exists to answer one open question with data instead of argument: the
+// one-hour cache lifetime costs a 2x write premium rather than 1.25x, and
+// nobody has measured whether real sessions go quiet long enough to need it.
+// Only gaps over five minutes and under an hour are evidence for it — see
+// agent/cachegap.go — so a session that never paused reports nothing rather
+// than reporting a reassuring zero.
+func cacheLifetimeSummary(gaps agent.CacheGaps) string {
+	if gaps.Gaps == 0 || (gaps.Recoverable == 0 && gaps.ColdEither == 0) {
+		return ""
+	}
+	summary := fmt.Sprintf("%d of %d gaps between requests went cold", gaps.Recoverable+gaps.ColdEither, gaps.Gaps)
+	if gaps.Recoverable > 0 {
+		summary += fmt.Sprintf("; %d would have stayed warm on a 1-hour cache", gaps.Recoverable)
+	}
+	if gaps.ColdEither > 0 {
+		summary += fmt.Sprintf("; %d exceeded an hour and would not", gaps.ColdEither)
+	}
+	return summary + fmt.Sprintf(" (longest %s)", gaps.Longest.Round(time.Second))
 }

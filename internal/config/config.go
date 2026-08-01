@@ -25,7 +25,25 @@ const ProjectFile = ".collomia.json"
 // writes. Older files without schema_version are treated as version 1.
 const CurrentSchemaVersion = 1
 
+// DefaultMaxTokens is the output cap applied to a provider that names none.
+//
+// It is small for a modern model on purpose — it predates most of them — and
+// the number is not the problem. The problem is that it used to be applied
+// invisibly: a provider block with no max_tokens produced answers that stopped
+// at 8192 tokens with no message, no diagnostic, and no field in the file to
+// point at. It is named here so `collo doctor` can report where it is in force
+// and `collo setup` can write it down rather than let it apply silently.
+const DefaultMaxTokens = 8192
+
 type Config struct {
+	// Schema is the `$schema` key an editor reads to find the contract for
+	// this file. It is declared here rather than tolerated, because
+	// LoadOptions.Strict turns on DisallowUnknownFields: without a field to
+	// decode into, a file carrying the key that makes editing bearable would
+	// load fine normally and fail `collo config validate --strict`. Nothing
+	// downstream reads it — it describes the file, it does not configure
+	// anything.
+	Schema          string               `json:"$schema,omitempty"`
 	SchemaVersion   int                  `json:"schema_version,omitempty"`
 	DefaultProvider string               `json:"default_provider"`
 	DefaultModel    string               `json:"default_model"`
@@ -100,7 +118,13 @@ type Provider struct {
 	Headers            map[string]string `json:"headers,omitempty"`
 	MaxTokens          int               `json:"max_tokens,omitempty"`
 	Context            int               `json:"context_window,omitempty"`
-	Temperature        *float64          `json:"temperature,omitempty"`
+	// MaxTokensDefaulted records that max_tokens was absent and normalization
+	// supplied one. Without it nothing downstream can tell a deliberate 8192
+	// from a field the user never knew existed — and the second case is the one
+	// worth reporting, because it silently truncates long answers from a model
+	// that could produce far more. Diagnostics only, never serialized.
+	MaxTokensDefaulted bool     `json:"-"`
+	Temperature        *float64 `json:"temperature,omitempty"`
 	// Reasoning is opt-in. When omitted, Collomia sends no reasoning-specific
 	// request field and preserves each provider/model's own default.
 	Reasoning *Reasoning `json:"reasoning,omitempty"`
@@ -891,31 +915,10 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 			p.EntraTenantID = strings.TrimSpace(p.EntraTenantID)
 			p.EntraAuthorityHost = strings.TrimSpace(p.EntraAuthorityHost)
 		} else {
-			p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
-			p.APIKey = expandEnv(p.APIKey)
-			if p.APIKey != "" {
-				p.CredentialSource = "api_key"
-			}
-			if p.APIKey == "" && p.APIKeyEnv != "" {
-				if p.APIKey = os.Getenv(p.APIKeyEnv); p.APIKey != "" {
-					p.CredentialSource = "environment " + p.APIKeyEnv
-				}
-			}
-			if p.APIKey == "" && usesStoredCredential(p) {
-				if secret, ok, err := lookupStoredCredential(name); err == nil && ok {
-					p.APIKey = secret
-					p.CredentialSource = "credential store"
-				}
-			}
-			for key, value := range p.Headers {
-				p.Headers[key] = expandEnv(value)
-			}
-			p.EntraScope = strings.TrimSpace(expandEnv(p.EntraScope))
-			p.EntraTenantID = strings.TrimSpace(expandEnv(p.EntraTenantID))
-			p.EntraAuthorityHost = strings.TrimSpace(expandEnv(p.EntraAuthorityHost))
+			p = resolveProviderEnvironment(name, p)
 		}
 		if p.MaxTokens <= 0 {
-			p.MaxTokens = 8192
+			p.MaxTokens, p.MaxTokensDefaulted = DefaultMaxTokens, true
 		}
 		if p.ConnectTimeoutSeconds == 0 {
 			p.ConnectTimeoutSeconds = 10
@@ -939,6 +942,47 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	for name, server := range c.MCP {
 		c.MCP[name] = normalizeMCPServer(server, !skipEnvironmentExpansion)
 	}
+}
+
+// ResolveProvider expands environment references and resolves the credential
+// for one provider definition, exactly as loading the merged configuration
+// would.
+//
+// It exists for callers that deliberately work on a single configuration layer
+// — `collo setup --provider`, which re-verifies a provider recorded in the
+// global file — and still need the credential a session would actually use.
+// Re-implementing the api_key → api_key_env → provider-family variable →
+// credential-store precedence at such a call site is how the two orders drift
+// apart, and a wizard that authenticates differently from the session it is
+// configuring would verify the wrong thing.
+func ResolveProvider(name string, p Provider) Provider {
+	return resolveProviderEnvironment(name, p)
+}
+
+func resolveProviderEnvironment(name string, p Provider) Provider {
+	p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
+	p.APIKey = expandEnv(p.APIKey)
+	if p.APIKey != "" {
+		p.CredentialSource = "api_key"
+	}
+	if p.APIKey == "" && p.APIKeyEnv != "" {
+		if p.APIKey = os.Getenv(p.APIKeyEnv); p.APIKey != "" {
+			p.CredentialSource = "environment " + p.APIKeyEnv
+		}
+	}
+	if p.APIKey == "" && usesStoredCredential(p) {
+		if secret, ok, err := lookupStoredCredential(name); err == nil && ok {
+			p.APIKey = secret
+			p.CredentialSource = "credential store"
+		}
+	}
+	for key, value := range p.Headers {
+		p.Headers[key] = expandEnv(value)
+	}
+	p.EntraScope = strings.TrimSpace(expandEnv(p.EntraScope))
+	p.EntraTenantID = strings.TrimSpace(expandEnv(p.EntraTenantID))
+	p.EntraAuthorityHost = strings.TrimSpace(expandEnv(p.EntraAuthorityHost))
+	return p
 }
 
 // ResolveMCPServer expands environment references and applies runtime
@@ -1001,51 +1045,17 @@ func (c Config) ValidateFields() []FieldError {
 	} else if c.DefaultModel == "" && c.EnvModel == "" && provider.Model == "" {
 		errs = append(errs, FieldError{"default_model", "default_model or provider.model is required"})
 	}
-	switch c.Permissions.Mode {
-	case "ask", "workspace", "autopilot":
-	default:
-		errs = append(errs, FieldError{"permissions.mode", fmt.Sprintf("must be ask, workspace, or autopilot (got %q)", c.Permissions.Mode)})
-	}
-	switch c.Permissions.Sandbox {
-	case "", "off", "auto", "require":
-	default:
-		errs = append(errs, FieldError{"permissions.sandbox", fmt.Sprintf("must be off, auto, or require (got %q)", c.Permissions.Sandbox)})
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Permissions.Preset)) {
-	case "", PresetStandard, PresetHardened, PresetFrictionless:
-	default:
-		errs = append(errs, FieldError{"permissions.preset", fmt.Sprintf("must be %s (got %q)", strings.Join(PresetNames(), ", "), c.Permissions.Preset)})
-	}
-	switch c.Permissions.Network {
-	case "", "open", "scoped":
-	default:
-		errs = append(errs, FieldError{"permissions.network", fmt.Sprintf("must be open or scoped (got %q)", c.Permissions.Network)})
-	}
-	switch c.Permissions.Commands {
-	case "", "open", "allowlist":
-	default:
-		errs = append(errs, FieldError{"permissions.commands", fmt.Sprintf("must be open or allowlist (got %q)", c.Permissions.Commands)})
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Permissions.SandboxEgress)) {
-	case "", SandboxEgressOff, SandboxEgressScoped:
-	default:
-		errs = append(errs, FieldError{"permissions.sandbox_egress", fmt.Sprintf("must be off or scoped (got %q)", c.Permissions.SandboxEgress)})
-	}
-	switch c.Permissions.CommandEnv {
-	case "", "full", "minimal":
-	default:
-		errs = append(errs, FieldError{"permissions.command_env", fmt.Sprintf("must be full or minimal (got %q)", c.Permissions.CommandEnv)})
-	}
-	switch c.Permissions.ProtectCredentials {
-	case "", ProtectCredentialsOff, ProtectCredentialsPrompt, ProtectCredentialsDeny:
-	default:
-		errs = append(errs, FieldError{"permissions.protect_credentials", fmt.Sprintf("must be %s (got %q)", strings.Join(ProtectCredentialsSettings(), ", "), c.Permissions.ProtectCredentials)})
-	}
-	switch c.Permissions.Publication {
-	case "", PublicationOff, PublicationPrompt, PublicationDeny:
-	default:
-		errs = append(errs, FieldError{"permissions.publication", fmt.Sprintf("must be %s (got %q)", strings.Join(PublicationSettings(), ", "), c.Permissions.Publication)})
-	}
+	errs = appendEnumErrors(errs,
+		enumField{field: "permissions.mode", value: c.Permissions.Mode, allowed: AutonomyModes()},
+		enumField{field: "permissions.sandbox", value: c.Permissions.Sandbox, allowed: SandboxModes(), optional: true},
+		enumField{field: "permissions.preset", value: c.Permissions.Preset, allowed: PresetNames(), optional: true, fold: true},
+		enumField{field: "permissions.network", value: c.Permissions.Network, allowed: NetworkPostures(), optional: true},
+		enumField{field: "permissions.commands", value: c.Permissions.Commands, allowed: CommandPostures(), optional: true},
+		enumField{field: "permissions.sandbox_egress", value: c.Permissions.SandboxEgress, allowed: SandboxEgressModes(), optional: true, fold: true},
+		enumField{field: "permissions.command_env", value: c.Permissions.CommandEnv, allowed: CommandEnvModes(), optional: true},
+		enumField{field: "permissions.protect_credentials", value: c.Permissions.ProtectCredentials, allowed: ProtectCredentialsSettings(), optional: true},
+		enumField{field: "permissions.publication", value: c.Permissions.Publication, allowed: PublicationSettings(), optional: true},
+	)
 	for i, root := range c.Permissions.SandboxWritableRoots {
 		if strings.TrimSpace(root) == "" {
 			errs = append(errs, FieldError{fmt.Sprintf("permissions.sandbox_writable_roots.%d", i), "must not be empty"})
@@ -1058,20 +1068,17 @@ func (c Config) ValidateFields() []FieldError {
 	}
 	for name, provider := range c.Providers {
 		field := "providers." + name
-		switch provider.Type {
-		case "openai", "openai-compatible", "anthropic", "anthropic-compatible", "bedrock", "bedrock-mantle", "azure-openai", "azure-foundry", "azure-foundry-anthropic":
-		default:
+		if !slices.Contains(ProviderTypes(), provider.Type) {
 			errs = append(errs, FieldError{field + ".type", fmt.Sprintf("unsupported type %q", provider.Type)})
 		}
 		if provider.Type != "bedrock" && provider.BaseURL == "" {
 			errs = append(errs, FieldError{field + ".base_url", "required for this provider type"})
 		}
 		if provider.Type == "bedrock" {
-			switch provider.Auth {
-			case "", "auto", "sigv4", "bearer":
-			default:
-				errs = append(errs, FieldError{field + ".auth", fmt.Sprintf("must be auto, sigv4, or bearer for Bedrock (got %q)", provider.Auth)})
-			}
+			errs = appendEnumErrors(errs, enumField{
+				field: field + ".auth", value: provider.Auth,
+				allowed: BedrockAuthModes(), optional: true, suffix: " for Bedrock",
+			})
 			if provider.Auth == "sigv4" && (provider.APIKey != "" || provider.APIKeyEnv != "") {
 				errs = append(errs, FieldError{field + ".api_key_env", "is not used with auth=sigv4; use the AWS credential chain or change auth to bearer/auto"})
 			}
@@ -1080,11 +1087,10 @@ func (c Config) ValidateFields() []FieldError {
 			}
 		}
 		if provider.Type == "azure-openai" || provider.Type == "azure-foundry" || provider.Type == "azure-foundry-anthropic" {
-			switch provider.Auth {
-			case "", "api_key", "bearer", "entra":
-			default:
-				errs = append(errs, FieldError{field + ".auth", fmt.Sprintf("must be api_key, bearer, or entra for Azure providers (got %q)", provider.Auth)})
-			}
+			errs = appendEnumErrors(errs, enumField{
+				field: field + ".auth", value: provider.Auth,
+				allowed: AzureAuthModes(), optional: true, suffix: " for Azure providers",
+			})
 			if provider.Auth == "entra" {
 				if provider.APIKey != "" || provider.APIKeyEnv != "" {
 					errs = append(errs, FieldError{field + ".api_key_env", "must be omitted with auth=entra; DefaultAzureCredential supplies short-lived tokens"})
@@ -1108,6 +1114,26 @@ func (c Config) ValidateFields() []FieldError {
 			} else if provider.EntraScope != "" || provider.EntraTenantID != "" || provider.EntraAuthorityHost != "" {
 				errs = append(errs, FieldError{field + ".auth", "must be entra when entra_scope, entra_tenant_id, or entra_authority_host is configured"})
 			}
+		}
+		// Token limits. Only the unsatisfiable combination is an error here;
+		// an absent field is a warning, reported by `collo doctor`, because
+		// refusing to start over a field that has always been optional would
+		// break every configuration written before it was validated.
+		if provider.Context < 0 {
+			errs = append(errs, FieldError{field + ".context_window", "must not be negative"})
+		}
+		if provider.MaxTokens < 0 {
+			errs = append(errs, FieldError{field + ".max_tokens", "must not be negative"})
+		}
+		if provider.Context > 0 && provider.MaxTokens >= provider.Context {
+			// The output cap is spent out of the same budget as the prompt, so
+			// this configuration cannot be satisfied by any request: the
+			// provider rejects it, and ValidateRequest already refuses it
+			// before the network. Catching it here names the two fields
+			// instead of surfacing as a provider error mid-session.
+			errs = append(errs, FieldError{field + ".max_tokens", fmt.Sprintf(
+				"%d is at or above context_window %d; the output cap is spent from the same budget as the prompt, so no request can satisfy this",
+				provider.MaxTokens, provider.Context)})
 		}
 		for _, timeout := range []struct {
 			key   string
@@ -1148,11 +1174,9 @@ func (c Config) ValidateFields() []FieldError {
 	}
 	for i, rule := range c.Permissions.Rules {
 		field := fmt.Sprintf("permissions.rules[%d]", i)
-		switch rule.Action {
-		case "allow", "prompt", "deny":
-		default:
-			errs = append(errs, FieldError{field + ".action", fmt.Sprintf("must be allow, prompt, or deny (got %q)", rule.Action)})
-		}
+		errs = appendEnumErrors(errs, enumField{
+			field: field + ".action", value: rule.Action, allowed: RuleActions(),
+		})
 		if rule.Tool == "" && rule.Path == "" && rule.Command == "" && rule.Host == "" && rule.Server == "" {
 			errs = append(errs, FieldError{field, "must match on at least one of tool, path, command, host, or server"})
 		}
@@ -1181,11 +1205,10 @@ func (c Config) ValidateFields() []FieldError {
 		if (name == "default" || name == "none") && AgentAvailableFor(a, "primary") {
 			errs = append(errs, FieldError{field + ".availability", "primary profiles cannot use the reserved names default or none"})
 		}
-		switch a.Availability {
-		case "", "delegate", "primary", "both":
-		default:
-			errs = append(errs, FieldError{field + ".availability", fmt.Sprintf("must be delegate, primary, or both (got %q)", a.Availability)})
-		}
+		errs = appendEnumErrors(errs, enumField{
+			field: field + ".availability", value: a.Availability,
+			allowed: AgentAvailabilities(), optional: true,
+		})
 		if a.Reasoning != nil {
 			if err := validateReasoningEffort(a.Reasoning.Effort); err != nil {
 				errs = append(errs, FieldError{field + ".reasoning.effort", err.Error()})
@@ -1203,11 +1226,10 @@ func (c Config) ValidateFields() []FieldError {
 		if a.TimeoutSeconds < 0 || a.TimeoutSeconds > 3600 {
 			errs = append(errs, FieldError{field + ".timeout_seconds", "must be between 0 and 3600"})
 		}
-		switch a.Permissions.Mode {
-		case "", "ask", "workspace", "autopilot":
-		default:
-			errs = append(errs, FieldError{field + ".permissions.mode", fmt.Sprintf("must be ask, workspace, or autopilot (got %q)", a.Permissions.Mode)})
-		}
+		errs = appendEnumErrors(errs, enumField{
+			field: field + ".permissions.mode", value: a.Permissions.Mode,
+			allowed: AgentAutonomyModes(), optional: true,
+		})
 		for i, pattern := range a.Permissions.DeniedCommands {
 			if _, err := regexp.Compile(pattern); err != nil {
 				errs = append(errs, FieldError{fmt.Sprintf("%s.permissions.denied_commands[%d]", field, i), err.Error()})
@@ -1215,7 +1237,7 @@ func (c Config) ValidateFields() []FieldError {
 		}
 		for i, rule := range a.Permissions.Rules {
 			ruleField := fmt.Sprintf("%s.permissions.rules[%d]", field, i)
-			if rule.Action != "prompt" && rule.Action != "deny" {
+			if !slices.Contains(AgentRuleActions(), rule.Action) {
 				errs = append(errs, FieldError{ruleField + ".action", "delegated-agent rules may only prompt or deny"})
 			}
 			if rule.Tool == "" && rule.Path == "" && rule.Command == "" && rule.Host == "" && rule.Server == "" {
@@ -1250,16 +1272,10 @@ func (c Config) ValidateFields() []FieldError {
 			errs = append(errs, FieldError{"options.delegate_provider_concurrency." + name, "must be between 1 and 6"})
 		}
 	}
-	switch c.Options.AgentIntegration {
-	case "", "manual", "reviewed":
-	default:
-		errs = append(errs, FieldError{"options.agent_integration", fmt.Sprintf("must be manual or reviewed (got %q)", c.Options.AgentIntegration)})
-	}
-	switch strings.ToLower(c.Options.Notifications) {
-	case "", "on", "bell", "off":
-	default:
-		errs = append(errs, FieldError{"options.notifications", fmt.Sprintf("must be on, bell, or off (got %q)", c.Options.Notifications)})
-	}
+	errs = appendEnumErrors(errs,
+		enumField{field: "options.agent_integration", value: c.Options.AgentIntegration, allowed: AgentIntegrationModes(), optional: true},
+		enumField{field: "options.notifications", value: c.Options.Notifications, allowed: NotificationModes(), optional: true, fold: true},
+	)
 	if c.Options.Editor.Command == "" && len(c.Options.Editor.Args) > 0 {
 		errs = append(errs, FieldError{"options.editor.command", "required when editor args are configured"})
 	}
@@ -1295,10 +1311,10 @@ func (c Config) ValidateFields() []FieldError {
 }
 
 func validateReasoningEffort(effort string) error {
-	if slices.Contains([]string{"low", "medium", "high", "xhigh", "max"}, effort) {
+	if slices.Contains(ReasoningEfforts(), effort) {
 		return nil
 	}
-	return fmt.Errorf("must be low, medium, high, xhigh, or max (got %q)", effort)
+	return fmt.Errorf("must be %s (got %q)", englishList(ReasoningEfforts()), effort)
 }
 
 // AgentAvailableFor reports whether a named profile may be used in the

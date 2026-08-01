@@ -309,6 +309,22 @@ func (l *Ledger) writeLocked(data []byte) error {
 		// dropped and the reader's own malformed-line accounting agrees.
 		err = io.ErrShortWrite
 	}
+	// The ledger is flushed per entry, where the session is flushed per turn.
+	// The asymmetry is deliberate and follows from what each file is for. A
+	// session is the user's own conversation, and losing the tail of an
+	// interrupted turn costs them a turn they watched fail. This file is the
+	// record of what an agent was permitted to do, read after the fact by
+	// someone reconstructing an incident and by the independent review that
+	// gates 1.0 — and a record that quietly loses its last entries during the
+	// event worth investigating is not one of those. A flush costs about four
+	// milliseconds against roughly two entries per privileged action, which is
+	// the price of the claim the README already makes for it.
+	//
+	// A failed flush is returned like a failed write, so it is counted as a
+	// dropped entry and declared as a gap rather than passing silently.
+	if err == nil {
+		err = file.Sync()
+	}
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
 	}

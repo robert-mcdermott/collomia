@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,6 +21,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
+	"github.com/robert-mcdermott/collomia/internal/shutdown"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -173,6 +172,12 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println("Created", path)
+		// Named explicitly because it is a second file appearing next to the
+		// one that was asked for — in a project's case, inside the user's
+		// repository. Silently creating a file is how a generated artifact
+		// ends up committed by accident.
+		fmt.Println("Created", filepath.Join(filepath.Dir(path), appconfig.SchemaFileName),
+			"(editor schema; regenerate with `collo schema config`)")
 		if opts.withReference {
 			referencePath := appconfig.ReferencePath(path)
 			if err = appconfig.WriteReference(referencePath); err != nil {
@@ -239,7 +244,7 @@ func run(args []string) error {
 			Stderr:      os.Stderr,
 		})
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdown.NotifyContext(context.Background())
 	defer stop()
 	if opts.command == "review" {
 		ref, instructions := "", ""
@@ -281,10 +286,37 @@ func run(args []string) error {
 	if runtime.Config.Options.Mouse {
 		programOptions = append(programOptions, tea.WithMouseCellMotion())
 	}
+	// The program must watch the shutdown context, not only its own signals.
+	//
+	// Bubble Tea installs a handler for SIGINT and SIGTERM and quits on them,
+	// which is why those two always worked. It does not handle SIGHUP. Before
+	// Collomia registered SIGHUP the runtime's default disposition killed the
+	// process — badly, with no teardown, but it did exit. Registering the
+	// signal without wiring the context would have been strictly worse: the
+	// signal would be swallowed and the interface would keep running against a
+	// terminal that no longer exists. WithContext is what turns a cancelled
+	// shutdown context into a returned Run, and a returned Run is what reaches
+	// the deferred Close above.
+	programOptions = append(programOptions, tea.WithContext(ctx))
 	program := tea.NewProgram(tui.New(runtime, broker, initial), programOptions...)
 	_, err = program.Run()
 	tui.ResetTerminalBackground()
+	if shutdownRequested(err, ctx) {
+		return nil
+	}
 	return err
+}
+
+// shutdownRequested reports whether Run ended because a shutdown signal
+// arrived, rather than because something went wrong.
+//
+// A hangup is how an interactive session normally ends when the terminal goes
+// away, so reporting it as a program failure would put an error on the way out
+// of an ordinary exit and make the status say the session failed when it was
+// simply over. Both halves are required: a kill with no shutdown request is a
+// real fault and must still surface.
+func shutdownRequested(err error, ctx context.Context) bool {
+	return errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil
 }
 
 // usagePtr converts session usage to the event payload shape, omitting the
@@ -797,7 +829,7 @@ Usage:
   collo [flags] [initial prompt]      start the interactive TUI
   collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
   collo run [flags] <prompt>          run once (or read the prompt from stdin)
-  collo setup                         find, verify, and configure a provider interactively
+  collo setup [--provider <name>]     find, verify, and configure a provider interactively
   collo init [--with-reference]       write project .collomia.json
   collo init --global [--with-reference]  write the user-wide .collomia/config.json
   collo config validate [--strict]    validate configuration with field-level errors
@@ -817,12 +849,14 @@ Usage:
   collo mcp [list|show|add|remove|enable|disable|test]  manage persistent MCP servers (project and --global scopes)
   collo completion bash|zsh|fish|powershell  generate shell completion
   collo schema events                 print the embedded JSON Schema for JSONL events
+  collo schema config                 print the JSON Schema for the configuration file, for
+                                      editor completion and inline validation
   collo replay [--check] <trace|->    validate and safely render a completed JSONL run trace
   collo version                       print build information
 
 Flags:
   --cwd <path>                         workspace (default: current directory)
-  --provider <name>                    configured provider name
+  --provider <name>                    configured provider name; with setup, re-verify that provider
   --model <id>                         model or deployment ID
   --agent <name>                       named primary agent profile
   --autonomy ask|workspace|autopilot   permission policy

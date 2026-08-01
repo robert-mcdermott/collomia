@@ -268,7 +268,7 @@ func TestSetupConfirmStatesWhatWillBeWritten(t *testing.T) {
 	m.model = "qwen2.5-coder"
 	m.provider = appconfig.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1"}
 	m.verification = setup.Verification{OK: true, Reply: "ok"}
-	m.result = setup.Build(m.name, m.provider, m.model, setup.CredentialNone, "", "")
+	m.result = setup.Build(m.name, m.provider, m.model, setup.CredentialNone, "", "", provider.Limits{})
 	view := stripANSI(m.View())
 	for _, want := range []string{"ollama", "qwen2.5-coder", "127.0.0.1:11434", "/tmp/config.json", "none required"} {
 		if !strings.Contains(view, want) {
@@ -284,9 +284,89 @@ func TestSetupWarnsBeforeReplacingAnExistingProvider(t *testing.T) {
 	m.name = "ollama"
 	m.model = "m"
 	m.verification = setup.Verification{OK: true, Reply: "ok"}
-	m.result = setup.Build("ollama", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://x/v1"}, "m", setup.CredentialNone, "", "")
+	m.result = setup.Build("ollama", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://x/v1"}, "m", setup.CredentialNone, "", "", provider.Limits{})
 	if !strings.Contains(stripANSI(m.View()), "replaces the provider named") {
 		t.Error("overwriting a configured provider must be stated before it happens, not after")
+	}
+}
+
+func TestSetupConfirmReportsBothLimitsAndTheirSource(t *testing.T) {
+	// Both numbers used to be decided invisibly — one written from a constant,
+	// one never written at all — and the whole value of resolving them is lost
+	// if the screen presents an assumption as a measurement.
+	m := newTestSetupModel(t)
+	m.stage = stageConfirm
+	m.name, m.model = "local", "some-unknown-model"
+	m.provider = appconfig.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1"}
+	m.verification = setup.Verification{OK: true, Reply: "ok"}
+	m.result = setup.Build(m.name, m.provider, m.model, setup.CredentialNone, "", "", provider.Limits{})
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "max output") {
+		t.Error("the output cap must be shown; it is the field that used to be written by nobody")
+	}
+	if !strings.Contains(view, "assumed") {
+		t.Errorf("a limit nobody established must be labelled: %q", view)
+	}
+
+	m.result = setup.Build(m.name, m.provider, m.model, setup.CredentialNone, "", "",
+		provider.Limits{ContextWindow: 65536, MaxOutput: 8192, ContextSource: provider.LimitsEndpoint, OutputSource: provider.LimitsEndpoint})
+	if got := stripANSI(m.View()); !strings.Contains(got, "reported by the endpoint") {
+		t.Errorf("a measured limit must say it was measured: %q", got)
+	}
+}
+
+func TestSetupReconfigureSkipsTheProviderScan(t *testing.T) {
+	// `--provider` names the provider, so scanning for runtimes it never asked
+	// about would be a different run from the one requested.
+	m := newTestSetupModel(t)
+	m.opts.Reconfigure = "bedrock"
+	m.opts.Existing = setup.Existing{
+		Providers: []string{"bedrock"},
+		Models:    map[string]string{"bedrock": "us.anthropic.claude-opus-4-1"},
+		Definitions: map[string]appconfig.Provider{
+			"bedrock": {Type: "bedrock", Region: "us-west-2", Model: "us.anthropic.claude-opus-4-1", Context: 200000, MaxTokens: 4096},
+		},
+	}
+	target, name, ok := m.reconfigureTarget()
+	if !ok || name != "bedrock" {
+		t.Fatalf("reconfigure target = %q, ok = %v", name, ok)
+	}
+	if target.Region != "us-west-2" {
+		t.Errorf("the existing definition must be carried in, got %+v", target)
+	}
+	if target.Context != 0 || target.MaxTokens != 0 {
+		t.Error("the old limits must be cleared; re-resolving them is the reason to run this")
+	}
+
+	m.name, m.provider = name, target
+	if view := stripANSI(m.View()); !strings.Contains(view, "Re-verifying bedrock") {
+		t.Errorf("the screen must not claim to be scanning for runtimes: %q", view)
+	}
+}
+
+func TestSetupReconfigureRejectsAnUnconfiguredName(t *testing.T) {
+	m := newTestSetupModel(t)
+	m.opts.Reconfigure = "nothing-here"
+	if _, _, ok := m.reconfigureTarget(); ok {
+		t.Error("a name the file does not contain must not seed the wizard")
+	}
+}
+
+func TestSetupReconfigureLeavesWithoutAProviderList(t *testing.T) {
+	// A run started with --provider never scanned, so its provider list is
+	// empty. Going "back" to it would draw a screen with no choices on it and
+	// index an empty slice on the next enter.
+	m := newTestSetupModel(t)
+	m.opts.Reconfigure = "ollama"
+	m.name, m.stage = "ollama", stageChooseModel
+	m.catalog = []provider.ModelInfo{{ID: "m"}}
+	next, cmd := m.onListKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, ok := next.(setupModel)
+	if !ok {
+		t.Fatal("unexpected model type")
+	}
+	if !updated.quitting || cmd == nil {
+		t.Error("backing out of the first screen of a --provider run is leaving")
 	}
 }
 

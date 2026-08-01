@@ -24,8 +24,14 @@ func TestWriteProjectStarterIsMinimal(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) != 2 || raw["schema_version"] == nil || raw["permissions"] == nil {
-		t.Fatalf("project starter should contain only schema_version and permissions: %s", data)
+	// $schema is documentation about the file rather than configuration in it:
+	// it configures nothing, and it is what gives an editor completion and
+	// inline validation for the settings the starter deliberately leaves out.
+	if len(raw) != 3 || raw["$schema"] == nil || raw["schema_version"] == nil || raw["permissions"] == nil {
+		t.Fatalf("project starter should contain only $schema, schema_version, and permissions: %s", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, SchemaFileName)); err != nil {
+		t.Fatalf("the starter's $schema reference must not be a broken link: %v", err)
 	}
 	var permissions map[string]json.RawMessage
 	if err := json.Unmarshal(raw["permissions"], &permissions); err != nil {

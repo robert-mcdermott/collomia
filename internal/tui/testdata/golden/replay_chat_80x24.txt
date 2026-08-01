@@ -20,4 +20,4 @@ main.go defines an empty Go entry point.
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │❯ Ask Collomia to build, debug, explain…  (/ for commands)                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ✿   ollama/qwen3-coder   ASK ⛨  ctx ▏░░░░░░░░░ 1%     / commands · ctrl+c quit
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▏░░░░░░░░░ 2%     / commands · ctrl+c quit

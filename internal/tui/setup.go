@@ -35,6 +35,12 @@ type SetupOptions struct {
 	// Existing is what ConfigPath already contains. It is read from that one
 	// file rather than from the merged configuration — see setup.Existing.
 	Existing setup.Existing
+	// Reconfigure names a provider already in that file to re-enter the wizard
+	// with, skipping the provider scan. Everything after the choice is the
+	// ordinary path: discover, verify, resolve limits, confirm, write — which
+	// is the point, since re-verifying is the same operation as verifying and a
+	// second implementation of it would be a second thing to keep correct.
+	Reconfigure string
 }
 
 // SetupOutcome reports what a completed wizard did, so the caller can print a
@@ -113,7 +119,13 @@ type catalogMsg struct {
 	models []provider.ModelInfo
 	err    error
 }
-type verifiedMsg struct{ verification setup.Verification }
+type verifiedMsg struct {
+	verification setup.Verification
+	// limits are resolved alongside verification rather than after it, because
+	// resolving them may cost a request to the endpoint and the wizard is
+	// already waiting on one there.
+	limits provider.Limits
+}
 type wroteMsg struct{ err error }
 type awsIdentityMsg struct{ identity setup.AWSIdentity }
 
@@ -129,6 +141,14 @@ func RunSetup(ctx context.Context, opts SetupOptions) (SetupOutcome, error) {
 		input:  newSetupInput(theme),
 		width:  80,
 		height: 24,
+	}
+	// Seeding happens here rather than in Init, because Init is called on a
+	// copy and returns only a command: anything it assigns to the model is
+	// discarded.
+	if p, name, ok := m.reconfigureTarget(); ok {
+		m.name, m.provider = name, p
+		m.credPlan, m.envVar = setup.CredentialKeep, p.APIKeyEnv
+		m.stage = stageScanning
 	}
 	program := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	final, err := program.Run()
@@ -170,7 +190,35 @@ func newSetupInput(t Theme) textinput.Model {
 }
 
 func (m setupModel) Init() tea.Cmd {
+	// A model seeded by RunSetup already knows its provider, so the scan has
+	// nothing to offer it: go straight to that provider's catalog, exactly as
+	// selecting it from the list would.
+	if m.name != "" {
+		return tea.Batch(m.spin.Tick, m.discoverCmd(m.name, m.provider))
+	}
 	return tea.Batch(m.spin.Tick, scanCmd())
+}
+
+// reconfigureTarget resolves the named provider from the file being written.
+//
+// The credential is resolved through the same precedence a session uses, so
+// the wizard verifies with the key the provider actually authenticates with
+// rather than with one the wizard would have asked for. The two token limits
+// are deliberately cleared: re-resolving them is the reason to run this, and
+// carrying the old numbers forward would make the manual-form branch treat a
+// stale window as a value the user just entered.
+func (m setupModel) reconfigureTarget() (appconfig.Provider, string, bool) {
+	name := strings.TrimSpace(m.opts.Reconfigure)
+	if name == "" {
+		return appconfig.Provider{}, "", false
+	}
+	definition, ok := m.opts.Existing.Definitions[name]
+	if !ok {
+		return appconfig.Provider{}, "", false
+	}
+	resolved := appconfig.ResolveProvider(name, definition)
+	resolved.Context, resolved.MaxTokens = 0, 0
+	return resolved, name, true
 }
 
 func scanCmd() tea.Cmd {
@@ -195,7 +243,11 @@ func (m setupModel) verifyCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		return verifiedMsg{verification: setup.Verify(ctx, name, p, model, catalog)}
+		verification := setup.Verify(ctx, name, p, model, catalog)
+		if !verification.OK {
+			return verifiedMsg{verification: verification}
+		}
+		return verifiedMsg{verification: verification, limits: setup.ModelLimits(ctx, p, model, catalog)}
 	}
 }
 
@@ -263,7 +315,19 @@ func (m setupModel) onCatalog(msg catalogMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	}
 	m.catalog = msg.models
+	// Open on the model this provider already uses, where it is still in the
+	// catalog. A re-verification usually means keeping the model and correcting
+	// what surrounds it, and making the user find their own model in a
+	// fifty-entry list invites picking the wrong one by accident.
 	m.stage, m.cursor = stageChooseModel, 0
+	if current := strings.TrimSpace(m.opts.Existing.Models[m.name]); current != "" {
+		for i, entry := range m.catalog {
+			if entry.ID == current {
+				m.cursor = i
+				break
+			}
+		}
+	}
 	return m, nil
 }
 
@@ -273,7 +337,7 @@ func (m setupModel) onVerified(msg verifiedMsg) (tea.Model, tea.Cmd) {
 		m.stage = stageFailed
 		return m, nil
 	}
-	m.result = setup.Build(m.name, m.provider, m.model, m.credPlan, m.envVar, m.secret)
+	m.result = setup.Build(m.name, m.provider, m.model, m.credPlan, m.envVar, m.secret, msg.limits)
 	m.makeDefault = m.defaultProposal()
 	m.result.MakeDefault = m.makeDefault
 	m.stage = stageConfirm
@@ -315,8 +379,7 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.stage = stageVerifying
 			return m, tea.Batch(m.spin.Tick, m.verifyCmd())
 		case "b", "esc":
-			m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
-			return m, nil
+			return m.back()
 		case "q":
 			m.quitting = true
 			return m, tea.Quit
@@ -330,8 +393,7 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.makeDefault = !m.makeDefault
 			return m, nil
 		case "esc", "b":
-			m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
-			return m, nil
+			return m.back()
 		case "q":
 			m.quitting = true
 			return m, tea.Quit
@@ -360,11 +422,26 @@ func (m setupModel) onListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
-		return m, nil
+		return m.back()
 	case "enter":
 		return m.onSelect()
 	}
+	return m, nil
+}
+
+// back returns to the provider list, or leaves when there is no list to return
+// to.
+//
+// A run started with `--provider` never scanned, so its provider list is empty:
+// going "back" to it would draw a screen with no choices on it and no way off,
+// and the next enter would index an empty slice. The provider was named on the
+// command line, so backing out of the first screen after it is leaving.
+func (m setupModel) back() (tea.Model, tea.Cmd) {
+	if len(m.choices) == 0 {
+		m.quitting = true
+		return m, tea.Quit
+	}
+	m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
 	return m, nil
 }
 
@@ -372,8 +449,7 @@ func (m setupModel) onInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.input.Blur()
-		m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
-		return m, nil
+		return m.back()
 	case "enter":
 		return m.onSubmit()
 	}

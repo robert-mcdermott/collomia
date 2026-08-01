@@ -103,13 +103,21 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 	case "/context":
 		usage := m.runtime.Agent.Usage()
 		estimate, window := m.runtime.Agent.ContextEstimate()
-		windowText := "unknown"
+		// "unknown" is not a neutral report. A zero window makes automatic
+		// compaction unreachable for the whole session, so the number nobody
+		// configured is the reason a long session will end at a provider
+		// context-length error instead of compacting — and the panel that
+		// exists to explain the context window is where that has to be said.
+		windowText := "unknown — context_window is not set for this provider, so automatic compaction is disabled; set it and /compact until then"
 		if window > 0 {
 			windowText = fmt.Sprintf("%d", window)
 		}
 		cacheLine := ""
 		if summary := cacheSummary(usage, m.runtime.Agent.Capabilities()); summary != "" {
 			cacheLine = "\nPrompt cache: " + summary
+		}
+		if summary := cacheLifetimeSummary(m.runtime.Agent.CacheGaps()); summary != "" {
+			cacheLine += "\nCache lifetime: " + summary
 		}
 		reasoning := ""
 		if usage.ReasoningTokens > 0 {
@@ -418,7 +426,12 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		estimate, window := m.runtime.Agent.ContextEstimate()
 		m.addSystem(fmt.Sprintf("Compacted %d messages into a summary. Estimated context is now ~%d tokens (window %d). The full transcript remains in the session log.", count, estimate, window))
 	case "/config":
-		m.addPanel("Configuration", "Active configuration: "+m.runtime.Config.Source+"\nProject configuration takes precedence over the user configuration. Run `collo init` to create "+m.runtime.Workspace+"/.collomia.json.")
+		showAll := len(args) == 1 && strings.EqualFold(args[0], "all")
+		if len(args) > 0 && !showAll {
+			m.addError(fmt.Errorf("usage: /config [all]"))
+			break
+		}
+		m.addPanel("Configuration", configPanel(m.runtime.Config, showAll))
 	case "/clear":
 		m.runtime.Agent.Clear()
 		m.blocks = nil
@@ -439,8 +452,12 @@ func busySlashAllowed(line string) bool {
 		return false
 	}
 	switch strings.ToLower(fields[0]) {
-	case "/help", "/status", "/context", "/tasks", "/tools", "/config", "/attachments", "/transcript", "/activity", "/diff":
+	case "/help", "/status", "/context", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
+	case "/config":
+		// Both forms only read local state, so neither belongs behind the
+		// running-turn gate.
+		return len(fields) == 1 || (len(fields) == 2 && strings.EqualFold(fields[1], "all"))
 	case "/ps":
 		return len(fields) == 1
 	case "/agents":

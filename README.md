@@ -39,7 +39,8 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Read-only planning mode with a structured, persisted plan artifact (`update_plan`, `/tasks`).
 - Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, non-destructive turn rewind, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, pinned plan state, referenced oversized results, and automatic context compaction.
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), colorized diff previews at approval, and **hunk-level approval** — accept or reject individual hunks of a `write_file` change before it lands.
-- Read-only git inspection tools (status, diff, log, blame) that never commit or push.
+- Git inspection tools (`git_status`, `git_diff`, `git_log`, `git_blame`) that are read-only, bounded, and the only Git tools available in planning mode.
+- Git writes under approval: `git_commit` commits **exactly the files you name and nothing else** — the user's unrelated edits, their own staged work, untracked scratch files and build output are all left alone. Because it declares those paths, the approval prompt previews the real diff and `protect_credentials` catches a `.env` or a private key entering history, which `run_command "git commit -a"` cannot do because it names no path. `git_branch` creates a branch at HEAD without touching the working tree. **Neither pushes** — publication stays with `run_command` under `permissions.publication`.
 - `run_command` supports a pseudo-terminal (`pty: true`) on every platform — a Unix PTY, or a Windows pseudoconsole — for interactive-only or isatty-dependent programs.
 - The agent can pause and ask you a typed question (`ask_user`) instead of guessing.
 - Command output streams into the transcript live, for both foreground and background commands.
@@ -66,7 +67,9 @@ collo setup
 
 It looks for local runtimes that are actually running, notices provider API keys your environment already exports, offers the endpoint's own model catalog, and verifies your choice with two real requests — one plain completion and one carrying a tool definition — before writing anything. A model that answers ordinary prompts but rejects tools cannot drive a coding agent, and that is caught here rather than at your first prompt. Keys are never written into the configuration file.
 
-Azure OpenAI, Azure AI Foundry, and AWS Bedrock are configured through a short form, since neither is discoverable from a name and a key; Bedrock additionally reports which identity the AWS credential chain resolved to. Run `collo setup` again at any time to add or reconfigure a provider — it shows what is already configured, marks anything it would replace, and asks before changing your default.
+Azure OpenAI, Azure AI Foundry, and AWS Bedrock are configured through a short form, since neither is discoverable from a name and a key; Bedrock additionally reports which identity the AWS credential chain resolved to. Run `collo setup` again at any time to add or reconfigure a provider — it shows what is already configured, marks anything it would replace, and asks before changing your default. `collo setup --provider <name>` skips the scan and re-verifies one provider you already have, leaving its credential untouched.
+
+Setup also writes both token limits and says where each number came from — the endpoint that published it, a conservative table of documented limits, or an assumption it labels as one. Both fields fail silently when omitted: without `context_window` automatic compaction never runs and a long session ends at a provider context-length error, and without `max_tokens` every answer stops at 8192 tokens with no message. `collo doctor` warns about either, naming the consequence rather than the field.
 
 If the provider's environment variable is already exported, setup uses it and never asks for a key — the recommended route for a long credential, since the value never passes through an input field:
 
@@ -192,6 +195,10 @@ In that project, the effective configuration uses the global OpenRouter provider
 
 Active configuration files are strict JSON. `collo config reference` prints an exhaustive commented JSONC reference without changing any files. Add `--with-reference` to either form of `collo init` to save that documentation beside the active file as `.collomia.example.jsonc` or `config.example.jsonc`. These reference files are documentation only and are never loaded.
 
+Because an active file cannot carry comments, the documentation reaches it through an editor schema instead. `collo schema config` generates a JSON Schema 2020-12 contract from the configuration structs themselves, and `collo init` and `collo setup` write it beside the file they create as `collomia.schema.json` with a `$schema` key pointing at it. Any editor speaking the JSON language server then offers completion, per-field documentation on hover, the valid values for every enumerated setting, and an inline error on a misspelled field — while you type, rather than at the next launch. Field names and types are read from the structs and enumerated values from the validator's own vocabularies, so the schema cannot recommend a value the loader rejects. It is a sibling file rather than a hosted URL because it describes the fields *your* build understands; `collo doctor` reports a reference that is missing or that was generated by a different build.
+
+Inside a session, `/config` shows what the layers actually resolved to — the effective value of each safety setting, the layer that set it, and anything a project asked to weaken and did not get. `/config all` extends that to every setting, including the ones no file mentions, which is the case reading a configuration file cannot answer. Values that can hold a credential are redacted by position rather than by pattern, because the merged configuration holds keys resolved from the environment and the OS credential store that appear in no file on disk.
+
 ## Usage
 
 ```text
@@ -204,6 +211,7 @@ collo init --global [--with-reference]  create ~/.collomia/config.json
 collo config validate [--strict]    validate configuration with field-level errors
 collo config show                   print the effective configuration and its layers
 collo config reference              print every configuration option with annotations
+collo schema config                 print the JSON Schema for the configuration file, for editors
 collo trust [--status|--revoke]     review and trust this workspace's project config
 collo doctor [--strict]             diagnose config, terminal, git, providers, MCP, sandbox
 collo capabilities [--markdown]     print the product capability matrix
@@ -387,7 +395,7 @@ Inside the TUI:
 | `/detach <number\|all>` | Remove one or every pending image before sending. |
 | `/mcp [subcommand]` | Browse MCP servers with a fuzzy picker, or manage them at runtime: `list`/`status` (health, identity, negotiated capabilities), `ping`, `reconnect`, `enable`/`disable`, `add`, `remove`. |
 | `/tools` | List the complete tool surface. |
-| `/config` | Show the active configuration source. |
+| `/config [all]` | Show what the configuration resolved to: layers in order, the effective safety stance, anything the containment clamp refused, and the layer that set each value. `all` lists every setting, including those no file mentions. Credential values are redacted. |
 | `/clear` | Clear active conversation context without resetting durable token/cost accounting. |
 | `/help` | Show command help and keybindings. |
 
@@ -482,6 +490,8 @@ Streaming adapters normalize upstream events before they reach the agent: text, 
 All built-in HTTP adapters use the same resilience policy. Network failures and HTTP 408, 429, 5xx, and 529 responses are retried up to three attempts with bounded exponential backoff, jitter, and `Retry-After`; authentication, permission, not-found, and other ordinary 4xx failures are not retried. A request is retried only when its body can be replayed. Failures are classified as `authentication`, `permission`, `rate_limit`, `invalid_request`, `not_found`, `timeout`, `unavailable`, `protocol`, `cancelled`, or `unknown`; status, retry timing, and request IDs are included when the provider supplies them. In `--jsonl` mode the same fields appear under `provider` on the `error` event.
 
 OpenAI-protocol models do not all accept the same Chat Completions fields. Collomia sends the backward-compatible `max_tokens` field first. Only when an upstream HTTP 400 explicitly rejects that field and directs the caller to `max_completion_tokens` does Collomia rebuild and resend the request; a similarly explicit rejection of a configured `temperature` retries with the provider default and emits a warning. Those choices are remembered for the active provider/model client, so later turns avoid the failed probe. Successful requests, unrelated 400 responses, and providers that accept the original fields are never rewritten. The configured `max_tokens` remains Collomia's provider-neutral output budget; for reasoning models the upstream `max_completion_tokens` interpretation includes hidden reasoning tokens as well as visible output.
+
+The same mechanism covers a `max_tokens` larger than the model will accept, on both the OpenAI and Anthropic routes. No catalog publishes a model's output ceiling, so the configured value is often written from documentation or from memory; when a 400 states the ceiling, Collomia retries that request under it, warns with both numbers, and remembers the ceiling for the active model. The rejection is matched on the phrasing that carries the number rather than on the digits in the message, so a rejection naming `claude-sonnet-4-5-20250929` cannot be read as a ceiling of four tokens; where no ceiling is recognized the provider's own error surfaces unchanged.
 
 Three consecutive transient request failures open a 30-second circuit so a broken endpoint is not hammered; one recovery probe closes it. `/status` shows the active provider as `not checked yet`, `healthy`, `degraded`, `circuit open`, or `testing recovery`. Switching provider/model starts a fresh health state. Timeouts are configured per provider (values shown are the defaults):
 

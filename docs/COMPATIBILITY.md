@@ -286,6 +286,114 @@ first — is discarded and reported rather than held against later work.
 This changes an interactive surface only. Headless runs, `collo` in
 non-interactive mode, and the JSONL event stream are unaffected.
 
+### Model token limits
+
+Two changes, both to configurations that were already legal.
+
+**`collo config validate` now rejects a `max_tokens` at or above
+`context_window`.** The output cap is spent out of the same budget as the
+prompt, so no request could ever satisfy such a provider block; it previously
+validated clean and surfaced mid-session as a provider error naming neither
+field. Lower `max_tokens` or raise `context_window`. Nothing else about the two
+fields is now required: an absent `context_window` still loads, because it
+always has, and is reported by `collo doctor` rather than refused.
+
+**A `max_tokens` larger than the model accepts is now retried rather than
+failing the turn.** When a provider's HTTP 400 states its own ceiling, that
+request is resent under the stated ceiling, a warning names both numbers, and
+the ceiling is remembered for the active model for the life of the session. The
+configuration file is never modified. A rejection with no recognizable ceiling
+in it behaves exactly as before: the provider's error surfaces unchanged. This
+applies to the OpenAI-protocol and Anthropic Messages routes.
+
+`collo setup` also now always writes both fields where it previously wrote a
+constant `context_window` and no `max_tokens` at all. Existing configurations
+are untouched; re-run `collo setup --provider <name>` to have the numbers
+resolved from the endpoint.
+
+### Editor schema and the `$schema` key
+
+Three changes, none of which alters how any existing configuration behaves.
+
+**`$schema` is now a recognized configuration key.** It names the JSON Schema
+an editor should use for the file and configures nothing. It was previously an
+unknown field, which ordinary loading ignored and `collo config validate
+--strict` rejected — so a file carrying it would have validated inconsistently
+depending on the flag. Declaring it removes that split. A file without the key
+is unaffected.
+
+**`collo init` now writes a second file.** `collomia.schema.json` is created
+beside the configuration, and the configuration's `$schema` points at it
+relatively. The file is generated output, is never read by Collomia, and can be
+deleted or gitignored; deleting it costs only the editor assistance, and
+`collo doctor` will then report the reference as dangling. The path is printed
+when it is created, so a project's copy does not appear in a repository
+unannounced.
+
+**`collo setup` adds `$schema` to a configuration it writes to, and refreshes
+the sibling schema on every run.** It adds the key only when the file does not
+already have one, so a `$schema` pointing at a shared or hosted contract is
+left exactly as it was. No other key is touched, and the sparse-file guarantee
+is unchanged: settings this build does not know about still survive untouched.
+
+Regenerate the schema after upgrading Collomia — `collo schema config >
+collomia.schema.json`, or simply re-run `collo setup`. A schema left over from
+an older build describes fields the running one may not have, which
+`collo doctor` reports as a warning rather than leaving to be discovered
+through wrong completions.
+
+`/config` output changed shape entirely: it previously printed the active
+configuration path and a sentence about precedence, and now reports the layers
+in order, the effective value and origin of each safety setting, and any
+project weakening that was refused. There is no configuration for this and
+nothing consumes it programmatically; scripts should use `collo config show`,
+which is unchanged.
+
+### Git write tools
+
+Two new built-in tools, `git_commit` and `git_branch`. Both are visible to the
+model by default, neither is available in planning mode, and
+`options.disabled_tools` removes either. Nothing existing changes: the
+read-only Git tools, `run_command`, and every permission setting behave exactly
+as before, and a configuration written before this release needs no edit.
+
+This is additive in capability terms rather than in permission terms, and the
+distinction is worth stating. The agent could already commit — `run_command
+"git commit -m …"` has always worked, and on a stock configuration
+`collo policy check 'git commit -m test' --autonomy autopilot` reports
+**allow**, because the safety classifier describes destruction and a commit
+destroys nothing. What changes is that a commit made through `git_commit`
+declares the files it will contain, so `permissions.protect_credentials` can
+act on them: committing a tracked `.env` or a private key now prompts by
+default and is refused under `deny`. The equivalent `run_command` invocation
+still cannot be gated that way, because `git commit -a` names no path for the
+shell analysis to classify.
+
+The guarantee is exact: **a commit contains the files named in `paths` and
+nothing else.** `paths` is required, and the commit runs as
+`git commit -- <paths>`, so:
+
+- unrelated changes in the working tree stay uncommitted, including the user's
+  own edits in progress;
+- anything the user staged by hand stays staged — the tool commits around a
+  hand-built index rather than through it;
+- untracked files are never swept in, so build output, scratch files, and a
+  local `.env` cannot ride along. A new file is committed when it is named, and
+  only then.
+
+There is deliberately no "commit everything that changed" mode. It would decide
+a commit's contents from whatever happened to be in the working tree, which is
+the one thing this tool exists not to do.
+
+`git_branch` only creates. Switching to an existing branch is refused, because
+a checkout rewrites the working tree from outside Collomia's change tracking
+and `/restore` verifies the workspace before reversing anything — a switch
+would leave earlier turns unrecoverable. Use `run_command` when a real checkout
+is wanted.
+
+Pushing is unchanged and stays with `run_command` under
+`permissions.publication`. There is no push tool.
+
 ## Sessions and upgrades
 
 Durable session JSONL is append-only. Current releases:

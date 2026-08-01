@@ -249,6 +249,59 @@ permission error is misread as a Bedrock outage. Authentication modes that have
 nothing to store — Entra, which issues short-lived tokens through
 `DefaultAzureCredential`, and the SigV4 chain — never ask you for a key.
 
+### Re-running setup for a provider you already have
+
+```sh
+collo setup --provider bedrock
+```
+
+This skips the runtime scan and re-enters the wizard pointed at a provider your
+configuration already names. The credential is left exactly as it is — the run
+uses whatever already authenticates and never stores, replaces, or asks for a
+key — and everything else is the ordinary path: the endpoint's catalog, the
+model (the picker opens on the one you are already using), two verification
+requests, and a confirmation before anything is written.
+
+Reach for it when you change models, when a model's limits have changed, or
+when `collo doctor` warns about a provider's token limits. An unknown name lists
+what your file actually contains rather than dropping you into adding a new
+provider.
+
+### The two token limits, and what happens when you omit them
+
+`context_window` and `max_tokens` both look optional and neither behaves that
+way. They fail silently, in opposite directions:
+
+| Field | Omitted | Consequence |
+| --- | --- | --- |
+| `context_window` | stays unset | Automatic compaction never runs. A long session ends at a provider context-length error rather than compacting to survive. |
+| `max_tokens` | becomes 8192 | Every answer stops at 8192 tokens, with no message. On a current frontier model that is a small fraction of what it can produce. |
+
+`collo setup` writes both, and says where each number came from:
+
+- **reported by the endpoint** — the catalog or the runtime stated it. Ollama is
+  asked about the chosen model directly, LM Studio's native catalog is read for
+  the whole list (including the window a model is *loaded* with, which is what
+  it is actually serving), and OpenRouter-style catalogs publish both numbers
+  beside the model id.
+- **published limits** — no hosted catalog publishes per-model limits, so a
+  small built-in table of documented values fills the gap. It is deliberately
+  conservative: it is never allowed to override a number you configured or one
+  an endpoint reported, and where it is wrong it is wrong in the direction that
+  compacts early rather than the direction that breaks.
+- **assumed** — nothing established these. Edit them.
+
+If `max_tokens` is larger than the model actually accepts, the provider's
+rejection names its real ceiling, and Collomia retries that request under the
+stated ceiling and remembers it for the rest of the session — with a warning
+telling you to set the value permanently. A turn is not lost to a number that
+was written from memory.
+
+`collo doctor` reports both fields for every provider and warns when either is
+missing, naming the consequence rather than the field. `collo config validate`
+refuses a `max_tokens` at or above `context_window`, which no request can
+satisfy.
+
 ### Credentials, and skipping the key prompt entirely
 
 `collo setup` never writes an API key into a configuration file. It prefers a
@@ -436,6 +489,7 @@ plan tool, making it useful before authorizing edits.
 | Project | `<workspace>/.collomia.json` | Only that workspace, after trust when the file exists |
 | User reference | `~/.collomia/config.example.jsonc` | Documentation only; never loaded |
 | Project reference | `<workspace>/.collomia.example.jsonc` | Documentation only; never loaded |
+| Editor schema | `collomia.schema.json`, beside each active file | Documentation only; read by your editor, never by Collomia |
 
 Active files are strict JSON: no comments, trailing commas, or unquoted keys.
 The `.example.jsonc` files may contain comments because they are not read as
@@ -450,6 +504,76 @@ collo init --with-reference
 Copy settings you intend to change from the JSONC reference into the active
 JSON file. Do not rename the reference to an active filename without first
 removing its comments.
+
+### Editing without reading this document first
+
+The active file is strict JSON, so it cannot carry the comments that make the
+reference readable. That is what the editor schema is for. `collo init` and
+`collo setup` write `collomia.schema.json` beside the file they create and add
+a `$schema` key pointing at it, which gives you — in VS Code, Zed, Neovim with
+`jsonls`, IntelliJ, and anything else speaking the JSON language server —
+completion for every field name, the documentation for a field on hover, the
+valid values for every enumerated setting, and a red underline on a misspelling
+while you are typing it rather than at the next launch.
+
+Write it yourself for a configuration that predates this:
+
+```sh
+collo schema config > ~/.collomia/collomia.schema.json
+```
+
+and add the reference as the first key of `~/.collomia/config.json`:
+
+```json
+{
+  "$schema": "./collomia.schema.json",
+  "schema_version": 1
+}
+```
+
+Adding that key is the only manual step: `collo schema config` prints the
+schema and deliberately does not edit your configuration. If you would rather
+not hand-edit, `collo setup --provider <name>` writes the sibling schema *and*
+inserts the `$schema` key for you — but it re-runs the full probe-and-verify
+path for that provider, so it is the heavier option when the schema is all you
+want.
+
+The schema is generated by the binary that reads the configuration, so it
+describes exactly the fields your build understands. Regenerate it after
+upgrading; `collo doctor` reports a reference that is missing or that was
+written by a different build, because both fail silently — an editor with a
+broken `$schema` link simply offers nothing, which looks the same as never
+having had one.
+
+Two things the schema is deliberately stricter and looser about than the
+loader:
+
+- It flags unknown fields, matching `collo config validate --strict` rather
+  than ordinary loading, which ignores them. A misspelled setting that silently
+  does nothing is the mistake an editor is best placed to catch.
+- It marks nothing at the top level as required. A configuration file is one
+  layer of a merge, so a project `.collomia.json` that sets two rules and
+  nothing else is perfectly correct. Requirements that apply to the *merged*
+  result — at least one provider, a resolvable `default_provider` — are still
+  reported by `collo config validate`.
+
+### Seeing what actually took effect
+
+Reading your configuration file tells you what one layer asked for. It cannot
+tell you which layer won, and it cannot tell you what is in force for the
+settings no file mentions — which is most of them. Inside a session:
+
+```
+/config          the layers in order, the effective safety stance, and anything refused
+/config all      every setting in force, with the layer that set it
+```
+
+Each row names its origin, and `built-in default` means no file anywhere states
+that setting — so searching your configuration for it will not find it. Values
+that can hold a credential are shown as `(redacted)`, decided by *where the
+value sits* rather than by what it looks like: the loader resolves API keys
+from the environment and the OS credential store into the merged
+configuration, so this view holds secrets that appear in no file on disk.
 
 ### Precedence
 
@@ -2790,7 +2914,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
-| `/config` | Show the active configuration source. |
+| `/config [all]` | Show what the configuration resolved to: layers in order, the effective safety stance, anything the containment clamp refused, and the layer that set each value. `all` lists every setting, including those no file mentions. Credential values are redacted. |
 | `/clear` | Clear active conversation context. It does not delete the durable session file or reset cumulative token/cost accounting and budgets. |
 | `/quit` or `/exit` | Exit. |
 
@@ -3423,7 +3547,7 @@ collo sessions list|show|fork|rewind|rename|archive|unarchive|delete
 collo skills list|show|new|install|update|remove|enable|disable
 collo mcp list|show|add|remove|enable|disable|test
 collo completion bash|zsh|fish|powershell
-collo schema events
+collo schema events|config
 collo replay [--check] <trace|->
 collo version
 ```
@@ -3480,6 +3604,8 @@ question broker can make the model-visible subset smaller.
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
 | `git_log` | Read-only recent history, default 20 and maximum 100 commits. |
 | `git_blame` | Read-only attribution, optionally line-bounded. |
+| `git_commit` | Commit exactly the files named in `paths` and nothing else, via `git commit -- <paths>`: unrelated working-tree changes stay uncommitted and anything the user staged by hand stays staged. `paths` is required. Declaring the paths is what lets the approval prompt preview the real change and `protect_credentials` see a credential file entering history. Never pushes. |
+| `git_branch` | Create a branch at the current commit and switch to it, leaving the working tree untouched. Refuses an existing branch, because checking one out changes files outside Collomia's tracking and would stop `/restore` from reversing earlier turns. |
 | `detect_verification` | Detect real build/lint/test commands from project files. |
 | `start_process` | Start a session-lifetime background command under command safety/sandbox policy. |
 | `list_processes` | List background process IDs, command, status, and uptime. |

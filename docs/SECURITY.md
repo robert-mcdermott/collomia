@@ -699,6 +699,47 @@ This fail-stop guard covers the durable conversation/session store. The debug
 log remains a best-effort diagnostic: its availability is checked by
 `collo doctor`, but a later I/O failure in it does not stop a tool.
 
+### What survives a crash, and what survives a power cut
+
+These are different questions with different answers, and the difference is
+worth stating rather than leaving "durable" to be read as more than it is.
+
+A **process death** — a kill, a panic, a closed terminal — loses nothing that
+was written. The records are already in the operating system's page cache, and
+the next process to read the file sees them whether or not this one exited
+cleanly.
+
+A **power loss or kernel panic** discards whatever the operating system had not
+yet written back, which can be any suffix of the file. Against that, the
+guarantee is: **a turn that finished is on disk.** The session is flushed at
+each turn boundary and again when it closes. An interrupted turn may be lost
+back to the previous boundary, which is the case nobody resumes into anyway.
+
+Flushing every record instead would cost roughly four milliseconds each on a
+local SSD and considerably more on network or encrypted storage, against tens
+of records in an ordinary turn — a per-tool-call cost for a guarantee finer
+than anyone can act on. The measurement, not the argument, is what settled it.
+
+The **audit ledger is flushed per entry**, not per turn. The asymmetry follows
+from what each file is for: a session is the user's own conversation, while the
+ledger is the record of what an agent was permitted to do, read after the fact
+by someone reconstructing an incident. A record that quietly loses its last
+entries during the event worth investigating is not that record.
+
+Recovery is tolerant of any truncation point, not only of tidy record
+boundaries. A final line whose newline never reached disk is still loaded, a
+partially written record is discarded rather than half-decoded, and a session
+whose metadata record never reached disk is refused rather than resumed as an
+anonymous one. This is verified by loading a session at every byte offset of
+its own log rather than at hand-picked positions.
+
+Terminal loss is handled rather than fatal. SIGHUP — a closed window, a dropped
+ssh connection — begins the same orderly shutdown as SIGINT and SIGTERM, so
+background processes are stopped and the session is flushed and closed. On
+Windows the equivalent console-close event arrives as SIGTERM, with the
+operating system's own few-second budget before the process is terminated
+regardless.
+
 The permission audit ledger is deliberately neither of those. A ledger write
 failure does not stop a tool — refusing work the user already authorized
 because a record could not be filed would be the wrong trade — but it is never

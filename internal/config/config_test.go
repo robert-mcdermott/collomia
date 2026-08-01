@@ -136,6 +136,58 @@ func TestValidateProviderTimeouts(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsAnOutputCapAtOrAboveTheWindow(t *testing.T) {
+	// The output cap is spent out of the same budget as the prompt, so this
+	// combination cannot be satisfied by any request. It used to validate
+	// clean and surface mid-session as a provider error naming neither field.
+	cfg := Defaults()
+	p := cfg.Providers["ollama"]
+	p.Context, p.MaxTokens = 32768, 32768
+	cfg.Providers["ollama"] = p
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected max_tokens at the context window to fail validation")
+	}
+	if !strings.Contains(err.Error(), "max_tokens") || !strings.Contains(err.Error(), "context_window") {
+		t.Errorf("the error must name both fields, got %q", err)
+	}
+}
+
+func TestValidateAllowsAnAbsentContextWindow(t *testing.T) {
+	// It behaves worse than its author intended — automatic compaction is
+	// unreachable — but it is a legal configuration, and refusing to start over
+	// a field that has always been optional would break every file written
+	// before this was validated. `collo doctor` warns instead.
+	cfg := Defaults()
+	p := cfg.Providers["ollama"]
+	p.Context, p.MaxTokens = 0, 0
+	cfg.Providers["ollama"] = p
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("an absent limit must not refuse to start: %v", err)
+	}
+}
+
+func TestNormalizeRecordsThatMaxTokensWasDefaulted(t *testing.T) {
+	// Nothing downstream could otherwise tell a deliberate 8192 from a field
+	// the user never knew existed, and only the second is worth reporting.
+	cfg := Defaults()
+	p := cfg.Providers["ollama"]
+	p.MaxTokens = 0
+	cfg.Providers["ollama"] = p
+	cfg.normalize()
+	if got := cfg.Providers["ollama"]; got.MaxTokens != DefaultMaxTokens || !got.MaxTokensDefaulted {
+		t.Errorf("max_tokens=%d defaulted=%v, want %d and true", got.MaxTokens, got.MaxTokensDefaulted, DefaultMaxTokens)
+	}
+
+	p = cfg.Providers["ollama"]
+	p.MaxTokens, p.MaxTokensDefaulted = DefaultMaxTokens, false
+	cfg.Providers["ollama"] = p
+	cfg.normalize()
+	if cfg.Providers["ollama"].MaxTokensDefaulted {
+		t.Error("a value the user wrote must not be reported as defaulted, even when it equals the default")
+	}
+}
+
 func TestValidateSandboxWritableRoots(t *testing.T) {
 	cfg := Defaults()
 	cfg.Permissions.SandboxWritableRoots = []string{".cache", "  "}

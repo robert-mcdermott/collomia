@@ -87,6 +87,40 @@ func TestListModelsParsesCatalog(t *testing.T) {
 	}
 }
 
+func TestListModelsKeepsThePublishedLimits(t *testing.T) {
+	// These fields were parsed and discarded before, which meant every limit
+	// downstream was a guess even when the catalog had stated the answer.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[
+			{"id":"a/model","context_length":262144,"top_provider":{"max_completion_tokens":16384}},
+			{"id":"loaded","max_context_length":131072,"loaded_context_length":8192},
+			{"id":"plain"}
+		]}`)
+	}))
+	defer server.Close()
+	client := &OpenAIClient{Label: "test", BaseURL: server.URL}
+	models, err := client.ListModels(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]ModelInfo{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if got := byID["a/model"].Limits; got.ContextWindow != 262144 || got.MaxOutput != 16384 || got.ContextSource != LimitsEndpoint {
+		t.Errorf("published limits = %+v", got)
+	}
+	// A runtime serving a smaller loaded window is serving the smaller one.
+	if got := byID["loaded"].Limits.ContextWindow; got != 8192 {
+		t.Errorf("loaded context window = %d, want the 8192 actually being served", got)
+	}
+	// An endpoint that publishes nothing must not acquire a number nobody
+	// stated: the zero value is the honest report, and the table applies later.
+	if byID["plain"].Limits.Known() {
+		t.Errorf("a catalog entry with no limits must carry none, got %+v", byID["plain"].Limits)
+	}
+}
+
 func TestDoWithRetryRecoversFromTransientFailures(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

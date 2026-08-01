@@ -66,6 +66,7 @@ type Agent struct {
 	projectInstructions string
 	messages            []provider.Message
 	usage               provider.Usage
+	cacheGaps           *cacheGapStats
 	lastInputTokens     int
 	usageWatermark      int
 	maxIterations       int
@@ -349,6 +350,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				return "", wrapped
 			}
 		}
+		// Recorded here rather than after the response, because what decides
+		// whether a cached prefix survived is when the request arrives, not
+		// how long the model then took to answer it.
+		a.cacheGapStatsOrInit().observeRequest()
 		var streamedUsage atomic.Bool
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" {
@@ -1715,6 +1720,24 @@ func (a *Agent) ProviderHealth() provider.Health {
 }
 
 func (a *Agent) Usage() provider.Usage { a.mu.RLock(); defer a.mu.RUnlock(); return a.usage }
+
+// CacheGaps reports how this session's request cadence sits against the
+// prompt-cache lifetime. See cachegap.go for why this is the measurement the
+// one-hour-TTL decision needs.
+func (a *Agent) CacheGaps() CacheGaps { return a.cacheGapStatsOrInit().snapshot() }
+
+// cacheGapStatsOrInit lazily creates the accumulator, so every Agent
+// construction site gets it without each one having to remember. There are
+// several, and a delegated child that silently measured nothing would make the
+// aggregate quietly wrong rather than visibly absent.
+func (a *Agent) cacheGapStatsOrInit() *cacheGapStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cacheGaps == nil {
+		a.cacheGaps = newCacheGapStats()
+	}
+	return a.cacheGaps
+}
 
 // nextRequestMaxTokens reserves enough of a delegated task's total token
 // budget for the estimated next input and caps the provider's output request

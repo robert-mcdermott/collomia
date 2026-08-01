@@ -13,12 +13,27 @@ import (
 )
 
 // Git inspection tools are read-only, run git directly (no shell), bound
-// their output, and refuse argument shapes that could smuggle flags. They
-// never commit, branch, push, or mutate the repository.
+// their output, and refuse argument shapes that could smuggle flags. The
+// mutating counterparts live in gitwrite.go and go through the permission
+// layer; nothing in this file commits, branches, or pushes.
 
 const gitOutputCap = 128 * 1024
 
 func runGit(ctx context.Context, workspace string, args ...string) (string, error) {
+	out, err := runGitRaw(ctx, workspace, args...)
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(out) == "" {
+		out = "(no output)"
+	}
+	return out, nil
+}
+
+// runGitRaw returns git's output verbatim, including the empty string, so a
+// caller can tell "no matching refs" from a line of output. The display
+// substitution in runGit would otherwise have to be parsed back out.
+func runGitRaw(ctx context.Context, workspace string, args ...string) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("git is not installed or not in PATH")
 	}
@@ -33,9 +48,6 @@ func runGit(ctx context.Context, workspace string, args ...string) (string, erro
 	out := buffer.String()
 	if err != nil {
 		return out, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	}
-	if strings.TrimSpace(out) == "" {
-		out = "(no output)"
 	}
 	return out, nil
 }

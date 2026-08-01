@@ -261,8 +261,16 @@ func Discover(ctx context.Context, name string, p appconfig.Provider) ([]provide
 	if err != nil {
 		return nil, err
 	}
+	// Enrich before declaring capabilities, so a per-model window reaches the
+	// declaration rather than arriving after it.
+	models = CatalogLimits(ctx, p, models)
 	for i := range models {
-		models[i].Capabilities, err = provider.CapabilitiesFor(p.Type, models[i].ID, p.Context)
+		// The window declared for a model is that model's own, not the one
+		// being assembled for the provider. Passing p.Context here — which is
+		// what this did — annotated every entry in the catalog with the same
+		// number, so a picker that looked like per-model discovery was showing
+		// one constant repeated down the list.
+		models[i].Capabilities, err = provider.CapabilitiesFor(p.Type, models[i].ID, models[i].Limits.ContextWindow)
 		if err != nil {
 			return nil, err
 		}

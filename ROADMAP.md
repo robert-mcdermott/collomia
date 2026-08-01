@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-30
+**Status updated:** 2026-07-31
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -75,14 +75,430 @@ campaigns — since the last P0 outside it was reclassified on the evidence that
 the enforced all-or-nothing network boundary it was meant to add already
 existed on all three platforms. The audit ledger those campaigns and that
 review read from is now itself complete, attributable, bounded, and
-inspectable, and pseudo-terminal execution reaches all three platforms. The
-most recent wave closed the last known asymmetry in the risk classifier: the
-safety taxonomy described destruction only, so publishing and deploying rode
-along with autopilot while their deletion counterparts required a decision.
+inspectable, and pseudo-terminal execution reaches all three platforms. An
+earlier wave closed the last known asymmetry in the risk classifier: the safety
+taxonomy described destruction only, so publishing and deploying rode along
+with autopilot while their deletion counterparts required a decision.
+
+The most recent wave took the first sustained beta report at its word. It was
+not about a missing capability: it was about having to hand-write JSON, and in
+particular about correcting `max_tokens` and `context_window` by hand because
+the defaults were wrong for the models in use. Both fields turn out to have
+failed silently and in opposite directions, and the product had never held any
+knowledge of a model's limits to offer instead. They are now discovered, always
+written, reported, validated, and — where the configured value is too large —
+corrected from the provider's own rejection.
+
+The wave after it finished the other half of the same report. The limits wave
+answered "two numbers were wrong"; this one answered "I have to read extensive
+documentation, or hand it to an AI to read, before I can write the file at
+all". The documentation was never the problem — the active configuration file
+is strict JSON and structurally cannot carry the comments the reference is made
+of, so the documentation had nowhere to be at the moment it was needed. It now
+reaches the editor as a generated schema.
+
+The most recent wave took the reliability P0 by running the failures rather
+than reasoning about them, and each one was a defect rather than a
+confirmation: terminal loss orphaned every background process, the session was
+never flushed to stable storage at all, and the first exhaustion harness passed
+against an implementation that destroyed the file it was replacing.
+
+The wave before it closed the last gap between what the agent could do and
+what the permission layer could see it doing. Committing was never impossible —
+`run_command "git commit"` worked and was approved silently under autopilot —
+but it was invisible, because the safety taxonomy classifies destruction and a
+commit destroys nothing. `git_commit` declares the files entering the commit, so
+`protect_credentials` can act on them; both write tools are classified by the
+same code that classifies the equivalent command string.
 
 No wave is currently active. See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — the failures nobody had run
+
+**Goal:** take the largest untouched P0 by running the failures the project had
+only ever reasoned about — a terminal that goes away, a power cut, a full
+disk — instead of adding another test that injects the error it expects.
+
+- [x] Find that terminal loss was unhandled, and that it was not a cosmetic
+  gap. `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` appeared at
+  three sites and none of them named SIGHUP, so a closed window or a dropped
+  ssh connection hit the Go runtime's default disposition: the process died
+  instantly and `defer runtime.Close()` never ran. Because `ProcessManager`
+  gives every background process its own group with `Setpgid`, and a hangup
+  reaches only the foreground group, **every background process the agent had
+  started was orphaned** and kept running against the workspace. The session
+  was never closed and the log never flushed. Confirmed by building a program
+  with the same wiring, sending it a real SIGHUP, and watching the child
+  survive its parent.
+- [x] Fix it in one place rather than three. `internal/shutdown` owns the set,
+  which is the same three-copies-of-one-vocabulary shape the completion table
+  had — and here the drift had already cost the signal that mattered.
+- [x] Discover that registering the signal alone would have made things
+  **worse**, which is the finding that justified reading the dependency rather
+  than trusting it. Bubble Tea installs its own handler for SIGINT and SIGTERM
+  and quits on them, which is why those two always reached teardown; it does
+  not handle SIGHUP, and it never sees Collomia's context. Registering SIGHUP
+  without `tea.WithContext` would have captured the signal, suppressed the
+  default disposition that at least ended the process, and left the interface
+  running against a terminal that no longer exists. A hang is worse than a
+  crash. The contract is now pinned by its own test so an upgrade cannot
+  silently remove it, and a shutdown-caused exit is reported as a clean one
+  rather than as a program failure.
+- [x] Separate what survives a crash from what survives a power cut, because
+  they had been one word. Process death loses nothing — the records are already
+  in the page cache — and that is what the existing tests covered. Power loss
+  discards whatever was not written back, and `Session.append` **never called
+  Sync**, so a cut could take the whole session.
+- [x] Choose the flush boundary by measuring it. An fsync costs about four
+  milliseconds on a local SSD against tens of records in an ordinary turn, so
+  per-record flushing buys a guarantee finer than anyone can act on — nobody
+  resumes into the middle of a turn — at a cost paid on every tool call. The
+  session flushes at turn boundaries and on close, supporting a claim a user can
+  act on: a turn that finished is on disk. A failed flush is latched exactly as
+  a failed write is, because an fsync error is not retryable — Linux may have
+  already discarded the pages it could not write.
+- [x] Flush the audit ledger per entry instead, and say why the two differ. A
+  session is the user's own conversation; the ledger is the record of what an
+  agent was permitted to do, read by someone reconstructing an incident and by
+  the review that gates 1.0. A record that quietly loses its last entries during
+  the event worth investigating is not that record.
+- [x] Sweep recovery across every byte offset rather than at chosen record
+  boundaries, since power loss can lose any suffix. That immediately found the
+  boundary the design actually has: a final line whose newline never reached
+  disk still loads, a partially written record is discarded rather than
+  half-decoded, and a session whose metadata never reached disk is refused
+  rather than resumed as an anonymous one. The first version of the sweep
+  asserted "always loads" and was wrong — refusing is correct there.
+- [x] Run the durable writers against a filesystem that is genuinely full.
+  `internal/reliability` builds an 8 MiB image with `hdiutil`, which needs no
+  privileges on macOS; Linux has no unprivileged equivalent, so the suite skips
+  unless an operator supplies a prepared mount rather than pretending to cover
+  the platform.
+- [x] Discover that the first version of that harness proved nothing, which is
+  the whole argument for running real failures. Filling the disk completely and
+  then attempting a write **passed against a `safefile.Replace` rewritten to
+  truncate the destination in place** — precisely the data loss
+  temporary-plus-rename exists to prevent. With nothing left, creating the
+  temporary file fails first, so the interesting code never runs. A real disk
+  fills while a program is running, and the write that fails is the one that had
+  somewhere to start and nowhere to finish. Filling completely and then handing
+  a known amount back reproduces that, and the same mutation now destroys the
+  file and fails both tests. Sizes come from `statfs` rather than from a
+  constant, which had guessed wrong in both directions.
+- [x] Raise the cancellation gate from five iterations to twenty and add the new
+  reliability tests to it. A race that reproduces one run in ten passes a
+  five-run gate most of the time, which is the same as not having one.
+
+**Behavior change:** SIGHUP now begins an orderly shutdown instead of killing
+the process, so background processes are stopped and the session is flushed and
+closed. Nothing configurable changed.
+
+**What it is not.** Not a claim that a power cut is free: an interrupted turn
+may still be lost back to the previous boundary, and that is stated rather than
+implied. The exhaustion suite covers the durable writers, not every path that
+touches a file. And the reliability P0 is not finished — an independent security
+assessment and the sustained adversarial campaigns remain, and those are the
+items that actually gate 1.0.
+
+## Completed wave — the commit that says what is in it
+
+**Goal:** stop the agent from having to drop to `run_command` to commit, and in
+doing so turn committing from something the permission layer cannot see into
+something it can describe, preview, and gate.
+
+- [x] Establish that this adds structure rather than capability, because that
+  decides how much freedom the design has. `run_command "git commit"` has always
+  worked, and measured against the built binary,
+  `collo policy check 'git commit -m test' --autonomy autopilot` answers
+  **allow (source: mode)** on a stock configuration. `internal/shell/safety.go`
+  is a taxonomy of destruction and a commit destroys nothing, so nothing
+  classified it. The deferred list has said since the beginning that autonomous
+  Git commits are not the intent; what was missing was any surface on which to
+  express that.
+- [x] Add `shell.AnalyzeArgv` before adding a tool that would need it. A
+  built-in that constructs its own argv has to be classified by the code that
+  classifies the same command as text, or it is a second classification site —
+  the shape that let the `host` matcher ship inert, made `collo policy check`
+  report the wrong decision for a credential-reaching command, and gave
+  delegated verification its own command runner. Here the consequence would have
+  been worse than a wrong report: a structured Git tool that skipped
+  `classifyGit` and `publicationLabel` would be a documented way around the
+  confirmations and the publication tier that govern the identical command
+  string. A test runs ten commands down both paths and compares.
+- [x] Run only the passes that apply. Splitting, quote handling, command
+  substitution, redirection, and the raw-string Windows scan all describe what a
+  *shell* does with a string; an argv has already been split, and a `>` or a
+  `` `rm -rf /` `` among its words is an argument. Running them anyway would
+  invent findings, and the finding it would invent is a commit message quoting a
+  command — which is exactly what commit messages do. Both directions are
+  pinned: the message is data through `AnalyzeArgv`, and the same text through
+  `Analyze` still defeats static analysis.
+- [x] Ship `git_commit` declaring every file the commit will contain. This is
+  the part `run_command` structurally cannot do — `git commit -a` names no path,
+  so shell analysis has no argument to classify and a tracked `.env` is
+  committed with nothing noticing. A declared path list runs through the
+  permission layer's existing derivation from `Action.Paths`, so committing a
+  credential file prompts under `protect_credentials` and is refused under
+  `deny`, without this tool knowing what a credential is. That derivation was
+  written on the promise that a tool added later would be covered by declaring
+  what it touches; this is the first tool to collect on it.
+- [x] Commit the named files and nothing else, which took two tries. The first
+  version let `paths` be omitted and then committed every changed tracked file —
+  `git commit -a` — and staged the union with whatever was already in the index,
+  on the reasoning that a commit takes the whole index so the prompt had better
+  say so. Both halves were wrong in the same way: they let *ambient working-tree
+  state* decide the contents of a commit. In a repository where the user has an
+  edit in progress, an agent committing "its" change would have carried that
+  edit along, silently, under autopilot, with no prompt — nothing about an
+  unrelated source file reaches a credential store. Found by being asked the
+  plain question of whether that could happen, and answering it with a test
+  rather than from memory.
+- [x] Make `paths` required and restrict the commit to it with
+  `git commit -- <paths>`. That is git's own exact semantic: those paths are
+  committed, anything else staged stays staged, and every other working-tree
+  change stays uncommitted. A hand-built index survives a commit made around it.
+  `git add` still runs first, because `git commit -- new-file` matches nothing
+  for a path git does not track yet. A tool whose stated purpose is to say what
+  is in a commit cannot have a mode where the answer is "whatever was lying
+  around", and the cost — the agent naming the files it just changed, with
+  `git_status` there for when it cannot — is the whole price of the guarantee.
+- [x] Let `git_branch` create and never switch. Creating a branch at HEAD leaves
+  every file on disk untouched; checking out an existing one rewrites the
+  working tree from outside Collomia's change tracking, and `/restore` verifies
+  the workspace before it will reverse anything — so allowing the switch would
+  silently disarm recovery for every turn that came before it. The refusal says
+  that rather than reporting a generic error.
+- [x] Ask git rather than restating it. A branch name is validated by
+  `git check-ref-format`, and the author identity by `git var
+  GIT_AUTHOR_IDENT` — not by `git config --get user.email`, which is only one of
+  the places the identity comes from and would have refused commits git performs
+  perfectly well from `GIT_AUTHOR_NAME` in CI. Found by writing the check the
+  obvious way first and watching it fail against this package's own tests.
+- [x] Ship no `git_push`. The publication tier already governs it through
+  `run_command`, and a dedicated tool would be adding the outward-facing
+  capability rather than governing the one that was already there — the
+  distinction the roadmap drew when it deferred this work behind the publication
+  wave. A test fails if either tool ever reports a publication target.
+- [x] Keep both out of planning mode, pinned by a test, because a new `git_*`
+  tool is exactly the kind of addition that gets waved into that list beside its
+  read-only siblings on the strength of the name.
+
+**Behavior change:** two new built-in tools, visible to the model by default and
+absent from planning mode. Nothing existing changes: `run_command "git commit"`
+behaves exactly as before, and `options.disabled_tools` removes the new tools.
+See the [compatibility note](docs/COMPATIBILITY.md#git-write-tools).
+
+**What it is not.** Not checkpoint commits, and not a fix for `/restore`'s
+process-local change tracking — that remains the open item it was. It is also
+not a claim that committing is now safe under autopilot: an ordinary source
+commit is still approved by the mode, exactly as the command was, and what
+changed is that the permission layer can finally see the file list well enough
+for `protect_credentials` to act on it. The guarantee is about *which files* are
+in a commit, not about whether their contents were the right change to make —
+a wrong edit to a correctly-named file is still committed.
+
+## Completed wave — documentation that reaches the file being edited
+
+**Goal:** answer the half of the beta report the previous wave did not — that
+configuring Collomia means reading extensive documentation, or handing it to an
+AI to read, before a block can be written by hand — by putting the
+documentation where the typing happens instead of writing more of it.
+
+- [x] Find the structural reason first. The reference is a 600-line annotated
+  JSONC file, and **it is never loaded**: there is no comment stripping
+  anywhere in the loader, so `~/.collomia/config.json` is strict JSON and
+  cannot hold a single line of the explanation that exists for it. The
+  documentation was not missing; it was in a different file from the one being
+  edited, which is why the working method became "ask an AI to read it".
+- [x] Ship `collo schema config`, a JSON Schema 2020-12 contract generated from
+  the structs, beside the existing `collo schema events`. Names and types come
+  from reflection and cannot disagree with the loader; enumerated values come
+  from the vocabularies below and cannot disagree with the validator;
+  defaults are read out of `Defaults()` itself. Descriptions are the one part
+  written by hand, and a test fails on a field that has none — an undocumented
+  setting is a build failure rather than a documentation debt, since a field
+  with a name and a type and nothing else is the state this wave exists to end.
+- [x] Extract the enumerated vocabularies before the generator could copy them.
+  They were inline `switch` literals, and `permissions.mode` already had two —
+  one for the top-level setting and one for a delegated agent's. A schema
+  hand-listing them would have been the third copy and the one nobody updates,
+  which is the inert-matcher shape this repository keeps finding. One list per
+  field now, read by both, with a test that drives the *loader* with every
+  published value rather than comparing two lists to each other.
+- [x] Give a delegated agent's rules their own definition. They are `[]Rule` in
+  Go and may only prompt or deny, so a single shared definition would have had
+  an editor offering `allow` in the one place the loader refuses it — an editor
+  recommending a broken configuration being strictly worse than no editor
+  support. The negative test that catches it is the delegated `allow`; the
+  positive one is that a top-level `allow` stays valid.
+- [x] Declare `$schema` as a real field rather than tolerating it.
+  `LoadOptions.Strict` turns on `DisallowUnknownFields`, so the key that makes
+  the file editable would have loaded fine normally and failed
+  `collo config validate --strict` — a validator rejecting a file `collo init`
+  had just written. It configures nothing and a test pins that.
+- [x] Require nothing at the root, which is the finding generating a schema
+  produced. **A configuration file is one layer of a merge, not the
+  configuration.** `providers`, `default_provider`, and `permissions.mode` are
+  required of the *merged* result and of no particular file, so a project
+  `.collomia.json` setting two rules is correct — and the obvious derivation,
+  "required means no `omitempty`", is wrong twice over, since a boolean
+  defaulting to true omits the tag so that `false` still serializes. Deriving
+  it that way would have underlined `options.mouse` and every project file in
+  existence.
+- [x] Write the schema as a sibling and point at it relatively, never a hosted
+  URL. It describes the fields *this* build understands; a URL describes
+  whichever release published it, which reintroduces at the last step exactly
+  the drift generating it removed. `collo doctor` reports a reference that is
+  dangling or was written by a different build, because both fail silently —
+  an editor with a broken `$schema` offers nothing at all, which looks the same
+  as never having had one.
+- [x] Replace `/config`, which printed a path and a sentence about precedence.
+  Reading the file answers what one layer asked for; it cannot answer which
+  layer won, and it cannot answer what is in force for the settings no file
+  mentions — which is most of them. It now reports the layers in order, the
+  effective value and origin of every containment setting, and any project
+  weakening that was refused, with `/config all` for the whole surface.
+- [x] Redact by position, not by pattern, and find out why it mattered.
+  `resolveProviderEnvironment` copies a resolved credential — from the
+  environment or the macOS Keychain — into `Provider.APIKey`, so the merged
+  configuration holds secrets that appear in no file the user could think to
+  check. The first run against the author's own configuration confirmed it:
+  three provider keys, sourced from the keychain, would have been printed into
+  the session transcript. A pattern matcher has to recognize a secret to
+  protect it; a positional rule protects a credential whose shape nobody has
+  seen yet, which is the only kind that generalizes to an endpoint a user
+  pointed Collomia at.
+- [x] Build the stance display from the struct rather than from the serialized
+  configuration, because the first version had the defect it exists to prevent.
+  Reading the merged JSON meant `omitempty` removed any field at its zero
+  value — so `sandbox_egress` and `command_env` vanished whenever unset, and
+  `sandbox_allow_network` and `sandbox_allow_read_outside_workspace` vanished
+  **precisely when they were turned off**. A containment display that hides a
+  boundary at the moment it is switched on is worse than no display. It reads
+  `ContainmentFields` so a new clamped setting appears without anyone
+  remembering, and names the behavior of each unset field instead of showing a
+  blank.
+- [x] Validate the schema against real documents rather than trusting it. The
+  generated contract is checked to be well-formed and byte-stable — `collo
+  doctor` compares it on disk, so leaked map-iteration order would have made it
+  perpetually stale — and it is run against both starters and the exhaustive
+  reference, then against six mistakes people actually make. The checker lives
+  in the test and understands only the keywords the generator emits, rather
+  than adding a JSON Schema module for something no shipped code needs.
+
+**Behavior change:** three, none affecting how an existing configuration
+behaves. `$schema` is a recognized key rather than one that passed ordinary
+loading and failed `--strict`; `collo init` writes a second file beside the
+configuration and prints its path; and `collo setup` adds `$schema` when the
+file has none, leaving an existing one alone. See the
+[compatibility note](docs/COMPATIBILITY.md#editor-schema-and-the-schema-key).
+
+**What it is not.** Not the interactive configuration surface the Phase 7 item
+describes, and not a form over 120 fields. It is the tier of that item that
+needed no wizard: the schema is generated, so it cannot drift, and it works in
+every editor without Collomia running. The descriptions remain the one
+hand-written part, and the exhaustive JSONC reference was deliberately left
+hand-written rather than generated from the same table — its worked examples
+are worth more than a single source would have been, and the completeness test
+already fails on a field missing from either.
+
+## Completed wave — the numbers nobody should have to guess
+
+**Goal:** stop the two configuration fields that decide how much a session can
+hold and how much a model may say from being decided invisibly, by a constant,
+in a product whose first sustained beta report was about having to set them by
+hand.
+
+- [x] Find out what the two fields actually did when omitted, because the
+  answer is what justified the wave. An absent `max_tokens` is normalized to
+  **8192** at load with no warning, so every answer from a frontier model stops
+  at a fraction of what it can emit and presents as a response that simply
+  ends. An absent `context_window` stays zero, and `Agent.shouldCompact`
+  returns false on a zero window for the life of the session — automatic
+  compaction never runs, and a long session ends at a provider context-length
+  error with no recovery. `ValidateFields` inspected neither, and no diagnostic
+  had ever mentioned either.
+- [x] Establish that Collomia held no knowledge of any model's limits anywhere.
+  `CapabilitiesFor(providerType, model, contextWindow)` takes the window as an
+  *argument* and echoes it back, so there was no registry to consult. Three
+  consequences were all shipping: `setup.Build`'s "take the context window from
+  the capability registry" branch **could never be reached**, since
+  `capabilities.ContextWindow` is non-zero only when a non-zero window was
+  passed in, so every locally discovered provider was written with the assumed
+  32768 whatever model was chosen; `setup.Build` wrote no `max_tokens` at all;
+  and the model picker annotated every catalog entry with `context N` taken
+  from one echoed constant — a display that looked like per-model discovery and
+  was the same number repeated down the list.
+- [x] Read the limits the catalogs already publish and the adapter already
+  discarded. `ListModels` parsed nothing but `id`, while OpenRouter-style
+  catalogs carry `context_length` and `top_provider.max_completion_tokens`
+  beside it. LM Studio's native catalog answers the whole list in one request,
+  which is what makes annotating a picker affordable; Ollama's `/api/show`
+  answers one model per request, so it is asked once, about the model actually
+  chosen.
+- [x] Prefer the window a runtime has **loaded** over the one its weights
+  allow. A model loaded with 8k is serving 8k, and writing the documented
+  number down would disable compaction exactly where it is needed soonest.
+- [x] Add a published-limits table for the hosted families whose catalogs
+  publish nothing at all, and make its epistemic status structural rather than
+  documented. Endpoint-reported limits are authoritative and may contradict a
+  configured value; the table is a floor that may only ever fill a gap. Every
+  entry deliberately understates, because understating a window costs an early
+  compaction while overstating one costs the session, and family floors carry
+  models released after this build so a new Claude inherits a modern Claude's
+  shape rather than the 32768 guess. A test fails on any entry whose output cap
+  meets its window, and another on a duplicate prefix, since a shadowed entry
+  is a maintenance trap: the numbers are there, the table appears to know the
+  model, and the floor answers instead.
+- [x] Make the table safe to ship by giving the provider the last word. A
+  `max_tokens` above the model's real ceiling now retries at the ceiling named
+  in the provider's own 400 — on the OpenAI route through the existing
+  parameter-negotiation profile, on the Anthropic route beside the reasoning
+  and caching retries — with a warning carrying both numbers and a pointer at
+  the configuration. This is what makes an approximate table and a
+  written-from-memory configuration both recoverable rather than fatal.
+- [x] Match the rejection on the phrasing that carries the number, never on the
+  digits in the message. A rejection routinely names the model, and
+  `claude-sonnet-4-5-20250929` contributes 4, 5, and a date to any scan of the
+  text — so "the smallest number in the message" would have silently learned a
+  ceiling of four output tokens and remembered it for the session. That failure
+  is worse than not recognizing the message at all, which is why an
+  unrecognized rejection surfaces the provider's error untouched.
+- [x] Report it where a configuration written before any of this gets read.
+  `collo doctor` carries both numbers on each provider's own row and warns when
+  either is missing, naming the consequence rather than the field; `/context`
+  says what an unknown window costs instead of printing "unknown"; and
+  `collo config validate` refuses a `max_tokens` at or above `context_window`,
+  which no request can satisfy. The first run of the doctor check found a live
+  defect in the author's own configuration: a Bedrock provider on Claude Opus
+  with no `max_tokens`, capped at 8192 output tokens for however long it had
+  been configured.
+- [x] Add `collo setup --provider <name>`, which re-enters the same
+  probe-verify-write path pointed at a provider the file already has. It is not
+  a second mode: it skips the scan, opens the picker on the model already in
+  use, and everything after that is the ordinary path. A `CredentialKeep` plan
+  exists because the alternative would have been `CredentialStore` with no
+  secret — which `Apply` would have written as an empty string, destroying the
+  credential the run had just authenticated with.
+- [x] Record in normalization that `max_tokens` was defaulted. Nothing
+  downstream could otherwise tell a deliberate 8192 from a field the user never
+  knew existed, and only the second is worth reporting.
+
+**Behavior change:** two. `collo config validate` now rejects a `max_tokens` at
+or above `context_window` — a combination no request could satisfy, which
+previously validated clean and failed mid-session. And a `max_tokens` above the
+model's ceiling is now corrected for that request instead of failing the turn;
+the configuration file is never modified. See the
+[compatibility note](docs/COMPATIBILITY.md#model-token-limits).
+
+**What it is not.** The table is documentation, not measurement, and it cannot
+be verified from inside a build — which is why it is confined to filling gaps,
+labelled wherever it is shown, and backed by the provider's own correction. No
+catalog anywhere publishes an output ceiling, so that number is the weakest one
+in the system whatever this does; the negotiation is what makes it survivable
+rather than what makes it right.
 
 ## Completed wave — the actions that leave the machine
 
@@ -946,6 +1362,25 @@ claiming enforcement the policy layer does not provide.
   not at all.
 - [ ] **P1 — Optional deeper review:** line-level pending-write selection and
   broader selective application for multi-file patches.
+- [x] **P1 — Git write tooling under approval:** `git_commit` stages the named
+  files and commits, declaring every file the commit will contain — including
+  changes already in the index — so the approval prompt previews the real diff
+  and `protect_credentials` gates a credential file entering history.
+  `run_command "git commit -a"` cannot be gated that way because it names no
+  path, which is what made this structure rather than capability: the command
+  was already allowed under autopilot. `paths` is required and the commit is
+  restricted to it through `git commit -- <paths>`, so an unrelated edit in the
+  working tree and anything the user staged by hand are both left where they
+  were. `git_branch` creates a branch at HEAD and
+  switches without touching the working tree, refusing an existing branch
+  because a checkout would change files outside the tracking `/restore` verifies
+  against. Both route through `shell.AnalyzeArgv`, so the classification is the
+  command runner's own and a rule naming `git commit` covers either spelling.
+
+  Pushing is deliberately not here. It stays with `run_command` under
+  `permissions.publication`, because governing the outward-facing capability
+  that already existed had to come first, and a dedicated tool would be adding
+  one rather than governing it.
 - [x] **P1 — Windows ConPTY:** `run_command` with `pty: true` and `collo --web`
   both work on Windows through a shared `internal/conpty` package. The child is
   created suspended and joined to a job object before it runs, so the
@@ -1071,6 +1506,17 @@ claiming enforcement the policy layer does not provide.
   the default port is unaffected in practice — `collo setup` finds it and
   writes it down — but a machine that relied on the implicit default without a
   configuration file now needs one.
+- [x] **P1 — Model limits that are discovered rather than guessed:** both token
+  limits are now resolved from the endpoint that knows them, then from a
+  conservative published-limits table, then labelled as assumed — and both are
+  always written. `collo doctor` reports them for every provider and warns when
+  either is absent, naming the consequence rather than the field; a
+  `max_tokens` at or above `context_window` is a validation error; and a
+  `max_tokens` above the model's real ceiling is retried at the ceiling the
+  provider's own rejection states rather than failing the turn.
+
+  See the [completed wave](#completed-wave--the-numbers-nobody-should-have-to-guess)
+  for what it found and what it deliberately does not do.
 - [x] **P1 — Provider prompt caching:** the Anthropic Messages routes send two
   cache breakpoints — the stable tools/system prefix and a rolling
   conversation boundary held behind any volatile trailing content — and drop
@@ -1150,6 +1596,48 @@ claiming enforcement the policy layer does not provide.
   already a linear-text path and is documented as the answer, in the same
   idiom as Linux scoped egress. That keeps a future `--screen-reader` flag
   cheap — wiring and documentation rather than architecture — if a user asks.
+- [ ] **P2 — A configuration surface that is not a hand-edited JSON file:**
+  the reported beta experience of configuring Collomia is reading extensive
+  documentation — or asking an AI to read it — and then hand-writing JSON,
+  including numbers like `max_tokens` and `context_window` whose defaults were
+  wrong for the model in use.
+
+  **Two of the three tiers below have now shipped.** The limits wave took the
+  discovery tier, and the schema wave took the third: `collo schema config`
+  generates the contract from the structs, `collo init`/`collo setup` write it
+  beside the file with a `$schema` key, and any editor supplies completion,
+  hover documentation, and inline validation for the file being typed into.
+  `/config` no longer prints a path — it reports what each layer resolved to.
+  What remains open is the middle tier alone: changing a safety posture from
+  inside a session rather than reading it.
+
+  **Deliberately not one wizard over the whole file.** There are ~120
+  configuration fields, and a form asking 120 questions is worse than the file
+  it replaces. Three tiers, of which two mostly exist:
+
+  - *Needs discovery or verification* — providers, models, limits,
+    credentials. This is where the reported pain is, it is the only tier a
+    wizard is the right instrument for, and `collo setup` plus Phase 4's
+    per-provider re-run covers it.
+  - *Safety postures* — already sugar-coated by `permissions.preset` and
+    reachable through `/autonomy`. What is missing is seeing and changing the
+    effective stance from inside a session rather than reading it in the
+    Session tab. Any such editor must respect the monotonic clamp, which means
+    it can offer a project a tightening and must refuse it a weakening in the
+    same words the loader already uses.
+  - *Everything else* — **shipped.** It stays JSON and got a generated schema
+    instead of a form: `collo schema config`, beside the existing
+    `collo schema events`, with `$schema` written into what `collo init` and
+    `collo setup` produce. Generated from the structs, so it cannot drift from
+    them the way `docs/FEATURES.md` drifted into claiming a mandatory-audit
+    posture that never existed — and enumerated values are read from the
+    validator's own vocabularies, which had to be extracted from duplicated
+    inline `switch` literals before the schema could safely consult them.
+
+  The schema was the cheapest part and answered most of the complaint, exactly
+  as predicted, and it needed no interactive surface. What is left is the
+  posture editor, which is worth taking only if reading the stance turns out
+  not to be enough.
 - [ ] **P2 — Structured local service API:** authenticated stdio/socket or
   WebSocket access to the event/session/permission contracts. The current web
   terminal is a PTY transport, not this API.
@@ -1162,10 +1650,23 @@ claiming enforcement the policy layer does not provide.
 
 - [ ] **P0 — Security program:** sustained fuzz/adversarial campaigns and an
   independent review.
-- [ ] **P0 — Reliability campaigns:** host-level filesystem exhaustion,
-  power-loss durability, native terminal loss, and longer cancellation stress.
-  The diagnostic/audit half of this item is broken out below, because it turned
-  out to be a feature rather than a policy decision.
+- [x] **P0 — Reliability campaigns:** all four are now run rather than
+  reasoned about. Native terminal loss was a live defect — SIGHUP was unhandled
+  at three signal sites, so a closed window killed the process before teardown
+  and orphaned every background process, each of which sits in its own process
+  group and never sees a hangup. Power-loss durability had no flush at all: the
+  session now flushes at turn boundaries and on close, the audit ledger flushes
+  per entry, and recovery is swept across every byte offset of a real log.
+  Filesystem exhaustion runs the durable writers against a genuinely full
+  filesystem through `internal/reliability`. Cancellation stress went from five
+  iterations to twenty.
+
+  **What remains under this heading is confidence built by others, not code.**
+  The suite proves the failures it reproduces; an independent assessment and
+  the sustained adversarial campaigns above are what actually close the 1.0
+  gate, and neither is something this project can perform on itself. See the
+  [completed wave](#completed-wave--the-failures-nobody-had-run) for what
+  running the failures found that reasoning about them had not.
 - [x] **P0 — A trustworthy audit ledger:** every entry names the session and
   actor that wrote it; a write failure is counted, reported once, and declared
   in the file as a gap rather than leaving a hole that reads as complete; both
@@ -1193,16 +1694,21 @@ claiming enforcement the policy layer does not provide.
   be a new clamped containment field with a fail-closed headless path. It stays
   unbuilt until someone wants it, because a posture nobody has asked for is how
   the original claim came to be written in the first place.
-- [ ] **P1 — Cover the credential store's actual backend:** `internal/credstore`
-  reads 40.8%, but the headline hides where the hole is — `backendGet`,
-  `backendSet`, and `backendDelete` in `store_darwin.go` are at **0.0%**, as are
-  `Delete` and `Verify`. The entire macOS Keychain path, and `collo auth rm`
-  along with it, has no test of its own on a platform that can run one. This is
-  the shape the audit wave already found once: a package at zero coverage whose
-  first real tests immediately surfaced two defects that unit review had missed,
-  in a package that holds provider API keys. Phase 4's first-run setup will put
-  this path under a user's hands for the first time, so the coverage is worth
-  having before that rather than after.
+- [x] **P1 — Cover the credential store's actual backend:** `internal/credstore`
+  read 40.8% with `backendGet`, `backendSet`, `backendDelete`, `Delete`, and
+  `Verify` in `store_darwin.go` all at **0.0%** — the entire macOS Keychain
+  path, and `collo auth rm` along with it, untested on a platform that can run
+  it, in a package that holds provider API keys. It is now 51.4%, with the
+  Keychain backend exercised against a real temporary keychain behind
+  `COLLO_KEYCHAIN_TESTS=1`; the suite is opt-in because unlike every other test
+  in the package it touches the user's own operating-system credential store,
+  and skips cleanly when `security(1)` is unavailable.
+
+  The remaining uncovered statements in `store_darwin.go` are the branches that
+  need a keychain that fails in a specific way — a locked store, a denied
+  authorization — which cannot be provoked from inside a test without leaving
+  state behind on the developer's machine. That is a stated limit rather than
+  an outstanding task.
 - [ ] **P1 — Performance budgets:** idle memory, token overhead, compaction
   quality, monorepo fixtures, and same-hardware regression thresholds. The
   prompt-cache wave established the measurement discipline and the live-endpoint
@@ -1267,7 +1773,25 @@ assessment would most likely have opened with. The rest, in order:
    hard to start using; this is the same asymmetry the publication wave fixed,
    in a different place. A control nobody leaves on and a product nobody can
    easily install fail for the same reason.
-2. Gather real beta feedback on named primary profiles, cost estimates,
+   The first sustained beta report has now arrived, from the one person using
+   Collomia daily, and it did not name a missing capability: it named the
+   configuration file. Extensive documentation has to be read — or handed to an
+   AI to read — before a provider block can be written, and `max_tokens` and
+   `context_window` in particular had to be corrected by hand because the
+   defaults were too small for the models actually in use. That is a concrete,
+   already-diagnosed defect rather than a preference. **That slice has now
+   shipped**, which leaves the three original segments — getting the binary,
+   trusting it, configuring a provider — with the third substantially closed and
+   the first two untouched. **Both halves of the configuration complaint have
+   now shipped** — discovered token limits, then a generated editor schema and
+   an effective-configuration view — so the third segment is closed as far as
+   the reported evidence goes, and what is left of Phase 7's
+   configuration-surface item is an interactive posture editor nobody has asked
+   for. Package managers are the next segment worth taking: Homebrew and Scoop
+   need no signed binary, the release workflow already produces everything their
+   manifests would reference, and `curl | sh` remains the only route to a first
+   install.
+2. Gather further beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
    judged against real toolchains rather than predicted. This is the stated
@@ -1277,28 +1801,35 @@ assessment would most likely have opened with. The rest, in order:
    combined-parent verification and conservative result-ranking criteria
    without turning a score into permission. `collo audit --actor` is now the
    surface that can say what each agent in such a graph was permitted to do.
-4. Continue Phase 8 security/reliability campaigns in parallel with every
-   feature wave, and take the performance budgets while the prompt-cache wave's
-   measurement harness is still warm. The reliability half — host-level
-   filesystem exhaustion, power-loss durability, native terminal loss, longer
-   cancellation stress — is now the largest untouched P0 and produces
-   confidence rather than a control, which is why it did not outrank the
-   publication gap but does outrank the next feature.
+4. Continue Phase 8 security campaigns in parallel with every feature wave,
+   and take the performance budgets while the prompt-cache wave's measurement
+   harness is still warm. **The reliability half has now shipped** — terminal
+   loss, power-loss durability, filesystem exhaustion, and a cancellation gate
+   raised from five iterations to twenty — so what is left under Phase 8's P0s
+   is the part no amount of self-testing closes: sustained adversarial
+   campaigns and an independent security assessment. That is now the only P0
+   between here and 1.0, and it is a decision to commission rather than work to
+   schedule.
 
 Two small decisions can ride along with whichever wave ships next rather than
 becoming waves of their own:
 
-- The one-hour cache TTL. The mechanism is measured and confirmed working; what
-  is unknown is only gap behavior, since the live run measured back-to-back
-  requests rather than a session resumed after a pause. Instrument the real
-  gap between turns before paying a write premium that is 2x rather than 1.25x.
-- Git write tooling under approval. The agent reads Git but must drop to
-  `run_command` to commit, and `/restore`'s change tracking is in memory so it
-  does not survive a resume; a checkpoint commit would fix both. It was
-  considered for this slot and deferred deliberately: it *adds* an
-  outward-facing capability, and governing the outward-facing capability that
-  already existed had to come first. It now lands on top of the publication
-  tier rather than beside it.
+- The one-hour cache TTL. **The instrumentation has now shipped**, so this is
+  waiting on data rather than on work. Collomia records the gap between
+  consecutive provider requests and reports, in `/context` and the Session tab,
+  how many of them exceeded the five-minute lifetime and how many of *those*
+  were under an hour — the second number being the only evidence for the longer
+  lifetime, since a gap beyond an hour is cold under either setting. A session
+  that never paused reports nothing rather than a reassuring zero. Decide once
+  a few real sessions have been read, not before: the write premium is 2x
+  rather than 1.25x, and the five-minute lifetime refreshes on every read, so a
+  chain of short gaps stays warm however long the session runs.
+- Git write tooling under approval — **shipped**, as its own wave rather than a
+  ride-along, because the classifier work it needed turned out to be the larger
+  half. What remains of the original note is the checkpoint-commit idea:
+  `/restore`'s change tracking is still in memory and still does not survive a
+  resume, and a commit made at each turn boundary would fix that. `git_commit`
+  is the mechanism such a feature would use; it is not that feature.
 - Deliberately **not** another terminal-surface wave. Four of the last six
   touched it, the width sweep now pins the property the golden screens had
   recorded wrong, and the returns there are visibly smaller than a security

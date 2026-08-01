@@ -37,6 +37,15 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Static analysis
         run: go vet ./...
+      - name: Filesystem exhaustion campaign
+        # macOS only: hdiutil builds and mounts a small filesystem without
+        # privileges, so the durable writers meet a genuinely full disk rather
+        # than an injected error. Linux and Windows have no unprivileged
+        # equivalent, and the tests skip rather than pretending to cover it.
+        if: runner.os == 'macOS'
+        env:
+          COLLO_DISK_EXHAUSTION_TESTS: '1'
+        run: go test -count=1 ./internal/reliability
       - name: Test shell installer
         if: runner.os != 'Windows'
         run: scripts/test-install.sh
@@ -64,10 +73,18 @@ jobs:
       - name: Deterministic offline agent evaluations
         run: go test -count=1 ./internal/eval
       - name: Interruption and cancellation stress
+        # Raised from 5 to 20. These are the tests whose failures are races,
+        # and a race that reproduces one run in ten passes a five-run gate
+        # most of the time — which is the same as not having one.
         run: >-
-          go test -count=5
-          -run '^(TestSessionAbruptProcessDeathLeavesRecoverableInterruptedTool|TestAtomicReplacementSurvivesAbruptProcessDeath|TestPersistenceFailure.*|TestTeamCancellationRaceCannotReviveTask|TestRuntimeCloseWaitsForBackgroundProcesses|TestExclusiveDurableBlobFailuresRemovePartialFile|TestStopAllKillsEverything)$'
+          go test -count=20 -timeout 30m
+          -run '^(TestSessionAbruptProcessDeathLeavesRecoverableInterruptedTool|TestAtomicReplacementSurvivesAbruptProcessDeath|TestPersistenceFailure.*|TestTeamCancellationRaceCannotReviveTask|TestRuntimeCloseWaitsForBackgroundProcesses|TestExclusiveDurableBlobFailuresRemovePartialFile|TestStopAllKillsEverything|TestHangupStopsBackgroundProcessesInsteadOfOrphaningThem|TestSyncFailureIsLatchedLikeAWriteFailure|TestCompletedTurnIsFlushedToDisk)$'
           ./internal/session ./internal/safefile ./internal/agent ./internal/app ./internal/tools
+      - name: Durability sweep
+        # The truncation sweep loads a session at every byte offset, so it is
+        # slower than a unit test and is worth running once per release rather
+        # than never.
+        run: go test -count=1 -run '^TestLoadHandlesEveryTruncationPoint$' ./internal/session
       - name: Performance baseline smoke
         run: >-
           go test -run '^$'

@@ -45,7 +45,7 @@ var slashCommands = []commandInfo{
 	{name: "/retry", args: "", desc: "load the previous prompt for review without running it"},
 	{name: "/new", args: "", desc: "start a fresh session (current one stays saved)"},
 	{name: "/compact", args: "[focus]", desc: "summarize older context to free the window"},
-	{name: "/config", args: "", desc: "show the active configuration path"},
+	{name: "/config", args: "[all]", desc: "show what the configuration resolved to and which layer set it"},
 	{name: "/clear", args: "", desc: "clear conversation context"},
 	{name: "/quit", args: "", desc: "exit Collomia"},
 }
