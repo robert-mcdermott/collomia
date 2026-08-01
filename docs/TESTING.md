@@ -321,3 +321,18 @@ credential-free run. See [Live provider contracts](LIVE_PROVIDER_CONTRACTS.md)
 for the required environment switches and safe test-account guidance. Never
 put provider credentials, endpoint secrets, session files, or support bundles
 into committed fixtures.
+
+Two narrower live suites need no credentials, only something listening:
+
+```sh
+COLLO_LIVE_WEB_TESTS=1 go test ./internal/web -run Live -v
+COLLO_LIVE_LIMIT_TESTS=1 go test ./internal/setup -run Live -v
+```
+
+The first exercises each search endpoint alone, so a working fallback cannot
+hide a primary that has stopped parsing. The second resolves model limits
+against whichever of Ollama, LM Studio, and vLLM is running, and skips the ones
+that are not. Both cover the same class of risk: the offline suite proves the
+parsers handle the documents this project expects, and cannot prove those are
+the documents the far side still sends. A native API key renamed upstream would
+return limit discovery to writing assumptions while every unit test passed.

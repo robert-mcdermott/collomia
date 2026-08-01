@@ -249,6 +249,59 @@ permission error is misread as a Bedrock outage. Authentication modes that have
 nothing to store — Entra, which issues short-lived tokens through
 `DefaultAzureCredential`, and the SigV4 chain — never ask you for a key.
 
+### Re-running setup for a provider you already have
+
+```sh
+collo setup --provider bedrock
+```
+
+This skips the runtime scan and re-enters the wizard pointed at a provider your
+configuration already names. The credential is left exactly as it is — the run
+uses whatever already authenticates and never stores, replaces, or asks for a
+key — and everything else is the ordinary path: the endpoint's catalog, the
+model (the picker opens on the one you are already using), two verification
+requests, and a confirmation before anything is written.
+
+Reach for it when you change models, when a model's limits have changed, or
+when `collo doctor` warns about a provider's token limits. An unknown name lists
+what your file actually contains rather than dropping you into adding a new
+provider.
+
+### The two token limits, and what happens when you omit them
+
+`context_window` and `max_tokens` both look optional and neither behaves that
+way. They fail silently, in opposite directions:
+
+| Field | Omitted | Consequence |
+| --- | --- | --- |
+| `context_window` | stays unset | Automatic compaction never runs. A long session ends at a provider context-length error rather than compacting to survive. |
+| `max_tokens` | becomes 8192 | Every answer stops at 8192 tokens, with no message. On a current frontier model that is a small fraction of what it can produce. |
+
+`collo setup` writes both, and says where each number came from:
+
+- **reported by the endpoint** — the catalog or the runtime stated it. Ollama is
+  asked about the chosen model directly, LM Studio's native catalog is read for
+  the whole list (including the window a model is *loaded* with, which is what
+  it is actually serving), and OpenRouter-style catalogs publish both numbers
+  beside the model id.
+- **published limits** — no hosted catalog publishes per-model limits, so a
+  small built-in table of documented values fills the gap. It is deliberately
+  conservative: it is never allowed to override a number you configured or one
+  an endpoint reported, and where it is wrong it is wrong in the direction that
+  compacts early rather than the direction that breaks.
+- **assumed** — nothing established these. Edit them.
+
+If `max_tokens` is larger than the model actually accepts, the provider's
+rejection names its real ceiling, and Collomia retries that request under the
+stated ceiling and remembers it for the rest of the session — with a warning
+telling you to set the value permanently. A turn is not lost to a number that
+was written from memory.
+
+`collo doctor` reports both fields for every provider and warns when either is
+missing, naming the consequence rather than the field. `collo config validate`
+refuses a `max_tokens` at or above `context_window`, which no request can
+satisfy.
+
 ### Credentials, and skipping the key prompt entirely
 
 `collo setup` never writes an API key into a configuration file. It prefers a

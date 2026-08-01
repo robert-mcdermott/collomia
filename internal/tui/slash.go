@@ -103,7 +103,12 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 	case "/context":
 		usage := m.runtime.Agent.Usage()
 		estimate, window := m.runtime.Agent.ContextEstimate()
-		windowText := "unknown"
+		// "unknown" is not a neutral report. A zero window makes automatic
+		// compaction unreachable for the whole session, so the number nobody
+		// configured is the reason a long session will end at a provider
+		// context-length error instead of compacting — and the panel that
+		// exists to explain the context window is where that has to be said.
+		windowText := "unknown — context_window is not set for this provider, so automatic compaction is disabled; set it and /compact until then"
 		if window > 0 {
 			windowText = fmt.Sprintf("%d", window)
 		}

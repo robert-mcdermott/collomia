@@ -135,11 +135,26 @@ const configReferenceJSONC = `
   "default_agent": "builder",
 
   // Keep only providers you use. Secrets should normally use api_key_env.
+  //
+  // Set both token limits on every provider, and prefer 'collo setup' to
+  // writing them by hand — it asks the endpoint. They fail silently and in
+  // opposite directions when left out:
+  //   context_window  omitted -> automatic compaction never runs, and a long
+  //                   session ends at a provider context-length error instead
+  //                   of compacting.
+  //   max_tokens      omitted -> every answer stops at 8192 tokens, with no
+  //                   message. On a modern model that is a small fraction of
+  //                   what it can produce.
+  // 'collo doctor' reports both, and 'collo setup --provider NAME' rewrites
+  // them for a provider that is already configured.
   "providers": {
     "ollama": {
       "type": "openai-compatible",
       "base_url": "http://127.0.0.1:11434/v1",
       "model": "qwen3-coder",
+      // max_tokens is the output budget, spent from the same window as the
+      // prompt: it must be below context_window, and validation refuses a
+      // configuration where it is not.
       "max_tokens": 8192,
       "context_window": 32768
     },

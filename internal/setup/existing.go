@@ -6,6 +6,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 )
 
 // Existing describes what the file setup is about to write already contains.
@@ -26,6 +28,11 @@ type Existing struct {
 	// Models maps a provider name to the model recorded for it, so a
 	// replacement can show what it is replacing rather than only that it is.
 	Models map[string]string
+	// Definitions holds each provider block as the file records it, which is
+	// what `collo setup --provider` re-enters the wizard with. It is the file's
+	// text, not a resolved configuration: no environment expansion and no
+	// credential lookup have happened, so nothing here carries a secret.
+	Definitions map[string]appconfig.Provider
 	// DefaultProvider and DefaultModel are the file's current selection.
 	DefaultProvider string
 	DefaultModel    string
@@ -60,7 +67,7 @@ func (e Existing) HasDefault() bool { return strings.TrimSpace(e.DefaultProvider
 // broken, but silently treating a broken file as empty would let a merge
 // destroy settings the user still has.
 func ReadExisting(path string) (Existing, error) {
-	result := Existing{Path: path, Models: map[string]string{}}
+	result := Existing{Path: path, Models: map[string]string{}, Definitions: map[string]appconfig.Provider{}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return result, nil
@@ -73,11 +80,9 @@ func ReadExisting(path string) (Existing, error) {
 	}
 
 	var document struct {
-		DefaultProvider string `json:"default_provider"`
-		DefaultModel    string `json:"default_model"`
-		Providers       map[string]struct {
-			Model string `json:"model"`
-		} `json:"providers"`
+		DefaultProvider string                        `json:"default_provider"`
+		DefaultModel    string                        `json:"default_model"`
+		Providers       map[string]appconfig.Provider `json:"providers"`
 	}
 	if err := json.Unmarshal(data, &document); err != nil {
 		return result, err
@@ -86,6 +91,7 @@ func ReadExisting(path string) (Existing, error) {
 	for name, entry := range document.Providers {
 		result.Providers = append(result.Providers, name)
 		result.Models[name] = entry.Model
+		result.Definitions[name] = entry
 	}
 	sort.Strings(result.Providers)
 	return result, nil

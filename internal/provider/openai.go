@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,10 @@ type openAIChatParameterProfile struct {
 	useMaxCompletionTokens bool
 	omitTemperature        bool
 	omitReasoningEffort    bool
+	// outputCeiling is the largest completion this model accepts, learned from
+	// the provider's own rejection of a larger one. Zero means nothing has
+	// been learned and the configured value is sent unchanged.
+	outputCeiling int
 }
 
 const maxOpenAIParameterAdjustments = 3
@@ -75,9 +80,25 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err := checkResponse(resp, c.Label, "list models"); err != nil {
 		return nil, withAzureRBACHint(err, c.AuthHint)
 	}
+	// The extra fields are what OpenRouter and several gateways publish beside
+	// the id, and what this adapter used to discard. A catalog that states a
+	// model's own context window is the only source that can be trusted over
+	// the configured value, so throwing it away meant every limit downstream
+	// was a guess. Endpoints that publish nothing are unaffected: the fields
+	// are absent, decode to zero, and ModelInfo.Limits stays empty rather than
+	// carrying a number nobody stated.
 	var payload struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID            string `json:"id"`
+			ContextLength int    `json:"context_length"`
+			// LM Studio and a few local gateways use their own spelling on the
+			// OpenAI-compatible route.
+			MaxContextLength    int `json:"max_context_length"`
+			LoadedContextLength int `json:"loaded_context_length"`
+			TopProvider         *struct {
+				ContextLength       int `json:"context_length"`
+				MaxCompletionTokens int `json:"max_completion_tokens"`
+			} `json:"top_provider"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -85,9 +106,34 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 	models := make([]ModelInfo, 0, len(payload.Data))
 	for _, m := range payload.Data {
-		if m.ID != "" {
-			models = append(models, ModelInfo{ID: m.ID})
+		if m.ID == "" {
+			continue
 		}
+		info := ModelInfo{ID: m.ID}
+		// A runtime that has loaded a model with a smaller window than the
+		// weights allow is serving the smaller one, and that is the number a
+		// session actually has to live inside.
+		switch {
+		case m.LoadedContextLength > 0:
+			info.Limits.ContextWindow = m.LoadedContextLength
+		case m.ContextLength > 0:
+			info.Limits.ContextWindow = m.ContextLength
+		case m.MaxContextLength > 0:
+			info.Limits.ContextWindow = m.MaxContextLength
+		}
+		if m.TopProvider != nil {
+			if info.Limits.ContextWindow <= 0 {
+				info.Limits.ContextWindow = m.TopProvider.ContextLength
+			}
+			info.Limits.MaxOutput = m.TopProvider.MaxCompletionTokens
+		}
+		if info.Limits.ContextWindow > 0 {
+			info.Limits.ContextSource = LimitsEndpoint
+		}
+		if info.Limits.MaxOutput > 0 {
+			info.Limits.OutputSource = LimitsEndpoint
+		}
+		models = append(models, info)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
@@ -122,6 +168,17 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 					}
 					continue
 				}
+				// Checked after the parameter negotiation, because a provider
+				// that rejects the max_tokens *field* must switch spelling
+				// before anything can be concluded about its value.
+				ceiling := rejectedOutputCeiling(resp.StatusCode, errorBody)
+				if retry, warning := c.parameters.learnOutputCeiling(ceiling, body); retry {
+					adjustments++
+					if warning != "" && onDelta != nil {
+						onDelta(Delta{Warning: warning})
+					}
+					continue
+				}
 			}
 			return Response{}, withAzureRBACHint(responseError(resp, c.Label, "chat", errorBody), c.AuthHint)
 		}
@@ -136,7 +193,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 }
 
 func (c *OpenAIClient) chatBody(in Request) (map[string]any, error) {
-	useMaxCompletionTokens, omitTemperature, omitReasoningEffort := c.parameters.snapshot()
+	useMaxCompletionTokens, omitTemperature, omitReasoningEffort, outputCeiling := c.parameters.snapshot()
 	messages, err := openAIMessages(in)
 	if err != nil {
 		return nil, err
@@ -150,7 +207,11 @@ func (c *OpenAIClient) chatBody(in Request) (map[string]any, error) {
 		if useMaxCompletionTokens {
 			parameter = "max_completion_tokens"
 		}
-		body[parameter] = in.MaxTokens
+		requested := in.MaxTokens
+		if outputCeiling > 0 && requested > outputCeiling {
+			requested = outputCeiling
+		}
+		body[parameter] = requested
 	}
 	if in.Temperature != nil && !omitTemperature {
 		body["temperature"] = *in.Temperature
@@ -196,10 +257,42 @@ func (c *OpenAIClient) sendChatRequest(ctx context.Context, url string, body map
 	return doWithRetry(client, req, c.Label, "chat")
 }
 
-func (p *openAIChatParameterProfile) snapshot() (useMaxCompletionTokens, omitTemperature, omitReasoningEffort bool) {
+func (p *openAIChatParameterProfile) snapshot() (useMaxCompletionTokens, omitTemperature, omitReasoningEffort bool, outputCeiling int) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.useMaxCompletionTokens, p.omitTemperature, p.omitReasoningEffort
+	return p.useMaxCompletionTokens, p.omitTemperature, p.omitReasoningEffort, p.outputCeiling
+}
+
+// learnOutputCeiling records a ceiling the provider named and reports whether
+// the request should be retried under it.
+//
+// This is what makes a configured max_tokens that is too large a one-time
+// correction rather than a failed turn. Both halves of this project's limits
+// story depend on it: the published-limits table understates on purpose but
+// cannot be verified from inside a build, and a hand-written configuration is
+// a number somebody remembered. The provider is the only authority on its own
+// ceiling, and it states one in the rejection.
+func (p *openAIChatParameterProfile) learnOutputCeiling(ceiling int, sent map[string]any) (retry bool, warning string) {
+	if ceiling <= 0 {
+		return false, ""
+	}
+	requested := 0
+	for _, key := range []string{"max_tokens", "max_completion_tokens"} {
+		if value, ok := sent[key].(int); ok {
+			requested = value
+		}
+	}
+	if requested <= ceiling {
+		// The rejection named a ceiling this request was already under, so
+		// retrying would send the same thing and fail the same way.
+		return false, ""
+	}
+	p.mu.Lock()
+	if p.outputCeiling == 0 || ceiling < p.outputCeiling {
+		p.outputCeiling = ceiling
+	}
+	p.mu.Unlock()
+	return true, fmt.Sprintf("provider rejected max_tokens=%d for this model; retrying at its stated ceiling of %d and remembering that for the active model — set max_tokens in your provider configuration to make it permanent", requested, ceiling)
 }
 
 func (p *openAIChatParameterProfile) learn(rejected string, sent map[string]any) (retry bool, warning string) {
@@ -305,6 +398,84 @@ func openAIRejectedChatParameter(status int, body []byte) string {
 		}
 	}
 	return ""
+}
+
+// rejectedOutputCeiling extracts the largest completion a provider says it
+// will accept, from its own rejection of a larger one.
+//
+// The message is the only place the number exists — no catalog publishes it —
+// and the wording differs per vendor, so this recognizes the shape rather than
+// a sentence: a 400 that names an output-token field and carries two numbers,
+// of which the smaller is the ceiling. Anthropic writes "max_tokens: 128000 >
+// 64000, which is the maximum allowed number of output tokens for <model>";
+// OpenAI writes "max_tokens is too large: 128000. This model supports at most
+// 16384 completion tokens". Returning zero means nothing was recognized, and
+// the caller then fails the turn with the provider's message intact — which is
+// the right outcome, because guessing a ceiling would be inventing the fact
+// this function exists to read.
+func rejectedOutputCeiling(status int, body []byte) int {
+	if status != http.StatusBadRequest {
+		return 0
+	}
+	message := strings.ToLower(errorMessageText(body))
+	if message == "" {
+		return 0
+	}
+	if !strings.Contains(message, "max_tokens") && !strings.Contains(message, "max_completion_tokens") &&
+		!strings.Contains(message, "maxtokens") && !strings.Contains(message, "output tokens") {
+		return 0
+	}
+	// A rejection of the *parameter* is a different negotiation, already
+	// handled above. Only a rejection of the value is a ceiling.
+	if strings.Contains(message, "unsupported") || strings.Contains(message, "not supported") {
+		return 0
+	}
+	for _, pattern := range outputCeilingPatterns {
+		match := pattern.FindStringSubmatch(message)
+		if match == nil {
+			continue
+		}
+		if value, err := strconv.Atoi(match[len(match)-1]); err == nil && value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+// outputCeilingPatterns are anchored on the phrasing that carries the number,
+// never on "the smallest number in the message".
+//
+// That distinction is the whole correctness of this: a rejection routinely
+// names the model, and `claude-sonnet-4-5-20250929` contributes 4, 5, and a
+// date to any scan of the digits in the text. A ceiling of 4 output tokens
+// would be learned silently and remembered for the session, which is a far
+// worse failure than not recognizing the message at all.
+var outputCeilingPatterns = []*regexp.Regexp{
+	// Anthropic: "max_tokens: 128000 > 64000, which is the maximum allowed…"
+	regexp.MustCompile(`max_?tokens:\s*\d+\s*>\s*(\d+)`),
+	// OpenAI: "…This model supports at most 16384 completion tokens"
+	regexp.MustCompile(`at most\s+(\d+)`),
+	// Assorted gateways: "maximum is 8192", "maximum value of 8192".
+	regexp.MustCompile(`maximum(?:\s+\w+)?\s+(?:is|of)\s+(\d+)`),
+}
+
+// errorMessageText pulls the human-readable message out of either error
+// envelope shape, falling back to the raw body.
+func errorMessageText(body []byte) string {
+	var envelope struct {
+		Message string `json:"message"`
+		Error   *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &envelope)
+	if envelope.Error != nil && envelope.Error.Message != "" {
+		return envelope.Error.Message
+	}
+	if envelope.Message != "" {
+		return envelope.Message
+	}
+	return string(body)
 }
 
 func mentionsQuotedParameter(message, parameter string) bool {

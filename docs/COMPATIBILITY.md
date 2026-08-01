@@ -286,6 +286,31 @@ first — is discarded and reported rather than held against later work.
 This changes an interactive surface only. Headless runs, `collo` in
 non-interactive mode, and the JSONL event stream are unaffected.
 
+### Model token limits
+
+Two changes, both to configurations that were already legal.
+
+**`collo config validate` now rejects a `max_tokens` at or above
+`context_window`.** The output cap is spent out of the same budget as the
+prompt, so no request could ever satisfy such a provider block; it previously
+validated clean and surfaced mid-session as a provider error naming neither
+field. Lower `max_tokens` or raise `context_window`. Nothing else about the two
+fields is now required: an absent `context_window` still loads, because it
+always has, and is reported by `collo doctor` rather than refused.
+
+**A `max_tokens` larger than the model accepts is now retried rather than
+failing the turn.** When a provider's HTTP 400 states its own ceiling, that
+request is resent under the stated ceiling, a warning names both numbers, and
+the ceiling is remembered for the active model for the life of the session. The
+configuration file is never modified. A rejection with no recognizable ceiling
+in it behaves exactly as before: the provider's error surfaces unchanged. This
+applies to the OpenAI-protocol and Anthropic Messages routes.
+
+`collo setup` also now always writes both fields where it previously wrote a
+constant `context_window` and no `max_tokens` at all. Existing configurations
+are untouched; re-run `collo setup --provider <name>` to have the numbers
+resolved from the endpoint.
+
 ## Sessions and upgrades
 
 Durable session JSONL is append-only. Current releases:

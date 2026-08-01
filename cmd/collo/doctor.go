@@ -86,6 +86,15 @@ func runDoctorCommand(opts options) error {
 		for _, name := range cfg.ProviderNames() {
 			p := cfg.Providers[name]
 			status, detail := providerDiagnostic(p)
+			// Token limits are reported on the provider's own row rather than
+			// as a second one. They are a property of this provider, and a
+			// report that lists every provider twice is one people stop reading.
+			if limitStatus, limitDetail := providerLimitsDiagnostic(p); limitDetail != "" {
+				detail += "; " + limitDetail
+				if limitStatus == "warn" && status == "ok" {
+					status = "warn"
+				}
+			}
 			add("provider "+name, status, detail)
 		}
 		// MCP.
@@ -371,6 +380,53 @@ func providerDiagnostic(p appconfig.Provider) (status, detail string) {
 		detail += "; caller-supplied bearer token; Collomia cannot refresh it (prefer auth=entra)"
 	}
 	return status, detail
+}
+
+// providerLimitsDiagnostic reports the two token fields that fail silently.
+//
+// Neither is validated at load and neither has ever appeared in a diagnostic,
+// so a configuration written by hand — which, before `collo setup`, was the
+// only kind — could disable automatic compaction and cap every answer at 8192
+// tokens without anything ever saying so. Both cases are warnings rather than
+// failures: they are legal configurations that behave worse than their author
+// intended, which is exactly what a doctor is for.
+//
+// The published-limits table is used only to *suggest*. It is a deliberate
+// understatement assembled from vendor documentation, so it may not contradict
+// a number the user chose, and a suggestion names the model it is about so a
+// reader can judge it.
+func providerLimitsDiagnostic(p appconfig.Provider) (status, detail string) {
+	known, hasKnown := provider.KnownLimits(p.Model)
+	suggestion := func(value int, field string) string {
+		if value <= 0 {
+			return ""
+		}
+		return fmt.Sprintf(" (published limits for %s suggest %s %d)", orDefaultString(p.Model, "this model"), field, value)
+	}
+
+	switch {
+	case p.Context <= 0 && p.MaxTokensDefaulted:
+		return "warn", fmt.Sprintf("no context_window and no max_tokens: automatic compaction is disabled, so a long session ends at a provider context-length error, and answers stop at %d tokens%s%s",
+			appconfig.DefaultMaxTokens,
+			suggestion(known.ContextWindow, "context_window"),
+			suggestion(known.MaxOutput, "max_tokens"))
+	case p.Context <= 0:
+		return "warn", fmt.Sprintf("max_tokens=%d but no context_window: automatic compaction is disabled, so a long session ends at a provider context-length error rather than compacting%s",
+			p.MaxTokens, suggestion(known.ContextWindow, "context_window"))
+	case p.MaxTokensDefaulted:
+		return "warn", fmt.Sprintf("context_window=%d but no max_tokens: every answer stops at the %d-token default, with no message%s",
+			p.Context, appconfig.DefaultMaxTokens, suggestion(known.MaxOutput, "max_tokens"))
+	default:
+		detail = fmt.Sprintf("limits context_window=%d max_tokens=%d", p.Context, p.MaxTokens)
+		if hasKnown && known.ContextWindow > 0 && p.Context > known.ContextWindow*2 {
+			// Not an error — the table understates by design and a gateway may
+			// genuinely serve more — but a window several times the documented
+			// one is worth seeing, because it is what a session runs out of
+			// context against without compacting first.
+			detail += fmt.Sprintf(" (published limits for %s suggest context_window %d)", p.Model, known.ContextWindow)
+		}
+		return "ok", detail
+	}
 }
 
 func isAzureProvider(providerType string) bool {

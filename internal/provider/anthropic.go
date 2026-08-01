@@ -143,7 +143,8 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
-	reasoningRetried, cachingRetried := false, false
+	reasoningRetried, cachingRetried, ceilingRetried := false, false, false
+	currentMaxTokens := in.MaxTokens
 	for {
 		req, err := newJSONRequest(ctx, http.MethodPost, base+"/messages", body)
 		if err != nil {
@@ -206,6 +207,23 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 					onDelta(Delta{Warning: "endpoint rejected prompt cache breakpoints; retrying without caching and not attempting it again for this provider"})
 				}
 				continue
+			}
+			// A max_tokens above the model's real ceiling is the one rejection
+			// here that the user can neither predict nor see coming: no
+			// Anthropic catalog publishes an output cap, so the number in the
+			// configuration was written from memory or from documentation. The
+			// rejection states the ceiling, so the request is retried under it
+			// rather than lost, once per session.
+			if !ceilingRetried {
+				if ceiling := rejectedOutputCeiling(resp.StatusCode, errorBody); ceiling > 0 && ceiling < currentMaxTokens {
+					ceilingRetried = true
+					if onDelta != nil {
+						onDelta(Delta{Warning: fmt.Sprintf("provider rejected max_tokens=%d for %s; retrying at its stated ceiling of %d — set max_tokens in your provider configuration to make it permanent", currentMaxTokens, in.Model, ceiling)})
+					}
+					currentMaxTokens = ceiling
+					body["max_tokens"] = ceiling
+					continue
+				}
 			}
 			return Response{}, withAzureRBACHint(responseError(resp, c.Label, "chat", errorBody), c.AuthHint)
 		}

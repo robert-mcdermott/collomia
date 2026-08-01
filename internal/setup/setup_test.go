@@ -428,7 +428,7 @@ func TestApplyRefusesToWriteASecretIntoConfiguration(t *testing.T) {
 }
 
 func TestBuildNeverCarriesTheSecretIntoTheProvider(t *testing.T) {
-	result := Build("hosted", appconfig.Provider{Type: "openai", BaseURL: "https://example.test/v1", APIKey: "sk-secret"}, "m", CredentialStore, "OPENAI_API_KEY", "sk-secret")
+	result := Build("hosted", appconfig.Provider{Type: "openai", BaseURL: "https://example.test/v1", APIKey: "sk-secret"}, "m", CredentialStore, "OPENAI_API_KEY", "sk-secret", provider.Limits{})
 	if result.Provider.APIKey != "" {
 		t.Fatal("Build must not copy an API key into the provider it writes")
 	}
@@ -436,7 +436,7 @@ func TestBuildNeverCarriesTheSecretIntoTheProvider(t *testing.T) {
 		t.Error("the secret must survive on the result for the credential store step")
 	}
 
-	env := Build("hosted", appconfig.Provider{Type: "openai", BaseURL: "https://example.test/v1"}, "m", CredentialEnv, "OPENAI_API_KEY", "sk-secret")
+	env := Build("hosted", appconfig.Provider{Type: "openai", BaseURL: "https://example.test/v1"}, "m", CredentialEnv, "OPENAI_API_KEY", "sk-secret", provider.Limits{})
 	if env.Provider.APIKeyEnv != "OPENAI_API_KEY" {
 		t.Errorf("api_key_env = %q", env.Provider.APIKeyEnv)
 	}
@@ -462,7 +462,7 @@ func TestApplyMergesWithoutDisturbingTheRestOfTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := Build("new", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://new.test/v1"}, "model-x", CredentialNone, "", "")
+	result := Build("new", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://new.test/v1"}, "model-x", CredentialNone, "", "", provider.Limits{})
 	result.MakeDefault = true
 	if err := Apply(path, result); err != nil {
 		t.Fatal(err)
@@ -500,7 +500,7 @@ func TestApplyMergesWithoutDisturbingTheRestOfTheFile(t *testing.T) {
 
 func TestApplyCreatesAFileWhenNoneExists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
-	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1"}, "m", CredentialNone, "", "")
+	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1"}, "m", CredentialNone, "", "", provider.Limits{})
 	result.MakeDefault = true
 	if err := Apply(path, result); err != nil {
 		t.Fatal(err)
@@ -519,28 +519,107 @@ func TestApplyCreatesAFileWhenNoneExists(t *testing.T) {
 	assertOwnerOnly(t, path)
 }
 
-func TestBuildTakesContextFromTheCapabilityRegistry(t *testing.T) {
-	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1", Context: 4096}, "m", CredentialNone, "", "")
-	if result.Provider.Context != 4096 {
-		t.Errorf("a known context window must be preserved, got %d", result.Provider.Context)
+func TestBuildKeepsAnExistingCredentialArrangement(t *testing.T) {
+	// Re-verifying a provider must not disturb the credential it just
+	// authenticated with. Without a plan meaning "leave it alone", the only way
+	// to express an already-configured key would be CredentialStore with no
+	// secret — which Apply would write as an empty string, destroying the key
+	// the run had just used successfully.
+	result := Build("bedrock", appconfig.Provider{Type: "bedrock", Region: "us-west-2", APIKeyEnv: "AWS_BEARER_TOKEN_BEDROCK"},
+		"us.anthropic.claude-opus-4-1", CredentialKeep, "AWS_BEARER_TOKEN_BEDROCK", "", provider.Limits{})
+	if result.Provider.APIKeyEnv != "AWS_BEARER_TOKEN_BEDROCK" {
+		t.Errorf("api_key_env = %q; dropping it leaves a provider that no longer knows where its credential lives", result.Provider.APIKeyEnv)
 	}
-	if result.ContextAssumed {
-		t.Error("a known context window must not be marked as assumed")
+	if result.Secret != "" {
+		t.Error("keeping an arrangement must involve no secret at all")
+	}
+	if !strings.Contains(result.CredentialSummary(), "unchanged") {
+		t.Errorf("the confirmation must say the credential is untouched: %q", result.CredentialSummary())
+	}
+
+	// And Apply must not reach the credential store on this plan.
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Apply(path, result); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "api_key\"") {
+		t.Error("no api_key field may ever appear in a written configuration")
 	}
 }
 
-func TestBuildAlwaysWritesAContextWindowAndSaysWhenItGuessed(t *testing.T) {
-	// Omitting the field looks more honest and is the wrong trade: a zero
-	// window makes Agent.shouldCompact return false forever, so automatic
-	// compaction never runs and a long session ends at a provider
-	// context-length error with no recovery. Found by running the wizard
+func TestBuildKeepsAContextWindowTheUserEntered(t *testing.T) {
+	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1", Context: 4096}, "m", CredentialNone, "", "", provider.Limits{})
+	if result.Provider.Context != 4096 {
+		t.Errorf("a context window entered on the form must be preserved, got %d", result.Provider.Context)
+	}
+	if result.ContextAssumed {
+		t.Error("a context window the user entered must not be marked as assumed")
+	}
+}
+
+func TestBuildPrefersEndpointReportedLimits(t *testing.T) {
+	// The endpoint's own statement about itself outranks everything, including
+	// a table entry for the same name: the table is a floor written from vendor
+	// documentation, and a runtime that has loaded a model with a smaller window
+	// is serving the smaller one.
+	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1"}, "qwen3-coder",
+		CredentialNone, "", "", provider.Limits{ContextWindow: 16384, MaxOutput: 2048, ContextSource: provider.LimitsEndpoint, OutputSource: provider.LimitsEndpoint})
+	if result.Provider.Context != 16384 || result.Provider.MaxTokens != 2048 {
+		t.Errorf("endpoint limits must win, got context %d max_tokens %d", result.Provider.Context, result.Provider.MaxTokens)
+	}
+	if result.ContextAssumed {
+		t.Error("endpoint-reported limits are not an assumption")
+	}
+}
+
+func TestBuildAlwaysWritesBothLimitsAndSaysWhenItGuessed(t *testing.T) {
+	// Omitting either field looks more honest and is the wrong trade, in two
+	// different ways. A zero window makes Agent.shouldCompact return false
+	// forever, so automatic compaction never runs and a long session ends at a
+	// provider context-length error with no recovery. An absent max_tokens is
+	// normalized to 8192 at load, which truncates every long answer with no
+	// message and no field in the file to point at. Found by running the wizard
 	// against a real Ollama and reading what it wrote.
-	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1"}, "some-local-model", CredentialNone, "", "")
+	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1"}, "some-local-model", CredentialNone, "", "", provider.Limits{})
 	if result.Provider.Context <= 0 {
 		t.Fatal("a written provider must always carry a context window, or automatic compaction is silently disabled")
 	}
+	if result.Provider.MaxTokens <= 0 {
+		t.Fatal("a written provider must always carry max_tokens, or the load-time default truncates answers invisibly")
+	}
 	if !result.ContextAssumed {
-		t.Error("a context window nobody established must be marked assumed so the confirmation can say so")
+		t.Error("limits nobody established must be marked assumed so the confirmation can say so")
+	}
+}
+
+func TestBuildTakesPublishedLimitsForAKnownFamily(t *testing.T) {
+	// The case the whole table exists for: no hosted catalog publishes limits,
+	// so before this every Claude the wizard wrote was given the 32768 guess
+	// and the 8192 output default.
+	result := Build("anthropic", appconfig.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}, "claude-sonnet-4-5-20250929", CredentialEnv, "ANTHROPIC_API_KEY", "", provider.Limits{})
+	if result.Provider.Context <= assumedContextWindow {
+		t.Errorf("a documented Claude window must beat the assumption, got %d", result.Provider.Context)
+	}
+	if result.Provider.MaxTokens <= assumedMaxOutput {
+		t.Errorf("a documented Claude output cap must beat the default, got %d", result.Provider.MaxTokens)
+	}
+	if result.ContextAssumed {
+		t.Error("a table hit is not an assumption; it is labelled as published rather than measured")
+	}
+}
+
+func TestBuildNeverWritesAnOutputCapAtOrAboveTheWindow(t *testing.T) {
+	// A provider rejects this outright, and `collo config validate` refuses it,
+	// so the wizard must not be able to produce it — the window and the cap
+	// come from independent sources and can meet on an unusual model.
+	result := Build("local", appconfig.Provider{Type: "openai-compatible", BaseURL: "http://local.test/v1"}, "m",
+		CredentialNone, "", "", provider.Limits{ContextWindow: 4096, MaxOutput: 8192, ContextSource: provider.LimitsEndpoint, OutputSource: provider.LimitsEndpoint})
+	if result.Provider.MaxTokens >= result.Provider.Context {
+		t.Errorf("max_tokens %d must stay below the context window %d", result.Provider.MaxTokens, result.Provider.Context)
 	}
 }
 
@@ -637,7 +716,7 @@ func TestApplyLeavesTheDefaultAloneWhenNotAsked(t *testing.T) {
 }`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result := Build("anthropic", appconfig.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}, "claude-sonnet-5", CredentialEnv, "ANTHROPIC_API_KEY", "")
+	result := Build("anthropic", appconfig.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}, "claude-sonnet-5", CredentialEnv, "ANTHROPIC_API_KEY", "", provider.Limits{})
 	result.MakeDefault = false
 	if err := Apply(path, result); err != nil {
 		t.Fatal(err)

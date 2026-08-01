@@ -151,6 +151,10 @@ type ModelInfo struct {
 	// model. Catalog APIs that do not publish per-model metadata inherit the
 	// adapter declaration and retain unknown model-dependent facts.
 	Capabilities Capabilities `json:"capabilities"`
+	// Limits are this model's own context and output ceilings where the
+	// catalog published them. Most do not, and the zero value says so rather
+	// than carrying a number the endpoint never stated.
+	Limits Limits `json:"limits,omitzero"`
 }
 
 // ModelLister is an optional Client capability: providers whose APIs expose

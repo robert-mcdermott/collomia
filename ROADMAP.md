@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-30
+**Status updated:** 2026-07-31
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -75,14 +75,119 @@ campaigns — since the last P0 outside it was reclassified on the evidence that
 the enforced all-or-nothing network boundary it was meant to add already
 existed on all three platforms. The audit ledger those campaigns and that
 review read from is now itself complete, attributable, bounded, and
-inspectable, and pseudo-terminal execution reaches all three platforms. The
-most recent wave closed the last known asymmetry in the risk classifier: the
-safety taxonomy described destruction only, so publishing and deploying rode
-along with autopilot while their deletion counterparts required a decision.
+inspectable, and pseudo-terminal execution reaches all three platforms. An
+earlier wave closed the last known asymmetry in the risk classifier: the safety
+taxonomy described destruction only, so publishing and deploying rode along
+with autopilot while their deletion counterparts required a decision.
+
+The most recent wave took the first sustained beta report at its word. It was
+not about a missing capability: it was about having to hand-write JSON, and in
+particular about correcting `max_tokens` and `context_window` by hand because
+the defaults were wrong for the models in use. Both fields turn out to have
+failed silently and in opposite directions, and the product had never held any
+knowledge of a model's limits to offer instead. They are now discovered, always
+written, reported, validated, and — where the configured value is too large —
+corrected from the provider's own rejection.
 
 No wave is currently active. See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — the numbers nobody should have to guess
+
+**Goal:** stop the two configuration fields that decide how much a session can
+hold and how much a model may say from being decided invisibly, by a constant,
+in a product whose first sustained beta report was about having to set them by
+hand.
+
+- [x] Find out what the two fields actually did when omitted, because the
+  answer is what justified the wave. An absent `max_tokens` is normalized to
+  **8192** at load with no warning, so every answer from a frontier model stops
+  at a fraction of what it can emit and presents as a response that simply
+  ends. An absent `context_window` stays zero, and `Agent.shouldCompact`
+  returns false on a zero window for the life of the session — automatic
+  compaction never runs, and a long session ends at a provider context-length
+  error with no recovery. `ValidateFields` inspected neither, and no diagnostic
+  had ever mentioned either.
+- [x] Establish that Collomia held no knowledge of any model's limits anywhere.
+  `CapabilitiesFor(providerType, model, contextWindow)` takes the window as an
+  *argument* and echoes it back, so there was no registry to consult. Three
+  consequences were all shipping: `setup.Build`'s "take the context window from
+  the capability registry" branch **could never be reached**, since
+  `capabilities.ContextWindow` is non-zero only when a non-zero window was
+  passed in, so every locally discovered provider was written with the assumed
+  32768 whatever model was chosen; `setup.Build` wrote no `max_tokens` at all;
+  and the model picker annotated every catalog entry with `context N` taken
+  from one echoed constant — a display that looked like per-model discovery and
+  was the same number repeated down the list.
+- [x] Read the limits the catalogs already publish and the adapter already
+  discarded. `ListModels` parsed nothing but `id`, while OpenRouter-style
+  catalogs carry `context_length` and `top_provider.max_completion_tokens`
+  beside it. LM Studio's native catalog answers the whole list in one request,
+  which is what makes annotating a picker affordable; Ollama's `/api/show`
+  answers one model per request, so it is asked once, about the model actually
+  chosen.
+- [x] Prefer the window a runtime has **loaded** over the one its weights
+  allow. A model loaded with 8k is serving 8k, and writing the documented
+  number down would disable compaction exactly where it is needed soonest.
+- [x] Add a published-limits table for the hosted families whose catalogs
+  publish nothing at all, and make its epistemic status structural rather than
+  documented. Endpoint-reported limits are authoritative and may contradict a
+  configured value; the table is a floor that may only ever fill a gap. Every
+  entry deliberately understates, because understating a window costs an early
+  compaction while overstating one costs the session, and family floors carry
+  models released after this build so a new Claude inherits a modern Claude's
+  shape rather than the 32768 guess. A test fails on any entry whose output cap
+  meets its window, and another on a duplicate prefix, since a shadowed entry
+  is a maintenance trap: the numbers are there, the table appears to know the
+  model, and the floor answers instead.
+- [x] Make the table safe to ship by giving the provider the last word. A
+  `max_tokens` above the model's real ceiling now retries at the ceiling named
+  in the provider's own 400 — on the OpenAI route through the existing
+  parameter-negotiation profile, on the Anthropic route beside the reasoning
+  and caching retries — with a warning carrying both numbers and a pointer at
+  the configuration. This is what makes an approximate table and a
+  written-from-memory configuration both recoverable rather than fatal.
+- [x] Match the rejection on the phrasing that carries the number, never on the
+  digits in the message. A rejection routinely names the model, and
+  `claude-sonnet-4-5-20250929` contributes 4, 5, and a date to any scan of the
+  text — so "the smallest number in the message" would have silently learned a
+  ceiling of four output tokens and remembered it for the session. That failure
+  is worse than not recognizing the message at all, which is why an
+  unrecognized rejection surfaces the provider's error untouched.
+- [x] Report it where a configuration written before any of this gets read.
+  `collo doctor` carries both numbers on each provider's own row and warns when
+  either is missing, naming the consequence rather than the field; `/context`
+  says what an unknown window costs instead of printing "unknown"; and
+  `collo config validate` refuses a `max_tokens` at or above `context_window`,
+  which no request can satisfy. The first run of the doctor check found a live
+  defect in the author's own configuration: a Bedrock provider on Claude Opus
+  with no `max_tokens`, capped at 8192 output tokens for however long it had
+  been configured.
+- [x] Add `collo setup --provider <name>`, which re-enters the same
+  probe-verify-write path pointed at a provider the file already has. It is not
+  a second mode: it skips the scan, opens the picker on the model already in
+  use, and everything after that is the ordinary path. A `CredentialKeep` plan
+  exists because the alternative would have been `CredentialStore` with no
+  secret — which `Apply` would have written as an empty string, destroying the
+  credential the run had just authenticated with.
+- [x] Record in normalization that `max_tokens` was defaulted. Nothing
+  downstream could otherwise tell a deliberate 8192 from a field the user never
+  knew existed, and only the second is worth reporting.
+
+**Behavior change:** two. `collo config validate` now rejects a `max_tokens` at
+or above `context_window` — a combination no request could satisfy, which
+previously validated clean and failed mid-session. And a `max_tokens` above the
+model's ceiling is now corrected for that request instead of failing the turn;
+the configuration file is never modified. See the
+[compatibility note](docs/COMPATIBILITY.md#model-token-limits).
+
+**What it is not.** The table is documentation, not measurement, and it cannot
+be verified from inside a build — which is why it is confined to filling gaps,
+labelled wherever it is shown, and backed by the provider's own correction. No
+catalog anywhere publishes an output ceiling, so that number is the weakest one
+in the system whatever this does; the negotiation is what makes it survivable
+rather than what makes it right.
 
 ## Completed wave — the actions that leave the machine
 
@@ -1071,6 +1176,17 @@ claiming enforcement the policy layer does not provide.
   the default port is unaffected in practice — `collo setup` finds it and
   writes it down — but a machine that relied on the implicit default without a
   configuration file now needs one.
+- [x] **P1 — Model limits that are discovered rather than guessed:** both token
+  limits are now resolved from the endpoint that knows them, then from a
+  conservative published-limits table, then labelled as assumed — and both are
+  always written. `collo doctor` reports them for every provider and warns when
+  either is absent, naming the consequence rather than the field; a
+  `max_tokens` at or above `context_window` is a validation error; and a
+  `max_tokens` above the model's real ceiling is retried at the ceiling the
+  provider's own rejection states rather than failing the turn.
+
+  See the [completed wave](#completed-wave--the-numbers-nobody-should-have-to-guess)
+  for what it found and what it deliberately does not do.
 - [x] **P1 — Provider prompt caching:** the Anthropic Messages routes send two
   cache breakpoints — the stable tools/system prefix and a rolling
   conversation boundary held behind any volatile trailing content — and drop
@@ -1150,6 +1266,37 @@ claiming enforcement the policy layer does not provide.
   already a linear-text path and is documented as the answer, in the same
   idiom as Linux scoped egress. That keeps a future `--screen-reader` flag
   cheap — wiring and documentation rather than architecture — if a user asks.
+- [ ] **P2 — A configuration surface that is not a hand-edited JSON file:**
+  the reported beta experience of configuring Collomia is reading extensive
+  documentation — or asking an AI to read it — and then hand-writing JSON,
+  including numbers like `max_tokens` and `context_window` whose defaults were
+  wrong for the model in use. `collo setup` removed that for the first
+  provider only; `/config` prints a path.
+
+  **Deliberately not one wizard over the whole file.** There are ~120
+  configuration fields, and a form asking 120 questions is worse than the file
+  it replaces. Three tiers, of which two mostly exist:
+
+  - *Needs discovery or verification* — providers, models, limits,
+    credentials. This is where the reported pain is, it is the only tier a
+    wizard is the right instrument for, and `collo setup` plus Phase 4's
+    per-provider re-run covers it.
+  - *Safety postures* — already sugar-coated by `permissions.preset` and
+    reachable through `/autonomy`. What is missing is seeing and changing the
+    effective stance from inside a session rather than reading it in the
+    Session tab. Any such editor must respect the monotonic clamp, which means
+    it can offer a project a tightening and must refuse it a weakening in the
+    same words the loader already uses.
+  - *Everything else* — stays JSON, and gets a generated schema instead of a
+    form. `collo schema config`, beside the existing `collo schema events`,
+    with `$schema` written into what `collo init` and `collo setup` produce,
+    gives completion, per-field documentation, and inline validation in any
+    editor. Generated from the structs, so it cannot drift from them the way
+    `docs/FEATURES.md` drifted into claiming a mandatory-audit posture that
+    never existed.
+
+  The schema is the cheapest part and answers most of the complaint; it should
+  not wait on the interactive surface, and it does not need one.
 - [ ] **P2 — Structured local service API:** authenticated stdio/socket or
   WebSocket access to the event/session/permission contracts. The current web
   terminal is a PTY transport, not this API.
@@ -1267,7 +1414,23 @@ assessment would most likely have opened with. The rest, in order:
    hard to start using; this is the same asymmetry the publication wave fixed,
    in a different place. A control nobody leaves on and a product nobody can
    easily install fail for the same reason.
-2. Gather real beta feedback on named primary profiles, cost estimates,
+   The first sustained beta report has now arrived, from the one person using
+   Collomia daily, and it did not name a missing capability: it named the
+   configuration file. Extensive documentation has to be read — or handed to an
+   AI to read — before a provider block can be written, and `max_tokens` and
+   `context_window` in particular had to be corrected by hand because the
+   defaults were too small for the models actually in use. That is a concrete,
+   already-diagnosed defect rather than a preference. **That slice has now
+   shipped**, which leaves the three original segments — getting the binary,
+   trusting it, configuring a provider — with the third substantially closed and
+   the first two untouched. Package managers are the next one worth taking:
+   Homebrew and Scoop need no signed binary, the release workflow already
+   produces everything their manifests would reference, and `curl | sh` remains
+   the only route to a first install. Phase 7's configuration-surface item
+   carries what remains of the configuration complaint, of which the cheapest
+   and most useful part is a generated `collo schema config` rather than any
+   interactive surface.
+2. Gather further beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best
    judged against real toolchains rather than predicted. This is the stated

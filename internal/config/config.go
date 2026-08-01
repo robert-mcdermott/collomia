@@ -25,6 +25,16 @@ const ProjectFile = ".collomia.json"
 // writes. Older files without schema_version are treated as version 1.
 const CurrentSchemaVersion = 1
 
+// DefaultMaxTokens is the output cap applied to a provider that names none.
+//
+// It is small for a modern model on purpose — it predates most of them — and
+// the number is not the problem. The problem is that it used to be applied
+// invisibly: a provider block with no max_tokens produced answers that stopped
+// at 8192 tokens with no message, no diagnostic, and no field in the file to
+// point at. It is named here so `collo doctor` can report where it is in force
+// and `collo setup` can write it down rather than let it apply silently.
+const DefaultMaxTokens = 8192
+
 type Config struct {
 	SchemaVersion   int                  `json:"schema_version,omitempty"`
 	DefaultProvider string               `json:"default_provider"`
@@ -100,7 +110,13 @@ type Provider struct {
 	Headers            map[string]string `json:"headers,omitempty"`
 	MaxTokens          int               `json:"max_tokens,omitempty"`
 	Context            int               `json:"context_window,omitempty"`
-	Temperature        *float64          `json:"temperature,omitempty"`
+	// MaxTokensDefaulted records that max_tokens was absent and normalization
+	// supplied one. Without it nothing downstream can tell a deliberate 8192
+	// from a field the user never knew existed — and the second case is the one
+	// worth reporting, because it silently truncates long answers from a model
+	// that could produce far more. Diagnostics only, never serialized.
+	MaxTokensDefaulted bool     `json:"-"`
+	Temperature        *float64 `json:"temperature,omitempty"`
 	// Reasoning is opt-in. When omitted, Collomia sends no reasoning-specific
 	// request field and preserves each provider/model's own default.
 	Reasoning *Reasoning `json:"reasoning,omitempty"`
@@ -891,31 +907,10 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 			p.EntraTenantID = strings.TrimSpace(p.EntraTenantID)
 			p.EntraAuthorityHost = strings.TrimSpace(p.EntraAuthorityHost)
 		} else {
-			p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
-			p.APIKey = expandEnv(p.APIKey)
-			if p.APIKey != "" {
-				p.CredentialSource = "api_key"
-			}
-			if p.APIKey == "" && p.APIKeyEnv != "" {
-				if p.APIKey = os.Getenv(p.APIKeyEnv); p.APIKey != "" {
-					p.CredentialSource = "environment " + p.APIKeyEnv
-				}
-			}
-			if p.APIKey == "" && usesStoredCredential(p) {
-				if secret, ok, err := lookupStoredCredential(name); err == nil && ok {
-					p.APIKey = secret
-					p.CredentialSource = "credential store"
-				}
-			}
-			for key, value := range p.Headers {
-				p.Headers[key] = expandEnv(value)
-			}
-			p.EntraScope = strings.TrimSpace(expandEnv(p.EntraScope))
-			p.EntraTenantID = strings.TrimSpace(expandEnv(p.EntraTenantID))
-			p.EntraAuthorityHost = strings.TrimSpace(expandEnv(p.EntraAuthorityHost))
+			p = resolveProviderEnvironment(name, p)
 		}
 		if p.MaxTokens <= 0 {
-			p.MaxTokens = 8192
+			p.MaxTokens, p.MaxTokensDefaulted = DefaultMaxTokens, true
 		}
 		if p.ConnectTimeoutSeconds == 0 {
 			p.ConnectTimeoutSeconds = 10
@@ -939,6 +934,47 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	for name, server := range c.MCP {
 		c.MCP[name] = normalizeMCPServer(server, !skipEnvironmentExpansion)
 	}
+}
+
+// ResolveProvider expands environment references and resolves the credential
+// for one provider definition, exactly as loading the merged configuration
+// would.
+//
+// It exists for callers that deliberately work on a single configuration layer
+// — `collo setup --provider`, which re-verifies a provider recorded in the
+// global file — and still need the credential a session would actually use.
+// Re-implementing the api_key → api_key_env → provider-family variable →
+// credential-store precedence at such a call site is how the two orders drift
+// apart, and a wizard that authenticates differently from the session it is
+// configuring would verify the wrong thing.
+func ResolveProvider(name string, p Provider) Provider {
+	return resolveProviderEnvironment(name, p)
+}
+
+func resolveProviderEnvironment(name string, p Provider) Provider {
+	p.BaseURL = strings.TrimRight(expandEnv(p.BaseURL), "/")
+	p.APIKey = expandEnv(p.APIKey)
+	if p.APIKey != "" {
+		p.CredentialSource = "api_key"
+	}
+	if p.APIKey == "" && p.APIKeyEnv != "" {
+		if p.APIKey = os.Getenv(p.APIKeyEnv); p.APIKey != "" {
+			p.CredentialSource = "environment " + p.APIKeyEnv
+		}
+	}
+	if p.APIKey == "" && usesStoredCredential(p) {
+		if secret, ok, err := lookupStoredCredential(name); err == nil && ok {
+			p.APIKey = secret
+			p.CredentialSource = "credential store"
+		}
+	}
+	for key, value := range p.Headers {
+		p.Headers[key] = expandEnv(value)
+	}
+	p.EntraScope = strings.TrimSpace(expandEnv(p.EntraScope))
+	p.EntraTenantID = strings.TrimSpace(expandEnv(p.EntraTenantID))
+	p.EntraAuthorityHost = strings.TrimSpace(expandEnv(p.EntraAuthorityHost))
+	return p
 }
 
 // ResolveMCPServer expands environment references and applies runtime
@@ -1108,6 +1144,26 @@ func (c Config) ValidateFields() []FieldError {
 			} else if provider.EntraScope != "" || provider.EntraTenantID != "" || provider.EntraAuthorityHost != "" {
 				errs = append(errs, FieldError{field + ".auth", "must be entra when entra_scope, entra_tenant_id, or entra_authority_host is configured"})
 			}
+		}
+		// Token limits. Only the unsatisfiable combination is an error here;
+		// an absent field is a warning, reported by `collo doctor`, because
+		// refusing to start over a field that has always been optional would
+		// break every configuration written before it was validated.
+		if provider.Context < 0 {
+			errs = append(errs, FieldError{field + ".context_window", "must not be negative"})
+		}
+		if provider.MaxTokens < 0 {
+			errs = append(errs, FieldError{field + ".max_tokens", "must not be negative"})
+		}
+		if provider.Context > 0 && provider.MaxTokens >= provider.Context {
+			// The output cap is spent out of the same budget as the prompt, so
+			// this configuration cannot be satisfied by any request: the
+			// provider rejects it, and ValidateRequest already refuses it
+			// before the network. Catching it here names the two fields
+			// instead of surfacing as a provider error mid-session.
+			errs = append(errs, FieldError{field + ".max_tokens", fmt.Sprintf(
+				"%d is at or above context_window %d; the output cap is spent from the same budget as the prompt, so no request can satisfy this",
+				provider.MaxTokens, provider.Context)})
 		}
 		for _, timeout := range []struct {
 			key   string

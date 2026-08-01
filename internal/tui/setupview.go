@@ -98,6 +98,17 @@ func (m setupModel) hint(text string) string {
 }
 
 func (m setupModel) scanView() string {
+	if m.opts.Reconfigure != "" && m.name != "" {
+		// Nothing is being looked for: the provider was named on the command
+		// line, and the screen must not claim to be scanning for runtimes it
+		// never asked about.
+		return strings.Join([]string{
+			m.title("Re-verifying " + m.name),
+			m.hint(orDash(m.provider.BaseURL) + " — its credential and settings are read from " + m.opts.ConfigPath),
+			"",
+			"  " + m.spin.View() + " asking the endpoint what it has…",
+		}, "\n")
+	}
 	lines := []string{m.title("Looking for local model runtimes"), ""}
 	if len(m.probes) == 0 {
 		for _, candidate := range setup.LocalCandidates() {
@@ -148,10 +159,15 @@ func (m setupModel) modelView() string {
 // capabilityNote reports what the registry declares, and is careful not to
 // read as a measurement: the verification request deliberately carries no
 // tools, so nothing here has been observed on this endpoint.
+//
+// The context figure is the exception, and it is shown only when this model's
+// own limits were established — by the catalog, or by the runtime's native
+// description endpoint. It used to show the window being assembled for the
+// provider, repeated identically beside every entry in the list.
 func capabilityNote(model provider.ModelInfo) string {
 	notes := make([]string, 0, 3)
-	if model.Capabilities.ContextWindow > 0 {
-		notes = append(notes, fmt.Sprintf("context %d", model.Capabilities.ContextWindow))
+	if model.Limits.ContextWindow > 0 {
+		notes = append(notes, "context "+compactTokens(model.Limits.ContextWindow))
 	}
 	if model.Capabilities.Tools == provider.CapabilitySupported {
 		notes = append(notes, "tools")
@@ -160,6 +176,35 @@ func capabilityNote(model provider.ModelInfo) string {
 		notes = append(notes, "images")
 	}
 	return strings.Join(notes, " · ")
+}
+
+// compactTokens renders a token count short enough to sit beside a model name
+// in a list. Rounding down is deliberate: this is a label, and 131K reads as a
+// size where 131072 reads as a measurement.
+func compactTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dK", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// limitSourceNote says where a written limit came from, in the words a reader
+// needs to decide whether to change it.
+func limitSourceNote(source provider.LimitSource) string {
+	switch source {
+	case provider.LimitsEndpoint:
+		return "reported by the endpoint"
+	case provider.LimitsTable:
+		return "published limits for this model; edit if yours differ"
+	case provider.LimitsConfigured:
+		return "as you entered it"
+	default:
+		return "assumed — nothing established these; edit context_window and max_tokens if your model differs"
+	}
 }
 
 // formView renders the multi-field screen for a provider that has to be
@@ -354,14 +399,14 @@ func (m setupModel) confirmView() string {
 		{"credential", m.result.CredentialSummary()},
 	}
 	if m.result.Provider.Context > 0 {
-		context := fmt.Sprintf("%d", m.result.Provider.Context)
-		if m.result.ContextAssumed {
-			// Neither the endpoint nor the registry establishes this, and
-			// automatic compaction depends on it, so the guess is labelled
-			// rather than presented as something that was measured.
-			context += " — assumed; set context_window if your model differs"
-		}
-		rows = append(rows, [2]string{"context", context})
+		// Both numbers are reported together with what established them.
+		// Automatic compaction depends on the window and every long answer
+		// depends on the cap, and an assumption presented as a measurement is
+		// how a wrong number survives to the first failed session.
+		rows = append(rows, [2]string{"limits", fmt.Sprintf("context %d — %s",
+			m.result.Provider.Context, limitSourceNote(m.result.Limits.ContextSource))})
+		rows = append(rows, [2]string{"", fmt.Sprintf("max output %d — %s",
+			m.result.Provider.MaxTokens, limitSourceNote(m.result.Limits.OutputSource))})
 	}
 	if m.awsIdentity != nil {
 		// The commonest Bedrock confusion is not a missing credential but not

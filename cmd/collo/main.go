@@ -797,7 +797,7 @@ Usage:
   collo [flags] [initial prompt]      start the interactive TUI
   collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
   collo run [flags] <prompt>          run once (or read the prompt from stdin)
-  collo setup                         find, verify, and configure a provider interactively
+  collo setup [--provider <name>]     find, verify, and configure a provider interactively
   collo init [--with-reference]       write project .collomia.json
   collo init --global [--with-reference]  write the user-wide .collomia/config.json
   collo config validate [--strict]    validate configuration with field-level errors
@@ -822,7 +822,7 @@ Usage:
 
 Flags:
   --cwd <path>                         workspace (default: current directory)
-  --provider <name>                    configured provider name
+  --provider <name>                    configured provider name; with setup, re-verify that provider
   --model <id>                         model or deployment ID
   --agent <name>                       named primary agent profile
   --autonomy ask|workspace|autopilot   permission policy

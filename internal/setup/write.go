@@ -35,6 +35,14 @@ const (
 	// export. Used where there is no credential store, so the alternative
 	// would be a secret in a file.
 	CredentialManual CredentialPlan = "manual"
+	// CredentialKeep leaves an already-working arrangement exactly as it is.
+	//
+	// It exists for `collo setup --provider`, which re-verifies a provider that
+	// already authenticates. Without it the only way to express "this provider
+	// already has a credential" would be CredentialStore with no secret to
+	// store, which would overwrite the stored key with an empty string — a
+	// re-verification that destroys the credential it just used.
+	CredentialKeep CredentialPlan = "keep"
 )
 
 // Result is a fully verified provider, ready to be written down.
@@ -55,32 +63,44 @@ type Result struct {
 	Secret string `json:"-"`
 	// MakeDefault promotes this provider to default_provider/default_model.
 	MakeDefault bool
+	// Limits are the limits that were written down, carrying the source that
+	// established them so the confirmation can distinguish a number the
+	// endpoint stated from one this build assumed.
+	Limits provider.Limits
 	// ContextAssumed marks a context window nobody could establish, so the
 	// confirmation can say so rather than presenting a guess as a measurement.
 	ContextAssumed bool
 }
 
-// assumedContextWindow is written when neither the endpoint nor the capability
-// registry establishes one.
+// assumedContextWindow and assumedMaxOutput are written when neither the
+// endpoint nor the published-limits table establishes anything.
 //
-// Leaving the field out would be the more honest-looking choice and is the
-// wrong one: a zero window makes Agent.shouldCompact return false for the life
-// of the session, so automatic compaction never runs and a long session ends
-// at a provider context-length error with no recovery. A stated assumption the
-// user can see and change beats a silent capability loss.
+// Leaving either field out would be the more honest-looking choice and is the
+// wrong one, in two different ways. A zero window makes Agent.shouldCompact
+// return false for the life of the session, so automatic compaction never runs
+// and a long session ends at a provider context-length error with no recovery.
+// An absent max_tokens is normalized to 8192 at load, which silently truncates
+// every long answer — the same number, but reached without the user ever
+// seeing it or knowing there was a field to change. A stated assumption the
+// user can read and edit beats a silent capability loss.
 //
-// The value matches what `collo init` has always written, so this is the
+// Both values match what `collo init` has always written, so this is the
 // existing default made visible rather than a new number introduced here.
-const assumedContextWindow = 32768
+const (
+	assumedContextWindow = 32768
+	assumedMaxOutput     = 8192
+)
 
-// Build assembles a Result from a verified selection, taking the context
-// window from the capability registry rather than guessing one.
+// Build assembles a Result from a verified selection, writing both token
+// limits from the best source that established them.
 //
-// The current starter hardcodes context 32768 and max_tokens 8192 for every
-// local model, which is a guess about someone else's hardware. Where the
-// registry knows better, it wins; where it does not, the field is left out so
-// the adapter's own default governs instead of a wrong number.
-func Build(name string, p appconfig.Provider, model string, credential CredentialPlan, envVar, secret string) Result {
+// Every earlier version of this wrote 32768 for the context window of every
+// locally discovered model and no max_tokens at all — a guess about someone
+// else's hardware, and a field left to a default nobody could see. The order
+// here is fixed and stated on the confirmation screen: what the endpoint
+// published about this model, then the published-limits table, then an
+// assumption that is labelled as one.
+func Build(name string, p appconfig.Provider, model string, credential CredentialPlan, envVar, secret string, limits provider.Limits) Result {
 	written := appconfig.Provider{
 		Type:    p.Type,
 		BaseURL: p.BaseURL,
@@ -96,17 +116,44 @@ func Build(name string, p appconfig.Provider, model string, credential Credentia
 		EntraTenantID:      p.EntraTenantID,
 		EntraAuthorityHost: p.EntraAuthorityHost,
 	}
-	assumed := false
-	switch capabilities, err := provider.CapabilitiesFor(p.Type, model, p.Context); {
-	case err == nil && capabilities.ContextWindow > 0:
-		written.Context = capabilities.ContextWindow
-	case p.Context > 0:
-		written.Context = p.Context
-	default:
-		written.Context, assumed = assumedContextWindow, true
+	// Resolving again here rather than trusting the caller is deliberate: Build
+	// is the last gate before a file is written, and a caller that skipped
+	// resolution must not be the reason a provider is recorded with no limits
+	// at all.
+	resolved := limits
+	if !resolved.Known() {
+		resolved = provider.ResolveLimits(model, provider.Limits{})
 	}
+	switch {
+	case resolved.ContextWindow > 0:
+	case p.Context > 0:
+		// A window the user typed into the manual form is theirs, and outranks
+		// an assumption even though it outranks nothing else.
+		resolved.ContextWindow, resolved.ContextSource = p.Context, provider.LimitsConfigured
+	default:
+		resolved.ContextWindow, resolved.ContextSource = assumedContextWindow, provider.LimitsAssumed
+	}
+	if resolved.MaxOutput <= 0 {
+		resolved.MaxOutput, resolved.OutputSource = assumedMaxOutput, provider.LimitsAssumed
+	}
+	// An output cap at or above the window is a configuration the provider will
+	// reject outright, and the table is deliberately conservative rather than
+	// coordinated, so the two can meet on an unusual model. Clamping here keeps
+	// the wizard from writing a file that `collo config validate` would refuse
+	// — and the number that results was established by nobody, so it says so.
+	if resolved.MaxOutput >= resolved.ContextWindow {
+		resolved.MaxOutput, resolved.OutputSource = resolved.ContextWindow/2, provider.LimitsAssumed
+	}
+	written.Context, written.MaxTokens = resolved.ContextWindow, resolved.MaxOutput
+
 	if credential == CredentialEnv || credential == CredentialManual {
 		written.APIKeyEnv = envVar
+	}
+	if credential == CredentialKeep {
+		// Carry the existing arrangement forward verbatim. Dropping api_key_env
+		// here would turn a re-verification into a provider that no longer
+		// knows where its credential lives.
+		written.APIKeyEnv = p.APIKeyEnv
 	}
 	return Result{
 		Name:           name,
@@ -115,7 +162,8 @@ func Build(name string, p appconfig.Provider, model string, credential Credentia
 		Credential:     credential,
 		EnvVar:         envVar,
 		Secret:         secret,
-		ContextAssumed: assumed,
+		Limits:         resolved,
+		ContextAssumed: resolved.ContextSource == provider.LimitsAssumed,
 	}
 }
 
@@ -290,6 +338,11 @@ func (r Result) CredentialSummary() string {
 		return "stored in " + credstore.Backend()
 	case CredentialManual:
 		return "read from $" + r.EnvVar + " — export it before starting a session"
+	case CredentialKeep:
+		if r.EnvVar != "" {
+			return "unchanged — read from $" + r.EnvVar + " as before"
+		}
+		return "unchanged — the arrangement that already authenticates is kept"
 	default:
 		return string(r.Credential)
 	}
