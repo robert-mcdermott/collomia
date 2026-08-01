@@ -26,6 +26,14 @@ func gitWriteRepo(t *testing.T) (string, *PathGuard) {
 		dir = real
 	}
 	gitTest(t, dir, "init", "-q", "-b", "main")
+	// Repository-local identity, because the tool runs git in a subprocess
+	// that inherits this process's environment rather than the one gitTest
+	// builds for its own commands. Without it these tests pass on a machine
+	// with a global ~/.gitconfig and fail on a clean CI runner — which is
+	// exactly what happened. The env-var and no-identity routes are covered
+	// deliberately below rather than left to the developer's dotfiles.
+	gitTest(t, dir, "config", "user.email", "t@t")
+	gitTest(t, dir, "config", "user.name", "t")
 	writeRepoFile(t, dir, "tracked.txt", "one\n")
 	gitTest(t, dir, "add", "tracked.txt")
 	gitTest(t, dir, "commit", "-q", "-m", "first")
@@ -389,4 +397,86 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// isolateGitIdentity removes every ambient source of a git author identity, so
+// the tests below describe the repository they build rather than the machine
+// they run on.
+func isolateGitIdentity(t *testing.T) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	for _, name := range []string{
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+	} {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+}
+
+// bareRepo builds a repository with no identity configured anywhere.
+func bareRepo(t *testing.T) (string, *PathGuard) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	dir := t.TempDir()
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	gitTest(t, dir, "init", "-q", "-b", "main")
+	guard, err := NewPathGuard(dir, false)
+	if err != nil {
+		t.Fatalf("guard: %v", err)
+	}
+	return dir, guard
+}
+
+// The reason requireCommitIdentity asks `git var` rather than reading
+// `git config --get user.email`: configuration is only one of the places the
+// identity comes from. GIT_AUTHOR_NAME and friends are how CI supplies it, and
+// a config-only check refuses commits git performs perfectly well.
+func TestCommitUsesAnIdentityFromTheEnvironment(t *testing.T) {
+	isolateGitIdentity(t)
+	dir, guard := bareRepo(t)
+	t.Setenv("GIT_AUTHOR_NAME", "env author")
+	t.Setenv("GIT_AUTHOR_EMAIL", "author@example.test")
+	t.Setenv("GIT_COMMITTER_NAME", "env committer")
+	t.Setenv("GIT_COMMITTER_EMAIL", "committer@example.test")
+	writeRepoFile(t, dir, "new.txt", "content\n")
+
+	tool := GitCommitTool{Guard: guard}
+	if _, err := tool.Execute(t.Context(), json.RawMessage(`{"message":"work","paths":["new.txt"]}`)); err != nil {
+		t.Fatalf("commit with an environment-supplied identity failed: %v", err)
+	}
+	author, err := runGitRaw(t.Context(), dir, "log", "-1", "--pretty=format:%an")
+	if err != nil || strings.TrimSpace(author) != "env author" {
+		t.Fatalf("commit author = %q err=%v, want the environment identity", author, err)
+	}
+}
+
+// And when there is genuinely no identity, the failure names the cause and the
+// fix instead of relaying git's four lines of advice — and it happens before
+// anything is staged, so a reported failure leaves the index as it was.
+func TestCommitWithoutAnyIdentityFailsBeforeStaging(t *testing.T) {
+	isolateGitIdentity(t)
+	dir, guard := bareRepo(t)
+	writeRepoFile(t, dir, "new.txt", "content\n")
+
+	tool := GitCommitTool{Guard: guard}
+	_, err := tool.Execute(t.Context(), json.RawMessage(`{"message":"work","paths":["new.txt"]}`))
+	if err == nil {
+		t.Skip("this environment still resolves a git identity; nothing to assert")
+	}
+	if !strings.Contains(err.Error(), "cannot determine who is committing") {
+		t.Errorf("error %q does not name the cause", err)
+	}
+	staged, err := runGitRaw(t.Context(), dir, "diff", "--cached", "--name-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(staged) != "" {
+		t.Errorf("a failed commit left %q staged; the identity check must run before staging", strings.TrimSpace(staged))
+	}
 }
