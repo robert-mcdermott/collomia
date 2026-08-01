@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -34,6 +35,10 @@ func gitWriteRepo(t *testing.T) (string, *PathGuard) {
 	// deliberately below rather than left to the developer's dotfiles.
 	gitTest(t, dir, "config", "user.email", "t@t")
 	gitTest(t, dir, "config", "user.name", "t")
+	// Deterministic line endings. A Windows runner with core.autocrlf=true
+	// rewrites LF fixtures and warns about it, which changes both what git
+	// stores and what it prints.
+	gitTest(t, dir, "config", "core.autocrlf", "false")
 	writeRepoFile(t, dir, "tracked.txt", "one\n")
 	gitTest(t, dir, "add", "tracked.txt")
 	gitTest(t, dir, "commit", "-q", "-m", "first")
@@ -64,12 +69,21 @@ func writeRepoFile(t *testing.T, dir, name, content string) {
 
 // gitLines runs a git query and returns its non-empty output lines, sorted, so
 // a test can assert on a file set without depending on git's ordering.
+//
+// It reads stdout alone rather than going through runGitRaw, which merges
+// stderr into the same buffer. That merge is right for a tool result a person
+// reads and wrong for output a test parses: on Windows, git writes "warning:
+// in the working copy of 'x', LF will be replaced by CRLF" to stderr, and the
+// merged form put that sentence into the list of changed files.
 func gitLines(t *testing.T, dir string, args ...string) ([]string, error) {
 	t.Helper()
-	out, err := runGitRaw(t.Context(), dir, args...)
-	if err != nil {
+	cmd := exec.Command("git", append([]string{"-C", dir, "--no-pager"}, args...)...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
 		return nil, err
 	}
+	out := stdout.String()
 	var lines []string
 	for _, line := range strings.Split(out, "\n") {
 		if line = strings.TrimSpace(line); line != "" {

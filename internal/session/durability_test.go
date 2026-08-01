@@ -47,6 +47,13 @@ func newCountedSession(t *testing.T) (*Session, *countingRecordFile) {
 	}
 	counted := &countingRecordFile{file: sess.file}
 	sess.file = counted
+	// Close the session before the temporary directory is removed. Unix
+	// happily unlinks a file that is still open, so leaving it to the garbage
+	// collector passes there and fails on Windows, where RemoveAll cannot
+	// delete an open handle and t.TempDir's cleanup reports it as a test
+	// failure. Close is idempotent, so the tests that close explicitly are
+	// unaffected.
+	t.Cleanup(sess.Close)
 	return sess, counted
 }
 
