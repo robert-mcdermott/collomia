@@ -43,29 +43,61 @@ func TestHangupStopsBackgroundProcessesInsteadOfOrphaningThem(t *testing.T) {
 	if err := helper.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		_ = helper.Process.Kill()
-		_, _ = helper.Process.Wait()
-	}()
 
 	lines := bufio.NewScanner(stdout)
-	backgroundPID := 0
-	teardown := false
-	ready := make(chan struct{})
+	type helperResult struct {
+		teardown bool
+		scanErr  error
+		waitErr  error
+	}
+	ready := make(chan int, 1)
+	finished := make(chan helperResult, 1)
 	go func() {
+		result := helperResult{}
 		for lines.Scan() {
 			line := strings.TrimSpace(lines.Text())
 			switch {
 			case strings.HasPrefix(line, "BACKGROUND_PID="):
-				backgroundPID, _ = strconv.Atoi(strings.TrimPrefix(line, "BACKGROUND_PID="))
-				close(ready)
+				pid, err := strconv.Atoi(strings.TrimPrefix(line, "BACKGROUND_PID="))
+				if err != nil {
+					result.scanErr = fmt.Errorf("parse helper output %q: %w", line, err)
+					continue
+				}
+				ready <- pid
 			case line == "TEARDOWN_RAN":
-				teardown = true
+				result.teardown = true
 			}
 		}
+		if err := lines.Err(); err != nil && result.scanErr == nil {
+			result.scanErr = fmt.Errorf("read helper output: %w", err)
+		}
+		// StdoutPipe requires all reads to finish before Wait. Keeping both in
+		// this goroutine also makes delivery of the final TEARDOWN_RAN line
+		// happen-before the test inspects result.teardown.
+		result.waitErr = helper.Wait()
+		finished <- result
 	}()
+	processWaited := false
+	defer func() {
+		if processWaited {
+			return
+		}
+		_ = helper.Process.Kill()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	backgroundPID := 0
 	select {
-	case <-ready:
+	case backgroundPID = <-ready:
+	case result := <-finished:
+		processWaited = true
+		if result.scanErr != nil {
+			t.Fatalf("helper output failed before reporting a background process: %v", result.scanErr)
+		}
+		t.Fatalf("helper exited before reporting a background process: %v", result.waitErr)
 	case <-time.After(30 * time.Second):
 		t.Fatal("helper never reported a background process")
 	}
@@ -79,16 +111,22 @@ func TestHangupStopsBackgroundProcessesInsteadOfOrphaningThem(t *testing.T) {
 	if err := helper.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatalf("send SIGHUP: %v", err)
 	}
-	waited := make(chan error, 1)
-	go func() { waited <- helper.Wait() }()
+	var result helperResult
 	select {
-	case <-waited:
+	case result = <-finished:
+		processWaited = true
 	case <-time.After(30 * time.Second):
 		// The failure mode a swallowed signal produces: the process neither
 		// exits nor tears down, which is worse than the crash it replaced.
 		t.Fatal("helper did not exit after SIGHUP; the signal was captured but nothing acted on it")
 	}
-	if !teardown {
+	if result.scanErr != nil {
+		t.Fatalf("read helper output: %v", result.scanErr)
+	}
+	if result.waitErr != nil {
+		t.Errorf("helper exited unsuccessfully after SIGHUP: %v", result.waitErr)
+	}
+	if !result.teardown {
 		t.Error("teardown did not run on SIGHUP, so nothing would have closed the session or stopped processes")
 	}
 	if err := waitForExit(backgroundPID, 15*time.Second); err != nil {
