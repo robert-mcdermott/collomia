@@ -1174,6 +1174,9 @@ func (m *Model) sessionSections(width int) string {
 	if summary := cacheSummary(usage, m.runtime.Agent.Capabilities()); summary != "" {
 		b.WriteString(kv("prompt cache", summary) + "\n")
 	}
+	if summary := cacheLifetimeSummary(m.runtime.Agent.CacheGaps()); summary != "" {
+		b.WriteString(kv("cache lifetime", summary) + "\n")
+	}
 	if usage.CostAvailable {
 		b.WriteString(kv("cost", fmt.Sprintf("$%.6f estimated", usage.CostUSD)) + "\n")
 	}

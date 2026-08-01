@@ -349,6 +349,51 @@ project weakening that was refused. There is no configuration for this and
 nothing consumes it programmatically; scripts should use `collo config show`,
 which is unchanged.
 
+### Git write tools
+
+Two new built-in tools, `git_commit` and `git_branch`. Both are visible to the
+model by default, neither is available in planning mode, and
+`options.disabled_tools` removes either. Nothing existing changes: the
+read-only Git tools, `run_command`, and every permission setting behave exactly
+as before, and a configuration written before this release needs no edit.
+
+This is additive in capability terms rather than in permission terms, and the
+distinction is worth stating. The agent could already commit — `run_command
+"git commit -m …"` has always worked, and on a stock configuration
+`collo policy check 'git commit -m test' --autonomy autopilot` reports
+**allow**, because the safety classifier describes destruction and a commit
+destroys nothing. What changes is that a commit made through `git_commit`
+declares the files it will contain, so `permissions.protect_credentials` can
+act on them: committing a tracked `.env` or a private key now prompts by
+default and is refused under `deny`. The equivalent `run_command` invocation
+still cannot be gated that way, because `git commit -a` names no path for the
+shell analysis to classify.
+
+The guarantee is exact: **a commit contains the files named in `paths` and
+nothing else.** `paths` is required, and the commit runs as
+`git commit -- <paths>`, so:
+
+- unrelated changes in the working tree stay uncommitted, including the user's
+  own edits in progress;
+- anything the user staged by hand stays staged — the tool commits around a
+  hand-built index rather than through it;
+- untracked files are never swept in, so build output, scratch files, and a
+  local `.env` cannot ride along. A new file is committed when it is named, and
+  only then.
+
+There is deliberately no "commit everything that changed" mode. It would decide
+a commit's contents from whatever happened to be in the working tree, which is
+the one thing this tool exists not to do.
+
+`git_branch` only creates. Switching to an existing branch is refused, because
+a checkout rewrites the working tree from outside Collomia's change tracking
+and `/restore` verifies the workspace before reversing anything — a switch
+would leave earlier turns unrecoverable. Use `run_command` when a real checkout
+is wanted.
+
+Pushing is unchanged and stays with `run_command` under
+`permissions.publication`. There is no push tool.
+
 ## Sessions and upgrades
 
 Durable session JSONL is append-only. Current releases:

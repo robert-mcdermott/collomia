@@ -97,9 +97,114 @@ is strict JSON and structurally cannot carry the comments the reference is made
 of, so the documentation had nowhere to be at the moment it was needed. It now
 reaches the editor as a generated schema.
 
+The most recent wave closed the last gap between what the agent could do and
+what the permission layer could see it doing. Committing was never impossible —
+`run_command "git commit"` worked and was approved silently under autopilot —
+but it was invisible, because the safety taxonomy classifies destruction and a
+commit destroys nothing. `git_commit` declares the files entering the commit, so
+`protect_credentials` can act on them; both write tools are classified by the
+same code that classifies the equivalent command string.
+
 No wave is currently active. See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — the commit that says what is in it
+
+**Goal:** stop the agent from having to drop to `run_command` to commit, and in
+doing so turn committing from something the permission layer cannot see into
+something it can describe, preview, and gate.
+
+- [x] Establish that this adds structure rather than capability, because that
+  decides how much freedom the design has. `run_command "git commit"` has always
+  worked, and measured against the built binary,
+  `collo policy check 'git commit -m test' --autonomy autopilot` answers
+  **allow (source: mode)** on a stock configuration. `internal/shell/safety.go`
+  is a taxonomy of destruction and a commit destroys nothing, so nothing
+  classified it. The deferred list has said since the beginning that autonomous
+  Git commits are not the intent; what was missing was any surface on which to
+  express that.
+- [x] Add `shell.AnalyzeArgv` before adding a tool that would need it. A
+  built-in that constructs its own argv has to be classified by the code that
+  classifies the same command as text, or it is a second classification site —
+  the shape that let the `host` matcher ship inert, made `collo policy check`
+  report the wrong decision for a credential-reaching command, and gave
+  delegated verification its own command runner. Here the consequence would have
+  been worse than a wrong report: a structured Git tool that skipped
+  `classifyGit` and `publicationLabel` would be a documented way around the
+  confirmations and the publication tier that govern the identical command
+  string. A test runs ten commands down both paths and compares.
+- [x] Run only the passes that apply. Splitting, quote handling, command
+  substitution, redirection, and the raw-string Windows scan all describe what a
+  *shell* does with a string; an argv has already been split, and a `>` or a
+  `` `rm -rf /` `` among its words is an argument. Running them anyway would
+  invent findings, and the finding it would invent is a commit message quoting a
+  command — which is exactly what commit messages do. Both directions are
+  pinned: the message is data through `AnalyzeArgv`, and the same text through
+  `Analyze` still defeats static analysis.
+- [x] Ship `git_commit` declaring every file the commit will contain. This is
+  the part `run_command` structurally cannot do — `git commit -a` names no path,
+  so shell analysis has no argument to classify and a tracked `.env` is
+  committed with nothing noticing. A declared path list runs through the
+  permission layer's existing derivation from `Action.Paths`, so committing a
+  credential file prompts under `protect_credentials` and is refused under
+  `deny`, without this tool knowing what a credential is. That derivation was
+  written on the promise that a tool added later would be covered by declaring
+  what it touches; this is the first tool to collect on it.
+- [x] Commit the named files and nothing else, which took two tries. The first
+  version let `paths` be omitted and then committed every changed tracked file —
+  `git commit -a` — and staged the union with whatever was already in the index,
+  on the reasoning that a commit takes the whole index so the prompt had better
+  say so. Both halves were wrong in the same way: they let *ambient working-tree
+  state* decide the contents of a commit. In a repository where the user has an
+  edit in progress, an agent committing "its" change would have carried that
+  edit along, silently, under autopilot, with no prompt — nothing about an
+  unrelated source file reaches a credential store. Found by being asked the
+  plain question of whether that could happen, and answering it with a test
+  rather than from memory.
+- [x] Make `paths` required and restrict the commit to it with
+  `git commit -- <paths>`. That is git's own exact semantic: those paths are
+  committed, anything else staged stays staged, and every other working-tree
+  change stays uncommitted. A hand-built index survives a commit made around it.
+  `git add` still runs first, because `git commit -- new-file` matches nothing
+  for a path git does not track yet. A tool whose stated purpose is to say what
+  is in a commit cannot have a mode where the answer is "whatever was lying
+  around", and the cost — the agent naming the files it just changed, with
+  `git_status` there for when it cannot — is the whole price of the guarantee.
+- [x] Let `git_branch` create and never switch. Creating a branch at HEAD leaves
+  every file on disk untouched; checking out an existing one rewrites the
+  working tree from outside Collomia's change tracking, and `/restore` verifies
+  the workspace before it will reverse anything — so allowing the switch would
+  silently disarm recovery for every turn that came before it. The refusal says
+  that rather than reporting a generic error.
+- [x] Ask git rather than restating it. A branch name is validated by
+  `git check-ref-format`, and the author identity by `git var
+  GIT_AUTHOR_IDENT` — not by `git config --get user.email`, which is only one of
+  the places the identity comes from and would have refused commits git performs
+  perfectly well from `GIT_AUTHOR_NAME` in CI. Found by writing the check the
+  obvious way first and watching it fail against this package's own tests.
+- [x] Ship no `git_push`. The publication tier already governs it through
+  `run_command`, and a dedicated tool would be adding the outward-facing
+  capability rather than governing the one that was already there — the
+  distinction the roadmap drew when it deferred this work behind the publication
+  wave. A test fails if either tool ever reports a publication target.
+- [x] Keep both out of planning mode, pinned by a test, because a new `git_*`
+  tool is exactly the kind of addition that gets waved into that list beside its
+  read-only siblings on the strength of the name.
+
+**Behavior change:** two new built-in tools, visible to the model by default and
+absent from planning mode. Nothing existing changes: `run_command "git commit"`
+behaves exactly as before, and `options.disabled_tools` removes the new tools.
+See the [compatibility note](docs/COMPATIBILITY.md#git-write-tools).
+
+**What it is not.** Not checkpoint commits, and not a fix for `/restore`'s
+process-local change tracking — that remains the open item it was. It is also
+not a claim that committing is now safe under autopilot: an ordinary source
+commit is still approved by the mode, exactly as the command was, and what
+changed is that the permission layer can finally see the file list well enough
+for `protect_credentials` to act on it. The guarantee is about *which files* are
+in a commit, not about whether their contents were the right change to make —
+a wrong edit to a correctly-named file is still committed.
 
 ## Completed wave — documentation that reaches the file being edited
 
@@ -1164,6 +1269,25 @@ claiming enforcement the policy layer does not provide.
   not at all.
 - [ ] **P1 — Optional deeper review:** line-level pending-write selection and
   broader selective application for multi-file patches.
+- [x] **P1 — Git write tooling under approval:** `git_commit` stages the named
+  files and commits, declaring every file the commit will contain — including
+  changes already in the index — so the approval prompt previews the real diff
+  and `protect_credentials` gates a credential file entering history.
+  `run_command "git commit -a"` cannot be gated that way because it names no
+  path, which is what made this structure rather than capability: the command
+  was already allowed under autopilot. `paths` is required and the commit is
+  restricted to it through `git commit -- <paths>`, so an unrelated edit in the
+  working tree and anything the user staged by hand are both left where they
+  were. `git_branch` creates a branch at HEAD and
+  switches without touching the working tree, refusing an existing branch
+  because a checkout would change files outside the tracking `/restore` verifies
+  against. Both route through `shell.AnalyzeArgv`, so the classification is the
+  command runner's own and a rule naming `git commit` covers either spelling.
+
+  Pushing is deliberately not here. It stays with `run_command` under
+  `permissions.publication`, because governing the outward-facing capability
+  that already existed had to come first, and a dedicated tool would be adding
+  one rather than governing it.
 - [x] **P1 — Windows ConPTY:** `run_command` with `pty: true` and `collo --web`
   both work on Windows through a shared `internal/conpty` package. The child is
   created suspended and joined to a job object before it runs, so the
@@ -1464,16 +1588,21 @@ claiming enforcement the policy layer does not provide.
   be a new clamped containment field with a fail-closed headless path. It stays
   unbuilt until someone wants it, because a posture nobody has asked for is how
   the original claim came to be written in the first place.
-- [ ] **P1 — Cover the credential store's actual backend:** `internal/credstore`
-  reads 40.8%, but the headline hides where the hole is — `backendGet`,
-  `backendSet`, and `backendDelete` in `store_darwin.go` are at **0.0%**, as are
-  `Delete` and `Verify`. The entire macOS Keychain path, and `collo auth rm`
-  along with it, has no test of its own on a platform that can run one. This is
-  the shape the audit wave already found once: a package at zero coverage whose
-  first real tests immediately surfaced two defects that unit review had missed,
-  in a package that holds provider API keys. Phase 4's first-run setup will put
-  this path under a user's hands for the first time, so the coverage is worth
-  having before that rather than after.
+- [x] **P1 — Cover the credential store's actual backend:** `internal/credstore`
+  read 40.8% with `backendGet`, `backendSet`, `backendDelete`, `Delete`, and
+  `Verify` in `store_darwin.go` all at **0.0%** — the entire macOS Keychain
+  path, and `collo auth rm` along with it, untested on a platform that can run
+  it, in a package that holds provider API keys. It is now 51.4%, with the
+  Keychain backend exercised against a real temporary keychain behind
+  `COLLO_KEYCHAIN_TESTS=1`; the suite is opt-in because unlike every other test
+  in the package it touches the user's own operating-system credential store,
+  and skips cleanly when `security(1)` is unavailable.
+
+  The remaining uncovered statements in `store_darwin.go` are the branches that
+  need a keychain that fails in a specific way — a locked store, a denied
+  authorization — which cannot be provoked from inside a test without leaving
+  state behind on the developer's machine. That is a stated limit rather than
+  an outstanding task.
 - [ ] **P1 — Performance budgets:** idle memory, token overhead, compaction
   quality, monorepo fixtures, and same-hardware regression thresholds. The
   prompt-cache wave established the measurement discipline and the live-endpoint
@@ -1577,17 +1706,22 @@ assessment would most likely have opened with. The rest, in order:
 Two small decisions can ride along with whichever wave ships next rather than
 becoming waves of their own:
 
-- The one-hour cache TTL. The mechanism is measured and confirmed working; what
-  is unknown is only gap behavior, since the live run measured back-to-back
-  requests rather than a session resumed after a pause. Instrument the real
-  gap between turns before paying a write premium that is 2x rather than 1.25x.
-- Git write tooling under approval. The agent reads Git but must drop to
-  `run_command` to commit, and `/restore`'s change tracking is in memory so it
-  does not survive a resume; a checkpoint commit would fix both. It was
-  considered for this slot and deferred deliberately: it *adds* an
-  outward-facing capability, and governing the outward-facing capability that
-  already existed had to come first. It now lands on top of the publication
-  tier rather than beside it.
+- The one-hour cache TTL. **The instrumentation has now shipped**, so this is
+  waiting on data rather than on work. Collomia records the gap between
+  consecutive provider requests and reports, in `/context` and the Session tab,
+  how many of them exceeded the five-minute lifetime and how many of *those*
+  were under an hour — the second number being the only evidence for the longer
+  lifetime, since a gap beyond an hour is cold under either setting. A session
+  that never paused reports nothing rather than a reassuring zero. Decide once
+  a few real sessions have been read, not before: the write premium is 2x
+  rather than 1.25x, and the five-minute lifetime refreshes on every read, so a
+  chain of short gaps stays warm however long the session runs.
+- Git write tooling under approval — **shipped**, as its own wave rather than a
+  ride-along, because the classifier work it needed turned out to be the larger
+  half. What remains of the original note is the checkpoint-commit idea:
+  `/restore`'s change tracking is still in memory and still does not survive a
+  resume, and a commit made at each turn boundary would fix that. `git_commit`
+  is the mechanism such a feature would use; it is not that feature.
 - Deliberately **not** another terminal-surface wave. Four of the last six
   touched it, the width sweep now pins the property the golden screens had
   recorded wrong, and the returns there are visibly smaller than a security

@@ -4,7 +4,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
@@ -157,5 +159,34 @@ func TestCacheSummaryDistinguishesTheThreeZeroes(t *testing.T) {
 	warm := cacheSummary(provider.Usage{InputTokens: 10_000, CachedTokens: 8_000, CacheWriteTokens: 1_000}, supported)
 	if !strings.Contains(warm, "8.0k tok read") || !strings.Contains(warm, "1.0k tok written") || !strings.Contains(warm, "80%") {
 		t.Errorf("warm cache: %q", warm)
+	}
+}
+
+func TestCacheLifetimeSummaryReportsOnlyWhatItMeasured(t *testing.T) {
+	// A session that never paused is not evidence that a longer cache
+	// lifetime is unnecessary — it is a session with nothing to say. Printing
+	// a reassuring zero would be an argument dressed as a measurement.
+	for _, quiet := range []agent.CacheGaps{
+		{},
+		{Gaps: 40, Longest: 90 * time.Second},
+	} {
+		if got := cacheLifetimeSummary(quiet); got != "" {
+			t.Errorf("cacheLifetimeSummary(%+v) = %q, want no claim", quiet, got)
+		}
+	}
+	recoverable := cacheLifetimeSummary(agent.CacheGaps{Gaps: 10, Recoverable: 3, Longest: 12 * time.Minute})
+	for _, want := range []string{"3 of 10 gaps", "1-hour cache", "12m0s"} {
+		if !strings.Contains(recoverable, want) {
+			t.Errorf("summary %q missing %q", recoverable, want)
+		}
+	}
+	if strings.Contains(recoverable, "exceeded an hour") {
+		t.Errorf("summary %q claims hour-long gaps that were not measured", recoverable)
+	}
+	both := cacheLifetimeSummary(agent.CacheGaps{Gaps: 10, Recoverable: 3, ColdEither: 2, Longest: 3 * time.Hour})
+	for _, want := range []string{"5 of 10 gaps", "3 would have stayed warm", "2 exceeded an hour"} {
+		if !strings.Contains(both, want) {
+			t.Errorf("summary %q missing %q", both, want)
+		}
 	}
 }

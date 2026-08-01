@@ -116,6 +116,9 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if summary := cacheSummary(usage, m.runtime.Agent.Capabilities()); summary != "" {
 			cacheLine = "\nPrompt cache: " + summary
 		}
+		if summary := cacheLifetimeSummary(m.runtime.Agent.CacheGaps()); summary != "" {
+			cacheLine += "\nCache lifetime: " + summary
+		}
 		reasoning := ""
 		if usage.ReasoningTokens > 0 {
 			reasoning = fmt.Sprintf(" (%d reasoning)", usage.ReasoningTokens)

@@ -39,7 +39,8 @@ An up-to-date, generated list of exactly what is implemented, experimental, or u
 - Read-only planning mode with a structured, persisted plan artifact (`update_plan`, `/tasks`).
 - Durable sessions: crash-safe persistence, complete transcript/tool restoration on `--resume`/`--continue`, forking, non-destructive turn rewind, live in-TUI switching (`/sessions` or `alt+s`) with in-process per-session drafts, prompt history, pinned plan state, referenced oversized results, and automatic context compaction.
 - Atomic multi-file patching (`apply_patch`), session-wide diff review (`/diff`), checkpointed undo (`/undo`), colorized diff previews at approval, and **hunk-level approval** — accept or reject individual hunks of a `write_file` change before it lands.
-- Read-only git inspection tools (status, diff, log, blame) that never commit or push.
+- Git inspection tools (`git_status`, `git_diff`, `git_log`, `git_blame`) that are read-only, bounded, and the only Git tools available in planning mode.
+- Git writes under approval: `git_commit` commits **exactly the files you name and nothing else** — the user's unrelated edits, their own staged work, untracked scratch files and build output are all left alone. Because it declares those paths, the approval prompt previews the real diff and `protect_credentials` catches a `.env` or a private key entering history, which `run_command "git commit -a"` cannot do because it names no path. `git_branch` creates a branch at HEAD without touching the working tree. **Neither pushes** — publication stays with `run_command` under `permissions.publication`.
 - `run_command` supports a pseudo-terminal (`pty: true`) on every platform — a Unix PTY, or a Windows pseudoconsole — for interactive-only or isatty-dependent programs.
 - The agent can pause and ask you a typed question (`ask_user`) instead of guessing.
 - Command output streams into the transcript live, for both foreground and background commands.

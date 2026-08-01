@@ -86,14 +86,7 @@ func Analyze(command string) Analysis {
 // AnalyzeInWorkspace analyzes command with workspace as its initial working
 // directory, allowing catastrophic relative targets to be resolved safely.
 func AnalyzeInWorkspace(command, workspace string) Analysis {
-	if workspace != "" {
-		if abs, err := filepath.Abs(workspace); err == nil {
-			workspace = abs
-		}
-		if canonical, err := filepath.EvalSymlinks(workspace); err == nil {
-			workspace = canonical
-		}
-	}
+	workspace = canonicalWorkspace(workspace)
 	return analyzeAt(command, workspace, workspace)
 }
 

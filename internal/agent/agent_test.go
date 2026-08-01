@@ -1484,3 +1484,20 @@ func TestCostClampsInconsistentCacheCounters(t *testing.T) {
 		t.Fatalf("negative cost from inconsistent counters: %+v", usage)
 	}
 }
+
+// Planning mode exists so a plan can be produced without changing anything.
+// The read-only Git tools belong there; the mutating ones do not, and a new
+// git_* tool is exactly the kind of addition that gets waved into the list
+// beside its siblings because the names look alike.
+func TestPlanModeAdmitsNoMutatingGitTool(t *testing.T) {
+	for _, name := range []string{"git_status", "git_diff", "git_log", "git_blame"} {
+		if !planTool(name) {
+			t.Errorf("%s is read-only and should be available while planning", name)
+		}
+	}
+	for _, name := range []string{"git_commit", "git_branch"} {
+		if planTool(name) {
+			t.Errorf("%s mutates the repository and must not be available while planning", name)
+		}
+	}
+}

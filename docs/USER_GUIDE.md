@@ -3604,6 +3604,8 @@ question broker can make the model-visible subset smaller.
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
 | `git_log` | Read-only recent history, default 20 and maximum 100 commits. |
 | `git_blame` | Read-only attribution, optionally line-bounded. |
+| `git_commit` | Commit exactly the files named in `paths` and nothing else, via `git commit -- <paths>`: unrelated working-tree changes stay uncommitted and anything the user staged by hand stays staged. `paths` is required. Declaring the paths is what lets the approval prompt preview the real change and `protect_credentials` see a credential file entering history. Never pushes. |
+| `git_branch` | Create a branch at the current commit and switch to it, leaving the working tree untouched. Refuses an existing branch, because checking one out changes files outside Collomia's tracking and would stop `/restore` from reversing earlier turns. |
 | `detect_verification` | Detect real build/lint/test commands from project files. |
 | `start_process` | Start a session-lifetime background command under command safety/sandbox policy. |
 | `list_processes` | List background process IDs, command, status, and uptime. |

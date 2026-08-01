@@ -21,4 +21,4 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │  Answer in the dialog…                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ✿   ollama/qwen3-coder   ASK ⛨  ctx ▏░░░░░░░░░ 1%   enter answer · esc decline
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▏░░░░░░░░░ 2%   enter answer · esc decline
