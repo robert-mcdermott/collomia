@@ -173,6 +173,12 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println("Created", path)
+		// Named explicitly because it is a second file appearing next to the
+		// one that was asked for — in a project's case, inside the user's
+		// repository. Silently creating a file is how a generated artifact
+		// ends up committed by accident.
+		fmt.Println("Created", filepath.Join(filepath.Dir(path), appconfig.SchemaFileName),
+			"(editor schema; regenerate with `collo schema config`)")
 		if opts.withReference {
 			referencePath := appconfig.ReferencePath(path)
 			if err = appconfig.WriteReference(referencePath); err != nil {
@@ -817,6 +823,8 @@ Usage:
   collo mcp [list|show|add|remove|enable|disable|test]  manage persistent MCP servers (project and --global scopes)
   collo completion bash|zsh|fish|powershell  generate shell completion
   collo schema events                 print the embedded JSON Schema for JSONL events
+  collo schema config                 print the JSON Schema for the configuration file, for
+                                      editor completion and inline validation
   collo replay [--check] <trace|->    validate and safely render a completed JSONL run trace
   collo version                       print build information
 

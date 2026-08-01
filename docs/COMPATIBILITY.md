@@ -311,6 +311,44 @@ constant `context_window` and no `max_tokens` at all. Existing configurations
 are untouched; re-run `collo setup --provider <name>` to have the numbers
 resolved from the endpoint.
 
+### Editor schema and the `$schema` key
+
+Three changes, none of which alters how any existing configuration behaves.
+
+**`$schema` is now a recognized configuration key.** It names the JSON Schema
+an editor should use for the file and configures nothing. It was previously an
+unknown field, which ordinary loading ignored and `collo config validate
+--strict` rejected — so a file carrying it would have validated inconsistently
+depending on the flag. Declaring it removes that split. A file without the key
+is unaffected.
+
+**`collo init` now writes a second file.** `collomia.schema.json` is created
+beside the configuration, and the configuration's `$schema` points at it
+relatively. The file is generated output, is never read by Collomia, and can be
+deleted or gitignored; deleting it costs only the editor assistance, and
+`collo doctor` will then report the reference as dangling. The path is printed
+when it is created, so a project's copy does not appear in a repository
+unannounced.
+
+**`collo setup` adds `$schema` to a configuration it writes to, and refreshes
+the sibling schema on every run.** It adds the key only when the file does not
+already have one, so a `$schema` pointing at a shared or hosted contract is
+left exactly as it was. No other key is touched, and the sparse-file guarantee
+is unchanged: settings this build does not know about still survive untouched.
+
+Regenerate the schema after upgrading Collomia — `collo schema config >
+collomia.schema.json`, or simply re-run `collo setup`. A schema left over from
+an older build describes fields the running one may not have, which
+`collo doctor` reports as a warning rather than leaving to be discovered
+through wrong completions.
+
+`/config` output changed shape entirely: it previously printed the active
+configuration path and a sentence about precedence, and now reports the layers
+in order, the effective value and origin of each safety setting, and any
+project weakening that was refused. There is no configuration for this and
+nothing consumes it programmatically; scripts should use `collo config show`,
+which is unchanged.
+
 ## Sessions and upgrades
 
 Durable session JSONL is append-only. Current releases:

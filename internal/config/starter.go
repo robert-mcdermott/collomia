@@ -41,6 +41,7 @@ func WriteStarter(path string, global bool) error {
 		Keybindings                 map[string]string `json:"keybindings"`
 	}
 	type starterConfig struct {
+		Schema          string              `json:"$schema"`
 		SchemaVersion   int                 `json:"schema_version"`
 		DefaultProvider string              `json:"default_provider,omitempty"`
 		DefaultModel    string              `json:"default_model,omitempty"`
@@ -49,7 +50,7 @@ func WriteStarter(path string, global bool) error {
 		Options         *starterOptions     `json:"options,omitempty"`
 	}
 
-	cfg := starterConfig{SchemaVersion: CurrentSchemaVersion}
+	cfg := starterConfig{Schema: SchemaReference, SchemaVersion: CurrentSchemaVersion}
 	if global {
 		cfg.DefaultProvider = "ollama"
 		cfg.DefaultModel = "qwen3-coder"
@@ -97,7 +98,32 @@ func WriteStarter(path string, global bool) error {
 	if err != nil {
 		return err
 	}
-	return writeGeneratedFile(path, append(data, '\n'))
+	if err := writeGeneratedFile(path, append(data, '\n')); err != nil {
+		return err
+	}
+	// The `$schema` key above points at a sibling, so the sibling has to exist
+	// or the reference is a broken link that makes the editor silently offer
+	// nothing — indistinguishable, from the user's side, from not having
+	// shipped a schema at all.
+	_, err = WriteSchema(path)
+	return err
+}
+
+// WriteSchema places the generated configuration schema beside a configuration
+// file and returns the path written.
+//
+// A sibling file rather than a hosted URL, because the schema describes the
+// fields *this* build understands: a URL would describe whichever release
+// published it, so an editor pointed at one would offer fields an older or
+// locally built binary does not have. That is the drift a generated schema
+// exists to remove, and putting it back in at the last step would be the same
+// mistake in a new place.
+func WriteSchema(configPath string) (string, error) {
+	target := filepath.Join(filepath.Dir(configPath), SchemaFileName)
+	if err := writeGeneratedFile(target, JSONSchema()); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 // WriteReference writes the exhaustive JSONC reference. It is intentionally
@@ -124,6 +150,14 @@ const configReferenceJSONC = `
 // Copy only the settings you intend to override into .collomia.json or the
 // user-level config.json. Active configuration files remain strict JSON.
 {
+  // Editor contract for this file. 'collo schema config' generates it from the
+  // build that will read the configuration, and 'collo init' / 'collo setup'
+  // write it beside the file they create. With it, an editor offers completion,
+  // hover documentation, and inline validation for every field below — which is
+  // the point, since an active configuration file is strict JSON and cannot
+  // carry the comments this reference is made of.
+  "$schema": "./collomia.schema.json",
+
   // Current configuration schema. Files without this field are treated as v1.
   "schema_version": 1,
 

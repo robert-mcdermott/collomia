@@ -228,13 +228,13 @@ func TestRunObservationTracksPartialTextAndRefusal(t *testing.T) {
 
 func TestSchemaCommandPrintsEmbeddedContract(t *testing.T) {
 	var out strings.Builder
-	if err := writeEventSchema(&out, []string{"events"}); err != nil {
+	if err := writeSchema(&out, []string{"events"}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := out.String(), string(event.JSONSchema()); got != want || !json.Valid([]byte(got)) {
 		t.Fatal("schema command did not print the valid embedded contract verbatim")
 	}
-	if err := writeEventSchema(&out, nil); err == nil {
+	if err := writeSchema(&out, nil); err == nil {
 		t.Fatal("schema command accepted a missing contract name")
 	}
 }

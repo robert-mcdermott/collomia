@@ -223,6 +223,17 @@ func mergeIntoFile(path string, result Result) error {
 		}
 		document["schema_version"] = version
 	}
+	// Point the file at its schema, but only when it does not already say. A
+	// user who pointed theirs at a shared URL made that choice deliberately,
+	// and quietly redirecting it to a local file would be setup reaching past
+	// the provider block it was asked to write.
+	if _, ok := document["$schema"]; !ok {
+		reference, err := json.Marshal(appconfig.SchemaReference)
+		if err != nil {
+			return err
+		}
+		document["$schema"] = reference
+	}
 
 	providers := map[string]json.RawMessage{}
 	if raw, ok := document["providers"]; ok {
@@ -255,7 +266,15 @@ func mergeIntoFile(path string, result Result) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	// Refresh the sibling schema on every run, not only when creating the
+	// file. Setup is the one command that is always executed by the binary
+	// whose fields the schema describes, so it is the cheapest place to keep a
+	// schema written by an older build from going stale.
+	_, err = appconfig.WriteSchema(path)
+	return err
 }
 
 // marshalStable renders the document with the keys a reader expects to find
@@ -263,7 +282,7 @@ func mergeIntoFile(path string, result Result) error {
 // would bury default_provider under agents and put schema_version near the
 // end of the file.
 func marshalStable(document map[string]json.RawMessage) ([]byte, error) {
-	lead := []string{"schema_version", "default_provider", "default_model", "providers"}
+	lead := []string{"$schema", "schema_version", "default_provider", "default_model", "providers"}
 	ordered := make([]string, 0, len(document))
 	seen := map[string]bool{}
 	for _, key := range lead {

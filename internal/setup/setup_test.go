@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -865,5 +866,68 @@ func TestBedrockAuthHintExplainsSigV4(t *testing.T) {
 		if !strings.Contains(hint, want) {
 			t.Errorf("the authentication hint should mention %q; got %q", want, hint)
 		}
+	}
+}
+
+func TestApplyPointsTheFileAtItsEditorSchemaAndWritesIt(t *testing.T) {
+	// The $schema key is what gives an editor completion and inline validation
+	// for a file that is strict JSON and cannot hold comments, so a run that
+	// wrote the provider block and left the key out would leave the user back
+	// where the beta report found them.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	result := Result{
+		Name:     "p",
+		Provider: appconfig.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:1234/v1", Model: "m"},
+		Model:    "m",
+	}
+	if err := Apply(path, result); err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]json.RawMessage
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(document["$schema"]); got != strconv.Quote(appconfig.SchemaReference) {
+		t.Errorf("$schema = %s, want %s", got, strconv.Quote(appconfig.SchemaReference))
+	}
+	// A reference with nothing behind it is a broken link, and every editor
+	// handles that by silently offering nothing at all.
+	sibling, err := os.ReadFile(filepath.Join(dir, appconfig.SchemaFileName))
+	if err != nil {
+		t.Fatalf("the schema the file points at must exist: %v", err)
+	}
+	if string(sibling) != string(appconfig.JSONSchema()) {
+		t.Error("the sibling schema must be this build's own")
+	}
+}
+
+func TestApplyLeavesAnExistingSchemaReferenceAlone(t *testing.T) {
+	// A user pointing at a shared or hosted contract made that choice
+	// deliberately. Setup was asked to write a provider block, and silently
+	// redirecting an editor hint is reaching past that.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"$schema":"https://example.test/team.json","schema_version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := Result{
+		Name:     "p",
+		Provider: appconfig.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:1234/v1", Model: "m"},
+		Model:    "m",
+	}
+	if err := Apply(path, result); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "https://example.test/team.json") {
+		t.Errorf("setup replaced a deliberate $schema reference:\n%s", data)
 	}
 }

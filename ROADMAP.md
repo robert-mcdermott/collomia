@@ -89,9 +89,122 @@ knowledge of a model's limits to offer instead. They are now discovered, always
 written, reported, validated, and — where the configured value is too large —
 corrected from the provider's own rejection.
 
+The wave after it finished the other half of the same report. The limits wave
+answered "two numbers were wrong"; this one answered "I have to read extensive
+documentation, or hand it to an AI to read, before I can write the file at
+all". The documentation was never the problem — the active configuration file
+is strict JSON and structurally cannot carry the comments the reference is made
+of, so the documentation had nowhere to be at the moment it was needed. It now
+reaches the editor as a generated schema.
+
 No wave is currently active. See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — documentation that reaches the file being edited
+
+**Goal:** answer the half of the beta report the previous wave did not — that
+configuring Collomia means reading extensive documentation, or handing it to an
+AI to read, before a block can be written by hand — by putting the
+documentation where the typing happens instead of writing more of it.
+
+- [x] Find the structural reason first. The reference is a 600-line annotated
+  JSONC file, and **it is never loaded**: there is no comment stripping
+  anywhere in the loader, so `~/.collomia/config.json` is strict JSON and
+  cannot hold a single line of the explanation that exists for it. The
+  documentation was not missing; it was in a different file from the one being
+  edited, which is why the working method became "ask an AI to read it".
+- [x] Ship `collo schema config`, a JSON Schema 2020-12 contract generated from
+  the structs, beside the existing `collo schema events`. Names and types come
+  from reflection and cannot disagree with the loader; enumerated values come
+  from the vocabularies below and cannot disagree with the validator;
+  defaults are read out of `Defaults()` itself. Descriptions are the one part
+  written by hand, and a test fails on a field that has none — an undocumented
+  setting is a build failure rather than a documentation debt, since a field
+  with a name and a type and nothing else is the state this wave exists to end.
+- [x] Extract the enumerated vocabularies before the generator could copy them.
+  They were inline `switch` literals, and `permissions.mode` already had two —
+  one for the top-level setting and one for a delegated agent's. A schema
+  hand-listing them would have been the third copy and the one nobody updates,
+  which is the inert-matcher shape this repository keeps finding. One list per
+  field now, read by both, with a test that drives the *loader* with every
+  published value rather than comparing two lists to each other.
+- [x] Give a delegated agent's rules their own definition. They are `[]Rule` in
+  Go and may only prompt or deny, so a single shared definition would have had
+  an editor offering `allow` in the one place the loader refuses it — an editor
+  recommending a broken configuration being strictly worse than no editor
+  support. The negative test that catches it is the delegated `allow`; the
+  positive one is that a top-level `allow` stays valid.
+- [x] Declare `$schema` as a real field rather than tolerating it.
+  `LoadOptions.Strict` turns on `DisallowUnknownFields`, so the key that makes
+  the file editable would have loaded fine normally and failed
+  `collo config validate --strict` — a validator rejecting a file `collo init`
+  had just written. It configures nothing and a test pins that.
+- [x] Require nothing at the root, which is the finding generating a schema
+  produced. **A configuration file is one layer of a merge, not the
+  configuration.** `providers`, `default_provider`, and `permissions.mode` are
+  required of the *merged* result and of no particular file, so a project
+  `.collomia.json` setting two rules is correct — and the obvious derivation,
+  "required means no `omitempty`", is wrong twice over, since a boolean
+  defaulting to true omits the tag so that `false` still serializes. Deriving
+  it that way would have underlined `options.mouse` and every project file in
+  existence.
+- [x] Write the schema as a sibling and point at it relatively, never a hosted
+  URL. It describes the fields *this* build understands; a URL describes
+  whichever release published it, which reintroduces at the last step exactly
+  the drift generating it removed. `collo doctor` reports a reference that is
+  dangling or was written by a different build, because both fail silently —
+  an editor with a broken `$schema` offers nothing at all, which looks the same
+  as never having had one.
+- [x] Replace `/config`, which printed a path and a sentence about precedence.
+  Reading the file answers what one layer asked for; it cannot answer which
+  layer won, and it cannot answer what is in force for the settings no file
+  mentions — which is most of them. It now reports the layers in order, the
+  effective value and origin of every containment setting, and any project
+  weakening that was refused, with `/config all` for the whole surface.
+- [x] Redact by position, not by pattern, and find out why it mattered.
+  `resolveProviderEnvironment` copies a resolved credential — from the
+  environment or the macOS Keychain — into `Provider.APIKey`, so the merged
+  configuration holds secrets that appear in no file the user could think to
+  check. The first run against the author's own configuration confirmed it:
+  three provider keys, sourced from the keychain, would have been printed into
+  the session transcript. A pattern matcher has to recognize a secret to
+  protect it; a positional rule protects a credential whose shape nobody has
+  seen yet, which is the only kind that generalizes to an endpoint a user
+  pointed Collomia at.
+- [x] Build the stance display from the struct rather than from the serialized
+  configuration, because the first version had the defect it exists to prevent.
+  Reading the merged JSON meant `omitempty` removed any field at its zero
+  value — so `sandbox_egress` and `command_env` vanished whenever unset, and
+  `sandbox_allow_network` and `sandbox_allow_read_outside_workspace` vanished
+  **precisely when they were turned off**. A containment display that hides a
+  boundary at the moment it is switched on is worse than no display. It reads
+  `ContainmentFields` so a new clamped setting appears without anyone
+  remembering, and names the behavior of each unset field instead of showing a
+  blank.
+- [x] Validate the schema against real documents rather than trusting it. The
+  generated contract is checked to be well-formed and byte-stable — `collo
+  doctor` compares it on disk, so leaked map-iteration order would have made it
+  perpetually stale — and it is run against both starters and the exhaustive
+  reference, then against six mistakes people actually make. The checker lives
+  in the test and understands only the keywords the generator emits, rather
+  than adding a JSON Schema module for something no shipped code needs.
+
+**Behavior change:** three, none affecting how an existing configuration
+behaves. `$schema` is a recognized key rather than one that passed ordinary
+loading and failed `--strict`; `collo init` writes a second file beside the
+configuration and prints its path; and `collo setup` adds `$schema` when the
+file has none, leaving an existing one alone. See the
+[compatibility note](docs/COMPATIBILITY.md#editor-schema-and-the-schema-key).
+
+**What it is not.** Not the interactive configuration surface the Phase 7 item
+describes, and not a form over 120 fields. It is the tier of that item that
+needed no wizard: the schema is generated, so it cannot drift, and it works in
+every editor without Collomia running. The descriptions remain the one
+hand-written part, and the exhaustive JSONC reference was deliberately left
+hand-written rather than generated from the same table — its worked examples
+are worth more than a single source would have been, and the completeness test
+already fails on a field missing from either.
 
 ## Completed wave — the numbers nobody should have to guess
 
@@ -1270,8 +1383,16 @@ claiming enforcement the policy layer does not provide.
   the reported beta experience of configuring Collomia is reading extensive
   documentation — or asking an AI to read it — and then hand-writing JSON,
   including numbers like `max_tokens` and `context_window` whose defaults were
-  wrong for the model in use. `collo setup` removed that for the first
-  provider only; `/config` prints a path.
+  wrong for the model in use.
+
+  **Two of the three tiers below have now shipped.** The limits wave took the
+  discovery tier, and the schema wave took the third: `collo schema config`
+  generates the contract from the structs, `collo init`/`collo setup` write it
+  beside the file with a `$schema` key, and any editor supplies completion,
+  hover documentation, and inline validation for the file being typed into.
+  `/config` no longer prints a path — it reports what each layer resolved to.
+  What remains open is the middle tier alone: changing a safety posture from
+  inside a session rather than reading it.
 
   **Deliberately not one wizard over the whole file.** There are ~120
   configuration fields, and a form asking 120 questions is worse than the file
@@ -1287,16 +1408,19 @@ claiming enforcement the policy layer does not provide.
     Session tab. Any such editor must respect the monotonic clamp, which means
     it can offer a project a tightening and must refuse it a weakening in the
     same words the loader already uses.
-  - *Everything else* — stays JSON, and gets a generated schema instead of a
-    form. `collo schema config`, beside the existing `collo schema events`,
-    with `$schema` written into what `collo init` and `collo setup` produce,
-    gives completion, per-field documentation, and inline validation in any
-    editor. Generated from the structs, so it cannot drift from them the way
-    `docs/FEATURES.md` drifted into claiming a mandatory-audit posture that
-    never existed.
+  - *Everything else* — **shipped.** It stays JSON and got a generated schema
+    instead of a form: `collo schema config`, beside the existing
+    `collo schema events`, with `$schema` written into what `collo init` and
+    `collo setup` produce. Generated from the structs, so it cannot drift from
+    them the way `docs/FEATURES.md` drifted into claiming a mandatory-audit
+    posture that never existed — and enumerated values are read from the
+    validator's own vocabularies, which had to be extracted from duplicated
+    inline `switch` literals before the schema could safely consult them.
 
-  The schema is the cheapest part and answers most of the complaint; it should
-  not wait on the interactive surface, and it does not need one.
+  The schema was the cheapest part and answered most of the complaint, exactly
+  as predicted, and it needed no interactive surface. What is left is the
+  posture editor, which is worth taking only if reading the stance turns out
+  not to be enough.
 - [ ] **P2 — Structured local service API:** authenticated stdio/socket or
   WebSocket access to the event/session/permission contracts. The current web
   terminal is a PTY transport, not this API.
@@ -1423,13 +1547,15 @@ assessment would most likely have opened with. The rest, in order:
    already-diagnosed defect rather than a preference. **That slice has now
    shipped**, which leaves the three original segments — getting the binary,
    trusting it, configuring a provider — with the third substantially closed and
-   the first two untouched. Package managers are the next one worth taking:
-   Homebrew and Scoop need no signed binary, the release workflow already
-   produces everything their manifests would reference, and `curl | sh` remains
-   the only route to a first install. Phase 7's configuration-surface item
-   carries what remains of the configuration complaint, of which the cheapest
-   and most useful part is a generated `collo schema config` rather than any
-   interactive surface.
+   the first two untouched. **Both halves of the configuration complaint have
+   now shipped** — discovered token limits, then a generated editor schema and
+   an effective-configuration view — so the third segment is closed as far as
+   the reported evidence goes, and what is left of Phase 7's
+   configuration-surface item is an interactive posture editor nobody has asked
+   for. Package managers are the next segment worth taking: Homebrew and Scoop
+   need no signed binary, the release workflow already produces everything their
+   manifests would reference, and `curl | sh` remains the only route to a first
+   install.
 2. Gather further beta feedback on named primary profiles, cost estimates,
    verified delegated results, scoped scheduling, three-way review, and the
    new postures — including scoped egress, whose allowlist ergonomics are best

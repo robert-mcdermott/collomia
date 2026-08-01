@@ -43,7 +43,11 @@ func ValidateMCPServer(name string, server MCPServer) []FieldError {
 			}
 		}
 	default:
-		errs = append(errs, FieldError{field + ".transport", fmt.Sprintf("must be stdio, http, or streamable-http (got %q)", server.Transport)})
+		// The cases above dispatch per-transport validation, so they cannot be
+		// collapsed into a vocabulary lookup — but the message can read the one
+		// definition, and TestEveryMCPTransportIsDispatched fails if a
+		// transport is added to the vocabulary without a case to handle it.
+		errs = append(errs, FieldError{field + ".transport", fmt.Sprintf("must be %s (got %q)", englishList(MCPTransports()), server.Transport)})
 	}
 	if server.Timeout < 0 {
 		errs = append(errs, FieldError{field + ".timeout_seconds", "must not be negative"})
