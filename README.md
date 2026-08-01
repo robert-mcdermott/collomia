@@ -65,6 +65,11 @@ The quickest way to get a working configuration is to let Collomia find one and 
 collo setup
 ```
 
+You can also run `collo` directly. If no provider has been configured, the
+interactive interface opens the same provider setup flow and continues into
+the session after verification. Collomia does not assume that Ollama is
+running or that any particular model is installed.
+
 It looks for local runtimes that are actually running, notices provider API keys your environment already exports, offers the endpoint's own model catalog, and verifies your choice with two real requests — one plain completion and one carrying a tool definition — before writing anything. A model that answers ordinary prompts but rejects tools cannot drive a coding agent, and that is caught here rather than at your first prompt. Keys are never written into the configuration file.
 
 Azure OpenAI, Azure AI Foundry, and AWS Bedrock are configured through a short form, since neither is discoverable from a name and a key; Bedrock additionally reports which identity the AWS credential chain resolved to. Run `collo setup` again at any time to add or reconfigure a provider — it shows what is already configured, marks anything it would replace, and asks before changing your default. `collo setup --provider <name>` skips the scan and re-verifies one provider you already have, leaving its credential untouched.
@@ -80,11 +85,14 @@ collo setup
 
 The [user guide](docs/USER_GUIDE.md#credentials-and-skipping-the-key-prompt-entirely) lists the variable for each provider.
 
-The manual path remains fully supported and is what scripted installs should use. The default configuration connects to Ollama at `http://127.0.0.1:11434/v1` and selects `qwen3-coder`:
+The manual path remains fully supported and is what scripted installs should
+use. `collo init --global` writes settings and an editor schema, but deliberately
+does not choose a provider or model. Copy only the provider you intend to use
+from the generated reference, then validate it:
 
 ```sh
-ollama pull qwen3-coder
 collo init --global --with-reference
+collo config validate --strict
 ```
 
 macOS and Linux can install the latest stable release without `sudo`:
@@ -536,7 +544,7 @@ This adapter works with OpenAI, Ollama, vLLM, LM Studio, Phlox-GW, and compatibl
 }
 ```
 
-OpenRouter is also available in the generated global starter as an unselected provider example:
+An explicit OpenRouter configuration looks like this:
 
 ```json
 {

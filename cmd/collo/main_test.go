@@ -400,6 +400,51 @@ func TestGlobalInitWritesHomeDirectoryConfiguration(t *testing.T) {
 	if !strings.Contains(string(data), `"schema_version": 1`) {
 		t.Fatalf("unexpected starter at %s: %s", path, data)
 	}
+	if strings.Contains(string(data), `"ollama"`) || strings.Contains(string(data), `"qwen3-coder"`) || strings.Contains(string(data), `"providers"`) {
+		t.Fatalf("global init must not invent an unverified provider: %s", data)
+	}
+}
+
+func TestInteractiveStartupOffersSetupOnlyForACleanUnconfiguredState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	needed, err := interactiveProviderSetupNeeded(options{cwd: workspace})
+	if err != nil || !needed {
+		t.Fatalf("fresh install needed=%v err=%v", needed, err)
+	}
+
+	needed, err = interactiveProviderSetupNeeded(options{cwd: workspace, provider: "explicit"})
+	if err != nil || needed {
+		t.Fatalf("explicit override needed=%v err=%v", needed, err)
+	}
+
+	configDir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configured := `{"default_provider":"local","providers":{"local":{"type":"openai-compatible","base_url":"http://127.0.0.1:8000/v1","model":"m"}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(configured), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	needed, err = interactiveProviderSetupNeeded(options{cwd: workspace})
+	if err != nil || needed {
+		t.Fatalf("configured install needed=%v err=%v", needed, err)
+	}
+}
+
+func TestHeadlessStartupNeverPromptsForAnUnconfiguredProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	err := run([]string{"run", "--cwd", t.TempDir(), "hello"})
+	if err == nil || !strings.Contains(err.Error(), "collo setup") {
+		t.Fatalf("unconfigured headless error=%v", err)
+	}
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("unconfigured headless exit=%d, want configuration/usage exit %d", got, exitUsage)
+	}
 }
 
 func TestConfigValidateInspectsUntrustedProject(t *testing.T) {

@@ -73,9 +73,7 @@ func TestChatScrollPositionSurvivesStreamingRefresh(t *testing.T) {
 }
 
 func BenchmarkChatViewLongTranscript(b *testing.B) {
-	home := b.TempDir()
-	b.Setenv("HOME", home)
-	b.Setenv("USERPROFILE", home)
+	configureTestProvider(b)
 	runtime, err := app.New(context.Background(), app.Options{Workspace: b.TempDir(), Ephemeral: true})
 	if err != nil {
 		b.Fatal(err)

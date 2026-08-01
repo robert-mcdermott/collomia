@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-31
+**Status updated:** 2026-08-01
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -97,7 +97,15 @@ is strict JSON and structurally cannot carry the comments the reference is made
 of, so the documentation had nowhere to be at the moment it was needed. It now
 reaches the editor as a generated schema.
 
-The most recent wave took the reliability P0 by running the failures rather
+The latest wave closed the gap between installation and a verified session.
+A fresh process no longer asserts that Ollama and qwen are present: interactive
+startup enters reusable provider setup when no provider is configured, then
+continues directly into the session after the selected endpoint, model, and
+tool-calling path have been proved. The same flow remains available later for
+adding or changing providers, while headless use receives an actionable
+configuration failure instead of a prompt or a dead localhost request.
+
+The reliability wave before it took the P0 by running the failures rather
 than reasoning about them, and each one was a defect rather than a
 confirmation: terminal loss orphaned every background process, the session was
 never flushed to stable storage at all, and the first exhaustion harness passed
@@ -111,9 +119,36 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-No wave is currently active. See
+No wave is currently active; the launch-to-verified-session slice is complete.
+See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — launch to a verified session
+
+**Goal:** make the first successful prompt the continuation of setup, not the
+first time Collomia discovers whether its assumed provider exists.
+
+- [x] Remove the synthetic Ollama/qwen provider from `config.Defaults()` and
+  the generated global starter. An empty provider map is a valid settings state
+  but not a session-ready state; stale provider/model selections remain invalid.
+- [x] Have interactive startup recognize only that clean unconfigured state,
+  enter provider setup, and continue into the session after a successful write.
+  Cancellation writes nothing and does not create a partial runtime.
+- [x] Keep headless behavior non-interactive. `collo run`, `review`, and
+  `verify` return a configuration-class error that points to `collo setup`
+  rather than assuming localhost or attempting to prompt.
+- [x] Make provider setup visibly reusable: remove the “first-run” label, list
+  already configured providers as actions, preserve the direct
+  `--provider <name>` shortcut, and keep the existing verify-before-write and
+  default-selection confirmation contracts.
+- [x] Carry a credential entered on a platform without an OS credential store
+  into only the immediately opened session. It is neither serialized nor left
+  in the process environment; later sessions still use the explicitly recorded
+  environment-variable contract.
+- [x] Make `collo doctor` report the provider-free state and update installation,
+  setup, feature, and capability documentation so none describes Ollama or a
+  particular model as an installed default.
 
 ## Completed wave — the failures nobody had run
 
@@ -1399,11 +1434,10 @@ claiming enforcement the policy layer does not provide.
   back. Environment variables keep precedence and remain fully supported;
   Linux has no backend by design, so headless hosts use `api_key_env`. MCP
   server credentials are covered separately by Phase 5's OAuth item.
-- [ ] **P1 — First-run setup and provider discovery:** make the configuration
-  correct *before* it is written, by proving it with a real request — and take
-  Azure deployment/project discovery and routing, tested sovereign presets, and
-  clearer resolved AWS identity/model-access diagnostics as part of the same
-  work rather than beside it.
+- [ ] **P1 — Provider discovery beyond verified setup:** enumerate Azure
+  deployments/projects and Bedrock models, add tested sovereign presets, and
+  deepen model-access diagnostics. The provider-configuration and startup
+  portions of the former combined item have shipped.
 
   **`collo setup` has shipped**, covering local runtimes, hosted families, and
   form-configured Azure and Bedrock end to end: concurrent probing, catalog
@@ -1421,7 +1455,7 @@ claiming enforcement the policy layer does not provide.
   is a current dependency. Foundry already gets model selection free, since its
   OpenAI v1 route publishes a catalog. Tested sovereign presets also remain.
 
-  **Reclassified from P2, and merged with the former "Setup wizard" entry.**
+  **Originally reclassified from P2 and merged with the former setup entry.**
   The two were one item seen from opposite sides: the wizard's Azure branch
   *is* deployment discovery, and its Bedrock branch *is* the model-access
   diagnostic, so kept separate the Azure probe gets written twice. The parts
@@ -1429,25 +1463,17 @@ claiming enforcement the policy layer does not provide.
   `ProviderAvailability` that already distinguishes *unverified* from
   *unavailable*, credential precedence, `credstore`, starter generation, and
   `config validate --strict` as the final gate — so this is assembly and one
-  honest failure path rather than new machinery. It is P1 because the first
-  item in the recommended next sequence is real beta feedback, and the current
-  first-run path is: read the README, hand-write JSONC, set a credential, run
-  `doctor`, and guess which of those four steps was wrong.
+  honest failure path rather than new machinery. It remains P1 because real
+  cloud enumeration removes deployment/model guesses the current form-based
+  configuration cannot make on the user's behalf.
 
-  **Nothing currently dials.** `collo init` writes a static starter file with
-  `ollama`/`qwen3-coder`/`127.0.0.1:11434` as literal values, and
-  `config.Defaults()` returns the same assumption for a machine that has never
-  been configured at all — so an install with no Ollama on it is, as far as the
-  configuration layer is concerned, correctly configured. `collo doctor` is
-  thorough about everything visible from the configuration and the
-  environment — which credential source won, the Entra scope and tenant,
-  whether Bedrock resolved bearer or SigV4 — and makes **no network request**,
-  so its best possible answer is `ok`. A dead port, a revoked key, a model the
-  endpoint does not have, an Azure model name written where a deployment name
-  belongs, a Bedrock region without model access, and a wrong `context` all
-  survive every existing check and surface identically: the interface opens,
-  the user types, and *then* it fails. That is the state in which someone
-  stops rather than reports.
+  **The verified path now dials before it writes.** `config.Defaults()` and
+  `collo init --global` name no provider; interactive startup enters the same
+  reusable setup flow when the provider map is empty, and headless startup
+  fails with an actionable configuration error. The remaining gap here is not
+  verification but cloud enumeration: Azure and Bedrock still require the user
+  to name deployment/project, region, and model fields before verification can
+  prove them.
 
   - Probe, discover, then verify, in that order. Probe the default ports of the
     local runtimes already supported (Ollama 11434, LM Studio 1234, vLLM 8000),
@@ -1499,7 +1525,7 @@ claiming enforcement the policy layer does not provide.
     behavior quietly becomes two. `collo setup` is re-runnable, since adding a
     second provider is the next thing that happens after the first works.
 
-  **Behavior change:** `config.Defaults()` stops naming a provider it has never
+  **Shipped behavior change:** `config.Defaults()` stops naming a provider it has never
   contacted. An installation with no configuration reports that no provider is
   configured and points at `collo setup`, rather than asserting Ollama on
   localhost and failing at the first prompt. Anyone actually running Ollama on

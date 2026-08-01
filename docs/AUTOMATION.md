@@ -388,8 +388,8 @@ the build, at the publish step, in a scheduled run nobody is watching.
 
 Configuration resolves through `$HOME`, and cron starts with a minimal
 environment. A job whose `HOME` is not what the author assumed silently gets
-built-in defaults — which now means prompting, which headless turns into a hard
-failure. Set it explicitly, as the [cron example](#cron-scheduled-repository-maintenance-report)
+a provider-free configuration, which headless startup reports as a hard
+configuration failure pointing to `collo setup`. Set it explicitly, as the [cron example](#cron-scheduled-repository-maintenance-report)
 below does, and confirm the resolved layers with:
 
 ```sh

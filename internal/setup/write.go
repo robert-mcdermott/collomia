@@ -58,8 +58,10 @@ type Result struct {
 	Credential CredentialPlan
 	// EnvVar names the variable for the env and manual plans.
 	EnvVar string
-	// Secret is held only between verification and Apply, and only for the
-	// store plan. It is never serialized.
+	// Secret is held only between verification and Apply. The store plan writes
+	// it to the OS credential manager; the automatic startup path may expose a
+	// manual-plan value just long enough for app.New to construct the verified
+	// provider client. It is never serialized.
 	Secret string `json:"-"`
 	// MakeDefault promotes this provider to default_provider/default_model.
 	MakeDefault bool

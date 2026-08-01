@@ -39,6 +39,33 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-01 — Launch to a verified session
+
+- **A fresh installation is now honestly unconfigured.** `config.Defaults()`
+  and `collo init --global` no longer name Ollama, localhost, qwen, or any other
+  provider/model combination that has not been observed. Settings without a
+  provider remain loadable for setup and diagnostics; a session request is the
+  boundary that requires one.
+- **Interactive startup now completes the setup journey.** Running `collo` with
+  no configured provider enters the existing probe/discover/two-request verify
+  flow and, after the verified configuration is written, continues directly
+  into the session. Cancellation writes nothing. Headless commands never
+  prompt and instead return a configuration-class error pointing to
+  `collo setup`.
+- **Setup is a reusable provider configuration surface.** The interface is
+  labelled “provider setup,” configured providers appear as actions for model
+  changes and re-verification, and `collo setup --provider <name>` remains the
+  direct shortcut. Adding a provider still cannot silently steal the default.
+- **The immediate Linux session does not lose the key just verified.** Where no
+  OS credential store exists, a manually entered key is passed directly into
+  only the runtime opened after setup. It is not serialized and is not placed
+  in the process environment; the recorded environment variable remains the
+  contract for later sessions.
+- **Diagnostics and documentation now agree with the runtime.** `collo doctor`
+  reports a provider-free configuration, and installation, feature, capability,
+  and provider documentation no longer describe the old Ollama/qwen assumption
+  as an installed default.
+
 ### 2026-07-31 — Phase 4 first-run setup, and verification that actually verifies
 
 - **The first-run path was four manual steps and a guess.** Read the README,

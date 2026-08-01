@@ -35,6 +35,7 @@ func isolateGlobalFiles(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	writeGlobalConfig(t, home, `{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}}}`)
 	return home
 }
 
@@ -76,6 +77,27 @@ func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testi
 	}
 }
 
+func TestRuntimeAcceptsVerifiedTransientCredentialWithoutPersistingIt(t *testing.T) {
+	home := isolateGlobalFiles(t)
+	writeGlobalConfig(t, home, `{"default_provider":"hosted","providers":{"hosted":{"type":"openai","base_url":"https://api.example.invalid/v1","api_key_env":"HOSTED_API_KEY","model":"m"}}}`)
+	t.Setenv("HOSTED_API_KEY", "")
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true, ProviderCredential: "verified-on-setup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if got := runtime.Config.Providers["hosted"].APIKey; got != "verified-on-setup" {
+		t.Fatalf("runtime credential=%q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".collomia", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "verified-on-setup") {
+		t.Fatal("transient setup credential was persisted")
+	}
+}
+
 func TestRuntimeCloseCancelsActiveDelegates(t *testing.T) {
 	isolateGlobalFiles(t)
 	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
@@ -98,7 +120,7 @@ func TestRuntimeCloseWaitsForBackgroundProcesses(t *testing.T) {
 	// sandboxed background process would pull the platform backend (AppContainer
 	// profiles and temp-directory ACL grants on Windows) into a lifecycle test.
 	// Containment and its teardown are covered by internal/sandbox.
-	writeGlobalConfig(t, home, `{"permissions":{"sandbox":"off"}}`)
+	writeGlobalConfig(t, home, `{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}},"permissions":{"sandbox":"off"}}`)
 	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
 	if err != nil {
 		t.Fatal(err)

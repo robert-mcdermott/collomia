@@ -42,9 +42,7 @@ func toolResultEvent(name, output string) runtimeevent.Event {
 
 func newTestModel(t *testing.T) Model {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	configureTestProvider(t)
 	runtime, err := app.New(context.Background(), app.Options{Workspace: t.TempDir()})
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
@@ -53,6 +51,21 @@ func newTestModel(t *testing.T) Model {
 	m := New(runtime, NewApprovalBroker(), "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	return updated.(Model)
+}
+
+func configureTestProvider(t testing.TB) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}}}`)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func typeKeys(t *testing.T, m Model, keys string) Model {

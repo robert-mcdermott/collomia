@@ -412,15 +412,13 @@ type EditorOptions struct {
 
 func Defaults() Config {
 	return Config{
-		SchemaVersion:   CurrentSchemaVersion,
-		DefaultProvider: "ollama",
-		DefaultModel:    "qwen3-coder",
-		Providers: map[string]Provider{
-			"ollama": {
-				Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1",
-				Model: "qwen3-coder", Context: 32768, MaxTokens: 8192,
-			},
-		},
+		SchemaVersion: CurrentSchemaVersion,
+		// A provider is not a safe built-in default. A fresh installation has
+		// not established that Ollama is running, that any particular model is
+		// installed, or that a hosted credential works. Interactive startup uses
+		// this empty map as the explicit signal to enter verified provider setup;
+		// headless startup reports the same state with an actionable error.
+		Providers: map[string]Provider{},
 		Permissions: Permissions{
 			Mode:                             "ask",
 			Network:                          "open",
@@ -1031,19 +1029,37 @@ func (e ValidationError) Error() string {
 // ValidateFields returns every problem found, each tied to its field path.
 func (c Config) ValidateFields() []FieldError {
 	var errs []FieldError
+	// An empty provider map is a valid configuration state, but it is not a
+	// session-ready one. Keeping those concepts separate lets `collo setup`
+	// read themes, permissions, and other settings before the first provider is
+	// configured. Selected reports the readiness error at the point a session
+	// is actually requested.
 	if len(c.Providers) == 0 {
-		errs = append(errs, FieldError{"providers", "at least one provider is required"})
-		return errs
-	}
-	providerName := c.DefaultProvider
-	if c.EnvProvider != "" {
-		providerName = c.EnvProvider
-	}
-	provider, ok := c.Providers[providerName]
-	if !ok {
-		errs = append(errs, FieldError{"default_provider", fmt.Sprintf("provider %q is not configured (configured: %s)", providerName, strings.Join(c.ProviderNames(), ", "))})
-	} else if c.DefaultModel == "" && c.EnvModel == "" && provider.Model == "" {
-		errs = append(errs, FieldError{"default_model", "default_model or provider.model is required"})
+		providerName := c.DefaultProvider
+		if c.EnvProvider != "" {
+			providerName = c.EnvProvider
+		}
+		if providerName != "" {
+			errs = append(errs, FieldError{"default_provider", fmt.Sprintf("provider %q is selected, but no providers are configured; run `collo setup` or remove the stale selection", providerName)})
+		}
+		model := c.DefaultModel
+		if c.EnvModel != "" {
+			model = c.EnvModel
+		}
+		if model != "" {
+			errs = append(errs, FieldError{"default_model", fmt.Sprintf("model %q is selected, but no providers are configured; run `collo setup` or remove the stale selection", model)})
+		}
+	} else {
+		providerName := c.DefaultProvider
+		if c.EnvProvider != "" {
+			providerName = c.EnvProvider
+		}
+		provider, ok := c.Providers[providerName]
+		if !ok {
+			errs = append(errs, FieldError{"default_provider", fmt.Sprintf("provider %q is not configured (configured: %s)", providerName, strings.Join(c.ProviderNames(), ", "))})
+		} else if c.DefaultModel == "" && c.EnvModel == "" && provider.Model == "" {
+			errs = append(errs, FieldError{"default_model", "default_model or provider.model is required"})
+		}
 	}
 	errs = appendEnumErrors(errs,
 		enumField{field: "permissions.mode", value: c.Permissions.Mode, allowed: AutonomyModes()},
@@ -1356,6 +1372,12 @@ func (c Config) Validate() error {
 }
 
 func (c Config) Selected(providerName, modelOverride string) (string, Provider, string, error) {
+	if len(c.Providers) == 0 {
+		return "", Provider{}, "", ValidationError{Errors: []FieldError{{
+			Field:   "providers",
+			Message: "no provider is configured; run `collo setup` in an interactive terminal, then retry",
+		}}}
+	}
 	if providerName == "" {
 		providerName = c.EnvProvider
 	}

@@ -159,7 +159,12 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 
 type Options struct {
 	Workspace, Provider, Model, Agent, Autonomy string
-	Plan, Debug, Ephemeral                      bool
+	// ProviderCredential carries a credential verified during automatic setup
+	// into the session opened immediately afterwards. It is never persisted and
+	// avoids putting the value in the process environment on platforms without
+	// an OS credential store.
+	ProviderCredential     string
+	Plan, Debug, Ephemeral bool
 	// Resume loads an existing session ID; Continue resumes the most
 	// recently updated session. Otherwise a new session is created.
 	Resume   string
@@ -196,6 +201,10 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	providerName, p, model, err := cfg.Selected(opts.Provider, opts.Model)
 	if err != nil {
 		return nil, err
+	}
+	if opts.ProviderCredential != "" {
+		p.APIKey = opts.ProviderCredential
+		cfg.Providers[providerName] = p
 	}
 	if opts.Model == "" && profile.Model != "" {
 		model = profile.Model

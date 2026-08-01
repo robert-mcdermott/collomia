@@ -210,6 +210,11 @@ should follow [Releasing Collomia](RELEASING.md).
 collo setup
 ```
 
+On an installation with no configured provider, simply running `collo` opens
+this same flow automatically. A successful verification writes the provider
+and pressing Enter continues directly into the session. No local runtime or
+model is assumed beforehand.
+
 `collo setup` finds the local model runtimes that are actually running (Ollama,
 LM Studio, vLLM), notices provider API keys the environment already exports,
 lets you choose a model from the endpoint's own catalog, and then **verifies the
@@ -249,13 +254,20 @@ permission error is misread as a Bedrock outage. Authentication modes that have
 nothing to store — Entra, which issues short-lived tokens through
 `DefaultAzureCredential`, and the SigV4 chain — never ask you for a key.
 
-### Re-running setup for a provider you already have
+### Adding or changing a provider later
+
+Run `collo setup` again. Configured providers appear at the top of the provider
+list, so selecting one changes its model and re-verifies its endpoint and
+limits; the other choices add another provider. The current default stays
+visible, and setup asks before repointing it.
+
+To jump directly to a configured provider from the command line:
 
 ```sh
 collo setup --provider bedrock
 ```
 
-This skips the runtime scan and re-enters the wizard pointed at a provider your
+This skips the runtime scan and re-enters setup pointed at a provider your
 configuration already names. The credential is left exactly as it is — the run
 uses whatever already authenticates and never stores, replaces, or asks for a
 key — and everything else is the ordinary path: the endpoint's catalog, the
@@ -417,26 +429,21 @@ This creates:
 - `config.example.jsonc` beside it: commented documentation only; Collomia
   never loads this file.
 
-The global starter includes Ollama, an unselected OpenRouter example, safe
-permission defaults, and common runtime options. `init` never overwrites an
+The global starter includes safe permission defaults and common runtime
+options. It deliberately includes no provider or model because a static file
+cannot establish what is installed or reachable. `init` never overwrites an
 existing file.
 
-If you use the default Ollama setup:
-
-```sh
-ollama pull qwen3-coder
-collo
-```
-
-If you use OpenRouter, set the key in your shell and select the existing
-`openrouter` entry in `~/.collomia/config.json`:
+Copy an explicit provider block from `config.example.jsonc`. For example, if
+you use OpenRouter, set the key in your shell and copy its provider example
+into `~/.collomia/config.json`:
 
 ```sh
 export OR_API_KEY='your-key'       # macOS/Linux
 $env:OR_API_KEY = 'your-key'       # PowerShell, current window
 ```
 
-Change `default_provider` to `openrouter`, then validate:
+Set `default_provider` to `openrouter`, then validate:
 
 ```sh
 collo config validate --strict
@@ -1371,8 +1378,8 @@ where discovery is supported.
 
 ### Ollama
 
-Ollama is the built-in default. Its OpenAI-compatible endpoint normally needs
-no API key:
+Ollama is supported through its OpenAI-compatible endpoint and normally needs
+no API key. This is an example configuration, not an assumption Collomia makes:
 
 ```json
 {
@@ -1434,7 +1441,7 @@ per-model feature metadata; `unknown` is not the same as unsupported.
 
 ### OpenRouter
 
-The generated global starter includes this provider but leaves Ollama selected:
+An explicit OpenRouter configuration begins by exporting its key:
 
 ```sh
 export OR_API_KEY='your-key'

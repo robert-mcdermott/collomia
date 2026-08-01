@@ -93,6 +93,9 @@ func runDoctorCommand(opts options) error {
 
 	// Providers.
 	if err == nil {
+		if len(cfg.Providers) == 0 {
+			add("providers", "warn", "none configured; run `collo setup` to discover and verify one")
+		}
 		for _, name := range cfg.ProviderNames() {
 			p := cfg.Providers[name]
 			status, detail := providerDiagnostic(p)
