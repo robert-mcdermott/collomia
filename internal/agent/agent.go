@@ -128,9 +128,9 @@ type Options struct {
 	// completion controller. Nil preserves the legacy ungated loop for
 	// specialized embedders; the application runtime always provides its board.
 	CompletionPlan *plan.Board
-	// GoalGraph enables the internal OG-1 primary-only execution controller.
-	// The application exposes no user-facing switch yet; offline product
-	// evaluations provide an approved logical graph programmatically.
+	// GoalGraph enables the runtime-owned primary execution controller. OG-1
+	// evaluations provide it at construction; the OG-2A TUI preview may attach
+	// one explicitly between turns after proposal approval.
 	GoalGraph *goalgraph.Graph
 	// GoalStateToken returns the current combined-workspace token. A nil
 	// function makes write-bearing graph nodes fail closed while allowing
@@ -271,6 +271,14 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	for _, part := range parts {
 		if part.Type != provider.ContentImage {
 			return "", fmt.Errorf("unsupported prompt content type %q", part.Type)
+		}
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph != nil {
+		if outcome, reason := graph.Outcome(); outcome != "" {
+			return "", goalGraphTerminalError(outcome, reason)
 		}
 	}
 	send := func(e event.Event) {

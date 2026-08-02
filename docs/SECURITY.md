@@ -767,13 +767,16 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
-## Runtime-owned goal-graph boundary (internal OG-1)
+## Runtime-owned goal-graph boundary (experimental OG-1/OG-2A)
 
-OG-1 adds an internal, programmatically activated primary-agent controller; it
-does not add a user-facing mode or another actor. A graph approval is scheduling
-state, never authority. Every selected node still uses the primary agent's
-existing tool registry, permission decision, lifecycle hooks, sandbox, audit
-identity, token/cost/iteration bounds, and cancellation path. Whole-plan
+OG-2A exposes OG-1's primary-agent controller only through a TUI action the
+user takes for one session. `/orchestrate <goal>` enters read-only proposal
+mode; it does not execute. `/orchestrate approve` accepts only a newly written
+pending plan whose every node has a concrete acceptance criterion. A graph
+approval is scheduling state, never authority. Every selected node still uses
+the primary agent's existing tool registry, permission decision, lifecycle
+hooks, sandbox, audit identity, token/cost/iteration bounds, and cancellation
+path. Whole-plan
 replacement and all delegate tools are hidden while this controller runs. Its
 two graph-control tools can only propose a bounded acyclic logical revision or
 record an exact blocker; they cannot grant a tool, path, host, publication,
@@ -794,8 +797,9 @@ Potentially mutating tools cross a durable write-ahead transition before they
 execute. If that flush fails, the tool never starts. An interrupted read-only
 attempt can be recomputed under a fresh attempt ID, but an action that may have
 written or caused an external effect becomes a reconciliation blocker on
-resume and is never repeated automatically. Internal graph runs cannot switch,
-rewind, or replace their session while active.
+resume and is never repeated automatically. Active graph runs cannot switch,
+rewind, or replace their session. A terminal graph rejects unrelated later
+prompts before a provider call; `/new` detaches it and begins ordinary work.
 
 Primary writes fail closed outside a Git-backed workspace. The combined-state
 token covers repository root and HEAD, index and worktree binary diffs, and
@@ -809,10 +813,12 @@ still advances the in-process mutation generation when Collomia ran the action,
 but an out-of-process change only to ignored data is intentionally outside the
 claim. A model-authored verification note is not a waiver.
 
-The mode remains unavailable through CLI flags, slash commands, configuration,
-project instructions, skills, or hooks. OG-2 must add explicit per-session
-proposal review before any user can opt in, and must preserve these boundaries
-before it adds bounded read-only fan-out.
+The only activation surface is the `/orchestrate` TUI command family. There is
+no configuration or headless flag, and project instructions, skills, hooks,
+model output, an ordinary persisted plan, and saved graph bytes cannot activate
+it. A saved graph is inspectable but inert until `/orchestrate resume`; recovery
+then retains OG-1's non-replay rule. Automatic actors remain disabled until the
+separate OG-2B read-only fan-out increment preserves these boundaries.
 
 ## Delegated-agent boundary
 

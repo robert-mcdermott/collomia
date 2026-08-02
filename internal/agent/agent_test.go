@@ -173,6 +173,36 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 	}
 }
 
+func TestCompletedGoalGraphRejectsUnrelatedLaterPromptBeforeProviderCall(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, goalgraph.ToolAction{Tool: "read_file", Risk: "read"}, "workspace"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, goalgraph.ToolResult{Tool: "read_file", Risk: "read", Summary: "observed", WorkspaceToken: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	if decision, err := graph.ProposeCompletion(t.Context(), "done", "workspace"); err != nil || decision.Kind != goalgraph.DecisionDone {
+		t.Fatalf("completion decision=%+v err=%v", decision, err)
+	}
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{Content: "must not run"}, nil
+	}}
+	runtime := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), GoalGraph: graph})
+	if _, err := runtime.Run(t.Context(), "now do something unrelated", nil); !errors.Is(err, ErrGoalGraphComplete) {
+		t.Fatalf("terminal graph error=%v", err)
+	}
+	if client.calls != 0 || runtime.MessageCount() != 0 {
+		t.Fatalf("terminal graph accepted later work: provider calls=%d messages=%d", client.calls, runtime.MessageCount())
+	}
+}
+
 func TestGoalGraphControllerRequiresFreshVerificationAfterPrimaryWrite(t *testing.T) {
 	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "change source"}}}, 1, goalgraph.Options{})
 	if err != nil {

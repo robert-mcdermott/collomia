@@ -156,12 +156,90 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 				enabled = false
 			}
 		}
+		phase := m.runtime.OrchestratedGoalPhase()
+		if phase == "proposal" && !enabled {
+			m.addError(fmt.Errorf("the Orchestrated Goal proposal is a read-only design phase; use /orchestrate cancel instead of disabling planning mode"))
+			break
+		}
+		if phase != "" && phase != "proposal" {
+			m.addError(fmt.Errorf("planning mode is separate from an attached Orchestrated Goal; inspect or cancel the graph instead"))
+			break
+		}
 		m.runtime.Agent.SetPlan(enabled)
 		if enabled {
 			m.addSystem("Planning mode enabled. Only read-only discovery tools are exposed.")
 		} else {
 			m.addSystem("Planning mode disabled. Execution tools are available subject to permissions.")
 		}
+	case "/orchestrate":
+		if len(args) == 0 || strings.EqualFold(args[0], "status") {
+			nodeID := 0
+			if len(args) > 0 {
+				if len(args) > 2 {
+					m.addError(fmt.Errorf("usage: /orchestrate status [node-id]"))
+					break
+				}
+				if len(args) == 2 {
+					var err error
+					nodeID, err = strconv.Atoi(args[1])
+					if err != nil || nodeID <= 0 {
+						m.addError(fmt.Errorf("orchestrated goal node id must be a positive integer"))
+						break
+					}
+				}
+			}
+			status, err := m.runtime.OrchestratedGoalStatus(nodeID)
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.addPanel("Orchestrated Goal · experimental", status)
+			}
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "approve") {
+			status, prompt, err := m.runtime.ApproveOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal approved · experimental", status)
+			return false, m.startTurn(prompt)
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "resume") {
+			status, prompt, runnable, err := m.runtime.ResumeOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal resumed · experimental", status)
+			if runnable {
+				return false, m.startTurn(prompt)
+			}
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "cancel") {
+			if m.busy && m.cancel != nil {
+				m.cancel()
+			}
+			status, err := m.runtime.CancelOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.reloadActivities()
+				m.addPanel("Orchestrated Goal cancelled · experimental", status)
+			}
+			break
+		}
+		goal := strings.TrimSpace(strings.Join(args, " "))
+		prompt, err := m.runtime.BeginOrchestratedProposal(goal)
+		if err != nil {
+			m.addError(err)
+			break
+		}
+		m.addSystem("Experimental Orchestrated Goal proposal started in read-only planning mode. Review the resulting graph with /orchestrate status; nothing executes until /orchestrate approve.")
+		return false, m.startTurn(prompt)
 	case "/autonomy":
 		if len(args) == 0 {
 			m.addSystem("Autonomy mode: " + m.runtime.Permissions.Mode() + " (ask, workspace, autopilot)")
@@ -328,6 +406,15 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
 	case "/tasks":
+		if m.runtime.GoalGraph != nil {
+			status, err := m.runtime.OrchestratedGoalStatus(0)
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.addPanel("Orchestrated Goal · experimental", status)
+			}
+			break
+		}
 		m.addPanel("Task plan", m.runtime.Plan.Current().Render())
 	case "/ps":
 		if len(args) == 2 && args[0] == "stop" {
@@ -454,6 +541,8 @@ func busySlashAllowed(line string) bool {
 	switch strings.ToLower(fields[0]) {
 	case "/help", "/status", "/context", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
+	case "/orchestrate":
+		return len(fields) == 1 || (len(fields) == 2 && (strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "cancel"))) || (len(fields) == 3 && strings.EqualFold(fields[1], "status"))
 	case "/config":
 		// Both forms only read local state, so neither belongs behind the
 		// running-turn gate.

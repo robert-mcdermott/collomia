@@ -17,10 +17,11 @@ import (
 )
 
 type Step struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	Status    string `json:"status"` // pending, in_progress, done, blocked, skipped
-	DependsOn []int  `json:"depends_on,omitempty"`
+	ID         int      `json:"id"`
+	Title      string   `json:"title"`
+	Status     string   `json:"status"` // pending, in_progress, done, blocked, skipped
+	DependsOn  []int    `json:"depends_on,omitempty"`
+	Acceptance []string `json:"acceptance,omitempty"`
 	// Evidence records how completion was verified (test run, file, output).
 	Evidence string `json:"evidence,omitempty"`
 }
@@ -81,6 +82,7 @@ func (b *Board) Snapshot() (*Plan, uint64) {
 	clone.Steps = append([]Step(nil), b.current.Steps...)
 	for i := range clone.Steps {
 		clone.Steps[i].DependsOn = append([]int(nil), b.current.Steps[i].DependsOn...)
+		clone.Steps[i].Acceptance = append([]string(nil), b.current.Steps[i].Acceptance...)
 	}
 	return &clone, b.revision
 }
@@ -124,6 +126,11 @@ func Validate(p Plan) error {
 			return fmt.Errorf("duplicate step id %d", step.ID)
 		}
 		seen[step.ID] = true
+		for criterionIndex, criterion := range step.Acceptance {
+			if strings.TrimSpace(criterion) == "" {
+				return fmt.Errorf("steps[%d].acceptance[%d] must not be empty", i, criterionIndex)
+			}
+		}
 		switch step.Status {
 		case "pending", "in_progress", "done", "blocked", "skipped":
 		default:
@@ -277,6 +284,9 @@ func (p *Plan) Render() string {
 			fmt.Fprintf(&b, " — %s", step.Evidence)
 		}
 		b.WriteString("\n")
+		for _, criterion := range step.Acceptance {
+			fmt.Fprintf(&b, "    acceptance: %s\n", criterion)
+		}
 	}
 	if p.VerificationNote != "" {
 		fmt.Fprintf(&b, "Verification not applicable: %s\n", p.VerificationNote)
@@ -290,8 +300,8 @@ func Tool(board *Board) tools.Tool {
 	return tools.Function{
 		Def: provider.ToolDefinition{
 			Name:        "update_plan",
-			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, and evidence. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","done","blocked","skipped"]},"depends_on":{"type":"array","items":{"type":"integer"}},"evidence":{"type":"string"}},"required":["id","title","status"],"additionalProperties":false}},"verification_note":{"type":"string","description":"specific reason automated verification does not apply after changed files; not machine-observed evidence"}},"required":["goal","steps"],"additionalProperties":false}`),
+			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, and evidence. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","done","blocked","skipped"]},"depends_on":{"type":"array","items":{"type":"integer"}},"acceptance":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":512}},"evidence":{"type":"string"}},"required":["id","title","status"],"additionalProperties":false}},"verification_note":{"type":"string","description":"specific reason automated verification does not apply after changed files; not machine-observed evidence"}},"required":["goal","steps"],"additionalProperties":false}`),
 		},
 		Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"},
 		Run: func(_ context.Context, raw json.RawMessage) (string, error) {

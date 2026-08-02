@@ -231,6 +231,26 @@ type Options struct {
 	NewID              func(string) string
 }
 
+// Limits is the fixed experimental controller envelope shown before approval.
+// These are runtime bounds, not permission grants or user configuration.
+type Limits struct {
+	MaxNodes                   int
+	MaxAttemptsPerNode         int
+	MaxRevisions               int
+	MaxAcceptanceItemsPerNode  int
+	MaxCompletionInterventions int
+}
+
+func DefaultLimits() Limits {
+	return Limits{
+		MaxNodes:                   maxGraphNodes,
+		MaxAttemptsPerNode:         defaultMaxAttempts,
+		MaxRevisions:               defaultMaxRevisions,
+		MaxAcceptanceItemsPerNode:  maxAcceptanceItems,
+		MaxCompletionInterventions: maxCompletionInterventions,
+	}
+}
+
 type Graph struct {
 	mu      sync.Mutex
 	state   Snapshot
@@ -1166,6 +1186,81 @@ func (g *Graph) Render() string {
 	}
 	b.WriteString("The runtime owns node state and evidence. Graph state grants no tool permission. Work only on the running node; use propose_goal_graph_revision for a bounded replan or block_goal_node for an exact blocker. A tool-free response proposes completion but cannot mark a node done by itself.")
 	return b.String()
+}
+
+// Inspect renders bounded operator-facing runtime truth. A zero nodeID shows
+// the graph overview; a non-zero nodeID adds that node's immutable attempts,
+// failures, and evidence. It deliberately does not infer state from model
+// prose or expose raw unbounded tool output.
+func (g *Graph) Inspect(nodeID int) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if nodeID != 0 && g.nodeLocked(nodeID) == nil {
+		return "", fmt.Errorf("goal graph has no node %d", nodeID)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Experimental Orchestrated Goal\nGraph: %s · generation %d\nGoal: %s\n", g.state.ID, g.state.Generation, g.state.Goal)
+	fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", maxGraphNodes, g.state.MaxAttemptsPerNode, g.state.MaxRevisions)
+	b.WriteString("Execution: one serial primary lane; automatic delegates are disabled in this preview.\n")
+	b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when the action is proposed.\n")
+	b.WriteString("Authority: every action still uses ordinary permissions; approval grants no publication or additional tool access.\n")
+	b.WriteString("Completion: changed workspace state requires fresh machine-observed verification.\n\n")
+	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
+	for _, node := range g.state.Nodes {
+		fmt.Fprintf(&b, "%s %d. %s · %s", marks[node.State], node.ID, node.Title, node.State)
+		if len(node.DependsOn) > 0 {
+			fmt.Fprintf(&b, " · after %s", joinInts(node.DependsOn))
+		}
+		if node.Reason != "" {
+			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(node.Reason), 600))
+		}
+		b.WriteByte('\n')
+		for _, criterion := range node.Acceptance {
+			fmt.Fprintf(&b, "    acceptance: %s\n", criterion)
+		}
+	}
+	if g.state.Outcome != "" {
+		fmt.Fprintf(&b, "\nOutcome: %s", g.state.Outcome)
+		if g.state.Reason != "" {
+			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(g.state.Reason), 600))
+		}
+		b.WriteByte('\n')
+	}
+	if nodeID == 0 {
+		b.WriteString("\n/orchestrate status <node-id> shows that node's attempts and evidence.")
+		return b.String(), nil
+	}
+	b.WriteString("\nAttempts and evidence\n")
+	for _, attempt := range g.state.Attempts {
+		if attempt.NodeID != nodeID {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s · attempt %d · %s", attempt.ID, attempt.Number, attempt.State)
+		if attempt.Summary != "" {
+			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(attempt.Summary), 600))
+		}
+		b.WriteByte('\n')
+		for _, failure := range attempt.Failures {
+			resolution := "unresolved"
+			if failure.Resolved {
+				resolution = "resolved"
+			}
+			fmt.Fprintf(&b, "    failure: %s · %s — %s\n", failure.Kind, resolution, bounded(strings.TrimSpace(failure.Detail), 600))
+		}
+		for _, evidenceID := range attempt.EvidenceIDs {
+			for _, evidence := range g.state.Evidence {
+				if evidence.ID != evidenceID {
+					continue
+				}
+				fmt.Fprintf(&b, "    evidence: %s · %s · %s", evidence.Kind, evidence.Status, bounded(strings.TrimSpace(evidence.Summary), 600))
+				if evidence.Command != "" {
+					fmt.Fprintf(&b, " · command %s", bounded(strings.TrimSpace(evidence.Command), 300))
+				}
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return b.String(), nil
 }
 
 func (g *Graph) Generation() uint64 {

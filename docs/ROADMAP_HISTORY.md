@@ -25,8 +25,8 @@ agents, provider platforms, and the Model Context Protocol specification.
 4. **Multi-agent orchestration polish**: user-approved Orchestrated Goal
    execution, automatic read fan-out, combined-parent verification/ranking,
    safe delegated pending-work recovery, and fuller transcript audit (Phase 6
-   now also has the internal OG-1 durable primary graph controller in addition
-   to named primary/delegated profiles, portable
+   now also has the explicit TUI-only OG-2A primary graph preview in addition
+   to the OG-1 durable controller, named primary/delegated profiles, portable
    reasoning, durable token/cost budgets, restrictive permissions,
    scheduling/isolation, declared-scope serialization, structured results,
    plan-step association, durable outcomes, a live parent/child tree,
@@ -40,6 +40,30 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-01 — OG-2A explicit primary-only preview completed
+
+- **The user surface and the autonomy increase are separate increments.**
+  OG-2A exposes the completed OG-1 primary controller through an explicit TUI
+  proposal/approval/status/cancel/resume flow. OG-2B remains responsible for
+  the first automatic read-only fan-out after the operator contract is proven.
+- **A saved plan or graph is not consent.** `/orchestrate <goal>` must produce a
+  new pending proposal with concrete acceptance criteria, and only
+  `/orchestrate approve` may activate it for the current session. Explicit
+  `/orchestrate resume` is required after a process/session boundary.
+- **The preview remains primary-only.** It adds no automatic delegates,
+  publication authority, configuration switch, headless flag, repository
+  opt-in, verification waiver, or recursive orchestration.
+- **Runtime truth is visible and session-safe.** The TUI carries an
+  experimental goal badge, live graph nodes in the Session/context-rail views,
+  and bounded whole-graph or per-node inspection. Active graphs cannot switch
+  or rewind sessions, terminal graphs reject unrelated prompts until `/new`,
+  and proposal consent cannot cross a rewind boundary.
+- **The exit gate was executed.** Focused app, controller, TUI, planning, and
+  credential-free product-evaluation tests cover the proposal-to-terminal
+  path and its negative authority cases. `go test -count=1 ./...`,
+  `go test -race -count=1 ./...`, `go vet ./...`, and `go build ./...` passed.
+  OG-2B bounded read-only fan-out is now unblocked but has not started.
 
 ### 2026-08-01 — OG-1 runtime-owned primary graph controller completed
 

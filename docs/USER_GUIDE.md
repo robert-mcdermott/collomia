@@ -594,8 +594,10 @@ The effective configuration is assembled from lowest to highest precedence:
 
 `default_agent` selects a primary profile after the provider/model defaults;
 `--agent` overrides it for one invocation. `--autonomy` overrides
-`permissions.mode`. `/model`, `/agent`, `/autonomy`, `/plan`, and `/theme` can
-make runtime changes, but they do not rewrite configuration files.
+`permissions.mode`. `/model`, `/agent`, `/autonomy`, `/plan`, `/orchestrate`,
+and `/theme` can make runtime changes, but they do not rewrite configuration
+files. Orchestrated Goal is an explicit per-session experiment; it cannot be
+enabled by any configuration layer.
 
 Later layers override only values they supply. Scalar fields nested in an
 object inherit independently. Named maps such as `providers`, `mcp`, and
@@ -2863,17 +2865,18 @@ Delegated agents are steered separately with `/agents steer` and `alt+a`.
 | `ctrl+c` | Cancel the active turn; press again to quit. |
 
 Typing `/` filters commands by prefix and substring. Known first arguments for
-`/theme`, `/autonomy`, `/plan`, `/model`, and `/agent` are completed fuzzily. These menus
-remain beside the composer; approvals and questions open as centered,
-theme-aware transient dialogs.
+`/theme`, `/autonomy`, `/plan`, `/orchestrate`, `/model`, and `/agent` are
+completed fuzzily. These menus remain beside the composer; approvals and
+questions open as centered, theme-aware transient dialogs.
 
 While a provider turn is running, the composer remains available for a small
 local-control command lane: `/help`, `/status`, `/context`, `/tasks`, `/tools`,
 `/config`, `/attachments`, `/transcript`, `/activity`, `/diff`, read-only
-`/ps`, and `/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
-the composer as unsent drafts; they are not queued to the model or executed
-concurrently. If the agent asks a question, Collomia preserves and restores the
-draft around the question dialog.
+`/ps`, `/orchestrate status [node]`, `/orchestrate cancel`, and `/agents`
+inspect/steer/stop. Free-form text and unavailable commands remain in the
+composer as unsent drafts; they are not queued to the model or executed
+concurrently. If the agent asks a question, Collomia preserves and restores
+the draft around the question dialog.
 
 The global actions in this table are configurable. The Help tab always shows
 the effective bindings after defaults, user configuration, and project
@@ -2890,6 +2893,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
+| `/orchestrate [goal\|approve\|status [node]\|cancel\|resume]` | Propose, explicitly approve, inspect, cancel, or resume the experimental primary-only Orchestrated Goal preview. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -2924,6 +2928,53 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/config [all]` | Show what the configuration resolved to: layers in order, the effective safety stance, anything the containment clamp refused, and the layer that set each value. `all` lists every setting, including those no file mentions. Credential values are redacted. |
 | `/clear` | Clear active conversation context. It does not delete the durable session file or reset cumulative token/cost accounting and budgets. |
 | `/quit` or `/exit` | Exit. |
+
+### Experimental Orchestrated Goal preview
+
+Orchestrated Goal is an opt-in TUI preview for running a bounded,
+runtime-owned dependency graph. It currently uses only the primary agent in one
+serial write lane; it does not automatically create delegated agents. Standard
+mode remains the default.
+
+A complete trial looks like this:
+
+```text
+/orchestrate Build the requested feature, update its documentation, and verify it
+/orchestrate status
+/orchestrate approve
+/orchestrate status
+/orchestrate status 2
+```
+
+The first command enters read-only proposal mode. Collomia asks the model for a
+new structured plan whose steps are all pending, have valid dependencies, and
+each state at least one concrete acceptance criterion. No implementation tool
+is available during this turn. Inspect the proposal with `/orchestrate status`;
+an ordinary plan that existed before the command, a restored plan, or a plan
+without acceptance criteria cannot be approved.
+
+`/orchestrate approve` is the explicit per-session opt-in. It converts that
+fresh proposal into durable runtime graph state and starts primary-agent
+execution. The graph, rather than a final-sounding model message, owns node
+readiness, attempts, failure state, evidence freshness, and terminal outcome.
+Every real tool action still passes through the ordinary permission,
+publication, sandbox, cancellation, and budget controls. Writes require fresh
+verification before the graph can finish.
+
+Use `/orchestrate status [node]` at any time to inspect the graph or one node,
+including dependencies, acceptance criteria, attempts, failures, commands,
+evidence, and the fixed preview bounds. `/tasks` and the Session/context-rail
+views project the active graph rather than showing a stale logical plan.
+`/orchestrate cancel` terminates a proposal or active graph. A saved graph is
+visible but deliberately inert after reopening a session; `/orchestrate resume`
+is required to reattach a nonterminal graph. This prevents persisted project or
+session content from silently opting the user back in.
+
+An active graph prevents session switching and rewind. After it reaches
+`done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
+`/new`. This preview has no configuration switch, repository-controlled opt-in,
+headless flag, automatic fan-out, pause control, per-node retry/cancel control,
+or verification waiver. Those remain later Orchestrated Goal work.
 
 ### Workspace paths and prompt files
 
@@ -3379,9 +3430,10 @@ turn.end               run.result
 
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
 `plan.update`, `goal.graph.update`, and `delegate.update` kinds for consumers
-that share the event model. `goal.graph.update` currently belongs only to the
-internal, programmatically activated OG-1 evaluation path; Standard mode and
-all documented CLI/TUI commands remain unchanged. Do not assume reserved kinds
+that share the event model. `goal.graph.update` is now written to durable
+session activity by the explicitly approved, TUI-only Orchestrated Goal
+preview. Standard mode and headless commands remain unchanged, and there is no
+configuration or automation activation surface. Do not assume reserved kinds
 appear in every current CLI stream.
 
 `tool.call.delta.arguments_delta` may be incomplete JSON while streaming.
@@ -5236,8 +5288,10 @@ image reserves a visible rough estimate of about 1,000 tokens.
 The current structured plan is rendered into a pinned session-state section
 on every provider request. It is refreshed after `update_plan`, resume,
 in-process session switching, compaction, and rewind. Because it is outside the
-message history, compaction cannot remove it. `/tasks` shows the same plan the
-model receives.
+message history, compaction cannot remove it. In Standard and planning modes,
+`/tasks` shows the same logical plan the model receives. During an approved
+Orchestrated Goal preview, `/tasks` instead shows the runtime graph and its live
+node states so a completed proposal cannot be mistaken for execution truth.
 
 When estimated active context exceeds 80% of a known window and enough messages
 exist, Collomia asks the active provider to summarize older history. It keeps

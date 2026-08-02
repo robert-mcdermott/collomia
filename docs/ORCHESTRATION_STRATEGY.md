@@ -1,7 +1,7 @@
 # Orchestrated Goal strategy
 
-**Status:** approved product and architecture strategy; OG-1 is complete and
-OG-2 is the next unstarted milestone
+**Status:** approved product and architecture strategy; OG-2A, the explicit
+primary-only preview, is complete and OG-2B is the next unblocked milestone
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-01  
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -47,18 +47,15 @@ Planning mode remains separate. `/plan` means read-only analysis and must not
 implicitly start execution or delegation. An orchestrated run begins with an
 explicit user action and a visible graph proposal.
 
-The recommended initial interaction is one of:
+The OG-2A preview resolves the initial interactive spelling as:
 
 ```text
 /orchestrate Build a kanban application with tests and documentation
 ```
 
-```text
-collo --orchestrate "Migrate this project to the new API and make all tests pass"
-```
-
-The exact command spelling remains an implementation decision. The required
-experience is:
+There is intentionally no headless or configuration activation surface yet.
+Whether a future milestone adds `collo --orchestrate` remains an implementation
+decision. The required experience is:
 
 1. Collomia creates a proposed logical graph in a read-only design phase.
 2. The UI shows dependencies, expected parallelism, declared write scopes,
@@ -496,16 +493,76 @@ Exit-gate evidence:
 
 ### OG-2 — Experimental Orchestrated Goal with read fan-out
 
-**Status: unblocked; not started.**
+**Status: in progress through two bounded increments.**
 
-- Add the explicit per-session opt-in and graph proposal approval.
+#### OG-2A — Explicit primary-only preview
+
+**Status: complete (2026-08-01).**
+
+This increment exposes OG-1 for real operator use without increasing the
+number of actors. It resolves the first user-facing command spelling as a TUI
+slash-command family:
+
+- `/orchestrate <goal>` starts a read-only proposal turn and cannot execute
+  work;
+- `/orchestrate approve` is the one-time per-session opt-in that converts the
+  newly proposed logical plan into runtime graph state and begins execution;
+- `/orchestrate status [node-id]` shows the proposal or durable node, attempt,
+  failure, evidence, readiness, and terminal state;
+- `/orchestrate cancel` cancels a pending proposal or the active graph; and
+- `/orchestrate resume` explicitly reattaches a saved non-terminal graph after
+  process or session resume. Persisted graph bytes alone never activate it.
+
+An approvable proposal must be newer than the state present when proposal mode
+began, contain only pending steps, and give each step at least one concrete
+acceptance criterion. The preview shows dependencies, the serial primary-only
+execution lane, fixed node/attempt/revision bounds, ordinary permission and
+publication posture, and the fresh combined-workspace verification rule.
+Project configuration, instructions, skills, hooks, model output, and a saved
+session still cannot opt the user in. Planning mode remains read-only.
+
+The preview adds an experimental status badge and projects graph nodes into the
+existing context rail and activity view. It does not add automatic delegates,
+pause, node-level cancellation/retry controls, verification waivers, new
+permissions, or a headless activation flag. Those omissions are visible rather
+than implied.
+
+Exit gate:
+
+- a user can propose, inspect, approve, execute, cancel, and explicitly resume
+  a primary-only graph in the TUI;
+- approval cannot consume a stale/restored ordinary plan or a plan without
+  concrete acceptance criteria;
+- no project-controlled input or persisted graph activates the mode;
+- Standard and read-only planning behavior remain unchanged.
+
+Completion evidence:
+
+- runtime/app/TUI tests prove fresh-proposal consent, concrete acceptance
+  criteria, proposal cancellation and planning-mode restoration, inert saved
+  graphs, explicit resume, terminal-session isolation, visible status/rail
+  state, and the prohibition on carrying proposal consent across rewind;
+- the credential-free product evaluation drives a real read-only proposal,
+  explicit approval, dependency-ready primary execution, real repository read,
+  and terminal evidence while asserting that proposal tools cannot mutate and
+  execution cannot delegate; and
+- `go test -count=1 ./...`, `go test -race -count=1 ./...`, `go vet ./...`,
+  `go build ./...`, formatting checks, and documentation-contract tests passed.
+
+#### OG-2B — Bounded read-only fan-out
+
+**Status: unblocked; recommended next milestone.**
+
+- Build on OG-2A's explicit per-session opt-in, graph approval, status,
+  cancellation, and inert-resume contract without weakening it.
 - Allow at most two automatically selected concurrent read-only delegates by
   default, even if the manual delegate ceiling is higher.
 - Keep one serial primary write lane in the parent workspace.
 - Start with a guideline of at most 12 logical nodes, two graph revisions, and
   two attempts per node; measure before making these configuration surface.
 - Enforce aggregate graph token, cost, iteration, and wall-clock budgets.
-- Add pause/resume/cancel/inspect controls and a visible experimental badge.
+- Add pause and any necessary node-level controls while retaining OG-2A's
+  resume/cancel/inspect controls and experimental badge.
 - Locally record why the scheduler delegated, serialized, retried, replanned,
   invalidated, blocked, or finished. Do not add default telemetry.
 
@@ -670,16 +727,17 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed milestone: **OG-1 — Runtime-owned primary graph controller**.
-- Next milestone: **OG-2 — Experimental Orchestrated Goal with read fan-out
-  (not started)**.
-- Active implementation branch or partial patch: **the completed OG-1
-  implementation is present in the current worktree; no OG-2 implementation
-  has started, and no user mode is shipped**.
-- Shipped experimental mode: **none**.
+- Last completed milestone: **OG-2A — Explicit primary-only preview**.
+- Active milestone: **none; OG-2B has not started**.
+- Next unblocked milestone: **OG-2B — Bounded read-only fan-out**.
+- Active implementation branch or partial patch: **OG-1 is committed on
+  `wave36`; the completed OG-2A patch is uncommitted in the current worktree**.
+- Shipped experimental mode: **TUI-only, explicit per-session, primary-only
+  Orchestrated Goal preview**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
-- Preserved implementation constraint: OG-1 adds no automatic delegated actors.
+- Preserved implementation constraint: OG-2A adds no automatic delegated
+  actors; OG-2B is the first milestone allowed to do so.
 - Parallel program requirement: continue the remaining Phase 8 security and
   reliability campaigns alongside every orchestration wave.
 
@@ -713,12 +771,16 @@ Every agent or contributor continuing this program must:
   precise read footprints. Treat a no-op structured write as unproven work.
 - End a required graph on the first material node blocker rather than spending
   more authority on independent nodes that cannot make the goal complete.
+- Resolve the first operator surface as a TUI-only `/orchestrate` command
+  family. Require a newly generated pending plan with concrete acceptance
+  criteria, a separate explicit approval, and explicit resume of inert saved
+  state. Defer headless activation and automatic actors.
 
 ## Open implementation decisions
 
-These remain unresolved for OG-2 or later:
+These remain unresolved for OG-2B or later:
 
-- final CLI and slash-command spelling;
+- whether and how a headless CLI surface should be added;
 - the representation of user-authored verification waivers;
 - whether the initial guideline limits become user configuration after
   measurement;

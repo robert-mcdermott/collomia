@@ -17,6 +17,9 @@ import (
 const maxCompletionInterventions = 2
 
 var (
+	// ErrGoalGraphComplete prevents a terminal one-shot Orchestrated Goal from
+	// becoming an accidental container for later unrelated prompts.
+	ErrGoalGraphComplete = errors.New("orchestrated goal is already complete")
 	// ErrGoalBlocked means the agent reached a truthful terminal response but
 	// could not demonstrate completion. The reason names either an explicitly
 	// blocked plan step or the evidence the controller could not obtain.

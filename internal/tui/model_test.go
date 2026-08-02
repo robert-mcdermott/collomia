@@ -17,6 +17,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/failureid"
+	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
@@ -110,6 +111,32 @@ func TestTabCycling(t *testing.T) {
 	m = press(t, m, tea.KeyCtrlT)
 	if m.tab != tabChat {
 		t.Fatalf("tabs should wrap back to chat, got %d", m.tab)
+	}
+}
+
+func TestOrchestratedGoalPreviewIsVisibleAndInspectable(t *testing.T) {
+	configureTestProvider(t)
+	approved := &plan.Plan{Goal: "inspect safely", Steps: []plan.Step{{ID: 1, Title: "inspect repository", Acceptance: []string{"repository evidence is recorded"}}}}
+	runtime, err := app.New(t.Context(), app.Options{Workspace: t.TempDir(), OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	m := New(runtime, NewApprovalBroker(), "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = updated.(Model)
+	if bar := ansi.Strip(m.renderStatusBar()); !strings.Contains(bar, "GOAL · EXP") || !strings.Contains(bar, "nodes 0/1") {
+		t.Fatalf("experimental graph is not visible in the status bar: %q", bar)
+	}
+	if rail := ansi.Strip(m.renderRail(30)); !strings.Contains(rail, "Goal · EXP") || !strings.Contains(rail, "inspect repository") {
+		t.Fatalf("runtime graph is not visible in the context rail:\n%s", rail)
+	}
+	if quit, cmd := (&m).slash("/orchestrate status 1"); quit || cmd != nil {
+		t.Fatalf("status should be a local inspection: quit=%t cmd=%v", quit, cmd)
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "panel" || !strings.Contains(last.content, "Attempts and evidence") {
+		t.Fatalf("node inspection panel=%+v", last)
 	}
 }
 

@@ -35,11 +35,14 @@ func TestBoardValidation(t *testing.T) {
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending"}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err == nil {
 		t.Fatal("in-progress step with unfinished dependency must be rejected")
 	}
-	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "go test passed"}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err != nil {
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Acceptance: []string{""}}}}); err == nil {
+		t.Fatal("empty acceptance criterion must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "go test passed", Acceptance: []string{"tests pass"}}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err != nil {
 		t.Fatal(err)
 	}
 	rendered := board.Current().Render()
-	for _, want := range []string{"Goal: g", "[x] 1. a", "go test passed", "[~] 2. b", "(after 1)"} {
+	for _, want := range []string{"Goal: g", "[x] 1. a", "go test passed", "acceptance: tests pass", "[~] 2. b", "(after 1)"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("render missing %q:\n%s", want, rendered)
 		}
@@ -71,7 +74,7 @@ func TestPlanCompletionAssessment(t *testing.T) {
 func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
 	board := NewBoard()
 	_, before := board.Snapshot()
-	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}}, {ID: 2, Title: "b", Status: "done", Evidence: "observed"}}}); err != nil {
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}, Acceptance: []string{"observable"}}, {ID: 2, Title: "b", Status: "done", Evidence: "observed"}}}); err != nil {
 		t.Fatal(err)
 	}
 	current, after := board.Snapshot()
@@ -79,8 +82,12 @@ func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
 		t.Fatalf("revision did not advance: before=%d after=%d", before, after)
 	}
 	current.Steps[0].DependsOn[0] = 99
+	current.Steps[0].Acceptance[0] = "mutated"
 	if got := board.Current().Steps[0].DependsOn[0]; got != 2 {
 		t.Fatalf("snapshot aliased board dependency: %d", got)
+	}
+	if got := board.Current().Steps[0].Acceptance[0]; got != "observable" {
+		t.Fatalf("snapshot aliased board acceptance: %q", got)
 	}
 }
 
@@ -89,14 +96,14 @@ func TestToolUpdatesBoardAndNotifies(t *testing.T) {
 	var persisted Plan
 	board.OnUpdate = func(p Plan) { persisted = p }
 	tool := Tool(board)
-	out, err := tool.Execute(t.Context(), json.RawMessage(`{"goal":"fix bug","steps":[{"id":1,"title":"reproduce","status":"in_progress"}]}`))
+	out, err := tool.Execute(t.Context(), json.RawMessage(`{"goal":"fix bug","steps":[{"id":1,"title":"reproduce","status":"in_progress","acceptance":["failure is reproduced"]}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, "reproduce") {
 		t.Fatalf("out=%q", out)
 	}
-	if persisted.Goal != "fix bug" || len(persisted.Steps) != 1 {
+	if persisted.Goal != "fix bug" || len(persisted.Steps) != 1 || len(persisted.Steps[0].Acceptance) != 1 {
 		t.Fatalf("persisted=%+v", persisted)
 	}
 }

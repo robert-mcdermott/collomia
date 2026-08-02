@@ -91,6 +91,33 @@ func TestGraphSelectsDependencyReadyNodesInStableOrder(t *testing.T) {
 	}
 }
 
+func TestGraphInspectShowsBoundedOperatorEvidence(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "read state", Acceptance: []string{"facts are grounded"}}}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "read_file", Risk: "read", Summary: "read config.go", WorkspaceToken: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := graph.Inspect(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "acceptance: facts are grounded", attempt.ID, "evidence: tool_result", "read config.go"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("inspection missing %q:\n%s", want, status)
+		}
+	}
+	if _, err := graph.Inspect(99); err == nil {
+		t.Fatal("unknown node inspection succeeded")
+	}
+}
+
 func TestPrimaryMutationRequiresFreshCombinedVerification(t *testing.T) {
 	fixture := &graphFixture{}
 	graph, err := New(Spec{Goal: "change", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, fixture.options())

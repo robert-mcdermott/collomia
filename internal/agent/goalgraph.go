@@ -13,7 +13,36 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
-func (a *Agent) graphEnabled() bool { return a != nil && a.goalGraph != nil }
+func (a *Agent) graphEnabled() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.goalGraph != nil
+}
+
+// SetGoalGraph attaches an explicitly approved runtime graph between turns.
+// It changes scheduling only: the registry, permissions, hooks, sandbox, and
+// budgets remain the same. Callers must not replace a live graph.
+func (a *Agent) SetGoalGraph(graph *goalgraph.Graph) error {
+	if a == nil {
+		return errors.New("agent is unavailable")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.goalGraph != nil && graph != nil && a.goalGraph != graph {
+		return errors.New("agent already has a different goal graph")
+	}
+	if graph != nil && a.subagent {
+		return errors.New("delegated agents cannot own an orchestrated goal graph")
+	}
+	a.goalGraph = graph
+	if graph != nil {
+		a.planMode = false
+	}
+	return nil
+}
 
 func (a *Agent) goalToken(ctx context.Context) (string, error) {
 	if a == nil || a.goalStateToken == nil {
@@ -63,7 +92,7 @@ func (a *Agent) ensureGoalAttempt(ctx context.Context, send Emit) error {
 func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 	switch outcome {
 	case goalgraph.OutcomeDone:
-		return nil
+		return fmt.Errorf("%w; start /new for unrelated work", ErrGoalGraphComplete)
 	case goalgraph.OutcomeCancelled:
 		if strings.TrimSpace(reason) == "" {
 			reason = "goal graph cancelled"

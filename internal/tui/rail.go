@@ -140,6 +140,22 @@ func (m Model) railWorkspace(inner int) string {
 }
 
 func (m Model) railPlan(inner int) string {
+	if graph := m.runtime.GoalGraph; graph != nil {
+		snapshot := graph.Snapshot()
+		done := 0
+		for _, node := range snapshot.Nodes {
+			if node.State == "done" {
+				done++
+			}
+		}
+		var b strings.Builder
+		b.WriteString(m.railHeading("Goal · EXP") + m.styles.muted.Render(fmt.Sprintf("  %d/%d", done, len(snapshot.Nodes))))
+		for _, node := range snapshot.Nodes {
+			glyph, style := m.graphNodeStyle(string(node.State))
+			b.WriteString("\n" + style.Render(glyph) + " " + m.styles.panelBody.Render(ansi.Truncate(node.Title, max(1, inner-2), "…")))
+		}
+		return b.String()
+	}
 	current := m.runtime.Plan.Current()
 	if current == nil || len(current.Steps) == 0 {
 		return ""
@@ -151,12 +167,30 @@ func (m Model) railPlan(inner int) string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(m.railHeading("Plan") + m.styles.muted.Render(fmt.Sprintf("  %d/%d", done, len(current.Steps))))
+	heading := "Plan"
+	if m.runtime.OrchestratedGoalPhase() == "proposal" {
+		heading = "Goal proposal · EXP"
+	}
+	b.WriteString(m.railHeading(heading) + m.styles.muted.Render(fmt.Sprintf("  %d/%d", done, len(current.Steps))))
 	for _, step := range current.Steps {
 		glyph, style := m.planStepStyle(step.Status)
 		b.WriteString("\n" + style.Render(glyph) + " " + m.styles.panelBody.Render(ansi.Truncate(step.Title, max(1, inner-2), "…")))
 	}
 	return b.String()
+}
+
+func (m Model) graphNodeStyle(status string) (string, lipgloss.Style) {
+	switch status {
+	case "done":
+		return "●", m.styles.success
+	case "running", "ready", "retryable":
+		return "◐", m.styles.warning
+	case "blocked", "cancelled", "budget_exhausted":
+		return "✗", m.styles.errText
+	case "stale":
+		return "!", m.styles.warning
+	}
+	return "○", m.styles.muted
 }
 
 func (m Model) planStepStyle(status string) (string, lipgloss.Style) {

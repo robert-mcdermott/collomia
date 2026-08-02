@@ -21,6 +21,7 @@ var slashCommands = []commandInfo{
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
+	{name: "/orchestrate", args: "[goal|approve|status [node]|cancel|resume]", desc: "explicit experimental goal proposal and execution"},
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
@@ -92,6 +93,13 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 		}
 	case "/plan":
 		candidates = []candidate{{"on", "read-only planning mode"}, {"off", "execution mode"}}
+	case "/orchestrate":
+		candidates = []candidate{
+			{"approve", "approve the fresh visible proposal and execute once"},
+			{"status", "inspect proposal or runtime graph state"},
+			{"cancel", "cancel the proposal or active graph"},
+			{"resume", "explicitly reattach a saved graph"},
+		}
 	case "/model":
 		for _, name := range m.runtime.Config.ProviderNames() {
 			p := m.runtime.Config.Providers[name]

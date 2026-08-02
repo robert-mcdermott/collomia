@@ -598,7 +598,7 @@ type Session struct {
 	// PlanRaw is the latest persisted structured plan, if any.
 	PlanRaw json.RawMessage
 	// GoalGraphRaw is the latest persisted runtime-owned graph snapshot, if
-	// this session was created by the internal OG-1 evaluation path.
+	// this session used the internal OG-1 path or explicit OG-2A TUI preview.
 	GoalGraphRaw json.RawMessage
 	// delegates retains the latest parent-inbox snapshot for each delegated
 	// task. Stored updates are inert data and are never scheduled during load.

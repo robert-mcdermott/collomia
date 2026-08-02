@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/robert-mcdermott/collomia/internal/agent"
+	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
@@ -16,6 +17,74 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
+
+// TestOrchestratedGoalExplicitPreviewEvaluation exercises the OG-2A product
+// boundary: a real application runtime stays Standard until a user starts a
+// read-only proposal and explicitly approves the fresh plan. Only then does
+// the same primary agent receive runtime-owned graph scheduling.
+func TestOrchestratedGoalExplicitPreviewEvaluation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configDir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteEvaluationFile(t, filepath.Join(configDir, "config.json"), `{"default_provider":"fixture","providers":{"fixture":{"type":"openai-compatible","base_url":"http://127.0.0.1:1/v1","model":"scripted","context_window":16000,"max_tokens":256}}}`)
+	workspace := orchestratedGitFixture(t)
+	client := &scriptedProvider{t: t, steps: []scriptedStep{
+		{check: func(request provider.Request) error {
+			if !strings.Contains(request.System, "planning mode") {
+				return errors.New("proposal did not use the read-only planning system prompt")
+			}
+			names := map[string]bool{}
+			for _, definition := range request.Tools {
+				names[definition.Name] = true
+			}
+			if !names["update_plan"] || names["write_file"] {
+				return errors.New("proposal tool surface was not read-only")
+			}
+			return nil
+		}, response: toolResponse("plan", "update_plan", `{"goal":"inspect the implementation","steps":[{"id":1,"title":"inspect current behavior","status":"pending","acceptance":["the implementation is reported from repository evidence"]}]}`)},
+		{check: requireGraphToolContains("acceptance: the implementation is reported"), response: provider.Response{Content: "The proposal is ready for explicit review."}},
+		{check: requireGraphNode(1, "inspect current behavior"), response: toolResponse("read", "read_file", `{"path":"calc.go"}`)},
+		{check: requireGraphToolContains("func Add"), response: provider.Response{Content: "The implementation is grounded in calc.go."}},
+	}}
+	runtime, err := app.New(t.Context(), app.Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.Agent.SetProvider("offline-evaluation", "scripted", appconfig.Provider{Type: "fixture", MaxTokens: 256, Context: 16_000}, client)
+
+	proposalPrompt, err := runtime.BeginOrchestratedProposal("inspect the implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph != nil {
+		t.Fatal("proposal action activated a graph before approval")
+	}
+	if _, err := runtime.Agent.Run(t.Context(), proposalPrompt, runtime.LogEvent); err != nil {
+		t.Fatal(err)
+	}
+	status, executionPrompt, err := runtime.ApproveOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph == nil || !strings.Contains(status, "one serial primary lane") {
+		t.Fatalf("approval did not attach the visible primary graph: %s", status)
+	}
+	answer, err := runtime.Agent.Run(t.Context(), executionPrompt, runtime.LogEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "The implementation is grounded in calc.go." || client.next != len(client.steps) {
+		t.Fatalf("answer=%q provider steps=%d/%d", answer, client.next, len(client.steps))
+	}
+	if outcome, _ := runtime.GoalGraph.Outcome(); outcome != goalgraph.OutcomeDone {
+		t.Fatalf("explicit preview outcome=%q", outcome)
+	}
+}
 
 // TestOrchestratedGoalPrimaryGraphEvaluation exercises OG-1 as a product
 // slice: one primary agent follows dependency readiness, changes the real

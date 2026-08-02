@@ -1136,6 +1136,14 @@ func (m *Model) sessionSections(width int) string {
 	b.WriteString(kv("reasoning", reasoningEffort) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
+	orchestration := m.runtime.OrchestratedGoalPhase()
+	if orchestration == "" {
+		orchestration = "off"
+	}
+	if orchestration != "off" {
+		orchestration += " · experimental"
+	}
+	b.WriteString(kv("orchestrated goal", orchestration) + "\n")
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
 	b.WriteString(kv("theme", m.theme.Name) + "\n")
 	// The transcript header no longer carries the build, so a bug report needs
@@ -1556,7 +1564,23 @@ func (m Model) renderStatusBar() string {
 	if m.runtime.Agent.Plan() {
 		segments = append(segments, statusSegment{text: badge("PLAN", m.theme.Accent), drop: 30})
 	}
-	if current := m.runtime.Plan.Current(); current != nil && len(current.Steps) > 0 {
+	if phase := m.runtime.OrchestratedGoalPhase(); phase != "" {
+		label := "GOAL · EXP"
+		if phase == "proposal" {
+			label = "GOAL? · EXP"
+		}
+		segments = append(segments, statusSegment{text: badge(label, m.theme.Warning), drop: 25})
+	}
+	if graph := m.runtime.GoalGraph; graph != nil {
+		snapshot := graph.Snapshot()
+		done := 0
+		for _, node := range snapshot.Nodes {
+			if node.State == "done" {
+				done++
+			}
+		}
+		segments = append(segments, statusSegment{text: badge(fmt.Sprintf("nodes %d/%d", done, len(snapshot.Nodes)), m.theme.Secondary), drop: 40})
+	} else if current := m.runtime.Plan.Current(); current != nil && len(current.Steps) > 0 {
 		done := 0
 		for _, step := range current.Steps {
 			if step.Status == "done" || step.Status == "skipped" {

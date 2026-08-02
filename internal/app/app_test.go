@@ -87,6 +87,147 @@ func TestOrchestratedGoalRejectsEphemeralExecution(t *testing.T) {
 	}
 }
 
+func TestExplicitOrchestratedGoalPreviewRequiresFreshApprovedProposal(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	stale := plan.Plan{Goal: "old task", Steps: []plan.Step{{ID: 1, Title: "old step", Status: "pending", Acceptance: []string{"old result exists"}}}}
+	if err := runtime.Plan.Set(stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "no new") {
+		t.Fatalf("restored/ordinary plan was accepted without opt-in: %v", err)
+	}
+
+	prompt, err := runtime.BeginOrchestratedProposal("repair the service and verify it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.Agent.Plan() || !strings.Contains(prompt, "read-only planning mode") {
+		t.Fatalf("proposal did not enter an explicit read-only design phase: plan=%t prompt=%q", runtime.Agent.Plan(), prompt)
+	}
+	if _, _, err := runtime.RewindSession(0); err == nil || !strings.Contains(err.Error(), "proposal") {
+		t.Fatalf("proposal consent marker was allowed to cross a rewind boundary: %v", err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "did not create a new") {
+		t.Fatalf("stale pre-proposal plan was accepted: %v", err)
+	}
+
+	missingAcceptance := plan.Plan{Goal: "repair the service", Steps: []plan.Step{{ID: 1, Title: "repair", Status: "pending"}}}
+	if err := runtime.Plan.Set(missingAcceptance); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "acceptance criterion") {
+		t.Fatalf("proposal without acceptance criteria was accepted: %v", err)
+	}
+
+	approved := plan.Plan{Goal: "repair the service", Steps: []plan.Step{
+		{ID: 1, Title: "inspect failure", Status: "pending", Acceptance: []string{"the failure cause is grounded in repository evidence"}},
+		{ID: 2, Title: "repair and verify", Status: "pending", DependsOn: []int{1}, Acceptance: []string{"the repository test suite passes after the repair"}},
+	}}
+	if err := runtime.Plan.Set(approved); err != nil {
+		t.Fatal(err)
+	}
+	status, executionPrompt, err := runtime.ApproveOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph == nil || runtime.Agent.Plan() {
+		t.Fatalf("approval did not attach execution graph and leave planning mode: graph=%v plan=%t", runtime.GoalGraph, runtime.Agent.Plan())
+	}
+	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "acceptance: the repository test suite passes"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("approved status missing %q:\n%s", want, status)
+		}
+	}
+	if !strings.Contains(executionPrompt, "explicitly approved") {
+		t.Fatalf("execution prompt=%q", executionPrompt)
+	}
+	if _, ok := runtime.Registry.Get(goalgraph.ReviseToolName); !ok {
+		t.Fatal("approved preview did not expose bounded graph revision control")
+	}
+	if err := runtime.NewSession(); err == nil || !strings.Contains(err.Error(), "active") {
+		t.Fatalf("active graph allowed a session reset: %v", err)
+	}
+}
+
+func TestCancelOrchestratedProposalRestoresPreviousPlanMode(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	for _, previous := range []bool{false, true} {
+		runtime.Agent.SetPlan(previous)
+		if _, err := runtime.BeginOrchestratedProposal("inspect without executing"); err != nil {
+			t.Fatal(err)
+		}
+		if !runtime.Agent.Plan() {
+			t.Fatal("proposal did not force read-only planning mode")
+		}
+		status, err := runtime.CancelOrchestratedGoal(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.Agent.Plan() != previous || runtime.OrchestratedGoalPhase() != "" {
+			t.Fatalf("cancel did not restore plan mode %t: plan=%t phase=%q", previous, runtime.Agent.Plan(), runtime.OrchestratedGoalPhase())
+		}
+		if !strings.Contains(status, "cannot be approved") {
+			t.Fatalf("cancel status=%q", status)
+		}
+	}
+}
+
+func TestSavedOrchestratedGoalRemainsInertUntilExplicitResume(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	first, err := New(t.Context(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.BeginOrchestratedProposal("inspect the repository"); err != nil {
+		t.Fatal(err)
+	}
+	approved := plan.Plan{Goal: "inspect the repository", Steps: []plan.Step{{ID: 1, Title: "inspect", Status: "pending", Acceptance: []string{"repository facts are reported with file evidence"}}}}
+	if err := first.Plan.Set(approved); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := first.ApproveOrchestratedGoal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	resumed, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if resumed.GoalGraph != nil {
+		t.Fatal("saved graph activated without an explicit resume action")
+	}
+	status, err := resumed.OrchestratedGoalStatus(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "Saved graph is inert") {
+		t.Fatalf("saved status=%q", status)
+	}
+	status, prompt, runnable, err := resumed.ResumeOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.GoalGraph == nil || !runnable || prompt == "" || !strings.Contains(status, "inspect the repository") {
+		t.Fatalf("explicit resume did not reattach runnable graph: graph=%v runnable=%t prompt=%q status=%q", resumed.GoalGraph, runnable, prompt, status)
+	}
+}
+
 func TestRuntimeAcceptsVerifiedTransientCredentialWithoutPersistingIt(t *testing.T) {
 	home := isolateGlobalFiles(t)
 	writeGlobalConfig(t, home, `{"default_provider":"hosted","providers":{"hosted":{"type":"openai","base_url":"https://api.example.invalid/v1","api_key_env":"HOSTED_API_KEY","model":"m"}}}`)
@@ -475,15 +616,18 @@ func TestOrchestratedGoalRestoresAmbiguousMutationAsBlocker(t *testing.T) {
 	if outcome, reason := resumed.GoalGraph.Outcome(); outcome != goalgraph.OutcomeBlocked || !strings.Contains(reason, "may have taken effect") {
 		t.Fatalf("outcome=%q reason=%q", outcome, reason)
 	}
-	if err := resumed.NewSession(); err == nil || !strings.Contains(err.Error(), "orchestrated-goal") {
-		t.Fatalf("graph runtime allowed an unsafe session reset: %v", err)
-	}
 	restored := resumed.GoalGraph.Snapshot()
 	if len(restored.Attempts) != 1 || restored.Attempts[0].State != goalgraph.AttemptInterrupted {
 		t.Fatalf("restored attempts=%+v", restored.Attempts)
 	}
 	if len(resumed.Session.GoalGraphRaw) == 0 {
 		t.Fatal("recovered graph was not persisted back to the session")
+	}
+	if err := resumed.NewSession(); err != nil {
+		t.Fatalf("terminal graph should allow an explicit fresh session: %v", err)
+	}
+	if resumed.GoalGraph != nil {
+		t.Fatal("new session retained the prior terminal graph")
 	}
 }
 
