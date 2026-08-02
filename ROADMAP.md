@@ -133,7 +133,10 @@ fan-out kernel** on top of the OG-2A explicit preview. An approved graph can
 now run at most two independently ready `read_only` nodes through governed
 automatic workers, ingest only grounded fresh evidence, and then return to its
 one serial primary lane. Fixed aggregate read bounds, scheduler reasons,
-cancellation, and inert saved-state compatibility are runtime-owned. Standard
+cancellation, and inert saved-state compatibility are runtime-owned. This is
+the first multi-actor increment of **evidence-gated durable execution**: the
+model proposes graph work, while the runtime owns readiness, attempts, fresh
+machine evidence, recovery treatment, and terminal state. Standard
 evidence-gated execution remains the default. **OG-2B2 — Operator controls and
 comparative evidence** is next; it retains pause/node controls, complete
 primary-plus-worker aggregate presentation, and the measured usefulness gate. See the
@@ -1643,19 +1646,21 @@ claiming enforcement the policy layer does not provide.
 ### Phase 6 — Multi-agent orchestration
 
 The approved product and architecture contract for the remaining Phase 6 work
-is [Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md). It is the canonical
-cross-session handoff for milestone order, authority boundaries, non-goals,
-evaluation, and graduation. The roadmap remains the source of priority and
-completion status.
+is [Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md), Collomia's experimental
+**evidence-gated durable execution** mode. It is the canonical cross-session
+handoff for the model/runtime authority boundary, evidence contract, recovery
+guarantees, milestone order, non-goals, evaluation, and graduation. The
+roadmap remains the source of priority and completion status.
 
 - [x] **P0 — Finish agent definitions:** reasoning controls, monetary budgets,
   visibility, and named primary profiles.
 - [x] **P0 — Conservative conflict handling:** serialize known overlapping
   assignments and offer explicit three-way reconciliation without silently
   overwriting parent or sibling work.
-- [ ] **P1 — Plan graph execution:** assign dependency-ready nodes, propagate
-  verified evidence, invalidate stale repository assumptions, and re-plan on
-  failure. Keep this opt-in until cancellation and review behavior are proven.
+- [ ] **P1 — Plan graph execution:** deliver evidence-gated durable execution
+  by assigning dependency-ready nodes, propagating machine-observed evidence,
+  invalidating stale repository assumptions, and re-planning on failure. Keep
+  this opt-in until cancellation and review behavior are proven.
   Deliver it through the strategy's ordered milestones rather than as one
   large autonomy jump:
   - [x] **OG-0 — Strategy and continuity:** record the durable charter,
@@ -1881,11 +1886,15 @@ completion status.
 ## Recommended next sequence
 
 The setup journey, first completion controller, OG-1 runtime-owned primary
-graph, OG-2A explicit preview, and OG-2B1 read fan-out kernel are now complete. The
+graph, OG-2A explicit preview, and OG-2B1 read fan-out kernel are now complete.
+Together, the graph milestones are the shipped experimental foundation for
+evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
-contract. The next orchestration slice is OG-2B2: operator controls and
-comparative evidence around the shipped bounded automatic read-only fan-out,
-with the primary workspace's write lane remaining serial.
+contract and explicitly separates current evidence/recovery guarantees from
+future automatic writer and exact scheduler-recovery claims. The next
+orchestration slice is OG-2B2: operator controls and comparative evidence
+around the shipped bounded automatic read-only fan-out, with the primary
+workspace's write lane remaining serial.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are missed by the

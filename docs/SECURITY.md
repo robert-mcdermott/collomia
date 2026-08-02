@@ -767,9 +767,12 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
-## Runtime-owned goal-graph boundary (experimental OG-1/OG-2)
+## Evidence-gated durable goal-graph boundary (experimental OG-1/OG-2)
 
-Orchestrated Goal exposes the runtime controller only through a TUI action the
+Orchestrated Goal is evidence-gated durable execution: the model proposes
+logical work and interprets results, while the runtime owns operational graph
+truth and accepts completion only through fresh, typed machine-observed
+evidence. It exposes the runtime controller only through a TUI action the
 user takes for one session. `/orchestrate <goal>` enters read-only proposal
 mode; it does not execute. `/orchestrate approve` accepts only a newly written
 pending plan whose every node has a concrete acceptance criterion. A graph

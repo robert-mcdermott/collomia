@@ -22,12 +22,13 @@ agents, provider platforms, and the Model Context Protocol specification.
 1. **Enforced endpoint-scoped egress and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; declared endpoints, host-scoped rules, scoped/allowlist postures, and per-capability grants shipped 2026-07-24, and credential-store protection shipped 2026-07-25, but OS-level endpoint-scoped egress confinement remains open).
 2. **Provider platform hardening**: Azure deployment/project discovery, general Responses routing, and explicit routing/fallback (Phase 4 — optional macOS/Windows keychain credential storage shipped 2026-07-25 — capability declarations/discovery/preflight, normalized cross-adapter streaming including Bedrock `ConverseStream`, resilience, recorded/live protocol contracts, and refreshable Azure Entra authentication shipped 2026-07-19).
 3. **MCP ecosystem remainder**: OAuth authentication, experimental tasks, resource subscriptions, audio/annotation passthrough, and argument-level permission scoping (Phase 5 — skills, hooks, lifecycle/resources/prompts/elicitation/progress/pinning, bounded image passthrough, external-data provenance framing, safe list-change refresh, and conformance fixtures have shipped).
-4. **Multi-agent orchestration polish**: user-approved Orchestrated Goal
-   execution, automatic read fan-out, combined-parent verification/ranking,
-   safe delegated pending-work recovery, and fuller transcript audit (Phase 6
-   now also has the explicit TUI-only OG-2A primary graph preview in addition
-   to the OG-1 durable controller, named primary/delegated profiles, portable
-   reasoning, durable token/cost budgets, restrictive permissions,
+4. **Multi-agent orchestration polish**: the user-approved Orchestrated Goal
+   evidence-gated durable execution mode, automatic writer candidates,
+   combined-parent verification/ranking, exact multi-worker recovery, and
+   fuller transcript audit (Phase 6 now has the OG-1 durable controller,
+   explicit TUI-only OG-2A preview, and OG-2B1 bounded automatic read fan-out,
+   in addition to named primary/delegated profiles, portable reasoning,
+   durable token/cost budgets, restrictive permissions,
    scheduling/isolation, declared-scope serialization, structured results,
    plan-step association, durable outcomes, a live parent/child tree,
    boundary-safe steering, machine-observed child verification, and
@@ -40,6 +41,24 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-02 — Evidence-gated durable execution contract documented
+
+- **The phrase names an implemented architectural boundary.** Orchestrated
+  Goal is now described consistently as Collomia's experimental
+  evidence-gated durable execution mode: the model proposes graph intent and
+  interprets results, while the runtime owns readiness, attempts, evidence
+  freshness, recovery treatment, and terminal state.
+- **The evidence contract states what each proof prevents.** Automatic reads
+  require a successful tool result and a matching state token when claimed;
+  mutations require recognized successful verification against the current
+  Git token and mutation generation. Model prose never substitutes for either
+  record, and later workspace drift invalidates evidence conservatively.
+- **Current guarantees are separated from later milestones.** Durable graph
+  state, explicit inert resume, fresh-attempt recomputation of replay-safe
+  reads, and non-replay of ambiguous mutations have shipped. Automatic
+  isolated writers, reviewed integration, pause/node controls, and exact
+  multi-worker scheduler recovery remain OG-2B2 through OG-5 work.
 
 ### 2026-08-02 — OG-2B1 runtime-selected read fan-out completed
 

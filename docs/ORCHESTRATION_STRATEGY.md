@@ -1,7 +1,7 @@
 # Orchestrated Goal strategy
 
-**Status:** approved product and architecture strategy; OG-2B1, the bounded
-automatic read fan-out kernel, is complete and OG-2B2 is next
+**Status:** approved product and architecture strategy; evidence-gated durable
+execution is available experimentally through OG-2B1, and OG-2B2 is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-02
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -18,12 +18,16 @@ slices after they happen.
 
 ## Objective
 
+**Orchestrated Goal is Collomia's experimental evidence-gated durable
+execution mode.** The product name describes the user experience; the phrase
+describes its runtime contract.
+
 The user-facing promise is:
 
-> Give Collomia an outcome. It builds an inspectable dependency graph,
-> executes only ready work, preserves evidence and repository freshness,
-> recovers from bounded failures, and stops only when the integrated workspace
-> is verified or the goal is explicitly blocked.
+> Give Collomia an outcome. The model proposes an inspectable dependency
+> graph, while the runtime executes only ready work, records evidence against
+> repository state, recovers conservatively from interruption, and stops only
+> when the applicable completion gates pass or the goal is explicitly blocked.
 
 The working product name is **Orchestrated Goal**. Internally it is plan-graph
 execution. The user-facing name emphasizes the outcome rather than the
@@ -34,6 +38,32 @@ This is a good direction for Collomia, but only as a staged, explicit opt-in.
 It should not become a generic agent swarm, a larger permission mode, or a
 default path for ordinary tasks.
 
+## Evidence-gated durable execution
+
+This term is a compact description of three properties, not a claim that the
+model is infallible:
+
+- **Evidence-gated:** a model or worker may propose that work is complete, but
+  it cannot write the proof record or accept its own claim. The runtime applies
+  a typed gate appropriate to the work and rejects missing, failed, or stale
+  evidence.
+- **Durable:** graph generations, attempts, failures, evidence, bounds, and
+  terminal state are stored with the session. Resume starts no work by itself,
+  and recovery distinguishes safe recomputation from an action that may have
+  mutated files or caused an external effect.
+- **Execution:** this is the operational state machine beneath a proposed
+  logical plan. It owns readiness and transition order; it does not grant new
+  tools, permissions, paths, network access, or publication authority.
+
+The shipped OG-1 through OG-2B1 boundary supports one serial primary lane and
+at most two governed automatic read-only workers. It provides durable graph
+truth, fresh machine-observed evidence, conservative invalidation, bounded
+retry/revision, explicit resume, and non-replay of ambiguous mutations. It
+does **not** yet automatically dispatch isolated writers, integrate their
+changes, provide pause or per-node controls, or reproduce a multi-worker
+scheduler exactly after restart. Those are OG-2B2 through OG-5 work and must
+not be described as current behavior.
+
 ## Product decision
 
 Collomia will retain two distinct execution modes:
@@ -41,7 +71,7 @@ Collomia will retain two distinct execution modes:
 | Mode | Contract |
 | --- | --- |
 | Standard | The current model-directed tool loop with evidence-gated completion. It remains the default. |
-| Orchestrated Goal — experimental | A runtime-owned dependency graph coordinates primary work, bounded delegates, integration, recovery, and verification. |
+| Orchestrated Goal — experimental | Evidence-gated durable execution: the model proposes a dependency graph; the runtime owns readiness, attempts, evidence freshness, recovery decisions, and terminal state. Current automatic fan-out is read-only; writers and integration remain staged milestones. |
 
 Planning mode remains separate. `/plan` means read-only analysis and must not
 implicitly start execution or delegation. An orchestrated run begins with an
@@ -120,26 +150,28 @@ The difficult prerequisites are substantially present:
 | Integration | Freshness-bound review, conservative three-way composition, selective rooted publication, ordinary permission checks, and no automatic commit, merge, push, or worktree deletion. |
 | Operations | Stable events, replay, audit attribution, token/cost/time/iteration bounds, cancellation, fail-stop persistence, and operator inspection. |
 
-The remaining prerequisites are not cosmetic:
+The current experiment is still intentionally incomplete:
 
-- an explicit per-session opt-in and reviewable logical-graph proposal;
-- a user-facing graph/node/attempt/evidence inspection and blocker/waiver flow;
-- bounded assignment of dependency-ready read nodes to existing delegates;
-- aggregate graph time/token/cost accounting across primary and workers;
-- conservative freshness and synthesis of returned read-only results;
+- pause and necessary node-level retry/cancel controls;
+- complete aggregate graph time/token/cost/iteration presentation across the
+  primary and automatic workers;
+- comparative evidence that bounded read fan-out improves suitable tasks;
+- an explicit user-owned verification-waiver interaction when meaningful
+  automated verification is unavailable;
 - later isolated-writer eligibility, guarded integration, fresh combined-parent
-  verification, and mutation-safe multi-worker scheduler recovery;
-- a final event/automation compatibility decision for the exposed experiment.
+  verification, and reproducible multi-worker scheduler recovery; and
+- a final event/automation compatibility decision before any headless
+  activation surface.
 
 ## Authority model
 
-Responsibility must remain divided:
+The authority boundary is the central design constraint:
 
-| Participant | Owns |
-| --- | --- |
-| Model | Decomposing the outcome, proposing dependencies and acceptance criteria, interpreting results, selecting a suitable profile, and proposing bounded replans. |
-| Runtime | Readiness, claims, attempts, locks, scheduling, staleness, evidence identity, budgets, cancellation, recovery, and whether structural completion is possible. |
-| User | Starting orchestration, granting authority, resolving material ambiguity or conflicts, approving protected operations, and granting any verification waiver. |
+| Participant | Proposes or decides | Cannot establish by itself |
+| --- | --- | --- |
+| Model | Proposes decomposition, dependencies, acceptance criteria, execution class, result interpretation, suitable profiles, and bounded replans. | Node readiness, a successful machine result, evidence freshness, permission, or terminal completion. |
+| Runtime | Decides readiness, claims, attempts, locks, scheduling, staleness, evidence identity, budgets, cancellation, recovery treatment, and whether structural completion is possible. | User intent, protected-operation approval, broader authority, or a verification waiver. |
+| User | Decides whether to start orchestration, grants ordinary authority, resolves material ambiguity or conflicts, approves protected operations, and may eventually grant an explicit verification waiver. | A graph approval does not manufacture machine evidence or make stale evidence fresh. |
 
 The model is never authoritative about machine state. It may explain that a
 test passed, but only a recorded successful command bound to the current state
@@ -218,7 +250,28 @@ completed attempts as history, validates the new acyclic graph, and invalidates
 affected downstream nodes. A model cannot delete an attempt, rewrite machine
 evidence, or silently expand a running node's scope.
 
-## Runtime-inserted control gates
+## Evidence contract and runtime-inserted control gates
+
+The evidence contract records what the runtime observed, which attempt
+produced it, and which workspace state it describes. It is deliberately
+different from a transcript claim: model-authored text such as “tests passed”
+or “the files are correct” is useful interpretation, but never a substitute
+for the corresponding record.
+
+| Completion claim | Evidence the runtime accepts | Failure prevented |
+| --- | --- | --- |
+| Automatic read-only node | A non-empty bounded result from the claimed worker, at least one successful read tool result, and the same Git workspace token when the claim was state-bound. | Ungrounded summaries, failed-only investigations, or research accepted after the repository changed. |
+| Primary node with no mutation | At least one successful bounded tool result on the active attempt, no unresolved failure, and a tool-free completion proposal for the runtime to assess. | A final-sounding answer closing an attempt with no machine-observed work or an unresolved failure. |
+| Primary node after a potential mutation | Successful tool evidence plus a recognized successful verification command recorded after the mutation against the current Git token and mutation generation; a successful structured write must also have changed that token. | A no-op write, a test from before the edit, a success-masked command, or model-authored “tests passed” prose being used as proof. |
+| Future delegated writer | Declared-scope compliance, fresh child verification, reviewed integration under ordinary permission, and fresh combined-parent verification. | A child's isolated pass being substituted for proof of the integrated workspace. |
+| Blocked node | A typed failure or exact structured reason tied to the node and attempt. | Vague abandonment being reported as either success or an actionable blocker. |
+
+Machine-observed evidence does not always mean command output. Current
+automatic read workers intentionally cannot run commands, so successful read
+tool results are their evidence. Command-backed verification becomes mandatory
+after the graph observes a potential workspace mutation. Evidence is retained
+for inspection, but acceptance expires conservatively when the current Git
+workspace token no longer matches the state it proved.
 
 Write work expands into system-controlled stages:
 
@@ -245,7 +298,9 @@ when a worker returned text. Acceptance means:
 - read-only node: a successful bounded result is attached to the expected
   graph revision and remains fresh enough for its consumers;
 - primary write node: tracked changes are present and fresh combined-workspace
-  verification or a user-authored waiver exists;
+  verification exists, or a user-authored waiver exists after that interaction
+  is implemented; the current experiment blocks when verification is
+  unavailable;
 - delegated write node: scope is valid, child verification is fresh,
   acceptable changes are integrated under ordinary permission, and combined
   parent verification is fresh;
@@ -336,9 +391,10 @@ Verification must be proportionate and state-bound:
 - preserve exact command, exit status, bounded output, state token, and time;
 - never interpret a success-masked compound command as passing evidence.
 
-If meaningful automated verification does not exist, Orchestrated Goal must
-pause for a user-authored waiver. A model-authored `verification_note` can
-explain the situation but cannot waive a graph's write-completion gate.
+If meaningful automated verification does not exist, the current experiment
+blocks honestly. A later milestone may pause for a user-authored waiver. A
+model-authored `verification_note` can explain the situation but cannot waive
+a graph's write-completion gate.
 
 Candidate synthesis has two stages:
 
@@ -352,25 +408,36 @@ A score or recommendation never authorizes application. The first writer
 slice stops at a reviewable candidate and does not automatically choose among
 competing results.
 
-## Recovery contract
+## Recovery guarantees and target contract
 
-Resume must distinguish safe recomputation from dangerous replay:
+The current experimental mode makes these recovery guarantees:
 
-- queued or interrupted read-only work may be restarted explicitly;
-- completed read-only evidence may be reused only while its state token remains
-  fresh;
-- an interrupted mutation is never replayed automatically;
-- a dirty retained worktree remains a candidate awaiting inspection;
-- an integration is not repeated because its final event was interrupted;
-- scheduler order, graph revision, attempts, bounds, and terminal states are
-  durable;
-- resume converts ambiguous mutation state into a blocker requiring
-  reconciliation rather than guessing;
-- cancellation can target a node, a branch of dependents, or the whole graph,
-  and no new action begins after cancellation is acknowledged.
+- graph generation, logical nodes, immutable attempts, evidence, failures,
+  bounds, and terminal state are stored in the durable session;
+- a restored non-terminal graph is inert until the user explicitly runs
+  `/orchestrate resume`;
+- an interrupted replay-safe read is recorded as interrupted and may be
+  recomputed only as a fresh bounded attempt;
+- a potentially mutating or external action crosses a durable write-ahead
+  transition before execution; if persistence fails it does not start, and if
+  its outcome is ambiguous after interruption it becomes a reconciliation
+  blocker and is never automatically replayed;
+- completed evidence is reusable only while its workspace token remains fresh;
+  later Git workspace drift invalidates it conservatively; and
+- unsupported or structurally false saved graph state fails closed rather than
+  being scheduled.
 
-This contract is a prerequisite for calling the mode suitable for unattended
-work.
+These guarantees prevent the most damaging recovery failure: repeating a
+mutation because the runtime cannot tell whether it already happened. Resume
+may repeat safe observation work, but never guesses that an ambiguous side
+effect is safe to run again.
+
+The full target contract additionally retains isolated writer candidates for
+inspection, prevents repeated integration, restores reproducible multi-worker
+scheduler order and aggregate bounds, and adds pause plus node/branch
+cancellation and retry controls. Those guarantees belong to OG-2B2 through
+OG-5. Until they ship and pass the recovery campaign, the current experiment
+must not be described as fully resumable or suitable for unattended work.
 
 ## Operator experience
 
@@ -792,9 +859,9 @@ Every agent or contributor continuing this program must:
 - Active milestone: **none**.
 - Next unblocked milestone: **OG-2B2 — Operator controls and comparative
   evidence**.
-- Active implementation branch or partial patch: **OG-1 and OG-2A are
-  committed on `wave36`; the completed OG-2B1 patch is uncommitted in the
-  current worktree**.
+- Active implementation branch or partial patch: **OG-1, OG-2A, and OG-2B1
+  are committed on `wave36`; no orchestration implementation slice is
+  currently active**.
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane and at most two automatic read-only
   workers for independently ready approved nodes**.
@@ -844,6 +911,16 @@ Every agent or contributor continuing this program must:
 
 ### 2026-08-02
 
+- Use **evidence-gated durable execution** as the architectural description of
+  Orchestrated Goal, not as a separate mode name or an unsupported marketing
+  claim. The model proposes intent and interpretation; the runtime owns
+  operational truth and accepts completion only through the applicable typed,
+  fresh evidence gate.
+- State the shipped recovery guarantees separately from the OG-2B2 through
+  OG-5 target. Current resume can recompute interrupted replay-safe reads in a
+  fresh attempt and will not replay an ambiguous mutation; exact multi-worker
+  scheduler recovery, isolated automatic writers, and guarded integration are
+  not current capabilities.
 - Split OG-2B into a fan-out kernel (OG-2B1) and operator/comparative work
   (OG-2B2), so concurrency safety can ship without claiming unmeasured product
   benefit or incomplete aggregate presentation.

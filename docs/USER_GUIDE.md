@@ -2931,10 +2931,12 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 
 ### Experimental Orchestrated Goal preview
 
-Orchestrated Goal is an opt-in TUI preview for running a bounded,
-runtime-owned dependency graph. It keeps one serial primary lane and can use at
-most two automatic governed workers for independently ready approved
-`read_only` nodes. Standard mode remains the default.
+Orchestrated Goal is Collomia's opt-in TUI preview for **evidence-gated durable
+execution**. The model proposes and interprets a bounded dependency graph; the
+runtime owns readiness, attempts, evidence freshness, recovery treatment, and
+the terminal outcome. It keeps one serial primary lane and can use at most two
+automatic governed workers for independently ready approved `read_only`
+nodes. Standard mode remains the default.
 
 A complete trial looks like this:
 
@@ -2964,6 +2966,16 @@ Every real tool action still passes through the ordinary permission,
 publication, sandbox, cancellation, and budget controls. Writes require fresh
 verification before the graph can finish.
 
+The evidence gate depends on the kind of work. An automatic read needs a
+non-empty bounded result, at least one successful read tool result, and the
+same Git workspace token as its durable claim when one was recorded. After a
+potential mutation, the runtime requires a recognized successful verification
+command tied to the current Git token and mutation generation; a successful
+structured write must also have changed that token. A model-authored “tests
+passed” statement, an earlier test result, a no-op write, or a success-masked
+command is not proof. Later workspace drift invalidates accepted evidence
+conservatively.
+
 When up to two independent `read_only` nodes are ready, the runtime—not the
 model—claims them in stable proposal order and runs them through the existing
 read-only delegated-agent boundary. These workers share the workspace for
@@ -2991,6 +3003,14 @@ views project the active graph rather than showing a stale logical plan.
 visible but deliberately inert after reopening a session; `/orchestrate resume`
 is required to reattach a nonterminal graph. This prevents persisted project or
 session content from silently opting the user back in.
+
+Resume is mutation-safe, but not yet an exact replay of a multi-worker
+schedule. An interrupted replay-safe read may be recomputed only as a fresh
+bounded attempt. A potentially mutating or external action is durably marked
+before it starts; if its outcome is ambiguous after interruption, the graph
+blocks for reconciliation and never automatically repeats it. Exact scheduler
+recovery, isolated automatic writers, and reviewed integration are later
+milestones.
 
 An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
