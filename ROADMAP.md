@@ -128,8 +128,10 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-No wave is currently active; the evidence-gated-goal-completion slice is
-complete.
+No implementation wave is currently active; the evidence-gated-goal-completion
+slice is complete. The next agentic program has an approved durable strategy:
+[Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md). Its strategy-and-continuity
+milestone is complete, but no plan-graph execution capability is implemented.
 See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
@@ -1635,6 +1637,12 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 6 — Multi-agent orchestration
 
+The approved product and architecture contract for the remaining Phase 6 work
+is [Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md). It is the canonical
+cross-session handoff for milestone order, authority boundaries, non-goals,
+evaluation, and graduation. The roadmap remains the source of priority and
+completion status.
+
 - [x] **P0 — Finish agent definitions:** reasoning controls, monetary budgets,
   visibility, and named primary profiles.
 - [x] **P0 — Conservative conflict handling:** serialize known overlapping
@@ -1643,6 +1651,26 @@ claiming enforcement the policy layer does not provide.
 - [ ] **P1 — Plan graph execution:** assign dependency-ready nodes, propagate
   verified evidence, invalidate stale repository assumptions, and re-plan on
   failure. Keep this opt-in until cancellation and review behavior are proven.
+  Deliver it through the strategy's ordered milestones rather than as one
+  large autonomy jump:
+  - [x] **OG-0 — Strategy and continuity:** record the durable charter,
+    cross-agent handoff, milestone order, and safety/graduation contract.
+  - [ ] **OG-1 — Runtime-owned primary graph controller:** add the durable
+    node/attempt state machine, dependency-ready primary execution, bounded
+    replanning, conservative invalidation, and combined-workspace completion
+    gates without adding automatic actors.
+  - [ ] **OG-2 — Experimental Orchestrated Goal:** require explicit
+    per-session opt-in and graph approval; add bounded automatic read-only
+    fan-out while keeping one serial primary write lane.
+  - [ ] **OG-3 — Isolated writer candidates:** dispatch only ready,
+    disjoint-scope writers on a stable base; require child verification and
+    stop at reviewable candidates.
+  - [ ] **OG-4 — Reviewed integration:** add recoverable publication,
+    conservative candidate synthesis, and fresh combined-parent verification
+    before a logical node can finish.
+  - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
+    state without replaying mutations, finish adversarial/performance
+    evaluations, and make an evidence-based graduation decision.
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -1830,24 +1858,32 @@ claiming enforcement the policy layer does not provide.
 ## Recommended next sequence
 
 The setup journey and the first completion controller are now shipped. The
-next agentic work should deepen the controller's decisions before it increases
-the number of actors or permissions:
+[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is approved and
+its continuity milestone is complete. The next agentic work remains deliberately
+primary-only: deepen the controller's decisions before increasing the number
+of actors or permissions.
 
 1. Gather real-session evidence from the completion gate: how often each rule
    intervenes, which verification commands are missed by the conservative
    recognizer, and whether two interventions is the right bound. Keep this
    local and inspectable rather than adding telemetry by default.
-2. Add automatic replanning after a recoverable failure and dependency-ready
-   node selection for the primary agent. A plan step may become ready, stale,
-   or blocked, but executing it still uses the ordinary tool/permission path;
-   this is scheduling state, not new authority.
-3. Only then add opt-in plan-graph delegation using verified results, declared
-   write scopes, dependency readiness, and stale-state invalidation. Before a
-   graph can publish combined work, add explicit combined-parent verification
-   and conservative result comparison without turning a score or a passing
-   child test into permission. `collo audit --actor` is the surface that can
-   say what each participant was permitted to do.
-4. Continue Phase 8 security campaigns in parallel with every feature wave,
+2. Implement **OG-1 — Runtime-owned primary graph controller**. Add automatic
+   replanning after a recoverable failure and dependency-ready node selection
+   for the primary agent, plus durable attempts, conservative invalidation,
+   activity evidence, and combined-workspace completion gates. A step may
+   become ready, stale, or blocked, but execution still uses the ordinary
+   tool/permission path; this is scheduling state, not new authority. OG-1
+   must add no automatic delegated actors.
+3. Expose **OG-2 — Experimental Orchestrated Goal** only after OG-1's exit gate
+   passes. Require explicit per-session opt-in and graph approval, begin with
+   bounded read-only fan-out, keep writes serial in the primary workspace, and
+   compare it with Standard mode in the offline evaluation corpus.
+4. Only then take OG-3 through OG-5: isolated dependency-ready writer
+   candidates, verified/recoverable combined-parent integration, and durable
+   graph recovery. A score, child test, or plan approval never grants
+   permission. `collo audit --actor` remains the surface that can say what each
+   participant was permitted to do.
+5. Continue Phase 8 security campaigns in parallel with every feature wave,
    and take the performance budgets while the prompt-cache wave's measurement
    harness is still warm. **The reliability half has now shipped** — terminal
    loss, power-loss durability, filesystem exhaustion, and a cancellation gate

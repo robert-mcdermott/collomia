@@ -9,7 +9,7 @@ New users and advanced operators should start with the [complete Collomia user g
 
 It combines a streaming agent loop with a polished Bubble Tea TUI, workspace-aware tools, human approval gates (down to individual diff hunks), a parallel multi-agent scheduler with git-worktree isolation, skills, MCP tools, background process management, code intelligence (a symbol index and real language-server diagnostics), and evidence-gated completion that keeps unfinished plans, unverified writes, and recoverable tool failures from being presented as done.
 
-An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`), and [docs/FEATURES.md](docs/FEATURES.md) is the prose summary of the same ground, including the security boundaries and limitations. The concise [roadmap](ROADMAP.md) tracks what is still ahead; the dated implementation record is preserved in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
+An up-to-date, generated list of exactly what is implemented, experimental, or unsupported lives in [docs/CAPABILITIES.md](docs/CAPABILITIES.md) (`collo capabilities`), and [docs/FEATURES.md](docs/FEATURES.md) is the prose summary of the same ground, including the security boundaries and limitations. The concise [roadmap](ROADMAP.md) tracks what is still ahead; the dated implementation record is preserved in [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md). The approved Phase 6 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable design and cross-agent handoff for experimental plan-graph execution; it describes intended work and does not imply that the mode has shipped.
 
 ## Highlights
 

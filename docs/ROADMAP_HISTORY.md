@@ -39,6 +39,29 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-01 — Orchestrated Goal strategy recorded
+
+- **This records a decision, not a shipped capability.** Phase 6 plan-graph
+  execution will proceed as an explicit experimental program named
+  Orchestrated Goal. Standard evidence-gated execution stays the default, and
+  `/plan` remains a separate read-only surface.
+- **The runtime will own execution truth.** The approved design separates the
+  user/model-visible logical plan from durable node attempts, readiness,
+  evidence identity, freshness, budgets, cancellation, recovery, and terminal
+  acceptance. Model-authored prose, a child pass, a candidate score, or plan
+  approval cannot grant permission or substitute for combined-parent
+  verification.
+- **The delivery order is intentionally conservative.** First prove
+  dependency-ready primary-only execution and bounded replanning; then expose
+  opt-in read-only fan-out; then isolated writer candidates; then reviewed
+  integration with fresh combined-parent verification; finally prove
+  mutation-safe recovery and decide whether the mode graduates.
+- **The strategy is a cross-agent handoff.** The complete authority model,
+  state design, non-goals, milestones `OG-0` through `OG-5`, exit gates,
+  evaluations, current handoff, and update protocol live in
+  [`ORCHESTRATION_STRATEGY.md`](ORCHESTRATION_STRATEGY.md). `OG-0` is complete;
+  implementation begins with `OG-1`, and no graph execution is claimed yet.
+
 ### 2026-08-01 — Evidence-gated goal completion
 
 - **A final-sounding sentence is no longer a completion signal.** In primary
