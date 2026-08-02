@@ -17,7 +17,7 @@ without rewriting it.
 | User/project configuration | `schema_version: 1` | A missing version is legacy version 1. Normal loading tolerates unknown fields; strict validation rejects them. A newer version is rejected before activation. |
 | Headless runtime events | `schema: 1` | Optional additive fields are allowed. Unknown event kinds, incompatible required fields, and other schema versions are rejected by `collo replay`. |
 | Durable session records | `schema_version: 1` | New records carry the version on every JSONL line. Legacy records without it are version 1. Unknown optional fields are ignored; a newer version is rejected without appending to the session. |
-| Runtime-owned goal-graph snapshots | `schema: 1` | OG-1/OG-2 snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. |
+| Runtime-owned goal-graph snapshots | `schema: 1` | OG-1/OG-2 snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. OG-2B2a adds optional pause request/reached/reason fields; omission restores as not paused. |
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
@@ -442,7 +442,7 @@ durable activity record, but there is no headless activation flag and no
 persisted setting can opt a process in. A consumer of an experimental graph
 trace must use a binary/schema that knows the kind; an older strict replay
 correctly rejects that trace. The established meanings and required payloads
-of every pre-existing schema-v1 kind remain byte-compatible. OG-2B2 must revisit
+of every pre-existing schema-v1 kind remain byte-compatible. OG-2B2b must revisit
 event versioning before Orchestrated Goal is exposed to headless automation.
 
 `plan.steps[].acceptance` is an additive optional session-plan field. Older

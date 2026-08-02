@@ -843,7 +843,12 @@ model output, an ordinary persisted plan, and saved graph bytes cannot activate
 it. A saved graph is inspectable but inert until `/orchestrate resume`; recovery
 then retains OG-1's non-replay rule. Pre-fan-out schema-1 snapshots restore an
 omitted execution class as serial `primary`, so upgrading cannot cause a saved
-graph to gain automatic actors. Pause, per-node operator controls, complete
+graph to gain automatic actors. A cooperative pause request is durable, starts
+no new graph work, and is reached only after the current provider/tool/read
+iteration completes; cancel remains the immediate stop. Resume clears only
+pause state. A retry is accepted only for a blocked node with remaining budget
+and no unresolved non-replayable action or ambiguous mutation, and it preserves
+the blocked attempt as history. Optional-branch/node cancellation, complete
 primary-plus-worker aggregate presentation, and headless activation remain
 unimplemented.
 

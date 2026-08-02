@@ -26,7 +26,8 @@ agents, provider platforms, and the Model Context Protocol specification.
    evidence-gated durable execution mode, automatic writer candidates,
    combined-parent verification/ranking, exact multi-worker recovery, and
    fuller transcript audit (Phase 6 now has the OG-1 durable controller,
-   explicit TUI-only OG-2A preview, and OG-2B1 bounded automatic read fan-out,
+   explicit TUI-only OG-2A preview, OG-2B1 bounded automatic read fan-out, and
+   OG-2B2a cooperative pause/resume plus safe blocked-node retry,
    in addition to named primary/delegated profiles, portable reasoning,
    durable token/cost budgets, restrictive permissions,
    scheduling/isolation, declared-scope serialization, structured results,
@@ -41,6 +42,39 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-02 — OG-2B2a cooperative pause and safe retry completed
+
+- **Pause is a durable scheduling request, not pretend process suspension.**
+  `/orchestrate pause` is admitted while a turn is running, prevents new graph
+  scheduling, lets the current provider/tool/read iteration finish, and then
+  records the safe boundary. The TUI distinguishes `pausing` from `paused`,
+  and `/orchestrate cancel` remains the immediate whole-graph stop.
+- **Resume preserves runtime truth.** An attached paused graph clears only its
+  pause state, retaining the active attempt, evidence, and bounds. A graph
+  restored after a process/session boundary remains inert until the user
+  explicitly runs `/orchestrate resume`; conservative interrupted-action
+  recovery still applies.
+- **Retry is narrow and history-preserving.** `/orchestrate retry <node-id>`
+  accepts only a blocked node with attempt budget remaining and no unresolved
+  non-replayable action. It preserves the blocked attempt and evidence, clears
+  the graph's blocked outcome, and lets ordinary dependency readiness create a
+  fresh attempt. Exhausted attempts and ambiguous interrupted mutations are
+  rejected.
+- **Node cancellation is intentionally absent.** Every current graph node is
+  required, so cancelling a node would only alias whole-graph cancellation.
+  Per-node cancellation stays deferred until optional branch semantics make it
+  truthful.
+- **Compatibility remains additive and internal.** Pause request/reached/reason
+  fields stay in graph schema 1, and `pause_requested`, `paused`, `resumed`,
+  and `retry_requested` use the existing internal-only `goal.graph.update`
+  lifecycle contract. Standard mode, project opt-in boundaries, permissions,
+  and the automatic-read envelope are unchanged.
+- **The control path is exercised end to end.** Graph, agent, app, and TUI
+  tests cover boundary arrival, active-attempt preservation, attached and
+  restored resume, safe retry, unsafe/exhausted rejection, event states, busy
+  command admission, and status presentation. Full test/race/vet/build and
+  documentation checks passed.
 
 ### 2026-08-02 — Evidence-gated durable execution contract documented
 

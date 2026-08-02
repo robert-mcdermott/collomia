@@ -173,6 +173,46 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 	}
 }
 
+func TestGoalGraphPauseRequestedDuringProviderCallStopsAtNextBoundary(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call != 1 {
+			t.Fatalf("provider called after pause request: %d", call)
+		}
+		if err := graph.RequestPause(context.Background(), "operator requested pause"); err != nil {
+			t.Fatal(err)
+		}
+		return provider.Response{Content: "I will stop at the next boundary."}, nil
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 4, GoalGraph: graph,
+	})
+	var states []string
+	result, err := runtime.Run(t.Context(), "inspect", func(e event.Event) {
+		if e.GoalGraph != nil {
+			states = append(states, e.GoalGraph.State)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.calls != 1 || !strings.Contains(result, "paused at a safe scheduling boundary") {
+		t.Fatalf("calls=%d result=%q", client.calls, result)
+	}
+	requested, reached, _ := graph.PauseState()
+	if !requested || !reached || !slices.Contains(states, "pause_requested") || !slices.Contains(states, "paused") {
+		t.Fatalf("pause requested=%t reached=%t states=%v", requested, reached, states)
+	}
+	if _, _, active := graph.Active(); !active {
+		t.Fatal("cooperative pause discarded the active immutable attempt")
+	}
+}
+
 func TestCompletedGoalGraphRejectsUnrelatedLaterPromptBeforeProviderCall(t *testing.T) {
 	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{})
 	if err != nil {

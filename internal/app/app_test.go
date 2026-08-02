@@ -228,6 +228,89 @@ func TestSavedOrchestratedGoalRemainsInertUntilExplicitResume(t *testing.T) {
 	}
 }
 
+func TestOrchestratedGoalPauseResumeAndSafeRetryControls(t *testing.T) {
+	isolateGlobalFiles(t)
+	approved := &plan.Plan{Goal: "inspect safely", Steps: []plan.Step{{ID: 1, Title: "inspect", Acceptance: []string{"repository evidence is recorded"}}}}
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	status, err := runtime.PauseOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.OrchestratedGoalPhase() != "paused" || !strings.Contains(status, "Scheduling: paused") {
+		t.Fatalf("phase=%q status=%q", runtime.OrchestratedGoalPhase(), status)
+	}
+	status, prompt, runnable, err := runtime.ResumeOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runnable || runtime.OrchestratedGoalPhase() != "running" || !strings.Contains(prompt, "explicitly resumed") || !strings.Contains(status, "Scheduling: active") {
+		t.Fatalf("runnable=%t phase=%q prompt=%q status=%q", runnable, runtime.OrchestratedGoalPhase(), prompt, status)
+	}
+
+	_, attempt, err := runtime.GoalGraph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.GoalGraph.RecordFailure(t.Context(), attempt.ID, goalgraph.Failure{Kind: goalgraph.FailurePermission, Tool: "read_file", Risk: "read", Detail: "permission denied"}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := runtime.GoalGraph.ProposeCompletion(t.Context(), "blocked", "state")
+	if err != nil || decision.Kind != goalgraph.DecisionBlocked {
+		t.Fatalf("decision=%+v err=%v", decision, err)
+	}
+	status, prompt, runnable, err = runtime.RetryOrchestratedNode(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runnable || runtime.OrchestratedGoalPhase() != "running" || !strings.Contains(prompt, "safe bounded retry") || !strings.Contains(status, "attempt 1 · blocked") {
+		t.Fatalf("runnable=%t phase=%q prompt=%q status=%q", runnable, runtime.OrchestratedGoalPhase(), prompt, status)
+	}
+	_, second, err := runtime.GoalGraph.StartNext(t.Context(), "state")
+	if err != nil || second.Number != 2 {
+		t.Fatalf("second attempt=%+v err=%v", second, err)
+	}
+}
+
+func TestSavedPausedGoalRemainsInertAndExplicitResumeClearsPause(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	approved := &plan.Plan{Goal: "inspect safely", Steps: []plan.Step{{ID: 1, Title: "inspect", Acceptance: []string{"repository evidence is recorded"}}}}
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.PauseOrchestratedGoal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	restored, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.GoalGraph != nil {
+		t.Fatal("paused saved graph activated without explicit resume")
+	}
+	status, err := restored.OrchestratedGoalStatus(0)
+	if err != nil || !strings.Contains(status, "Scheduling: paused") || !strings.Contains(status, "Saved graph is inert") {
+		t.Fatalf("saved paused status=%q err=%v", status, err)
+	}
+	status, _, runnable, err := restored.ResumeOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runnable || restored.OrchestratedGoalPhase() != "running" || !strings.Contains(status, "Scheduling: active") {
+		t.Fatalf("runnable=%t phase=%q status=%q", runnable, restored.OrchestratedGoalPhase(), status)
+	}
+}
+
 func TestRuntimeAcceptsVerifiedTransientCredentialWithoutPersistingIt(t *testing.T) {
 	home := isolateGlobalFiles(t)
 	writeGlobalConfig(t, home, `{"default_provider":"hosted","providers":{"hosted":{"type":"openai","base_url":"https://api.example.invalid/v1","api_key_env":"HOSTED_API_KEY","model":"m"}}}`)

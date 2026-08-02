@@ -37,6 +37,9 @@ const (
 	GoalBlocked         GoalOutcome = "blocked"
 	GoalCancelled       GoalOutcome = "cancelled"
 	GoalBudgetExhausted GoalOutcome = "budget_exhausted"
+	// GoalPaused is a nonterminal turn boundary used only by the interactive
+	// Orchestrated Goal controller. It is not a public run.result outcome.
+	GoalPaused GoalOutcome = "paused"
 )
 
 // GoalOutcomeFor reduces every runtime exit to the four goal-level states an

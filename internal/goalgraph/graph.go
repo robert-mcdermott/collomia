@@ -220,6 +220,9 @@ type Snapshot struct {
 	MaxAttemptsPerNode int        `json:"max_attempts_per_node"`
 	MaxRevisions       int        `json:"max_revisions"`
 	ReadFanout         ReadFanout `json:"read_fanout"`
+	PauseRequested     bool       `json:"pause_requested,omitempty"`
+	PauseReached       bool       `json:"pause_reached,omitempty"`
+	PauseReason        string     `json:"pause_reason,omitempty"`
 	Outcome            Outcome    `json:"outcome,omitempty"`
 	Reason             string     `json:"reason,omitempty"`
 	Created            time.Time  `json:"created"`
@@ -315,6 +318,8 @@ var (
 	ErrWorkspaceState    = errors.New("goal graph requires a Git-backed workspace state token before potentially mutating work")
 	ErrStaleRevision     = errors.New("goal graph revision was based on stale state")
 	ErrRevisionExhausted = errors.New("goal graph revision budget exhausted")
+	ErrGraphPaused       = errors.New("goal graph scheduling is paused")
+	ErrUnsafeNodeRetry   = errors.New("goal graph node cannot be retried safely")
 )
 
 func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
@@ -496,6 +501,18 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	}
 	if snapshot.ReadFanout.MaxConcurrent <= 0 || snapshot.ReadFanout.MaxConcurrent > defaultMaxReadConcurrency || snapshot.ReadFanout.MaxStarts <= 0 || snapshot.ReadFanout.Starts < 0 || snapshot.ReadFanout.Starts > snapshot.ReadFanout.MaxStarts || snapshot.ReadFanout.MaxTokens <= 0 || snapshot.ReadFanout.UsedTokens < 0 || snapshot.ReadFanout.MaxWallSeconds <= 0 {
 		return errors.New("goal graph snapshot has invalid read-fan-out bounds or usage")
+	}
+	if snapshot.PauseReached && !snapshot.PauseRequested {
+		return errors.New("goal graph snapshot reached pause without a pause request")
+	}
+	if snapshot.PauseRequested && strings.TrimSpace(snapshot.PauseReason) == "" {
+		return errors.New("goal graph snapshot has a pause request without a reason")
+	}
+	if !snapshot.PauseRequested && strings.TrimSpace(snapshot.PauseReason) != "" {
+		return errors.New("goal graph snapshot has a pause reason without a pause request")
+	}
+	if snapshot.Outcome != "" && snapshot.PauseRequested {
+		return errors.New("terminal goal graph snapshot retains a pause request")
 	}
 	nodes := make(map[int]Node, len(snapshot.Nodes))
 	positions := make(map[int]bool, len(snapshot.Nodes))
@@ -779,6 +796,9 @@ func (g *Graph) StartReadyReads(ctx context.Context, workspaceToken string, limi
 	if g.state.Outcome != "" {
 		return nil, ErrGraphTerminal
 	}
+	if g.state.PauseRequested {
+		return nil, ErrGraphPaused
+	}
 	if g.activeAttemptLocked() != nil {
 		return nil, errors.New("goal graph already has a running attempt")
 	}
@@ -944,6 +964,9 @@ func (g *Graph) StartNext(ctx context.Context, workspaceToken string) (Node, Att
 	defer g.mu.Unlock()
 	if g.state.Outcome != "" {
 		return Node{}, Attempt{}, ErrGraphTerminal
+	}
+	if g.state.PauseRequested {
+		return Node{}, Attempt{}, ErrGraphPaused
 	}
 	if g.activeAttemptLocked() != nil {
 		return Node{}, Attempt{}, errors.New("goal graph already has a running attempt")
@@ -1418,6 +1441,132 @@ func (g *Graph) Recover(ctx context.Context, workspaceToken string) error {
 	return g.persistLocked(ctx, true)
 }
 
+// RequestPause durably prevents the graph from starting another provider or
+// scheduler iteration. It is cooperative: an iteration already in flight may
+// finish, and the agent acknowledges the safe boundary with ReachPause.
+func (g *Graph) RequestPause(ctx context.Context, reason string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return ErrGraphTerminal
+	}
+	if g.state.PauseRequested {
+		return nil
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "paused explicitly by the user"
+	}
+	g.state.PauseRequested = true
+	g.state.PauseReached = g.activeAttemptLocked() == nil
+	g.state.PauseReason = reason
+	state := "pause_requested"
+	detail := reason + "; the current iteration may finish before scheduling stops"
+	if g.state.PauseReached {
+		state = "paused"
+		detail = reason + "; no new work will start until explicit resume"
+	}
+	g.queueUpdateLocked(0, "", state, detail)
+	return g.persistLocked(ctx, true)
+}
+
+// ReachPause records that the running agent reached a boundary at which no
+// provider request, automatic read wave, or primary action is in flight.
+func (g *Graph) ReachPause(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.state.PauseRequested {
+		return errors.New("goal graph has no pause request")
+	}
+	if g.state.Outcome != "" {
+		return ErrGraphTerminal
+	}
+	if g.state.PauseReached {
+		return nil
+	}
+	for i := range g.state.Attempts {
+		attempt := &g.state.Attempts[i]
+		if attempt.State == AttemptRunning && attempt.PendingAction != nil {
+			return errors.New("goal graph cannot reach a pause boundary while an action is pending")
+		}
+	}
+	g.state.PauseReached = true
+	g.queueUpdateLocked(0, "", "paused", g.state.PauseReason+"; safe scheduling boundary reached")
+	return g.persistLocked(ctx, true)
+}
+
+// Resume clears a durable pause without changing attempts, evidence, bounds,
+// permissions, or terminal state. The caller must explicitly start the next
+// agent turn after this transition.
+func (g *Graph) Resume(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return ErrGraphTerminal
+	}
+	if !g.state.PauseRequested {
+		return errors.New("goal graph is not paused")
+	}
+	reason := g.state.PauseReason
+	g.state.PauseRequested, g.state.PauseReached, g.state.PauseReason = false, false, ""
+	g.queueUpdateLocked(0, "", "resumed", reason)
+	return g.persistLocked(ctx, true)
+}
+
+// PauseState returns the durable operator-control state without activating or
+// scheduling the graph.
+func (g *Graph) PauseState() (requested, reached bool, reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.state.PauseRequested, g.state.PauseReached, g.state.PauseReason
+}
+
+// RetryNode reopens one safely retryable blocker as a fresh bounded attempt.
+// It preserves the blocked attempt and evidence. An ambiguous non-replayable
+// action is never converted into retryable work by an operator command.
+func (g *Graph) RetryNode(ctx context.Context, nodeID int, reason string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != OutcomeBlocked {
+		return errors.New("goal graph is not blocked")
+	}
+	node := g.nodeLocked(nodeID)
+	if node == nil {
+		return fmt.Errorf("goal graph has no node %d", nodeID)
+	}
+	if node.State != NodeBlocked {
+		return fmt.Errorf("goal graph node %d is %s, not blocked", nodeID, node.State)
+	}
+	if len(node.AttemptIDs) >= g.state.MaxAttemptsPerNode {
+		return fmt.Errorf("goal graph node %d exhausted its %d-attempt bound", nodeID, g.state.MaxAttemptsPerNode)
+	}
+	if len(node.AttemptIDs) == 0 {
+		return fmt.Errorf("goal graph node %d has no blocked attempt to retry", nodeID)
+	}
+	blocked := g.attemptLocked(node.AttemptIDs[len(node.AttemptIDs)-1])
+	if blocked == nil || (blocked.State != AttemptBlocked && blocked.State != AttemptInterrupted) {
+		return fmt.Errorf("goal graph node %d has no immutable blocked attempt", nodeID)
+	}
+	if blocked.PendingAction != nil && blocked.PendingAction.NonReplayable {
+		return fmt.Errorf("%w: node %d retains ambiguous action %s", ErrUnsafeNodeRetry, nodeID, blocked.PendingAction.Tool)
+	}
+	for _, failure := range blocked.Failures {
+		if !failure.Resolved && failure.Kind == FailureInterruptedAction {
+			return fmt.Errorf("%w: node %d has an interrupted action requiring reconciliation", ErrUnsafeNodeRetry, nodeID)
+		}
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "retry requested explicitly by the user"
+	}
+	g.state.Outcome, g.state.Reason = "", ""
+	node.State, node.ActiveAttemptID, node.Reason = NodeRetryable, "", reason
+	g.queueUpdateLocked(node.ID, blocked.ID, "retry_requested", reason)
+	g.refreshReadyLocked("operator-approved retry is dependency-ready")
+	g.reduceOutcomeLocked()
+	return g.persistLocked(ctx, true)
+}
+
 func (g *Graph) Cancel(ctx context.Context, reason string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1433,6 +1582,7 @@ func (g *Graph) Cancel(ctx context.Context, reason string) error {
 		}
 	}
 	g.state.Outcome, g.state.Reason = OutcomeCancelled, strings.TrimSpace(reason)
+	g.clearPauseLocked()
 	g.queueUpdateLocked(0, "", string(OutcomeCancelled), g.state.Reason)
 	return g.persistLocked(ctx, true)
 }
@@ -1452,6 +1602,7 @@ func (g *Graph) ExhaustBudget(ctx context.Context, reason string) error {
 		}
 	}
 	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, strings.TrimSpace(reason)
+	g.clearPauseLocked()
 	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
 	return g.persistLocked(ctx, true)
 }
@@ -1461,6 +1612,13 @@ func (g *Graph) Render() string {
 	defer g.mu.Unlock()
 	var b strings.Builder
 	fmt.Fprintf(&b, "Runtime-owned goal graph %s · generation %d\nGoal: %s\n", g.state.ID, g.state.Generation, g.state.Goal)
+	if g.state.PauseRequested {
+		state := "requested; current iteration may still be finishing"
+		if g.state.PauseReached {
+			state = "reached; no new work will start"
+		}
+		fmt.Fprintf(&b, "Scheduling pause: %s — %s\n", state, g.state.PauseReason)
+	}
 	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
 	for _, node := range g.state.Nodes {
 		fmt.Fprintf(&b, "%s %d. %s · %s · %s", marks[node.State], node.ID, node.Title, node.State, node.Execution)
@@ -1506,6 +1664,15 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Experimental Orchestrated Goal\nGraph: %s · generation %d\nGoal: %s\n", g.state.ID, g.state.Generation, g.state.Goal)
+	if g.state.PauseRequested {
+		state := "requested · current iteration may still be finishing"
+		if g.state.PauseReached {
+			state = "paused · no new work will start"
+		}
+		fmt.Fprintf(&b, "Scheduling: %s — %s\n", state, bounded(g.state.PauseReason, 600))
+	} else {
+		b.WriteString("Scheduling: active\n")
+	}
 	fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", maxGraphNodes, g.state.MaxAttemptsPerNode, g.state.MaxRevisions)
 	fmt.Fprintf(&b, "Read fan-out: %d/%d starts · %d/%d tokens · at most %d concurrent · %ds wall bound\n", g.state.ReadFanout.Starts, g.state.ReadFanout.MaxStarts, g.state.ReadFanout.UsedTokens, g.state.ReadFanout.MaxTokens, g.state.ReadFanout.MaxConcurrent, g.state.ReadFanout.MaxWallSeconds)
 	b.WriteString("Execution: dependency-ready read_only nodes may use bounded automatic workers; one serial primary lane owns primary work and every parent-workspace write.\n")
@@ -1660,6 +1827,7 @@ func (g *Graph) reduceOutcomeLocked() {
 	if allDone {
 		g.state.Outcome = OutcomeDone
 		g.state.Reason = "all required nodes passed runtime acceptance gates"
+		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeDone), g.state.Reason)
 		return
 	}
@@ -1668,13 +1836,19 @@ func (g *Graph) reduceOutcomeLocked() {
 		// is materially blocked cannot make the approved goal complete and only
 		// spends authority/budget after the truthful terminal state is known.
 		g.state.Outcome, g.state.Reason = OutcomeBlocked, strings.Join(blockers, "; ")
+		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeBlocked), g.state.Reason)
 		return
 	}
 	if len(exhausted) > 0 && !running {
 		g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, strings.Join(exhausted, "; ")
+		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
 	}
+}
+
+func (g *Graph) clearPauseLocked() {
+	g.state.PauseRequested, g.state.PauseReached, g.state.PauseReason = false, false, ""
 }
 
 func (g *Graph) blockNodeLocked(node *Node, reason string) {

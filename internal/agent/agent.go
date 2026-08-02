@@ -335,6 +335,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		a.applySteering()
 		if a.graphEnabled() {
 			if graphErr := a.ensureGoalAttempt(ctx, send); graphErr != nil {
+				if errors.Is(graphErr, goalgraph.ErrGraphPaused) {
+					a.endTurn(ctx, send, iteration, GoalPaused)
+					return "Orchestrated Goal paused at a safe scheduling boundary. Use /orchestrate resume to continue.", nil
+				}
 				graphErr = reportError(send, graphErr)
 				a.endTurn(ctx, send, iteration, GoalOutcomeFor(graphErr))
 				return "", graphErr
@@ -528,6 +532,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 					}
 					if decision.Kind == goalgraph.DecisionAccepted || decision.Kind == goalgraph.DecisionRetry {
 						if graphErr := a.ensureGoalAttempt(ctx, send); graphErr != nil {
+							if errors.Is(graphErr, goalgraph.ErrGraphPaused) {
+								a.endTurn(ctx, send, iteration, GoalPaused)
+								return "Orchestrated Goal paused at a safe scheduling boundary. Use /orchestrate resume to continue.", nil
+							}
 							graphErr = reportError(send, graphErr)
 							return response.Content, graphErr
 						}

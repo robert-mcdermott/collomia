@@ -490,6 +490,18 @@ func OrchestratedExecutionPrompt(goal string) string {
 	return fmt.Sprintf("The user explicitly approved the visible Orchestrated Goal proposal for this session. Execute the runtime-owned graph now and pursue this outcome: %s", strings.TrimSpace(goal))
 }
 
+// OrchestratedResumePrompt is conversational context only. Resume authority
+// comes from the explicit runtime transition that clears the durable pause.
+func OrchestratedResumePrompt(goal string) string {
+	return fmt.Sprintf("The user explicitly resumed the paused Orchestrated Goal. Continue the existing runtime-owned graph from its preserved attempts and evidence, pursuing this outcome: %s", strings.TrimSpace(goal))
+}
+
+// OrchestratedRetryPrompt tells the primary agent why a terminal blocker was
+// reopened without allowing prose to rewrite the preserved blocked attempt.
+func OrchestratedRetryPrompt(goal string, nodeID int) string {
+	return fmt.Sprintf("The user explicitly requested one safe bounded retry of Orchestrated Goal node %d. Continue the runtime-owned graph from its preserved attempts and evidence, pursuing this outcome: %s", nodeID, strings.TrimSpace(goal))
+}
+
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
 // a read-only pass over pending changes with findings tied to files/lines.
 // A ref of "-" (or "") reviews uncommitted changes; instructions, when
@@ -889,11 +901,25 @@ func (r *Runtime) ResumeOrchestratedGoal(ctx context.Context) (status, prompt st
 	r.orchestrationMu.Lock()
 	defer r.orchestrationMu.Unlock()
 	if r.GoalGraph != nil {
-		return "", "", false, errors.New("an Orchestrated Goal graph is already attached")
+		requested, _, _ := r.GoalGraph.PauseState()
+		if !requested {
+			return "", "", false, errors.New("the attached Orchestrated Goal graph is not paused")
+		}
+		if err := r.GoalGraph.Resume(ctx); err != nil {
+			return "", "", false, err
+		}
+		r.logGoalGraphUpdates()
+		status, _ = r.GoalGraph.Inspect(0)
+		return status, OrchestratedResumePrompt(r.GoalGraph.Snapshot().Goal), true, nil
 	}
 	graph, err := restoreGoalGraph(ctx, r.Session, r.goalStateToken)
 	if err != nil {
 		return "", "", false, err
+	}
+	if requested, _, _ := graph.PauseState(); requested {
+		if err := graph.Resume(ctx); err != nil {
+			return "", "", false, err
+		}
 	}
 	if err := r.Agent.SetGoalGraph(graph); err != nil {
 		return "", "", false, err
@@ -905,7 +931,49 @@ func (r *Runtime) ResumeOrchestratedGoal(ctx context.Context) (status, prompt st
 	r.logGoalGraphUpdates()
 	status, _ = graph.Inspect(0)
 	outcome, _ := graph.Outcome()
-	return status, OrchestratedExecutionPrompt(graph.Snapshot().Goal), outcome == "", nil
+	return status, OrchestratedResumePrompt(graph.Snapshot().Goal), outcome == "", nil
+}
+
+// PauseOrchestratedGoal requests a cooperative durable pause. It never
+// suspends an OS process or cancels the current iteration; the agent records
+// the reached boundary before another provider/scheduler iteration starts.
+func (r *Runtime) PauseOrchestratedGoal(ctx context.Context) (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph == nil {
+		return "", errors.New("there is no attached Orchestrated Goal graph to pause")
+	}
+	if err := r.GoalGraph.RequestPause(ctx, "paused explicitly by the user"); err != nil {
+		return "", err
+	}
+	r.logGoalGraphUpdates()
+	return r.GoalGraph.Inspect(0)
+}
+
+// RetryOrchestratedNode reopens only a runtime-approved safe blocker. The
+// graph rejects exhausted attempts and ambiguous interrupted mutations.
+func (r *Runtime) RetryOrchestratedNode(ctx context.Context, nodeID int) (status, prompt string, runnable bool, err error) {
+	if r == nil || r.Agent == nil {
+		return "", "", false, errors.New("runtime is unavailable")
+	}
+	if nodeID <= 0 {
+		return "", "", false, errors.New("orchestrated goal node id must be a positive integer")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph == nil {
+		return "", "", false, errors.New("there is no attached Orchestrated Goal graph to retry")
+	}
+	if err := r.GoalGraph.RetryNode(ctx, nodeID, "retry requested explicitly by the user"); err != nil {
+		return "", "", false, err
+	}
+	r.logGoalGraphUpdates()
+	status, _ = r.GoalGraph.Inspect(nodeID)
+	requested, _, _ := r.GoalGraph.PauseState()
+	return status, OrchestratedRetryPrompt(r.GoalGraph.Snapshot().Goal, nodeID), !requested, nil
 }
 
 // CancelOrchestratedGoal cancels either the unapproved process-local proposal
@@ -1001,6 +1069,12 @@ func (r *Runtime) OrchestratedGoalPhase() string {
 	if r.GoalGraph != nil {
 		if outcome, _ := r.GoalGraph.Outcome(); outcome != "" {
 			return string(outcome)
+		}
+		if requested, reached, _ := r.GoalGraph.PauseState(); requested {
+			if reached {
+				return "paused"
+			}
+			return "pausing"
 		}
 		return "running"
 	}

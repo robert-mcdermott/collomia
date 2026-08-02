@@ -208,6 +208,19 @@ func TestBusyComposerSteersTheTurnAndRunsOnlyLocalCommands(t *testing.T) {
 	}
 }
 
+func TestBusyOrchestrationCommandsAllowPauseButNotRetryOrResume(t *testing.T) {
+	for _, command := range []string{"/orchestrate pause", "/orchestrate status", "/orchestrate status 2", "/orchestrate cancel"} {
+		if !busySlashAllowed(command) {
+			t.Fatalf("busy command %q was not allowed", command)
+		}
+	}
+	for _, command := range []string{"/orchestrate resume", "/orchestrate retry 2"} {
+		if busySlashAllowed(command) {
+			t.Fatalf("busy command %q should wait for the current turn boundary", command)
+		}
+	}
+}
+
 func TestBusyAgentSteeringCommandQueuesGuidance(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true

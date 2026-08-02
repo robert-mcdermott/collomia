@@ -453,6 +453,169 @@ func TestPermissionDenialBlocksInsteadOfBeingRoutedAround(t *testing.T) {
 	}
 }
 
+func TestGraphPauseStopsSchedulingAtDurableBoundaryAndResumesSameAttempt(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect"}}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RequestPause(t.Context(), "operator requested a checkpoint"); err != nil {
+		t.Fatal(err)
+	}
+	requested, reached, reason := graph.PauseState()
+	if !requested || reached || !strings.Contains(reason, "checkpoint") {
+		t.Fatalf("pause state requested=%t reached=%t reason=%q", requested, reached, reason)
+	}
+	if _, _, err := graph.StartNext(t.Context(), "state"); !errors.Is(err, ErrGraphPaused) {
+		t.Fatalf("paused start error=%v", err)
+	}
+	if err := graph.ReachPause(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, reached, _ := graph.PauseState(); !reached {
+		t.Fatal("safe pause boundary was not retained")
+	}
+	if err := ValidateSnapshot(graph.Snapshot()); err != nil {
+		t.Fatalf("paused snapshot is invalid: %v", err)
+	}
+	if err := graph.Resume(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if requested, reached, reason := graph.PauseState(); requested || reached || reason != "" {
+		t.Fatalf("resumed pause state requested=%t reached=%t reason=%q", requested, reached, reason)
+	}
+	node, resumed, active := graph.Active()
+	if !active || node.ID != 1 || resumed.ID != attempt.ID {
+		t.Fatalf("resume replaced the active attempt: node=%+v attempt=%+v active=%t", node, resumed, active)
+	}
+	if len(fixture.snapshots) < 4 || !fixture.durable[len(fixture.durable)-1] {
+		t.Fatal("pause/resume transitions were not persisted durably")
+	}
+}
+
+func TestGraphPauseBeforeWorkStartsIsImmediatelyReached(t *testing.T) {
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect", Execution: ExecutionReadOnly}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RequestPause(t.Context(), "pause before scheduling"); err != nil {
+		t.Fatal(err)
+	}
+	if requested, reached, _ := graph.PauseState(); !requested || !reached {
+		t.Fatalf("idle pause requested=%t reached=%t", requested, reached)
+	}
+	if _, err := graph.StartReadyReads(t.Context(), "state", 2); !errors.Is(err, ErrGraphPaused) {
+		t.Fatalf("paused read scheduling error=%v", err)
+	}
+}
+
+func TestGraphPauseBoundaryRejectsPendingActionAndMalformedSnapshot(t *testing.T) {
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "read_file", Risk: "read", Summary: "inspect"}, "state"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RequestPause(t.Context(), "pause after the read"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.ReachPause(t.Context()); err == nil || !strings.Contains(err.Error(), "action is pending") {
+		t.Fatalf("pending-action pause error=%v", err)
+	}
+
+	snapshot := graph.Snapshot()
+	snapshot.PauseRequested = false
+	snapshot.PauseReached = false
+	if err := ValidateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "pause reason") {
+		t.Fatalf("orphaned pause-reason validation error=%v", err)
+	}
+	snapshot.PauseRequested = true
+	snapshot.PauseReason = ""
+	if err := ValidateSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "without a reason") {
+		t.Fatalf("missing pause-reason validation error=%v", err)
+	}
+}
+
+func TestRetryNodeReopensSafeBlockerAndPreservesAttempt(t *testing.T) {
+	graph, err := New(Spec{Goal: "write", Nodes: []NodeSpec{{ID: 1, Title: "write"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, first, err := graph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RecordFailure(t.Context(), first.ID, Failure{Kind: FailurePermission, Tool: "write_file", Risk: "write", Detail: "permission denied"}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := graph.ProposeCompletion(t.Context(), "blocked", "state")
+	if err != nil || decision.Kind != DecisionBlocked {
+		t.Fatalf("decision=%+v err=%v", decision, err)
+	}
+	if err := graph.RetryNode(t.Context(), 1, "permission policy changed"); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, reason := graph.Outcome(); outcome != "" || reason != "" {
+		t.Fatalf("retry retained terminal outcome=%q reason=%q", outcome, reason)
+	}
+	_, second, err := graph.StartNext(t.Context(), "state")
+	if err != nil || second.Number != 2 || second.ID == first.ID {
+		t.Fatalf("fresh retry attempt=%+v err=%v", second, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Attempts[0].State != AttemptBlocked || snapshot.Attempts[0].Failures[0].Detail != "permission denied" {
+		t.Fatalf("blocked attempt was rewritten: %+v", snapshot.Attempts[0])
+	}
+}
+
+func TestRetryNodeRefusesAmbiguousMutationAndExhaustedBound(t *testing.T) {
+	graph, err := New(Spec{Goal: "publish", Nodes: []NodeSpec{{ID: 1, Title: "publish"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "run_command", Risk: "execute", Summary: "publish", PotentialMutation: true, NonReplayable: true}, "before"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Restore(graph.Snapshot(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Recover(t.Context(), "before"); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.RetryNode(t.Context(), 1, "try again"); !errors.Is(err, ErrUnsafeNodeRetry) {
+		t.Fatalf("ambiguous retry error=%v", err)
+	}
+
+	exhausted, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect"}}}, 1, Options{MaxAttemptsPerNode: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, only, _ := exhausted.StartNext(t.Context(), "state")
+	if err := exhausted.RecordFailure(t.Context(), only.ID, Failure{Kind: FailurePermission, Detail: "denied"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exhausted.ProposeCompletion(t.Context(), "blocked", "state"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exhausted.RetryNode(t.Context(), 1, "try again"); err == nil || !strings.Contains(err.Error(), "attempt bound") {
+		t.Fatalf("exhausted retry error=%v", err)
+	}
+}
+
 func TestExternalWorkspaceDriftStalesRecordedDoneNodes(t *testing.T) {
 	fixture := &graphFixture{}
 	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "one"}, {ID: 2, Title: "two"}}}, 1, fixture.options())

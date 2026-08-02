@@ -138,6 +138,18 @@ func TestOrchestratedGoalPreviewIsVisibleAndInspectable(t *testing.T) {
 	if last.role != "panel" || !strings.Contains(last.content, "Attempts and evidence") {
 		t.Fatalf("node inspection panel=%+v", last)
 	}
+	cancelled := false
+	m.busy = true
+	m.cancel = func() { cancelled = true }
+	if quit, cmd := (&m).slash("/orchestrate pause"); quit || cmd != nil {
+		t.Fatalf("pause should be a local cooperative control: quit=%t cmd=%v", quit, cmd)
+	}
+	if cancelled || runtime.OrchestratedGoalPhase() != "paused" {
+		t.Fatalf("pause cancelled current work=%t phase=%q", cancelled, runtime.OrchestratedGoalPhase())
+	}
+	if bar := ansi.Strip(m.renderStatusBar()); !strings.Contains(bar, "GOAL ‖ · EXP") {
+		t.Fatalf("paused graph is not visible in the status bar: %q", bar)
+	}
 }
 
 func TestSessionTabShowsWorkspaceHealthAndRecentActivity(t *testing.T) {
@@ -302,6 +314,47 @@ func TestPaletteDismissAndTabComplete(t *testing.T) {
 	m = typeKeys(t, m, "y")
 	if m.paletteOn {
 		t.Fatal("palette should stay dismissed after esc while typing arguments")
+	}
+}
+
+func TestOrchestratePaletteShowsControlsAndKeepsRetryNodeInput(t *testing.T) {
+	m := newTestModel(t)
+	m = typeKeys(t, m, "/orchestrate ")
+	if !m.paletteOn {
+		t.Fatal("orchestrate argument palette is not visible")
+	}
+	seen := map[string]bool{}
+	for _, entry := range m.palette {
+		seen[entry.name] = true
+	}
+	for _, want := range []string{"/orchestrate pause", "/orchestrate resume", "/orchestrate retry"} {
+		if !seen[want] {
+			t.Fatalf("orchestrate palette is missing %q: %+v", want, m.palette)
+		}
+	}
+
+	m = newTestModel(t)
+	m = typeKeys(t, m, "/orchestrate ret")
+	if !m.paletteOn || len(m.palette) != 1 || m.palette[0].name != "/orchestrate retry" {
+		t.Fatalf("retry completion=%+v", m.palette)
+	}
+	m = press(t, m, tea.KeyEnter)
+	if got := m.input.Value(); got != "/orchestrate retry " {
+		t.Fatalf("retry completion should wait for a node id, got %q", got)
+	}
+
+	m = newTestModel(t)
+	m.busy = true
+	m = typeKeys(t, m, "/orchestrate ")
+	seen = map[string]bool{}
+	for _, entry := range m.palette {
+		seen[entry.name] = true
+	}
+	if !seen["/orchestrate pause"] {
+		t.Fatalf("busy palette should expose cooperative pause: %+v", m.palette)
+	}
+	if seen["/orchestrate retry"] || seen["/orchestrate resume"] {
+		t.Fatalf("busy palette exposed controls that start a turn: %+v", m.palette)
 	}
 }
 

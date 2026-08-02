@@ -206,6 +206,16 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			m.addPanel("Orchestrated Goal approved · experimental", status)
 			return false, m.startTurn(prompt)
 		}
+		if len(args) == 1 && strings.EqualFold(args[0], "pause") {
+			status, err := m.runtime.PauseOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal pause requested · experimental", status)
+			break
+		}
 		if len(args) == 1 && strings.EqualFold(args[0], "resume") {
 			status, prompt, runnable, err := m.runtime.ResumeOrchestratedGoal(context.Background())
 			if err != nil {
@@ -214,6 +224,24 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			}
 			m.reloadActivities()
 			m.addPanel("Orchestrated Goal resumed · experimental", status)
+			if runnable {
+				return false, m.startTurn(prompt)
+			}
+			break
+		}
+		if len(args) == 2 && strings.EqualFold(args[0], "retry") {
+			nodeID, convErr := strconv.Atoi(args[1])
+			if convErr != nil || nodeID <= 0 {
+				m.addError(fmt.Errorf("usage: /orchestrate retry <node-id>"))
+				break
+			}
+			status, prompt, runnable, err := m.runtime.RetryOrchestratedNode(context.Background(), nodeID)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal node retry · experimental", status)
 			if runnable {
 				return false, m.startTurn(prompt)
 			}
@@ -542,7 +570,7 @@ func busySlashAllowed(line string) bool {
 	case "/help", "/status", "/context", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
 	case "/orchestrate":
-		return len(fields) == 1 || (len(fields) == 2 && (strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "cancel"))) || (len(fields) == 3 && strings.EqualFold(fields[1], "status"))
+		return len(fields) == 1 || (len(fields) == 2 && (strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "pause") || strings.EqualFold(fields[1], "cancel"))) || (len(fields) == 3 && strings.EqualFold(fields[1], "status"))
 	case "/config":
 		// Both forms only read local state, so neither belongs behind the
 		// running-turn gate.

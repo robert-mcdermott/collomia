@@ -11,6 +11,9 @@ type commandInfo struct {
 	// complete marks palette entries whose name is a full command line
 	// (argument completion) rather than a command awaiting arguments.
 	complete bool
+	// needsArg keeps a subcommand suggestion in the composer instead of
+	// executing it, so a required second argument can be entered.
+	needsArg bool
 }
 
 var slashCommands = []commandInfo{
@@ -21,7 +24,7 @@ var slashCommands = []commandInfo{
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
-	{name: "/orchestrate", args: "[goal|approve|status [node]|cancel|resume]", desc: "explicit experimental goal proposal and execution"},
+	{name: "/orchestrate", args: "[goal|approve|status [node]|pause|resume|retry node|cancel]", desc: "explicit experimental goal proposal and execution"},
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
@@ -97,8 +100,10 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 		candidates = []candidate{
 			{"approve", "approve the fresh visible proposal and execute once"},
 			{"status", "inspect proposal or runtime graph state"},
+			{"pause", "pause at the next safe scheduling boundary"},
+			{"resume", "resume a paused graph or reattach a saved graph"},
+			{"retry", "safely retry an eligible blocked node"},
 			{"cancel", "cancel the proposal or active graph"},
-			{"resume", "explicitly reattach a saved graph"},
 		}
 	case "/model":
 		for _, name := range m.runtime.Config.ProviderNames() {
@@ -130,7 +135,8 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 	var out []commandInfo
 	for _, c := range candidates {
 		if _, ok := fuzzyScore(partial, c.value); ok {
-			out = append(out, commandInfo{name: command + " " + c.value, desc: c.desc, complete: true})
+			needsArg := command == "/orchestrate" && c.value == "retry"
+			out = append(out, commandInfo{name: command + " " + c.value, desc: c.desc, complete: !needsArg, needsArg: needsArg})
 		}
 	}
 	return out

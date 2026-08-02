@@ -490,6 +490,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				fields := strings.Fields(m.input.Value())
 				chosen := m.palette[m.paletteSel]
+				if chosen.needsArg {
+					m.setComposerValue(chosen.name + " ")
+					if m.updatePalette() {
+						m.layout()
+					}
+					m.refresh()
+					return m, nil
+				}
 				line := chosen.name
 				// Argument completions are already full command lines; for
 				// bare commands, keep whatever arguments were typed.
@@ -1568,6 +1576,10 @@ func (m Model) renderStatusBar() string {
 		label := "GOAL · EXP"
 		if phase == "proposal" {
 			label = "GOAL? · EXP"
+		} else if phase == "paused" {
+			label = "GOAL ‖ · EXP"
+		} else if phase == "pausing" {
+			label = "GOAL… · EXP"
 		}
 		segments = append(segments, statusSegment{text: badge(label, m.theme.Warning), drop: 25})
 	}

@@ -76,6 +76,15 @@ func (a *Agent) ensureGoalAttempt(ctx context.Context, send Emit) error {
 	if outcome, reason := a.goalGraph.Outcome(); outcome != "" {
 		return goalGraphTerminalError(outcome, reason)
 	}
+	if requested, reached, _ := a.goalGraph.PauseState(); requested {
+		if !reached {
+			if err := a.goalGraph.ReachPause(ctx); err != nil {
+				return err
+			}
+			a.emitGoalUpdates(send)
+		}
+		return goalgraph.ErrGraphPaused
+	}
 	if _, _, active := a.goalGraph.Active(); active {
 		return nil
 	}

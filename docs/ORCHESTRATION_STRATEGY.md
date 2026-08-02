@@ -1,7 +1,7 @@
 # Orchestrated Goal strategy
 
 **Status:** approved product and architecture strategy; evidence-gated durable
-execution is available experimentally through OG-2B1, and OG-2B2 is next
+execution is available experimentally through OG-2B2a, and OG-2B2b is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-02
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -55,14 +55,14 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-2B1 boundary supports one serial primary lane and
+The shipped OG-1 through OG-2B2a boundary supports one serial primary lane and
 at most two governed automatic read-only workers. It provides durable graph
 truth, fresh machine-observed evidence, conservative invalidation, bounded
-retry/revision, explicit resume, and non-replay of ambiguous mutations. It
-does **not** yet automatically dispatch isolated writers, integrate their
-changes, provide pause or per-node controls, or reproduce a multi-worker
-scheduler exactly after restart. Those are OG-2B2 through OG-5 work and must
-not be described as current behavior.
+retry/revision, cooperative pause and resume, safe retry of eligible blocked
+nodes, and non-replay of ambiguous mutations. It does **not** yet automatically
+dispatch isolated writers, integrate their changes, cancel an optional branch
+or node, or reproduce a multi-worker scheduler exactly after restart. Those
+are OG-2B2b through OG-5 work and must not be described as current behavior.
 
 ## Product decision
 
@@ -152,10 +152,10 @@ The difficult prerequisites are substantially present:
 
 The current experiment is still intentionally incomplete:
 
-- pause and necessary node-level retry/cancel controls;
 - complete aggregate graph time/token/cost/iteration presentation across the
   primary and automatic workers;
 - comparative evidence that bounded read fan-out improves suitable tasks;
+- optional-branch semantics that would make node-level cancellation useful;
 - an explicit user-owned verification-waiver interaction when meaningful
   automated verification is unavailable;
 - later isolated-writer eligibility, guarded integration, fresh combined-parent
@@ -416,6 +416,9 @@ The current experimental mode makes these recovery guarantees:
   bounds, and terminal state are stored in the durable session;
 - a restored non-terminal graph is inert until the user explicitly runs
   `/orchestrate resume`;
+- a cooperative pause request is durable, starts no new graph work, and becomes
+  fully paused at the next provider/scheduler boundary after the current
+  iteration finishes; an in-process resume retains the same active attempt;
 - an interrupted replay-safe read is recorded as interrupted and may be
   recomputed only as a fresh bounded attempt;
 - a potentially mutating or external action crosses a durable write-ahead
@@ -434,10 +437,10 @@ effect is safe to run again.
 
 The full target contract additionally retains isolated writer candidates for
 inspection, prevents repeated integration, restores reproducible multi-worker
-scheduler order and aggregate bounds, and adds pause plus node/branch
-cancellation and retry controls. Those guarantees belong to OG-2B2 through
-OG-5. Until they ship and pass the recovery campaign, the current experiment
-must not be described as fully resumable or suitable for unattended work.
+scheduler order and aggregate bounds, and adds optional-branch/node
+cancellation. Those guarantees belong to OG-2B2b through OG-5. Until they ship
+and pass the recovery campaign, the current experiment must not be described
+as fully resumable or suitable for unattended work.
 
 ## Operator experience
 
@@ -455,10 +458,17 @@ The operator must be able to see:
 - the exact cause and consequences of a replan or invalidation;
 - what decision is required from the user.
 
-Required controls are pause, resume, cancel graph, cancel node, inspect node,
-retry eligible node, and review a proposed graph revision. A paused graph holds
-state and starts no new work; it does not suspend an already running OS process
-without using the existing cancellation contract.
+The current preview provides status and node inspection, whole-graph cancel,
+cooperative pause/resume, and safe retry of an eligible blocked node. Pause is
+not an OS-process suspension: the current provider/tool/read iteration may
+finish, then the runtime records the safe boundary and starts no new work.
+Whole-graph cancel remains the immediate-stop control. Retry creates a new
+bounded attempt while preserving the blocked attempt and its evidence; it is
+rejected after attempt exhaustion or when an interrupted mutation may already
+have happened. Node cancellation remains a target only after the graph can
+express an optional branch; today every node is required, so cancelling one is
+equivalent to cancelling the graph. Review of a proposed graph revision also
+remains target work.
 
 ## Delivery plan
 
@@ -666,10 +676,54 @@ Completion evidence:
 
 ##### OG-2B2 — Operator controls and comparative evidence
 
+**Status: in progress through two bounded increments.**
+
+###### OG-2B2a — Cooperative pause and safe retry
+
+**Status: complete (2026-08-02).**
+
+- Add `/orchestrate pause` as a cooperative runtime control. A durable pause
+  request prevents new scheduling, lets the current provider/tool/read
+  iteration reach its boundary, then records the graph as paused.
+- Add `/orchestrate resume` for an attached paused graph. In-process resume
+  clears only the pause state and preserves the active attempt, evidence, and
+  bounds. A restored graph remains inert and requires the same explicit
+  command before it can run.
+- Add `/orchestrate retry <node-id>` only for a safely retryable blocked node
+  with remaining attempt budget. Preserve its blocked attempt and evidence,
+  clear the terminal blocked outcome, and let ordinary dependency readiness
+  create the next attempt.
+- Reject retry when a non-replayable action is unresolved or an interrupted
+  mutation may already have happened. Do not manufacture a successful attempt
+  or replay an ambiguous side effect.
+- Keep `/orchestrate cancel` as the immediate whole-graph stop. Do not add a
+  misleading node-cancel surface while every graph node is required.
+- Persist pause state additively in graph schema 1 and keep the new lifecycle
+  states inside the existing internal-only `goal.graph.update` event contract.
+
+Exit gate:
+
+- an active run can be asked to pause without cancelling its current attempt,
+  reaches a visible safe boundary, and resumes without losing in-process graph
+  state;
+- a safe blocked node can enter a new bounded attempt while the prior attempt
+  remains inspectable;
+- ambiguous mutation and exhausted-attempt retries fail closed; and
+- Standard mode, activation consent, permissions, automatic-read bounds, and
+  inert restore behavior remain unchanged.
+
+Completion evidence:
+
+- graph, agent, app, and TUI tests cover durable pause boundaries, preservation
+  of an active attempt, explicit attached and restored resume, safe retry,
+  ambiguous-mutation rejection, exhausted-attempt rejection, busy-command
+  admission, lifecycle events, and visible pausing/paused state; and
+- the full verification commands recorded in `docs/ROADMAP_HISTORY.md` pass.
+
+###### OG-2B2b — Aggregate presentation and comparative evidence
+
 **Status: next and unblocked.**
 
-- Add pause and necessary node-level retry/cancel controls without treating an
-  OS process as safely suspended.
 - Complete aggregate token/cost/iteration/wall-clock presentation across the
   primary and automatic workers.
 - Compare decomposable, cross-layer, trivial, and inherently serial scenarios
@@ -686,8 +740,6 @@ Completion evidence:
 - Start with a guideline of at most 12 logical nodes, two graph revisions, and
   two attempts per node; measure before making these configuration surface.
 - Enforce aggregate graph token, cost, iteration, and wall-clock budgets.
-- Add pause and any necessary node-level controls while retaining OG-2A's
-  resume/cancel/inspect controls and experimental badge.
 - Locally record why the scheduler delegated, serialized, retried, replanned,
   invalidated, blocked, or finished. Do not add default telemetry.
 
@@ -763,12 +815,14 @@ now cover dependency-ready success with a repository repair and fresh tests,
 recoverable tool failure in a new attempt, permission denial, and no delegated
 events. Focused state/app coverage adds provider retry, cancellation, budget
 exhaustion, stale workspace state, graph revision, durable restart, corrupt
-snapshot rejection, and ambiguous-mutation non-replay. OG-2B1 now adds the
+snapshot rejection, and ambiguous-mutation non-replay. OG-2B1 adds the
 first user-facing multi-actor path: at most two runtime-selected read-only
 workers can run before the serial primary lane. It proves authority,
-freshness, cancellation, and result-ingestion semantics, but makes no
-Standard-versus-Orchestrated quality, cost, or performance claim. That
-comparative decision belongs to OG-2B2.
+freshness, cancellation, and result-ingestion semantics. OG-2B2a adds
+cooperative pause/resume and safe blocked-node retry without weakening the
+non-replay guarantee. Neither increment makes a Standard-versus-Orchestrated
+quality, cost, or performance claim. That comparative decision belongs to
+OG-2B2b.
 
 Compare Standard and Orchestrated modes on:
 
@@ -855,16 +909,16 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed milestone: **OG-2B1 — Runtime-selected read fan-out kernel**.
+- Last completed milestone: **OG-2B2a — Cooperative pause and safe retry**.
 - Active milestone: **none**.
-- Next unblocked milestone: **OG-2B2 — Operator controls and comparative
+- Next unblocked milestone: **OG-2B2b — Aggregate presentation and comparative
   evidence**.
-- Active implementation branch or partial patch: **OG-1, OG-2A, and OG-2B1
-  are committed on `wave36`; no orchestration implementation slice is
-  currently active**.
+- Active implementation branch or partial patch: **OG-2B2a is implemented as
+  an uncommitted patch on `wave36`**.
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane and at most two automatic read-only
-  workers for independently ready approved nodes**.
+  workers for independently ready approved nodes, plus cooperative
+  pause/resume and safe retry of eligible blocked nodes**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
 - Preserved implementation constraint: only approved `read_only` nodes may be
@@ -939,13 +993,28 @@ Every agent or contributor continuing this program must:
   manual model-directed delegation hidden during an approved graph.
 - Treat graph meta-tools as parent-only authority even when a child fabricates
   a hidden call by name.
-- Retain pause/node controls, complete primary-plus-worker aggregate
+- Retain operator controls, complete primary-plus-worker aggregate
   presentation, comparative usefulness measurements, and the event/headless
   decision for OG-2B2.
+- Implement pause as a cooperative scheduling boundary, not an OS-process
+  suspension: durably request it, allow the current iteration to finish, then
+  start no new graph work. Keep whole-graph cancellation as immediate stop.
+- Resume an in-process pause by clearing only pause state. Keep restored graph
+  state inert until the user explicitly resumes it, after which ordinary
+  conservative recovery rules still apply.
+- Permit retry only for a blocked node with remaining attempt budget and no
+  unresolved non-replayable action or ambiguous interrupted mutation. Preserve
+  prior attempts and evidence rather than rewriting history.
+- Do not add node cancellation while every node is required; it would be only
+  an alias for whole-graph cancellation. Revisit it with optional branch
+  semantics.
+- Keep additive schema-1 pause fields and `pause_requested`, `paused`,
+  `resumed`, and `retry_requested` lifecycle states under the existing
+  internal-only event decision. Split remaining OG-2B2 work into OG-2B2b.
 
 ## Open implementation decisions
 
-These remain unresolved for OG-2B2 or later:
+These remain unresolved for OG-2B2b or later:
 
 - whether and how a headless CLI surface should be added;
 - the representation of user-authored verification waivers;

@@ -2872,7 +2872,8 @@ questions open as centered, theme-aware transient dialogs.
 While a provider turn is running, the composer remains available for a small
 local-control command lane: `/help`, `/status`, `/context`, `/tasks`, `/tools`,
 `/config`, `/attachments`, `/transcript`, `/activity`, `/diff`, read-only
-`/ps`, `/orchestrate status [node]`, `/orchestrate cancel`, and `/agents`
+`/ps`, `/orchestrate status [node]`, `/orchestrate pause`, `/orchestrate
+cancel`, and `/agents`
 inspect/steer/stop. Free-form text and unavailable commands remain in the
 composer as unsent drafts; they are not queued to the model or executed
 concurrently. If the agent asks a question, Collomia preserves and restores
@@ -2893,7 +2894,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|cancel\|resume]` | Propose, explicitly approve, inspect, cancel, or resume the experimental Orchestrated Goal preview with bounded automatic read-only fan-out. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, or cancel the experimental Orchestrated Goal preview. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -2946,6 +2947,8 @@ A complete trial looks like this:
 /orchestrate approve
 /orchestrate status
 /orchestrate status 2
+/orchestrate pause
+/orchestrate resume
 ```
 
 The first command enters read-only proposal mode. Collomia asks the model for a
@@ -2993,16 +2996,33 @@ and eight iterations, and each node retains the two-attempt bound. Provider,
 profile, scheduler, permission, and cancellation limits can be tighter. The
 graph records why it delegated and the worker identity, usage, evidence,
 retry, and terminal state; complete primary-plus-worker aggregate presentation
-remains OG-2B2 work.
+remains OG-2B2b work.
 
 Use `/orchestrate status [node]` at any time to inspect the graph or one node,
 including dependencies, acceptance criteria, attempts, failures, commands,
 evidence, and the fixed preview bounds. `/tasks` and the Session/context-rail
 views project the active graph rather than showing a stale logical plan.
-`/orchestrate cancel` terminates a proposal or active graph. A saved graph is
-visible but deliberately inert after reopening a session; `/orchestrate resume`
-is required to reattach a nonterminal graph. This prevents persisted project or
-session content from silently opting the user back in.
+`/orchestrate pause` is also available in the limited command lane while a turn
+is running. It durably prevents new graph scheduling, lets the current
+provider/tool/read iteration finish, and then records a safe paused boundary;
+it does not pretend to suspend an operating-system process. The status bar
+shows `GOAL… · EXP` while the boundary is pending and `GOAL ‖ · EXP` once it
+is reached. `/orchestrate resume` clears only pause state and starts the next
+turn, so an in-process active attempt, its evidence, and its bounds remain
+intact. `/orchestrate cancel` remains the immediate whole-graph stop.
+
+If a graph ends `blocked`, `/orchestrate retry <node-id>` creates a new attempt
+only when that node has attempt budget remaining and no non-replayable action
+is unresolved. The blocked attempt and its evidence remain inspectable. Retry
+fails closed after attempt exhaustion or when an interrupted mutation may
+already have happened; it never converts model prose into proof or repeats an
+ambiguous side effect. There is no node-cancel command because every current
+node is required—cancelling one would be equivalent to cancelling the graph.
+
+A saved graph is visible but deliberately inert after reopening a session;
+`/orchestrate resume` is required to reattach a nonterminal graph and clears a
+saved pause only as part of that explicit action. This prevents persisted
+project or session content from silently opting the user back in.
 
 Resume is mutation-safe, but not yet an exact replay of a multi-worker
 schedule. An interrupted replay-safe read may be recomputed only as a fresh
@@ -3015,8 +3035,8 @@ milestones.
 An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
 `/new`. This preview has no configuration switch, repository-controlled opt-in,
-headless flag, pause control, per-node retry/cancel control, or verification
-waiver. Complete primary-plus-worker aggregate cost presentation and
+headless flag, per-node/branch cancellation, or verification waiver. Complete
+primary-plus-worker aggregate cost presentation and
 comparative quality/elapsed-time evidence also remain later Orchestrated Goal
 work.
 
