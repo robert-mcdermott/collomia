@@ -27,8 +27,9 @@ agents, provider platforms, and the Model Context Protocol specification.
    combined-parent verification/ranking, exact multi-worker recovery, and
    fuller transcript audit (Phase 6 now has the OG-1 durable controller,
    explicit TUI-only OG-2A preview, OG-2B1 bounded automatic read fan-out, and
-   OG-2B2a cooperative pause/resume plus safe blocked-node retry, and OG-2B2b1
-   durable primary-plus-worker accounting and status presentation,
+   OG-2B2a cooperative pause/resume plus safe blocked-node retry, OG-2B2b1
+   durable primary-plus-worker accounting/status presentation, and OG-2B2b2
+   fixed aggregate enforcement plus comparative read-fan-out evidence,
    in addition to named primary/delegated profiles, portable reasoning,
    durable token/cost budgets, restrictive permissions,
    scheduling/isolation, declared-scope serialization, structured results,
@@ -43,6 +44,45 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-02 — OG-2B2b2 aggregate enforcement and comparison completed
+
+- **The graph now owns a whole-run envelope.** Durable schema-1 state stores
+  fixed experimental ceilings of 96 provider iterations, 192,000 input/output
+  tokens, $5 estimated cost when all token-bearing work has configured
+  pricing, and 30 minutes of active execution after approval. Project
+  configuration, instructions, skills, hooks, persisted content, and model
+  output cannot widen them; tighter primary/profile/read limits still win.
+- **Admission and observation both enforce it.** Reaching an exact bound
+  prevents another provider or scheduler admission; a response that crosses a
+  bound records its usage and ends `budget_exhausted`. Automatic read claims
+  receive a durable share of the remaining token, iteration, priced-cost, and
+  active-wall allowance. A completed parallel wave retains every sibling's
+  already-spent usage even when the first recorded result crosses a bound.
+- **Active time has conservative recovery semantics.** A reached pause,
+  terminal transition, and process boundary freeze the clock. Saved state is
+  inert, and only explicit resume starts it again, so user review, pause, and
+  downtime do not consume the post-approval active execution allowance.
+- **Missing pricing remains an explicit limitation, not fake enforcement.** If
+  any token-bearing contribution is unpriced, cost remains unavailable and the
+  runtime relies on its always-enforceable token, iteration, and active-wall
+  ceilings instead of claiming it proved a dollar total.
+- **The comparative conclusion is narrow and favorable where intended.**
+  Credential-free decomposable-fact and cross-layer source/test scenarios run
+  through Standard, primary-only graph, and two-worker graph paths. All produce
+  the same grounded answer. With equal substantive investigation latency, the
+  two independent workers share one expensive critical-path wave and complete
+  faster, while six provider iterations and higher tokens remain visible.
+  Primary-only trivial work starts no worker, and dependency-serial reads never
+  overlap. This supports retaining bounded read fan-out, not making it default
+  or claiming it is universally cheaper.
+- **No event surface was added without a consumer.** Aggregate state remains in
+  the durable graph snapshot and TUI status. `goal.graph.update` remains the
+  same internal transition payload; the headless/event compatibility decision
+  is deferred until a real headless activation design needs it.
+- **Verification:** focused envelope, recovery, controller, application, and
+  comparison evaluations pass. Full test/race/vet/build and documentation
+  checks passed before handoff.
 
 ### 2026-08-02 — OG-2B2b1 durable aggregate accounting completed
 

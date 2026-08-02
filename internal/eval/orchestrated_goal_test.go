@@ -223,7 +223,7 @@ func TestOrchestratedGoalAutomaticReadFanoutEvaluation(t *testing.T) {
 		t.Fatalf("aggregate accounting=%+v", usage.Total)
 	}
 	status, err := runtime.OrchestratedGoalStatus(0)
-	if err != nil || !strings.Contains(status, "Aggregate model work:") || !strings.Contains(status, "6 provider iterations") || !strings.Contains(status, "cost unavailable") {
+	if err != nil || !strings.Contains(status, "Aggregate model work:") || !strings.Contains(status, "Aggregate envelope:") || !strings.Contains(status, "6 provider iterations") || !strings.Contains(status, "cost unavailable") {
 		t.Fatalf("aggregate status err=%v\n%s", err, status)
 	}
 	delegatedEvidence := 0

@@ -90,12 +90,14 @@ bounded manual or graph-selected child status used by durable interactive sessio
 JSONL runs do not currently promise either internal lifecycle kind.
 Do not assume every reserved kind appears in every current CLI stream.
 
-OG-2B2b1 aggregate accounting is currently an internal graph-snapshot and TUI
-status contract, not a new schema-v1 event contract. The existing
+OG-2 aggregate accounting and enforcement are internal graph-snapshot and TUI
+status contracts, not new schema-v1 event contracts. The existing
 `goal.graph.update` payload remains a bounded transition notification and does
-not include aggregate or per-lane usage fields. OG-2B2b2 owns the later decision
-about whether this accounting needs additive headless/event presentation after
-the comparison and enforcement work establishes a concrete consumer need.
+not include aggregate or per-lane usage/budget fields. The completed
+OG-2B2b2 decision is to add no event kind or optional payload without a
+headless activation design and a concrete automation consumer. A future
+headless mode must revisit compatibility explicitly; current internal status
+presentation does not justify expanding the public wire contract.
 
 When present, its `delegate` object includes stable identity/profile/provider,
 `plan_step`, lifecycle state/current action, bounded `recent_output`, steering

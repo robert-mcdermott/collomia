@@ -10,8 +10,6 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 )
 
-const automaticReadMaxIterations = 8
-
 // runGoalReadFanout executes graph-owned read claims through the same bounded
 // delegated-agent path used by the manual delegate tool. Claims are already
 // durable and dependency-ready; this function adds no scheduling authority.
@@ -43,8 +41,9 @@ func (a *Agent) runGoalReadFanout(ctx context.Context, claims []goalgraph.ReadCl
 				RuntimeID:             "goal-" + claim.Attempt.ID,
 				GraphNode:             true,
 				TokenBudgetOverride:   claim.TokenBudget,
+				CostBudgetOverride:    claim.CostBudgetUSD,
 				TimeoutOverride:       claim.TimeoutSeconds,
-				MaxIterationsOverride: automaticReadMaxIterations,
+				MaxIterationsOverride: claim.MaxIterations,
 			}
 			results[index] = a.runScheduledDelegate(ctx, index, task, cfg, approver, team, scheduler, nil)
 		}(index, claim)
@@ -55,18 +54,49 @@ func (a *Agent) runGoalReadFanout(ctx context.Context, claims []goalgraph.ReadCl
 		// unrelated child failures. Retain completed provider accounting first,
 		// then persist the terminal decision so cancellation cannot be misreported
 		// as blocked or erase work that the runtime actually observed.
+		budgetExhausted := false
 		for index, result := range results {
-			_ = graph.RecordReadUsage(context.WithoutCancel(ctx), readResultFromDelegate(claims[index].Attempt.ID, result, ""))
+			recordErr := graph.RecordReadUsage(context.WithoutCancel(ctx), readResultFromDelegate(claims[index].Attempt.ID, result, ""))
+			budgetExhausted = budgetExhausted || errors.Is(recordErr, goalgraph.ErrAggregateBudget)
+		}
+		if budgetExhausted {
+			a.emitGoalUpdates(send)
+			outcome, reason := graph.Outcome()
+			return goalGraphTerminalError(outcome, reason)
 		}
 		_ = graph.Cancel(context.WithoutCancel(ctx), err.Error())
 		a.emitGoalUpdates(send)
 		return err
 	}
 
+	// Account the entire completed wave before interpreting any one result.
+	// Otherwise the first over-budget result would make the graph terminal and
+	// hide work already spent by its concurrently finishing siblings.
+	budgetExhausted := false
+	for index, result := range results {
+		recordErr := graph.RecordReadUsage(context.WithoutCancel(ctx), readResultFromDelegate(claims[index].Attempt.ID, result, ""))
+		if errors.Is(recordErr, goalgraph.ErrAggregateBudget) {
+			budgetExhausted = true
+			continue
+		}
+		if recordErr != nil {
+			return recordErr
+		}
+	}
+	if budgetExhausted {
+		a.emitGoalUpdates(send)
+		outcome, reason := graph.Outcome()
+		return goalGraphTerminalError(outcome, reason)
+	}
+
 	for index, result := range results {
 		token, _ := a.goalToken(ctx)
 		err := graph.FinishRead(context.WithoutCancel(ctx), readResultFromDelegate(claims[index].Attempt.ID, result, token))
 		a.emitGoalUpdates(send)
+		if errors.Is(err, goalgraph.ErrAggregateBudget) {
+			outcome, reason := graph.Outcome()
+			return goalGraphTerminalError(outcome, reason)
+		}
 		if err != nil && !errors.Is(err, goalgraph.ErrGraphTerminal) {
 			return err
 		}

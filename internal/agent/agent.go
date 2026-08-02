@@ -286,6 +286,11 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		if outcome, reason := graph.Outcome(); outcome != "" {
 			return "", goalGraphTerminalError(outcome, reason)
 		}
+		if remaining := graph.BudgetStatus(time.Now()).RemainingActiveWall; remaining > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, remaining)
+			defer cancel()
+		}
 	}
 	send := func(e event.Event) {
 		if emit != nil {
@@ -328,6 +333,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 		select {
 		case <-ctx.Done():
+			if budgetErr := a.aggregateBudgetError(send); budgetErr != nil {
+				return "", reportError(send, budgetErr)
+			}
 			a.cancelGoalGraph(ctx.Err().Error(), send)
 			err := reportError(send, ctx.Err())
 			return "", err
@@ -433,13 +441,21 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		})
 		response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 		if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {
+			a.emitGoalUpdates(send)
 			return response.Content, reportError(send, graphErr)
 		}
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-				a.cancelGoalGraph(err.Error(), send)
-				err = reportError(send, err)
-				return "", err
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				if budgetErr := a.aggregateBudgetError(send); budgetErr != nil {
+					return response.Content, reportError(send, budgetErr)
+				}
+				cancelErr := err
+				if ctx.Err() != nil {
+					cancelErr = ctx.Err()
+				}
+				a.cancelGoalGraph(cancelErr.Error(), send)
+				cancelErr = reportError(send, cancelErr)
+				return "", cancelErr
 			}
 			if a.graphEnabled() {
 				decision, graphErr := a.recordProviderFailure(ctx, err, send)
@@ -591,8 +607,16 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			}
 			result, observation, fatalErr := a.executeTool(ctx, call, plan, send)
 			if fatalErr != nil {
-				if errors.Is(fatalErr, context.Canceled) {
-					a.cancelGoalGraph(fatalErr.Error(), send)
+				if errors.Is(fatalErr, context.Canceled) || ctx.Err() != nil {
+					if budgetErr := a.aggregateBudgetError(send); budgetErr != nil {
+						return response.Content, reportError(send, budgetErr)
+					}
+					cancelErr := fatalErr
+					if ctx.Err() != nil {
+						cancelErr = ctx.Err()
+					}
+					a.cancelGoalGraph(cancelErr.Error(), send)
+					fatalErr = cancelErr
 				}
 				return response.Content, reportError(send, fatalErr)
 			}
@@ -1089,11 +1113,12 @@ type DelegateTask struct {
 	PlanStep int `json:"plan_step,omitempty"`
 	// The remaining fields are runtime-only controls for graph-owned automatic
 	// reads. They are never accepted from the delegate tool's JSON arguments.
-	RuntimeID             string `json:"-"`
-	GraphNode             bool   `json:"-"`
-	TokenBudgetOverride   int    `json:"-"`
-	TimeoutOverride       int    `json:"-"`
-	MaxIterationsOverride int    `json:"-"`
+	RuntimeID             string  `json:"-"`
+	GraphNode             bool    `json:"-"`
+	TokenBudgetOverride   int     `json:"-"`
+	CostBudgetOverride    float64 `json:"-"`
+	TimeoutOverride       int     `json:"-"`
+	MaxIterationsOverride int     `json:"-"`
 }
 
 // AddDelegationTool registers the delegate tool: a concurrency-limited
@@ -1543,6 +1568,9 @@ func delegateLimits(task DelegateTask, profile appconfig.AgentDefinition) (token
 	timeoutSeconds, maxIterations = profile.TimeoutSeconds, profile.MaxIterations
 	if task.TokenBudgetOverride > 0 && (tokenBudget <= 0 || task.TokenBudgetOverride < tokenBudget) {
 		tokenBudget = task.TokenBudgetOverride
+	}
+	if task.CostBudgetOverride > 0 && (costBudget <= 0 || task.CostBudgetOverride < costBudget) {
+		costBudget = task.CostBudgetOverride
 	}
 	if task.TimeoutOverride > 0 && (timeoutSeconds <= 0 || task.TimeoutOverride < timeoutSeconds) {
 		timeoutSeconds = task.TimeoutOverride
@@ -2050,31 +2078,64 @@ func (a *Agent) nextRequestMaxTokens() (int, error) {
 	spent := a.usage.CostUSD
 	pricing := a.providerConfig.Pricing
 	configured := a.providerConfig.MaxTokens
+	graph := a.goalGraph
 	a.mu.RUnlock()
-	if budget <= 0 && costBudget <= 0 {
+	if budget <= 0 && costBudget <= 0 && graph == nil {
 		return configured, nil
 	}
 	estimatedInput, _ := a.ContextEstimate()
+	remainingTokens := 0
+	tokenErr := ErrTokenBudgetExceeded
 	if budget > 0 {
-		remaining := budget - used
-		if remaining <= 0 {
+		remainingTokens = budget - used
+		if remainingTokens <= 0 {
 			return 0, fmt.Errorf("%w: used %d of %d tokens", ErrTokenBudgetExceeded, used, budget)
 		}
-		if estimatedInput >= remaining {
-			return 0, fmt.Errorf("%w: approximately %d input tokens need the remaining %d-token allowance", ErrTokenBudgetExceeded, estimatedInput, remaining)
+	}
+	var aggregate goalgraph.BudgetStatus
+	if graph != nil {
+		aggregate = graph.BudgetStatus(time.Now())
+		if aggregate.RemainingTokens <= 0 {
+			return 0, fmt.Errorf("%w: aggregate token allowance is exhausted", ErrAggregateBudgetExceeded)
 		}
-		allowance := remaining - estimatedInput
+		if remainingTokens == 0 || aggregate.RemainingTokens < remainingTokens {
+			remainingTokens = aggregate.RemainingTokens
+			tokenErr = ErrAggregateBudgetExceeded
+		}
+	}
+	if remainingTokens > 0 {
+		if estimatedInput >= remainingTokens {
+			return 0, fmt.Errorf("%w: approximately %d input tokens need the remaining %d-token allowance", tokenErr, estimatedInput, remainingTokens)
+		}
+		allowance := remainingTokens - estimatedInput
 		if configured <= 0 || configured > allowance {
 			configured = allowance
 		}
 	}
+	remainingCost := 0.0
+	costErr := ErrCostBudgetExceeded
 	if costBudget > 0 {
 		if pricing == nil || pricing.InputPerMillion <= 0 || pricing.OutputPerMillion <= 0 {
 			return 0, fmt.Errorf("%w: cost_budget_usd requires positive pricing.input_per_million and pricing.output_per_million on the selected provider", ErrCostBudgetExceeded)
 		}
-		remainingUSD := costBudget - spent - float64(estimatedInput)*pricing.InputPerMillion/1_000_000
+		remainingCost = costBudget - spent
+		if remainingCost <= 0 {
+			return 0, fmt.Errorf("%w: estimated spend $%.6f exhausted $%.6f", ErrCostBudgetExceeded, spent, costBudget)
+		}
+	}
+	if graph != nil && aggregate.CostEnforceable && pricing != nil && pricing.InputPerMillion > 0 && pricing.OutputPerMillion > 0 {
+		if aggregate.RemainingCostUSD <= 0 {
+			return 0, fmt.Errorf("%w: aggregate estimated-cost allowance is exhausted", ErrAggregateBudgetExceeded)
+		}
+		if remainingCost == 0 || aggregate.RemainingCostUSD < remainingCost {
+			remainingCost = aggregate.RemainingCostUSD
+			costErr = ErrAggregateBudgetExceeded
+		}
+	}
+	if remainingCost > 0 {
+		remainingUSD := remainingCost - float64(estimatedInput)*pricing.InputPerMillion/1_000_000
 		if remainingUSD <= 0 {
-			return 0, fmt.Errorf("%w: estimated input would exceed the remaining $%.6f", ErrCostBudgetExceeded, costBudget-spent)
+			return 0, fmt.Errorf("%w: estimated input would exceed the remaining $%.6f", costErr, remainingCost)
 		}
 		costAllowance := int(math.Floor(remainingUSD * 1_000_000 / pricing.OutputPerMillion))
 		if configured <= 0 || configured > costAllowance {
@@ -2082,10 +2143,10 @@ func (a *Agent) nextRequestMaxTokens() (int, error) {
 		}
 	}
 	if configured <= 0 {
-		if costBudget > 0 {
-			return 0, fmt.Errorf("%w: no output allowance remains", ErrCostBudgetExceeded)
+		if remainingCost > 0 {
+			return 0, fmt.Errorf("%w: no output allowance remains", costErr)
 		}
-		return 0, fmt.Errorf("%w: no output allowance remains", ErrTokenBudgetExceeded)
+		return 0, fmt.Errorf("%w: no output allowance remains", tokenErr)
 	}
 	return configured, nil
 }
@@ -2304,6 +2365,7 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	response, err := client.Chat(ctx, req, nil)
 	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 	if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {
+		a.emitGoalUpdates(send)
 		return 0, graphErr
 	}
 	if err != nil {

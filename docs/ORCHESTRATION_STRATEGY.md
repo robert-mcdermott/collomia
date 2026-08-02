@@ -1,7 +1,7 @@
 # Orchestrated Goal strategy
 
 **Status:** approved product and architecture strategy; evidence-gated durable
-execution is available experimentally through OG-2B2b1, and OG-2B2b2 is next
+execution is available experimentally through completed OG-2, and OG-3 is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-02
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -55,17 +55,16 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-2B2b1 boundary supports one serial primary lane and
+The shipped OG-1 through OG-2 boundary supports one serial primary lane and
 at most two governed automatic read-only workers. It provides durable graph
 truth, fresh machine-observed evidence, conservative invalidation, bounded
 retry/revision, cooperative pause and resume, safe retry of eligible blocked
-nodes, non-replay of ambiguous mutations, and durable primary-plus-worker
-token/cost/iteration accounting with elapsed-time presentation. It does
-**not** yet establish a measured fan-out benefit, enforce a new whole-graph
-aggregate budget, automatically dispatch isolated writers, integrate their
-changes, cancel an optional branch or node, or reproduce a multi-worker
-scheduler exactly after restart. Those are OG-2B2b2 through OG-5 work and must
-not be described as current behavior.
+nodes, non-replay of ambiguous mutations, durable primary-plus-worker
+accounting, fixed whole-graph aggregate enforcement, and a bounded comparative
+case for substantive independent read fan-out. It does **not** automatically
+dispatch isolated writers, integrate their changes, cancel an optional branch
+or node, or reproduce a multi-worker scheduler exactly after restart. Those
+are OG-3 through OG-5 work and must not be described as current behavior.
 
 ## Product decision
 
@@ -155,9 +154,6 @@ The difficult prerequisites are substantially present:
 
 The current experiment is still intentionally incomplete:
 
-- whole-graph aggregate token/cost/iteration/wall enforcement built on the
-  now-visible accounting record;
-- comparative evidence that bounded read fan-out improves suitable tasks;
 - optional-branch semantics that would make node-level cancellation useful;
 - an explicit user-owned verification-waiver interaction when meaningful
   automated verification is unavailable;
@@ -573,7 +569,7 @@ Exit-gate evidence:
 
 ### OG-2 — Experimental Orchestrated Goal with read fan-out
 
-**Status: in progress through two bounded increments.**
+**Status: complete through two bounded increments (2026-08-02).**
 
 #### OG-2A — Explicit primary-only preview
 
@@ -631,7 +627,7 @@ Completion evidence:
 
 #### OG-2B — Bounded read-only fan-out
 
-**Status: in progress through two bounded increments.**
+**Status: complete (2026-08-02).**
 
 ##### OG-2B1 — Runtime-selected read fan-out kernel
 
@@ -679,7 +675,7 @@ Completion evidence:
 
 ##### OG-2B2 — Operator controls and comparative evidence
 
-**Status: in progress through two bounded increments.**
+**Status: complete (2026-08-02).**
 
 ###### OG-2B2a — Cooperative pause and safe retry
 
@@ -725,7 +721,7 @@ Completion evidence:
 
 ###### OG-2B2b — Aggregate presentation and comparative evidence
 
-**Status: in progress through two bounded increments.**
+**Status: complete (2026-08-02).**
 
 **OG-2B2b1 — Durable aggregate accounting and presentation**
 
@@ -770,7 +766,7 @@ Completion evidence:
 
 **OG-2B2b2 — Aggregate bounds and comparative evidence**
 
-**Status: next and unblocked.**
+**Status: complete (2026-08-02).**
 
 - Enforce whole-graph aggregate token, cost, iteration, and active wall-clock
   bounds using the durable accounting record without weakening tighter
@@ -780,6 +776,33 @@ Completion evidence:
   only where the measured quality or elapsed-time benefit justifies its cost.
 - Finish the event/automation compatibility decision required before any
   headless activation surface is considered.
+
+Implemented contract:
+
+- Persist fixed, non-configurable experimental ceilings of 96 aggregate
+  provider iterations, 192,000 aggregate input/output tokens, $5 estimated
+  cost when every token-bearing contribution has configured pricing, and 30
+  minutes of active execution after approval.
+- Apply the limit at provider/scheduler admission and again after recorded
+  usage. An exact limit prevents another request; a response that crosses it
+  terminates the graph `budget_exhausted`. Tighter primary/profile/read limits
+  continue to win. If one result in a completed parallel read wave crosses the
+  limit, the runtime still records its already-finished siblings before
+  returning the terminal outcome.
+- Divide the remaining token, iteration, cost (when enforceable), and active
+  wall allowance among an automatic read wave and retain those bounds on each
+  immutable attempt.
+- Stop the active clock at a reached cooperative pause, terminal transition,
+  and durable process boundary. Restarted bytes are inert; only explicit
+  resume restarts the clock. Proposal usage is included in aggregate work, but
+  user review, pause, and downtime do not consume the post-approval active
+  execution allowance.
+- Keep unpriced work visibly `cost unavailable`. The runtime cannot prove a
+  dollar total without pricing, so it enforces tokens, iterations, and active
+  wall rather than pretending the $5 cost gate was observed.
+- Keep aggregate accounting in the internal graph snapshot and TUI status.
+  Do not add event kinds or `goal.graph.update` usage fields before a headless
+  activation surface has an actual compatibility consumer.
 
 - Build on OG-2A's explicit per-session opt-in, graph approval, status,
   cancellation, and inert-resume contract without weakening it.
@@ -799,9 +822,26 @@ Exit gate:
 - trivial or inherently serial work remains serial;
 - project content cannot enable the mode or widen authority.
 
+Completion evidence and retained decision:
+
+- state/agent tests cover exact-bound admission, post-response token/cost
+  overage, unpriced-cost behavior, active pause/resume time, stored-bound
+  validation, narrowed automatic claims, and the graph-level terminal result;
+- credential-free comparisons run equal grounded scenarios through Standard,
+  primary-only graph, and two-worker graph execution. For decomposable facts
+  and cross-layer source/test investigation with equal substantive read
+  latency, fan-out completes faster because its expensive reads share one
+  critical-path wave; all three produce the same grounded answer;
+- the comparison also proves fan-out spends six visible provider iterations
+  and more tokens than Standard. The result is therefore narrow: retain it for
+  independently ready, substantive read investigations, not as a general
+  claim that parallel execution is cheaper or always faster; and
+- primary-only trivial work launches no worker, while dependency-serial reads
+  have at most one active worker and gain no parallelism.
+
 ### OG-3 — Isolated writer candidates
 
-**Status: blocked on OG-2.**
+**Status: next and unblocked.**
 
 - Automatically dispatch only dependency-ready writers with declared disjoint
   scopes and a stable base.
@@ -869,9 +909,9 @@ workers can run before the serial primary lane. It proves authority,
 freshness, cancellation, and result-ingestion semantics. OG-2B2a adds
 cooperative pause/resume and safe blocked-node retry without weakening the
 non-replay guarantee. OG-2B2b1 makes proposal, primary, and worker model work
-durably visible without claiming it is worthwhile. The
-Standard-versus-Orchestrated quality, cost, and performance decision belongs
-to OG-2B2b2.
+durably visible. OG-2B2b2 bounds that aggregate and establishes the narrow
+comparative case for substantive independent reads while preserving Standard
+as the default and serializing unsuitable work.
 
 Compare Standard and Orchestrated modes on:
 
@@ -958,18 +998,17 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed milestone: **OG-2B2b1 — Durable aggregate accounting and
-  presentation**.
+- Last completed milestone: **OG-2B2b2 — Aggregate bounds and comparative
+  evidence**, completing OG-2.
 - Active milestone: **none**.
-- Next unblocked milestone: **OG-2B2b2 — Aggregate bounds and comparative
-  evidence**.
-- Active implementation branch or partial patch: **OG-2B2b1 is implemented as
-  an uncommitted patch on `wave36`; OG-2B2a is committed as `0aa4afc`**.
+- Next unblocked milestone: **OG-3 — Isolated writer candidates**.
+- Active implementation branch or partial patch: **OG-2B2b2 is implemented as
+  an uncommitted patch on `wave36`; OG-2B2b1 is committed as `d85acc4`**.
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane and at most two automatic read-only
   workers for independently ready approved nodes, plus cooperative
-  pause/resume, safe retry of eligible blocked nodes, and durable aggregate
-  proposal/primary/automatic-read accounting**.
+  pause/resume, safe retry of eligible blocked nodes, durable aggregate
+  accounting, and a fixed whole-graph execution envelope**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
 - Preserved implementation constraint: only approved `read_only` nodes may be
@@ -1073,10 +1112,23 @@ Every agent or contributor continuing this program must:
 - Preserve accounting additively in graph schema 1. Legacy restore may rebuild
   stored attempt usage but must not invent proposal work or iteration history
   that older snapshots never recorded.
+- Store fixed whole-graph ceilings of 96 provider iterations, 192,000 tokens,
+  $5 estimated cost when pricing is complete, and 30 minutes active execution.
+  Project/config/model content cannot widen them; tighter existing limits win.
+- Count active time only while approved execution is attached and runnable.
+  Stop it at a reached pause, terminal state, or process boundary, and restart
+  it only through explicit resume. Do not count user review or downtime.
+- Retain two-worker fan-out for independently ready, substantive reads because
+  equal-grounding decomposable and cross-layer comparisons reduced controlled
+  elapsed time. Do not generalize this result to trivial, serial, cheaper, or
+  lower-token work; the evaluation records visible overhead.
+- Keep `goal.graph.update` unchanged and internal-only. Aggregate snapshot/TUI
+  presentation has no headless event consumer yet, so additive event fields
+  would create compatibility surface without product value.
 
 ## Open implementation decisions
 
-These remain unresolved for OG-2B2b2 or later:
+These remain unresolved for OG-3 or later:
 
 - whether and how a headless CLI surface should be added;
 - the representation of user-authored verification waivers;
@@ -1086,7 +1138,7 @@ These remain unresolved for OG-2B2b2 or later:
   type;
 - whether later built-in reads earn narrower freshness footprints than OG-1's
   conservative whole-workspace token;
-- the final event-version decision when real automation users can opt in.
+- the final event-version decision if real automation users can opt in.
 
 An implementation may resolve these questions, but must record the decision
 and its evidence here before declaring the relevant milestone complete.

@@ -959,6 +959,10 @@ func (r *Runtime) ResumeOrchestratedGoal(ctx context.Context) (status, prompt st
 		if err := graph.Resume(ctx); err != nil {
 			return "", "", false, err
 		}
+	} else if outcome, _ := graph.Outcome(); outcome == "" {
+		if err := graph.Activate(ctx); err != nil {
+			return "", "", false, err
+		}
 	}
 	if err := r.Agent.SetGoalGraph(graph); err != nil {
 		return "", "", false, err
@@ -1065,6 +1069,7 @@ func (r *Runtime) OrchestratedGoalStatus(nodeID int) (string, error) {
 		fmt.Fprintf(&b, "Proposal state: %s\n", map[bool]string{true: "awaiting explicit approval", false: "waiting for a new structured plan"}[fresh])
 		fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", limits.MaxNodes, limits.MaxAttemptsPerNode, limits.MaxRevisions)
 		fmt.Fprintf(&b, "Automatic reads: at most %d concurrent · %d starts · %d tokens · %ds wall bound\n", limits.MaxReadConcurrency, limits.MaxReadStarts, limits.MaxReadTokens, limits.MaxReadWallSeconds)
+		fmt.Fprintf(&b, "Aggregate envelope after approval: %d provider iterations · %d tokens · $%.2f when pricing is complete · %ds active wall\n", limits.MaxAggregateIterations, limits.MaxAggregateTokens, limits.MaxAggregateCostUSD, limits.MaxActiveWallSeconds)
 		b.WriteString("Execution: one serial primary lane; independently ready approved read_only nodes may use at most two automatic read-only workers.\n")
 		b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when proposed.\n")
 		b.WriteString("Authority: approval grants no tool, path, network, publication, or budget authority.\n")

@@ -61,10 +61,15 @@ func (a *Agent) recordGoalProviderUsage(ctx context.Context, usage provider.Usag
 	if graph == nil {
 		return nil
 	}
-	return graph.RecordPrimaryUsage(ctx, goalgraph.WorkUsage{
+	err := graph.RecordPrimaryUsage(ctx, goalgraph.WorkUsage{
 		Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 		CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
 	})
+	if errors.Is(err, goalgraph.ErrAggregateBudget) {
+		outcome, reason := graph.Outcome()
+		return goalGraphTerminalError(outcome, reason)
+	}
+	return err
 }
 
 func (a *Agent) emitGoalUpdates(send Emit) {
@@ -91,6 +96,14 @@ func (a *Agent) ensureGoalAttempt(ctx context.Context, send Emit) error {
 	}
 	if outcome, reason := a.goalGraph.Outcome(); outcome != "" {
 		return goalGraphTerminalError(outcome, reason)
+	}
+	if err := a.goalGraph.EnforceAggregateBudget(ctx); err != nil {
+		a.emitGoalUpdates(send)
+		if errors.Is(err, goalgraph.ErrAggregateBudget) {
+			outcome, reason := a.goalGraph.Outcome()
+			return goalGraphTerminalError(outcome, reason)
+		}
+		return err
 	}
 	if requested, reached, _ := a.goalGraph.PauseState(); requested {
 		if !reached {
@@ -144,7 +157,7 @@ func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 		if strings.TrimSpace(reason) == "" {
 			reason = "goal graph budget exhausted"
 		}
-		return fmt.Errorf("%w: %s", ErrIterationBudgetExceeded, reason)
+		return fmt.Errorf("%w: %s", ErrAggregateBudgetExceeded, reason)
 	case goalgraph.OutcomeBlocked:
 		if strings.TrimSpace(reason) == "" {
 			reason = "goal graph blocked"
@@ -292,4 +305,20 @@ func (a *Agent) exhaustGoalGraph(reason string, send Emit) {
 	}
 	_ = a.goalGraph.ExhaustBudget(context.Background(), reason)
 	a.emitGoalUpdates(send)
+}
+
+func (a *Agent) aggregateBudgetError(send Emit) error {
+	if !a.graphEnabled() {
+		return nil
+	}
+	err := a.goalGraph.EnforceAggregateBudget(context.Background())
+	if err == nil {
+		return nil
+	}
+	a.emitGoalUpdates(send)
+	outcome, reason := a.goalGraph.Outcome()
+	if terminalErr := goalGraphTerminalError(outcome, reason); terminalErr != nil {
+		return terminalErr
+	}
+	return err
 }

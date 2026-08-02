@@ -28,6 +28,9 @@ var (
 	// from a model choosing to stop. Token and cost ceilings have their own
 	// sentinels in agent.go; all three map to budget_exhausted.
 	ErrIterationBudgetExceeded = errors.New("agent iteration budget exhausted")
+	// ErrAggregateBudgetExceeded is the whole Orchestrated Goal envelope across
+	// proposal, primary, and automatic-worker work.
+	ErrAggregateBudgetExceeded = errors.New("orchestrated goal aggregate budget exhausted")
 )
 
 type GoalOutcome string
@@ -52,7 +55,7 @@ func GoalOutcomeFor(err error) GoalOutcome {
 	switch {
 	case err == nil:
 		return GoalDone
-	case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded), errors.Is(err, ErrIterationBudgetExceeded):
+	case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded), errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, ErrAggregateBudgetExceeded):
 		return GoalBudgetExhausted
 	case errors.Is(err, context.Canceled):
 		return GoalCancelled

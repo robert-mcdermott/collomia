@@ -105,10 +105,13 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   provider/scheduler boundary, and a blocked node can be retried only when its
   attempt budget and non-replay checks allow it; whole-graph cancel remains
   immediate. Status durably separates proposal-plus-primary and automatic-read
-  iterations, tokens, honest price availability, estimated cost, and elapsed
-  time. There is no optional-branch/node cancellation; whole-graph aggregate
-  enforcement and comparative benefit measurements remain roadmap work.
-  Automatic writer orchestration and
+  iterations, tokens, honest price availability, estimated cost, elapsed
+  time, and active time. A fixed whole-graph envelope limits the preview to 96
+  provider iterations, 192,000 tokens, $5 estimated cost when pricing is
+  complete, and 30 minutes of active post-approval execution. Controlled
+  comparisons retain two-worker fan-out for substantive independent reads
+  while showing its extra model work; trivial and dependency-serial work stays
+  serial. There is no optional-branch/node cancellation. Automatic writer orchestration and
   exact multi-worker recovery are also not implemented. Configuration, a
   repository, a saved graph, and a headless flag still cannot enable the
   preview. Standard execution remains the default.

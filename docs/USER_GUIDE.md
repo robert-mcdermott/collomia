@@ -2934,8 +2934,8 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 
 Orchestrated Goal is Collomia's opt-in TUI preview for **evidence-gated durable
 execution**. The model proposes and interprets a bounded dependency graph; the
-runtime owns readiness, attempts, evidence freshness, recovery treatment, and
-the terminal outcome. It keeps one serial primary lane and can use at most two
+runtime owns readiness, attempts, evidence freshness, recovery treatment,
+aggregate bounds, and the terminal outcome. It keeps one serial primary lane and can use at most two
 automatic governed workers for independently ready approved `read_only`
 nodes. Standard mode remains the default.
 
@@ -2987,7 +2987,8 @@ agent tree, but cannot write files, run commands, update the plan, delegate
 again, or control the graph. Their bounded summary becomes node evidence only
 when a successful tool result was recorded and the Git workspace token still
 matches the durable claim. Both workers finish before the primary lane moves
-on. Primary-only and dependency-serial graphs create no unnecessary child.
+on. Primary-only graphs create no child; dependency-serial `read_only` work
+never has more than one worker active and gains no parallelism.
 
 The fixed aggregate automatic-read envelope is visible in `/orchestrate
 status`: at most two concurrent workers, eight starts, 64,000 read tokens, and
@@ -2997,15 +2998,31 @@ profile, scheduler, permission, and cancellation limits can be tighter. The
 graph records why it delegated and the worker identity, usage, evidence,
 retry, and terminal state.
 
+The whole graph also has a fixed experimental envelope: 96 provider
+iterations, 192,000 aggregate input/output tokens, $5 estimated cost when
+every token-bearing contribution has configured pricing, and 30 minutes of
+active execution after approval. These limits are stored with the graph and
+cannot be widened by configuration, repository content, instructions, skills,
+hooks, or the model. Reaching an exact limit prevents another provider or
+scheduler admission; a response that crosses one records its usage and ends
+the graph `budget_exhausted`. Automatic workers inherit a share of the
+remaining allowance, while tighter primary/profile/read limits continue to
+win. If pricing is incomplete, Collomia says cost is unavailable and relies on
+the token, iteration, and active-wall limits—it does not pretend the dollar
+ceiling was observed.
+
 The same status panel shows durable aggregate model work. The primary lane
 includes the explicit proposal call plus later serial execution; automatic
 reads have their own lane. Each reports provider iterations and input/output
-tokens, and the total adds elapsed time from the start of `/orchestrate`. Cost
+tokens, and the total shows both elapsed time from the start of `/orchestrate`
+and active post-approval execution time. Cost
 appears only when every token-bearing contribution had user-configured
 pricing; otherwise the panel says `cost unavailable` rather than implying the
 work was free. Failed provider requests still count as iterations even when
-they report no tokens. These counters are measurement, not authority, and do
-not replace the existing primary/profile or automatic-read bounds.
+they report no tokens. A reached pause, terminal transition, or process
+boundary freezes active time; explicit resume restarts it, so user review,
+paused time, and downtime do not consume the active allowance. These counters
+are measurement, not authority, and do not replace tighter existing bounds.
 
 Use `/orchestrate status [node]` at any time to inspect the graph or one node,
 including dependencies, acceptance criteria, attempts, failures, commands,
@@ -3045,8 +3062,13 @@ An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
 `/new`. This preview has no configuration switch, repository-controlled opt-in,
 headless flag, per-node/branch cancellation, or verification waiver.
-Whole-graph aggregate enforcement and comparative quality/elapsed-time
-evidence remain later Orchestrated Goal work.
+Controlled credential-free comparisons support the current narrow fan-out
+decision: substantive independent repository-fact and cross-layer source/test
+investigations produced the same grounded result faster than Standard and
+primary-only graph runs, while their extra iterations and tokens stayed
+visible. This is not a claim that orchestration is always faster or cheaper.
+Automatic isolated writer candidates and exact multi-worker recovery remain
+later Orchestrated Goal work.
 
 ### Workspace paths and prompt files
 

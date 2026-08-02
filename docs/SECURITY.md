@@ -851,9 +851,15 @@ and no unresolved non-replayable action or ambiguous mutation, and it preserves
 the blocked attempt as history. Provider iterations, input/output tokens,
 price availability, estimated cost, and elapsed time are durable runtime facts
 split between proposal-plus-primary and automatic-read lanes; they grant no
-permission and never substitute for completion evidence. Optional-branch/node
-cancellation, whole-graph aggregate enforcement, comparative usefulness
-evidence, and headless activation remain unimplemented.
+permission and never substitute for completion evidence. Fixed runtime-owned
+aggregate ceilings limit the graph to 96 provider iterations, 192,000 tokens,
+$5 estimated cost when pricing is complete, and 30 minutes of active
+post-approval execution. Project/config/model content cannot widen them;
+unpriced work remains bounded by tokens, iterations, and active wall rather
+than receiving a fictitious dollar verdict. Active time stops at a reached
+pause or process boundary and restarts only after explicit resume.
+Optional-branch/node cancellation, automatic writer orchestration, and
+headless activation remain unimplemented.
 
 ## Delegated-agent boundary
 

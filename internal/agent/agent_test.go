@@ -404,6 +404,38 @@ func TestGoalGraphControllerPreservesCancellationAndIterationBudget(t *testing.T
 			t.Fatalf("outcome=%q", outcome)
 		}
 	})
+
+	t.Run("whole graph iteration budget", func(t *testing.T) {
+		graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{MaxAggregateIterations: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+			return provider.Response{Content: "done without evidence"}, nil
+		}}
+		runtime := New(Options{Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 8, GoalGraph: graph})
+		if _, err := runtime.Run(t.Context(), "inspect", nil); !errors.Is(err, ErrAggregateBudgetExceeded) || GoalOutcomeFor(err) != GoalBudgetExhausted {
+			t.Fatalf("calls=%d outcome=%s error=%v", client.calls, GoalOutcomeFor(err), err)
+		}
+		if outcome, reason := graph.Outcome(); outcome != goalgraph.OutcomeBudgetExhausted || !strings.Contains(reason, "1/1") {
+			t.Fatalf("outcome=%q reason=%q", outcome, reason)
+		}
+	})
+
+	t.Run("whole graph active wall interrupts an in-flight provider", func(t *testing.T) {
+		graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{MaxActiveWallSeconds: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &cancellableClient{started: make(chan struct{}, 1)}
+		runtime := New(Options{Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), MaxIterations: 8, GoalGraph: graph})
+		if _, err := runtime.Run(t.Context(), "inspect", nil); !errors.Is(err, ErrAggregateBudgetExceeded) || GoalOutcomeFor(err) != GoalBudgetExhausted {
+			t.Fatalf("outcome=%s error=%v", GoalOutcomeFor(err), err)
+		}
+		if outcome, reason := graph.Outcome(); outcome != goalgraph.OutcomeBudgetExhausted || !strings.Contains(reason, "active-wall") {
+			t.Fatalf("outcome=%q reason=%q", outcome, reason)
+		}
+	})
 }
 
 func TestGoalGraphControllerFailsBeforeMutationWhenWriteAheadPersistenceFails(t *testing.T) {

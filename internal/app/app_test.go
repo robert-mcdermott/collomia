@@ -139,7 +139,7 @@ func TestExplicitOrchestratedGoalPreviewRequiresFreshApprovedProposal(t *testing
 	if runtime.GoalGraph == nil || runtime.Agent.Plan() {
 		t.Fatalf("approval did not attach execution graph and leave planning mode: graph=%v plan=%t", runtime.GoalGraph, runtime.Agent.Plan())
 	}
-	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "acceptance: the repository test suite passes"} {
+	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "Aggregate envelope:", "0/96 provider iterations", "0/192000 tokens", "acceptance: the repository test suite passes"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("approved status missing %q:\n%s", want, status)
 		}

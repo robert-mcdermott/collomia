@@ -207,6 +207,188 @@ func TestGraphAggregateAccountingSeparatesPrimaryAndAutomaticReads(t *testing.T)
 	}
 }
 
+func TestGraphAggregateEnvelopeEnforcesEveryMachineObservableBound(t *testing.T) {
+	start := time.Date(2026, 8, 2, 15, 0, 0, 0, time.UTC)
+	newGraph := func(t *testing.T, opts Options) (*Graph, *time.Time) {
+		t.Helper()
+		now := start
+		opts.Now = func() time.Time { return now }
+		graph, err := New(Spec{Goal: "bounded", Nodes: []NodeSpec{{ID: 1, Title: "work"}}}, 1, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return graph, &now
+	}
+
+	t.Run("iterations stop admission at the exact boundary", func(t *testing.T) {
+		graph, _ := newGraph(t, Options{MaxAggregateIterations: 2, InitialPrimary: WorkUsage{Iterations: 1}})
+		if _, _, err := graph.StartNext(t.Context(), "state"); err != nil {
+			t.Fatal(err)
+		}
+		if err := graph.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if err := graph.EnforceAggregateBudget(t.Context()); !errors.Is(err, ErrAggregateBudget) {
+			t.Fatalf("iteration admission error=%v", err)
+		}
+		if outcome, reason := graph.Outcome(); outcome != OutcomeBudgetExhausted || !strings.Contains(reason, "2/2") {
+			t.Fatalf("iteration outcome=%q reason=%q", outcome, reason)
+		}
+	})
+
+	t.Run("tokens and priced cost stop immediately after an overage", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			opts   Options
+			usage  WorkUsage
+			reason string
+		}{
+			"tokens": {opts: Options{MaxAggregateTokens: 10}, usage: WorkUsage{Iterations: 1, InputTokens: 8, OutputTokens: 3}, reason: "token"},
+			"cost":   {opts: Options{MaxAggregateCostUSD: 0.001}, usage: WorkUsage{Iterations: 1, InputTokens: 1, CostUSD: 0.002, CostAvailable: true, CostEstimated: true}, reason: "cost"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				graph, _ := newGraph(t, tc.opts)
+				if _, _, err := graph.StartNext(t.Context(), "state"); err != nil {
+					t.Fatal(err)
+				}
+				if err := graph.RecordPrimaryUsage(t.Context(), tc.usage); !errors.Is(err, ErrAggregateBudget) {
+					t.Fatalf("overage error=%v", err)
+				}
+				if outcome, gotReason := graph.Outcome(); outcome != OutcomeBudgetExhausted || !strings.Contains(gotReason, tc.reason) {
+					t.Fatalf("outcome=%q reason=%q", outcome, gotReason)
+				}
+			})
+		}
+	})
+
+	t.Run("a terminal parallel wave retains every completed worker usage", func(t *testing.T) {
+		graph, err := New(Spec{Goal: "bounded read wave", Nodes: []NodeSpec{
+			{ID: 1, Title: "one", Execution: ExecutionReadOnly},
+			{ID: 2, Title: "two", Execution: ExecutionReadOnly},
+		}}, 1, Options{MaxAggregateTokens: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claims, err := graph.StartReadyReads(t.Context(), "state", 2)
+		if err != nil || len(claims) != 2 {
+			t.Fatalf("claims=%+v error=%v", claims, err)
+		}
+		first := ReadResult{AttemptID: claims[0].Attempt.ID, WorkerID: "one", Iterations: 1, InputTokens: 11}
+		if err := graph.RecordReadUsage(t.Context(), first); !errors.Is(err, ErrAggregateBudget) {
+			t.Fatalf("first overage error=%v", err)
+		}
+		second := ReadResult{AttemptID: claims[1].Attempt.ID, WorkerID: "two", Iterations: 1, InputTokens: 7}
+		if err := graph.RecordReadUsage(t.Context(), second); !errors.Is(err, ErrAggregateBudget) {
+			t.Fatalf("late sibling accounting error=%v", err)
+		}
+		snapshot := graph.Snapshot()
+		if snapshot.Accounting.AutomaticReads.Iterations != 2 || snapshot.Accounting.AutomaticReads.InputTokens != 18 || !snapshot.Attempts[1].UsageRecorded {
+			t.Fatalf("parallel terminal accounting=%+v attempts=%+v", snapshot.Accounting.AutomaticReads, snapshot.Attempts)
+		}
+	})
+
+	t.Run("unpriced work remains bounded by tokens and iterations", func(t *testing.T) {
+		graph, _ := newGraph(t, Options{MaxAggregateCostUSD: 0.001})
+		if _, _, err := graph.StartNext(t.Context(), "state"); err != nil {
+			t.Fatal(err)
+		}
+		if err := graph.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 1, InputTokens: 100, CostUSD: 10}); err != nil {
+			t.Fatalf("unpriced cost was treated as enforceable: %v", err)
+		}
+		status := graph.BudgetStatus(time.Time{})
+		if status.CostEnforceable || status.RemainingTokens != defaultMaxGraphTokens-100 {
+			t.Fatalf("unpriced budget status=%+v", status)
+		}
+	})
+
+	t.Run("active wall excludes reached pause time", func(t *testing.T) {
+		graph, now := newGraph(t, Options{MaxActiveWallSeconds: 10})
+		*now = now.Add(5 * time.Second)
+		if err := graph.RequestPause(t.Context(), "inspect"); err != nil {
+			t.Fatal(err)
+		}
+		*now = now.Add(time.Hour)
+		if err := graph.Resume(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if got := graph.BudgetStatus(*now).ActiveElapsed; got != 5*time.Second {
+			t.Fatalf("paused time consumed active wall: %s", got)
+		}
+		*now = now.Add(5 * time.Second)
+		if err := graph.EnforceAggregateBudget(t.Context()); !errors.Is(err, ErrAggregateBudget) {
+			t.Fatalf("active-wall error=%v", err)
+		}
+	})
+
+	t.Run("restore freezes active time until explicit activation", func(t *testing.T) {
+		graph, now := newGraph(t, Options{MaxActiveWallSeconds: 10})
+		*now = now.Add(4 * time.Second)
+		if err := graph.Persist(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := graph.Snapshot()
+		restoredNow := now.Add(time.Hour)
+		restored, err := Restore(snapshot, Options{Now: func() time.Time { return restoredNow }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := restored.BudgetStatus(restoredNow).ActiveElapsed; got != 4*time.Second {
+			t.Fatalf("restore counted downtime: %s", got)
+		}
+		if err := restored.Activate(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		restoredNow = restoredNow.Add(6 * time.Second)
+		if err := restored.EnforceAggregateBudget(t.Context()); !errors.Is(err, ErrAggregateBudget) {
+			t.Fatalf("reactivated active-wall error=%v", err)
+		}
+	})
+}
+
+func TestGraphAggregateAllowanceNarrowsAutomaticReadClaims(t *testing.T) {
+	now := time.Date(2026, 8, 2, 16, 0, 0, 0, time.UTC)
+	graph, err := New(Spec{Goal: "bounded fanout", Nodes: []NodeSpec{
+		{ID: 1, Title: "one", Execution: ExecutionReadOnly},
+		{ID: 2, Title: "two", Execution: ExecutionReadOnly},
+	}}, 1, Options{
+		Now: func() time.Time { return now }, MaxAggregateIterations: 5, MaxAggregateTokens: 100,
+		MaxAggregateCostUSD: 2, MaxActiveWallSeconds: 20,
+		InitialPrimary: WorkUsage{Iterations: 1, InputTokens: 50, OutputTokens: 10, CostUSD: 1, CostAvailable: true, CostEstimated: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 2 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	for _, claim := range claims {
+		if claim.TokenBudget != 20 || claim.MaxIterations != 2 || math.Abs(claim.CostBudgetUSD-0.5) > 1e-12 || claim.TimeoutSeconds != 20 {
+			t.Fatalf("claim did not inherit remaining aggregate allowance: %+v", claim)
+		}
+		if claim.Attempt.TokenBudget != claim.TokenBudget || claim.Attempt.IterationBudget != claim.MaxIterations || claim.Attempt.CostBudgetUSD != claim.CostBudgetUSD {
+			t.Fatalf("attempt did not durably retain claim bounds: %+v", claim.Attempt)
+		}
+	}
+
+	widened := graph.Snapshot()
+	widened.AggregateBudget.MaxTokens = defaultMaxGraphTokens + 1
+	if _, err := Restore(widened, Options{}); err == nil || !strings.Contains(err.Error(), "aggregate budget") {
+		t.Fatalf("widened stored envelope was accepted: %v", err)
+	}
+
+	oneToken, err := New(Spec{Goal: "one token remains", Nodes: []NodeSpec{
+		{ID: 1, Title: "one", Execution: ExecutionReadOnly},
+		{ID: 2, Title: "two", Execution: ExecutionReadOnly},
+	}}, 1, Options{MaxAggregateTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err = oneToken.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 1 || claims[0].TokenBudget != 1 {
+		t.Fatalf("one remaining token admitted more than one worker: claims=%+v err=%v", claims, err)
+	}
+}
+
 func TestGraphLeavesPrimaryOnlyAndDependencySerialWorkSerial(t *testing.T) {
 	primary, err := New(Spec{Goal: "small change", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{})
 	if err != nil {

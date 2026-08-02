@@ -128,18 +128,18 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-The latest implementation wave completed **OG-2B2b1 — Durable aggregate
-accounting and presentation**. The runtime now records proposal-plus-primary
-and automatic-read provider iterations, input/output tokens, price
-availability, estimated cost, and elapsed time in durable graph state.
-`/orchestrate status` presents each lane and the total; incomplete pricing is
-reported as unavailable, never as zero. Legacy graph snapshots reconstruct
-only usage their attempts actually stored. This measurement supports
-**evidence-gated durable execution** without claiming fan-out is already
-beneficial or adding authority. Standard evidence-gated execution remains the
-default. **OG-2B2b2 — Aggregate bounds and comparative evidence** is next; it
-uses these counters to enforce a whole-graph envelope and make the measured
-usefulness decision. See the
+The latest implementation wave completed **OG-2B2b2 — Aggregate bounds and
+comparative evidence**, finishing OG-2. Orchestrated Goal now applies a fixed
+runtime-owned whole-graph envelope of 96 provider iterations, 192,000 tokens,
+a $5 estimated-cost ceiling when pricing is complete, and 30 minutes of active
+post-approval execution. Reached pauses and inert restart time do not consume
+that active allowance. Credential-free comparisons retain bounded two-worker
+fan-out for substantive independent read investigations: decomposable and
+cross-layer scenarios produced the same grounded answer with lower controlled
+elapsed time than Standard and primary-only graph runs, while their extra
+model work remained visible. Trivial primary work launches no worker and
+dependency-serial reads do not overlap. Standard evidence-gated execution
+remains the default. **OG-3 — Isolated writer candidates** is next. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1670,7 +1670,7 @@ roadmap remains the source of priority and completion status.
     replanning, conservative invalidation, and combined-workspace completion
     gates without adding automatic actors. *(Completed 2026-08-01 through an
     internal programmatic evaluation path; no user-facing mode.)*
-  - [ ] **OG-2 — Experimental Orchestrated Goal:** require explicit
+  - [x] **OG-2 — Experimental Orchestrated Goal:** require explicit
     per-session opt-in and graph approval; add bounded automatic read-only
     fan-out while keeping one serial primary write lane.
     - [x] **OG-2A — Explicit primary-only preview:** add a TUI-only fresh
@@ -1678,7 +1678,7 @@ roadmap remains the source of priority and completion status.
       status/cancel/explicit-resume controls, visible experimental graph state,
       and inert persisted state without automatic actors. *(Completed
       2026-08-01.)*
-    - [ ] **OG-2B — Bounded read-only fan-out:** automatically schedule at
+    - [x] **OG-2B — Bounded read-only fan-out:** automatically schedule at
       most two useful dependency-ready read-only delegates while retaining one
       serial primary write lane and the OG-2A consent/authority boundary.
       - [x] **OG-2B1 — Runtime-selected read fan-out kernel:** add explicit
@@ -1686,7 +1686,7 @@ roadmap remains the source of priority and completion status.
         automatic read workers, bounded evidence/usage ingestion, and no
         unnecessary child for primary-only or serial graphs. *(Completed
         2026-08-02.)*
-      - [ ] **OG-2B2 — Controls and comparative evidence:** complete operator
+      - [x] **OG-2B2 — Controls and comparative evidence:** complete operator
         control, aggregate presentation, and proof of a useful quality or
         elapsed-time gain over Standard and primary-only execution before
         completing OG-2B.
@@ -1696,7 +1696,7 @@ roadmap remains the source of priority and completion status.
           rejecting ambiguous mutation replay. Keep whole-graph cancellation
           immediate and defer node cancellation until optional branches exist.
           *(Completed 2026-08-02.)*
-        - [ ] **OG-2B2b — Aggregate presentation and comparative evidence:**
+        - [x] **OG-2B2b — Aggregate presentation and comparative evidence:**
           make primary-plus-worker work visible and bounded, compare suitable
           and unsuitable workloads, and finish the event/automation decision
           before any headless activation surface.
@@ -1705,10 +1705,11 @@ roadmap remains the source of priority and completion status.
             failed provider iterations exactly once; persist per-lane
             input/output tokens and honest price availability; and show total
             elapsed work in graph status. *(Completed 2026-08-02.)*
-          - [ ] **OG-2B2b2 — Aggregate bounds and comparative evidence:**
+          - [x] **OG-2B2b2 — Aggregate bounds and comparative evidence:**
             enforce a whole-graph token/cost/iteration/active-wall envelope,
             run the comparative scenario matrix, and retain fan-out only if
             quality or elapsed-time evidence justifies its added work.
+            *(Completed 2026-08-02.)*
   - [ ] **OG-3 — Isolated writer candidates:** dispatch only ready,
     disjoint-scope writers on a stable base; require child verification and
     stop at reviewable candidates.
@@ -1905,32 +1906,28 @@ roadmap remains the source of priority and completion status.
 ## Recommended next sequence
 
 The setup journey, first completion controller, OG-1 runtime-owned primary
-graph, OG-2A explicit preview, OG-2B1 read fan-out kernel, OG-2B2a cooperative
-operator controls, and OG-2B2b1 aggregate accounting are now complete.
+graph, and the complete OG-2 experimental read-only orchestration program are
+now complete.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future automatic writer and exact scheduler-recovery claims. The next
-orchestration slice is OG-2B2b2: aggregate bounds and comparative evidence
-around the now-measured automatic read-only fan-out, with the primary
-workspace's write lane remaining serial.
+orchestration slice is **OG-3 — Isolated writer candidates**, with every
+candidate remaining in its own worktree and the primary workspace unchanged.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are missed by the
    conservative recognizer, and whether two interventions is the right bound.
    Keep this local and inspectable rather than adding telemetry by default.
-2. Take **OG-2B2b2 — Aggregate bounds and comparative evidence** around the
-   completed fan-out, cooperative-control, and measurement kernel. Enforce
-   whole-graph aggregate usage/cost/iteration/active-wall bounds, and
-   compare decomposable, cross-layer, trivial, and serial tasks with Standard
-   and primary-only graph mode. Do not let project configuration,
-   instructions, skills, hooks, persisted state, or the model opt in.
-3. Only then take OG-3 through OG-5: isolated dependency-ready writer
-   candidates, verified/recoverable combined-parent integration, and durable
-   graph recovery. A score, child test, or plan approval never grants
-   permission. `collo audit --actor` remains the surface that can say what each
-   participant was permitted to do.
+2. Take **OG-3 — Isolated writer candidates**: automatically dispatch only
+   dependency-ready writers with declared disjoint scopes on a stable base,
+   require child verification, and stop at retained reviewable candidates.
+   Do not select, integrate, or publish a candidate in this milestone.
+3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
+   and durable graph recovery. A score, child test, or plan approval never
+   grants permission. `collo audit --actor` remains the surface that can say
+   what each participant was permitted to do.
 4. Continue Phase 8 security campaigns in parallel with every feature wave,
    and take the performance budgets while the prompt-cache wave's measurement
    harness is still warm. **The reliability half has now shipped** — terminal

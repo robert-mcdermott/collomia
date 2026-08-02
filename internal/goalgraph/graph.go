@@ -19,20 +19,25 @@ import (
 )
 
 const (
-	SchemaVersion              = 1
-	defaultMaxAttempts         = 2
-	defaultMaxRevisions        = 2
-	maxCompletionInterventions = 2
-	maxGraphNodes              = 12
-	maxGoalBytes               = 2048
-	maxTitleBytes              = 512
-	maxAcceptanceItems         = 8
-	maxAcceptanceBytes         = 512
-	defaultMaxReadConcurrency  = 2
-	defaultMaxReadStarts       = 8
-	defaultMaxReadTokens       = 64_000
-	defaultMaxReadWallSeconds  = 15 * 60
-	defaultReadTaskWallSeconds = 5 * 60
+	SchemaVersion               = 1
+	defaultMaxAttempts          = 2
+	defaultMaxRevisions         = 2
+	maxCompletionInterventions  = 2
+	maxGraphNodes               = 12
+	maxGoalBytes                = 2048
+	maxTitleBytes               = 512
+	maxAcceptanceItems          = 8
+	maxAcceptanceBytes          = 512
+	defaultMaxReadConcurrency   = 2
+	defaultMaxReadStarts        = 8
+	defaultMaxReadTokens        = 64_000
+	defaultMaxReadWallSeconds   = 15 * 60
+	defaultReadTaskWallSeconds  = 5 * 60
+	defaultReadTaskIterations   = 8
+	defaultMaxGraphIterations   = 96
+	defaultMaxGraphTokens       = 192_000
+	defaultMaxGraphCostUSD      = 5.00
+	defaultMaxActiveWallSeconds = 30 * 60
 )
 
 type Execution string
@@ -178,6 +183,8 @@ type Attempt struct {
 	CostAvailable           bool           `json:"cost_available,omitempty"`
 	CostEstimated           bool           `json:"cost_estimated,omitempty"`
 	TokenBudget             int            `json:"token_budget,omitempty"`
+	CostBudgetUSD           float64        `json:"cost_budget_usd,omitempty"`
+	IterationBudget         int            `json:"iteration_budget,omitempty"`
 	TimeoutSeconds          int            `json:"timeout_seconds,omitempty"`
 	Started                 time.Time      `json:"started"`
 	Finished                time.Time      `json:"finished,omitempty"`
@@ -209,29 +216,30 @@ type Revision struct {
 // a new snapshot on every meaningful transition; loading uses only the latest
 // one and never reconstructs runtime truth from model messages.
 type Snapshot struct {
-	Schema             int        `json:"schema"`
-	ID                 string     `json:"id"`
-	LogicalRevision    uint64     `json:"logical_revision"`
-	Generation         uint64     `json:"generation"`
-	Goal               string     `json:"goal"`
-	Nodes              []Node     `json:"nodes"`
-	Attempts           []Attempt  `json:"attempts,omitempty"`
-	Evidence           []Evidence `json:"evidence,omitempty"`
-	Revisions          []Revision `json:"revisions,omitempty"`
-	MutationGeneration uint64     `json:"mutation_generation"`
-	WorkspaceToken     string     `json:"workspace_token,omitempty"`
-	RevisionCount      int        `json:"revision_count,omitempty"`
-	MaxAttemptsPerNode int        `json:"max_attempts_per_node"`
-	MaxRevisions       int        `json:"max_revisions"`
-	ReadFanout         ReadFanout `json:"read_fanout"`
-	Accounting         Accounting `json:"accounting"`
-	PauseRequested     bool       `json:"pause_requested,omitempty"`
-	PauseReached       bool       `json:"pause_reached,omitempty"`
-	PauseReason        string     `json:"pause_reason,omitempty"`
-	Outcome            Outcome    `json:"outcome,omitempty"`
-	Reason             string     `json:"reason,omitempty"`
-	Created            time.Time  `json:"created"`
-	Updated            time.Time  `json:"updated"`
+	Schema             int             `json:"schema"`
+	ID                 string          `json:"id"`
+	LogicalRevision    uint64          `json:"logical_revision"`
+	Generation         uint64          `json:"generation"`
+	Goal               string          `json:"goal"`
+	Nodes              []Node          `json:"nodes"`
+	Attempts           []Attempt       `json:"attempts,omitempty"`
+	Evidence           []Evidence      `json:"evidence,omitempty"`
+	Revisions          []Revision      `json:"revisions,omitempty"`
+	MutationGeneration uint64          `json:"mutation_generation"`
+	WorkspaceToken     string          `json:"workspace_token,omitempty"`
+	RevisionCount      int             `json:"revision_count,omitempty"`
+	MaxAttemptsPerNode int             `json:"max_attempts_per_node"`
+	MaxRevisions       int             `json:"max_revisions"`
+	ReadFanout         ReadFanout      `json:"read_fanout"`
+	Accounting         Accounting      `json:"accounting"`
+	AggregateBudget    AggregateBudget `json:"aggregate_budget"`
+	PauseRequested     bool            `json:"pause_requested,omitempty"`
+	PauseReached       bool            `json:"pause_reached,omitempty"`
+	PauseReason        string          `json:"pause_reason,omitempty"`
+	Outcome            Outcome         `json:"outcome,omitempty"`
+	Reason             string          `json:"reason,omitempty"`
+	Created            time.Time       `json:"created"`
+	Updated            time.Time       `json:"updated"`
 }
 
 // ReadFanout is the durable aggregate envelope for automatic read workers.
@@ -265,9 +273,22 @@ type WorkUsage struct {
 // is the beginning of the explicit proposal turn, so comparison does not hide
 // the extra model call needed to create an Orchestrated Goal graph.
 type Accounting struct {
-	Started        time.Time `json:"started"`
-	Primary        WorkUsage `json:"primary"`
-	AutomaticReads WorkUsage `json:"automatic_reads"`
+	Started        time.Time     `json:"started"`
+	Primary        WorkUsage     `json:"primary"`
+	AutomaticReads WorkUsage     `json:"automatic_reads"`
+	ActiveElapsed  time.Duration `json:"active_elapsed,omitempty"`
+	ActiveSince    time.Time     `json:"active_since,omitempty"`
+}
+
+// AggregateBudget is the fixed runtime-owned envelope across proposal,
+// primary, and automatic-worker work. Cost is enforced only while every
+// token-bearing contribution has user-configured pricing; token, iteration,
+// and active-wall limits always remain enforceable.
+type AggregateBudget struct {
+	MaxIterations        int     `json:"max_iterations"`
+	MaxTokens            int     `json:"max_tokens"`
+	MaxCostUSD           float64 `json:"max_cost_usd"`
+	MaxActiveWallSeconds int     `json:"max_active_wall_seconds"`
 }
 
 // UsageSummary is the operator-facing aggregate derived from Accounting. The
@@ -278,6 +299,20 @@ type UsageSummary struct {
 	AutomaticReads WorkUsage
 	Total          WorkUsage
 	Elapsed        time.Duration
+	ActiveElapsed  time.Duration
+}
+
+// BudgetStatus is a read-only view used by provider admission and status
+// presentation. Remaining values are clamped to zero.
+type BudgetStatus struct {
+	Limits              AggregateBudget
+	Usage               WorkUsage
+	ActiveElapsed       time.Duration
+	RemainingIterations int
+	RemainingTokens     int
+	RemainingCostUSD    float64
+	RemainingActiveWall time.Duration
+	CostEnforceable     bool
 }
 
 // Update is a bounded public lifecycle fact. It contains enough state for
@@ -301,17 +336,21 @@ type Update struct {
 type PersistFunc func(context.Context, Snapshot, bool) error
 
 type Options struct {
-	MaxAttemptsPerNode int
-	MaxRevisions       int
-	MaxReadConcurrency int
-	MaxReadStarts      int
-	MaxReadTokens      int
-	MaxReadWallSeconds int
-	AccountingStarted  time.Time
-	InitialPrimary     WorkUsage
-	Persist            PersistFunc
-	Now                func() time.Time
-	NewID              func(string) string
+	MaxAttemptsPerNode     int
+	MaxRevisions           int
+	MaxReadConcurrency     int
+	MaxReadStarts          int
+	MaxReadTokens          int
+	MaxReadWallSeconds     int
+	MaxAggregateIterations int
+	MaxAggregateTokens     int
+	MaxAggregateCostUSD    float64
+	MaxActiveWallSeconds   int
+	AccountingStarted      time.Time
+	InitialPrimary         WorkUsage
+	Persist                PersistFunc
+	Now                    func() time.Time
+	NewID                  func(string) string
 }
 
 // Limits is the fixed experimental controller envelope shown before approval.
@@ -326,6 +365,10 @@ type Limits struct {
 	MaxReadStarts              int
 	MaxReadTokens              int
 	MaxReadWallSeconds         int
+	MaxAggregateIterations     int
+	MaxAggregateTokens         int
+	MaxAggregateCostUSD        float64
+	MaxActiveWallSeconds       int
 }
 
 func DefaultLimits() Limits {
@@ -339,6 +382,10 @@ func DefaultLimits() Limits {
 		MaxReadStarts:              defaultMaxReadStarts,
 		MaxReadTokens:              defaultMaxReadTokens,
 		MaxReadWallSeconds:         defaultMaxReadWallSeconds,
+		MaxAggregateIterations:     defaultMaxGraphIterations,
+		MaxAggregateTokens:         defaultMaxGraphTokens,
+		MaxAggregateCostUSD:        defaultMaxGraphCostUSD,
+		MaxActiveWallSeconds:       defaultMaxActiveWallSeconds,
 	}
 }
 
@@ -360,6 +407,7 @@ var (
 	ErrRevisionExhausted = errors.New("goal graph revision budget exhausted")
 	ErrGraphPaused       = errors.New("goal graph scheduling is paused")
 	ErrUnsafeNodeRetry   = errors.New("goal graph node cannot be retried safely")
+	ErrAggregateBudget   = errors.New("goal graph aggregate budget exhausted")
 )
 
 func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
@@ -380,15 +428,17 @@ func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
 		Schema: SchemaVersion, ID: opts.NewID("graph"), LogicalRevision: logicalRevision,
 		Generation: 1, Goal: strings.TrimSpace(spec.Goal), MaxAttemptsPerNode: opts.MaxAttemptsPerNode,
 		MaxRevisions: opts.MaxRevisions, Created: now, Updated: now,
-		ReadFanout: ReadFanout{MaxConcurrent: opts.MaxReadConcurrency, MaxStarts: opts.MaxReadStarts, MaxTokens: opts.MaxReadTokens, MaxWallSeconds: opts.MaxReadWallSeconds},
-		Accounting: Accounting{Started: accountingStarted, Primary: opts.InitialPrimary},
-		Revisions:  []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
+		ReadFanout:      ReadFanout{MaxConcurrent: opts.MaxReadConcurrency, MaxStarts: opts.MaxReadStarts, MaxTokens: opts.MaxReadTokens, MaxWallSeconds: opts.MaxReadWallSeconds},
+		Accounting:      Accounting{Started: accountingStarted, Primary: opts.InitialPrimary, ActiveSince: now},
+		AggregateBudget: AggregateBudget{MaxIterations: opts.MaxAggregateIterations, MaxTokens: opts.MaxAggregateTokens, MaxCostUSD: opts.MaxAggregateCostUSD, MaxActiveWallSeconds: opts.MaxActiveWallSeconds},
+		Revisions:       []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
 	}
 	for position, node := range spec.Nodes {
 		g.state.Nodes = append(g.state.Nodes, Node{ID: node.ID, Position: position, Title: strings.TrimSpace(node.Title), DependsOn: append([]int(nil), node.DependsOn...), Acceptance: append([]string(nil), node.Acceptance...), Execution: normalizeExecution(node.Execution), State: NodeProposed})
 	}
 	g.queueUpdateLocked(0, "", "created", "approved logical graph recorded")
 	g.refreshReadyLocked("dependencies accepted")
+	_ = g.enforceAggregateBudgetLocked(now, false)
 	return g, nil
 }
 
@@ -421,6 +471,19 @@ func normalizeSnapshot(snapshot *Snapshot) {
 	if snapshot.ReadFanout.MaxWallSeconds == 0 {
 		snapshot.ReadFanout.MaxWallSeconds = defaultMaxReadWallSeconds
 	}
+	hadAggregateBudget := snapshot.AggregateBudget.MaxIterations != 0 || snapshot.AggregateBudget.MaxTokens != 0 || snapshot.AggregateBudget.MaxCostUSD != 0 || snapshot.AggregateBudget.MaxActiveWallSeconds != 0
+	if snapshot.AggregateBudget.MaxIterations == 0 {
+		snapshot.AggregateBudget.MaxIterations = defaultMaxGraphIterations
+	}
+	if snapshot.AggregateBudget.MaxTokens == 0 {
+		snapshot.AggregateBudget.MaxTokens = defaultMaxGraphTokens
+	}
+	if snapshot.AggregateBudget.MaxCostUSD == 0 {
+		snapshot.AggregateBudget.MaxCostUSD = defaultMaxGraphCostUSD
+	}
+	if snapshot.AggregateBudget.MaxActiveWallSeconds == 0 {
+		snapshot.AggregateBudget.MaxActiveWallSeconds = defaultMaxActiveWallSeconds
+	}
 	if snapshot.Accounting.Started.IsZero() {
 		// Pre-accounting schema-1 snapshots reconstruct what their immutable
 		// attempts can prove. Primary proposal/iteration counts were not stored,
@@ -440,6 +503,22 @@ func normalizeSnapshot(snapshot *Snapshot) {
 				addWorkUsage(&snapshot.Accounting.Primary, usage)
 			}
 		}
+	}
+	if !hadAggregateBudget && snapshot.Accounting.ActiveElapsed == 0 && snapshot.Accounting.ActiveSince.IsZero() {
+		// OG-2B2b1 snapshots did not distinguish active execution time. Their
+		// creation/update timestamps prove only the elapsed execution observed at
+		// durable boundaries, which is the conservative value restored here.
+		if elapsed := snapshot.Updated.Sub(snapshot.Created); elapsed > 0 {
+			snapshot.Accounting.ActiveElapsed = elapsed
+		}
+	}
+	if !snapshot.Accounting.ActiveSince.IsZero() {
+		// Restore is inert until an explicit user resume. Count only time through
+		// the last durable transition, never downtime after it.
+		if elapsed := snapshot.Updated.Sub(snapshot.Accounting.ActiveSince); elapsed > 0 {
+			snapshot.Accounting.ActiveElapsed += elapsed
+		}
+		snapshot.Accounting.ActiveSince = time.Time{}
 	}
 	for i := range snapshot.Nodes {
 		snapshot.Nodes[i].Execution = normalizeExecution(snapshot.Nodes[i].Execution)
@@ -471,6 +550,18 @@ func normalizedOptions(opts Options) Options {
 	}
 	if opts.MaxReadWallSeconds <= 0 {
 		opts.MaxReadWallSeconds = defaultMaxReadWallSeconds
+	}
+	if opts.MaxAggregateIterations <= 0 || opts.MaxAggregateIterations > defaultMaxGraphIterations {
+		opts.MaxAggregateIterations = defaultMaxGraphIterations
+	}
+	if opts.MaxAggregateTokens <= 0 || opts.MaxAggregateTokens > defaultMaxGraphTokens {
+		opts.MaxAggregateTokens = defaultMaxGraphTokens
+	}
+	if opts.MaxAggregateCostUSD <= 0 || opts.MaxAggregateCostUSD > defaultMaxGraphCostUSD || math.IsNaN(opts.MaxAggregateCostUSD) || math.IsInf(opts.MaxAggregateCostUSD, 0) {
+		opts.MaxAggregateCostUSD = defaultMaxGraphCostUSD
+	}
+	if opts.MaxActiveWallSeconds <= 0 || opts.MaxActiveWallSeconds > defaultMaxActiveWallSeconds {
+		opts.MaxActiveWallSeconds = defaultMaxActiveWallSeconds
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -573,6 +664,16 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if snapshot.Accounting.Started.IsZero() || !validWorkUsage(snapshot.Accounting.Primary) || !validWorkUsage(snapshot.Accounting.AutomaticReads) {
 		return errors.New("goal graph snapshot has invalid aggregate accounting")
 	}
+	budget := snapshot.AggregateBudget
+	if budget.MaxIterations <= 0 || budget.MaxIterations > defaultMaxGraphIterations || budget.MaxTokens <= 0 || budget.MaxTokens > defaultMaxGraphTokens || budget.MaxCostUSD <= 0 || budget.MaxCostUSD > defaultMaxGraphCostUSD || math.IsNaN(budget.MaxCostUSD) || math.IsInf(budget.MaxCostUSD, 0) || budget.MaxActiveWallSeconds <= 0 || budget.MaxActiveWallSeconds > defaultMaxActiveWallSeconds || snapshot.Accounting.ActiveElapsed < 0 {
+		return errors.New("goal graph snapshot has invalid aggregate budget or active time")
+	}
+	if snapshot.Outcome != "" && !snapshot.Accounting.ActiveSince.IsZero() {
+		return errors.New("terminal goal graph snapshot retains an active wall clock")
+	}
+	if snapshot.PauseReached && !snapshot.Accounting.ActiveSince.IsZero() {
+		return errors.New("paused goal graph snapshot retains an active wall clock")
+	}
 	if snapshot.PauseReached && !snapshot.PauseRequested {
 		return errors.New("goal graph snapshot reached pause without a pause request")
 	}
@@ -617,7 +718,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if _, duplicate := attempts[attempt.ID]; duplicate {
 			return fmt.Errorf("goal graph snapshot repeats attempt %q", attempt.ID)
 		}
-		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.TimeoutSeconds < 0 {
+		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.CostBudgetUSD < 0 || math.IsNaN(attempt.CostBudgetUSD) || math.IsInf(attempt.CostBudgetUSD, 0) || attempt.IterationBudget < 0 || attempt.TimeoutSeconds < 0 {
 			return fmt.Errorf("goal graph snapshot has invalid attempt %q state, number, or generation", attempt.ID)
 		}
 		if attempt.PendingAction != nil && attempt.State != AttemptRunning && attempt.State != AttemptInterrupted {
@@ -838,6 +939,8 @@ type ReadClaim struct {
 	Node           Node
 	Attempt        Attempt
 	TokenBudget    int
+	CostBudgetUSD  float64
+	MaxIterations  int
 	TimeoutSeconds int
 }
 
@@ -875,6 +978,12 @@ func (g *Graph) StartReadyReads(ctx context.Context, workspaceToken string, limi
 	if g.activeAttemptLocked() != nil {
 		return nil, errors.New("goal graph already has a running attempt")
 	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), true); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return nil, persistErr
+		}
+		return nil, err
+	}
 	if g.state.WorkspaceToken != "" && workspaceToken != "" && g.state.WorkspaceToken != workspaceToken {
 		g.invalidateAllDoneLocked("combined workspace changed outside the recorded graph state")
 	}
@@ -895,14 +1004,16 @@ func (g *Graph) StartReadyReads(ctx context.Context, workspaceToken string, limi
 	if limit <= 0 || limit > g.state.ReadFanout.MaxConcurrent {
 		limit = g.state.ReadFanout.MaxConcurrent
 	}
-	remainingStarts := g.state.ReadFanout.MaxStarts - g.state.ReadFanout.Starts
-	remainingTokens := g.state.ReadFanout.MaxTokens - g.state.ReadFanout.UsedTokens
 	now := g.now().UTC()
+	aggregate := g.budgetStatusLocked(now)
+	remainingStarts := g.state.ReadFanout.MaxStarts - g.state.ReadFanout.Starts
+	remainingTokens := min(g.state.ReadFanout.MaxTokens-g.state.ReadFanout.UsedTokens, aggregate.RemainingTokens)
+	remainingIterations := aggregate.RemainingIterations
 	if g.state.ReadFanout.Started.IsZero() {
 		g.state.ReadFanout.Started = now
 	}
-	remainingWall := g.state.ReadFanout.MaxWallSeconds - int(now.Sub(g.state.ReadFanout.Started).Seconds())
-	if remainingStarts <= 0 || remainingTokens <= 0 || remainingWall <= 0 {
+	remainingWall := min(g.state.ReadFanout.MaxWallSeconds-int(now.Sub(g.state.ReadFanout.Started).Seconds()), max(0, int(math.Ceil(aggregate.RemainingActiveWall.Seconds()))))
+	if remainingStarts <= 0 || remainingTokens <= 0 || remainingIterations <= 0 || remainingWall <= 0 {
 		reason := fmt.Sprintf("automatic read fan-out budget exhausted: starts %d/%d, tokens %d/%d, wall %ds/%ds", g.state.ReadFanout.Starts, g.state.ReadFanout.MaxStarts, g.state.ReadFanout.UsedTokens, g.state.ReadFanout.MaxTokens, max(0, g.state.ReadFanout.MaxWallSeconds-remainingWall), g.state.ReadFanout.MaxWallSeconds)
 		g.exhaustReadyReadLocked(ready[0], reason)
 		if err := g.persistLocked(ctx, true); err != nil {
@@ -910,8 +1021,13 @@ func (g *Graph) StartReadyReads(ctx context.Context, workspaceToken string, limi
 		}
 		return nil, ErrGraphTerminal
 	}
-	count := min(len(ready), limit, remainingStarts)
+	count := min(len(ready), limit, remainingStarts, remainingIterations, remainingTokens)
 	perTaskTokens := max(1, remainingTokens/count)
+	perTaskIterations := min(defaultReadTaskIterations, max(1, remainingIterations/count))
+	perTaskCost := 0.0
+	if aggregate.CostEnforceable && aggregate.Usage.InputTokens+aggregate.Usage.OutputTokens > 0 {
+		perTaskCost = aggregate.RemainingCostUSD / float64(count)
+	}
 	timeout := min(defaultReadTaskWallSeconds, remainingWall)
 	claims := make([]ReadClaim, 0, count)
 	for index, node := range ready[:count] {
@@ -924,6 +1040,7 @@ func (g *Graph) StartReadyReads(ctx context.Context, workspaceToken string, limi
 			ID: g.newID("attempt"), NodeID: node.ID, Number: number, State: AttemptRunning,
 			GraphGeneration: g.state.Generation, BaseWorkspaceToken: workspaceToken,
 			MutationGeneration: g.state.MutationGeneration, TokenBudget: perTaskTokens,
+			CostBudgetUSD: perTaskCost, IterationBudget: perTaskIterations,
 			TimeoutSeconds: timeout, Started: now,
 		}
 		g.state.Attempts = append(g.state.Attempts, attempt)
@@ -933,7 +1050,7 @@ func (g *Graph) StartReadyReads(ctx context.Context, workspaceToken string, limi
 		reason := fmt.Sprintf("automatically delegated: approved read_only node is dependency-ready (slot %d/%d)", index+1, g.state.ReadFanout.MaxConcurrent)
 		node.Reason = reason
 		g.queueUpdateLocked(node.ID, attempt.ID, "delegated_read", reason)
-		claims = append(claims, ReadClaim{Node: cloneNode(*node), Attempt: cloneAttempt(attempt), TokenBudget: perTaskTokens, TimeoutSeconds: timeout})
+		claims = append(claims, ReadClaim{Node: cloneNode(*node), Attempt: cloneAttempt(attempt), TokenBudget: perTaskTokens, CostBudgetUSD: perTaskCost, MaxIterations: perTaskIterations, TimeoutSeconds: timeout})
 	}
 	if len(claims) == 0 {
 		g.reduceOutcomeLocked()
@@ -962,6 +1079,12 @@ func (g *Graph) FinishRead(ctx context.Context, result ReadResult) error {
 		return fmt.Errorf("goal graph attempt %q is not a read_only node", result.AttemptID)
 	}
 	if err := g.recordReadUsageLocked(attempt, result); err != nil {
+		return err
+	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), false); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
 		return err
 	}
 	now := g.now().UTC()
@@ -1031,11 +1154,12 @@ func (g *Graph) FinishRead(ctx context.Context, result ReadResult) error {
 func (g *Graph) RecordReadUsage(ctx context.Context, result ReadResult) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.state.Outcome != "" {
+	terminalBudget := g.state.Outcome == OutcomeBudgetExhausted
+	if g.state.Outcome != "" && !terminalBudget {
 		return ErrGraphTerminal
 	}
 	attempt := g.attemptLocked(result.AttemptID)
-	if attempt == nil || attempt.State != AttemptRunning {
+	if attempt == nil || (attempt.State != AttemptRunning && !(terminalBudget && attempt.State == AttemptBudgetExhausted)) {
 		return fmt.Errorf("goal graph read attempt %q is not running", result.AttemptID)
 	}
 	node := g.nodeLocked(attempt.NodeID)
@@ -1043,6 +1167,21 @@ func (g *Graph) RecordReadUsage(ctx context.Context, result ReadResult) error {
 		return fmt.Errorf("goal graph attempt %q is not a read_only node", result.AttemptID)
 	}
 	if err := g.recordReadUsageLocked(attempt, result); err != nil {
+		return err
+	}
+	if terminalBudget {
+		// A parallel wave may already have crossed the graph limit while this
+		// worker was in flight. Its completed work still belongs in the durable
+		// accounting record even though it cannot change terminal graph state.
+		if err := g.persistLocked(ctx, false); err != nil {
+			return err
+		}
+		return ErrAggregateBudget
+	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), false); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
 		return err
 	}
 	return g.persistLocked(ctx, false)
@@ -1113,12 +1252,19 @@ func (g *Graph) RecordPrimaryUsage(ctx context.Context, usage WorkUsage) error {
 		attempt.Iterations, attempt.InputTokens, attempt.OutputTokens = attemptUsage.Iterations, attemptUsage.InputTokens, attemptUsage.OutputTokens
 		attempt.CostUSD, attempt.CostAvailable, attempt.CostEstimated = attemptUsage.CostUSD, attemptUsage.CostAvailable, attemptUsage.CostEstimated
 	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), false); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
 	return g.persistLocked(ctx, false)
 }
 
 func (g *Graph) exhaustReadyReadLocked(node *Node, reason string) {
 	node.State, node.Reason = NodeBudgetExhausted, strings.TrimSpace(reason)
 	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, node.Reason
+	g.stopActiveLocked(g.now().UTC())
 	g.queueUpdateLocked(node.ID, "", string(NodeBudgetExhausted), node.Reason)
 	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
 }
@@ -1158,6 +1304,12 @@ func (g *Graph) StartNext(ctx context.Context, workspaceToken string) (Node, Att
 	}
 	if g.activeAttemptLocked() != nil {
 		return Node{}, Attempt{}, errors.New("goal graph already has a running attempt")
+	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), true); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return Node{}, Attempt{}, persistErr
+		}
+		return Node{}, Attempt{}, err
 	}
 	if g.state.WorkspaceToken != "" && workspaceToken != "" && g.state.WorkspaceToken != workspaceToken {
 		g.invalidateAllDoneLocked("combined workspace changed outside the recorded graph state")
@@ -1648,6 +1800,9 @@ func (g *Graph) RequestPause(ctx context.Context, reason string) error {
 	g.state.PauseRequested = true
 	g.state.PauseReached = g.activeAttemptLocked() == nil
 	g.state.PauseReason = reason
+	if g.state.PauseReached {
+		g.stopActiveLocked(g.now().UTC())
+	}
 	state := "pause_requested"
 	detail := reason + "; the current iteration may finish before scheduling stops"
 	if g.state.PauseReached {
@@ -1679,6 +1834,7 @@ func (g *Graph) ReachPause(ctx context.Context) error {
 		}
 	}
 	g.state.PauseReached = true
+	g.stopActiveLocked(g.now().UTC())
 	g.queueUpdateLocked(0, "", "paused", g.state.PauseReason+"; safe scheduling boundary reached")
 	return g.persistLocked(ctx, true)
 }
@@ -1697,6 +1853,14 @@ func (g *Graph) Resume(ctx context.Context) error {
 	}
 	reason := g.state.PauseReason
 	g.state.PauseRequested, g.state.PauseReached, g.state.PauseReason = false, false, ""
+	now := g.now().UTC()
+	g.startActiveLocked(now)
+	if err := g.enforceAggregateBudgetLocked(now, true); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
 	g.queueUpdateLocked(0, "", "resumed", reason)
 	return g.persistLocked(ctx, true)
 }
@@ -1748,6 +1912,14 @@ func (g *Graph) RetryNode(ctx context.Context, nodeID int, reason string) error 
 		reason = "retry requested explicitly by the user"
 	}
 	g.state.Outcome, g.state.Reason = "", ""
+	now := g.now().UTC()
+	g.startActiveLocked(now)
+	if err := g.enforceAggregateBudgetLocked(now, true); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
 	node.State, node.ActiveAttemptID, node.Reason = NodeRetryable, "", reason
 	g.queueUpdateLocked(node.ID, blocked.ID, "retry_requested", reason)
 	g.refreshReadyLocked("operator-approved retry is dependency-ready")
@@ -1770,6 +1942,7 @@ func (g *Graph) Cancel(ctx context.Context, reason string) error {
 		}
 	}
 	g.state.Outcome, g.state.Reason = OutcomeCancelled, strings.TrimSpace(reason)
+	g.stopActiveLocked(now)
 	g.clearPauseLocked()
 	g.queueUpdateLocked(0, "", string(OutcomeCancelled), g.state.Reason)
 	return g.persistLocked(ctx, true)
@@ -1781,18 +1954,60 @@ func (g *Graph) ExhaustBudget(ctx context.Context, reason string) error {
 	if g.state.Outcome != "" {
 		return nil
 	}
-	now := g.now().UTC()
-	for _, attempt := range g.runningAttemptsLocked() {
-		attempt.State, attempt.Finished = AttemptBudgetExhausted, now
-		if node := g.nodeLocked(attempt.NodeID); node != nil {
-			node.State, node.ActiveAttemptID, node.Reason = NodeBudgetExhausted, "", strings.TrimSpace(reason)
-			g.queueUpdateLocked(node.ID, attempt.ID, string(NodeBudgetExhausted), node.Reason)
-		}
-	}
-	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, strings.TrimSpace(reason)
-	g.clearPauseLocked()
-	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
+	g.exhaustAggregateLocked(g.now().UTC(), reason)
 	return g.persistLocked(ctx, true)
+}
+
+// EnforceAggregateBudget is the admission gate called before scheduling or a
+// provider boundary. Hitting an exact limit prevents more work; a response
+// that crosses a limit is handled by the recording paths below.
+func (g *Graph) EnforceAggregateBudget(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		if g.state.Outcome == OutcomeBudgetExhausted {
+			return ErrAggregateBudget
+		}
+		return ErrGraphTerminal
+	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), true); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
+	return nil
+}
+
+// Activate starts the active execution clock after an inert restore. Saved
+// bytes never call this method; only the explicit application resume path does.
+func (g *Graph) Activate(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return ErrGraphTerminal
+	}
+	if g.state.PauseRequested {
+		return ErrGraphPaused
+	}
+	now := g.now().UTC()
+	g.startActiveLocked(now)
+	if err := g.enforceAggregateBudgetLocked(now, true); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
+	g.queueUpdateLocked(0, "", "resumed", "explicitly reattached after durable restore")
+	return g.persistLocked(ctx, true)
+}
+
+// BudgetStatus returns the immutable limits and their current machine-observed
+// consumption without changing graph state.
+func (g *Graph) BudgetStatus(now time.Time) BudgetStatus {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.budgetStatusLocked(now)
 }
 
 // UsageTotals returns durable per-lane counters plus live/frozen elapsed time.
@@ -1820,7 +2035,105 @@ func (g *Graph) usageSummaryLocked(now time.Time) UsageSummary {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	return UsageSummary{Primary: primary, AutomaticReads: reads, Total: total, Elapsed: elapsed}
+	return UsageSummary{Primary: primary, AutomaticReads: reads, Total: total, Elapsed: elapsed, ActiveElapsed: g.activeElapsedLocked(now)}
+}
+
+func (g *Graph) budgetStatusLocked(now time.Time) BudgetStatus {
+	usage := g.usageSummaryLocked(now)
+	limits := g.state.AggregateBudget
+	remainingWall := time.Duration(limits.MaxActiveWallSeconds)*time.Second - usage.ActiveElapsed
+	if remainingWall < 0 {
+		remainingWall = 0
+	}
+	costEnforceable := usage.Total.InputTokens+usage.Total.OutputTokens == 0 || usage.Total.CostAvailable
+	return BudgetStatus{
+		Limits: limits, Usage: usage.Total, ActiveElapsed: usage.ActiveElapsed,
+		RemainingIterations: max(0, limits.MaxIterations-usage.Total.Iterations),
+		RemainingTokens:     max(0, limits.MaxTokens-usage.Total.InputTokens-usage.Total.OutputTokens),
+		RemainingCostUSD:    math.Max(0, limits.MaxCostUSD-usage.Total.CostUSD),
+		RemainingActiveWall: remainingWall, CostEnforceable: costEnforceable,
+	}
+}
+
+func (g *Graph) activeElapsedLocked(now time.Time) time.Duration {
+	elapsed := g.state.Accounting.ActiveElapsed
+	if !g.state.Accounting.ActiveSince.IsZero() {
+		if now.IsZero() {
+			now = g.now()
+		}
+		if current := now.UTC().Sub(g.state.Accounting.ActiveSince); current > 0 {
+			elapsed += current
+		}
+	}
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed
+}
+
+func (g *Graph) startActiveLocked(now time.Time) {
+	if g.state.Outcome == "" && !g.state.PauseReached && g.state.Accounting.ActiveSince.IsZero() {
+		g.state.Accounting.ActiveSince = now.UTC()
+	}
+}
+
+func (g *Graph) stopActiveLocked(now time.Time) {
+	if g.state.Accounting.ActiveSince.IsZero() {
+		return
+	}
+	if elapsed := now.UTC().Sub(g.state.Accounting.ActiveSince); elapsed > 0 {
+		g.state.Accounting.ActiveElapsed += elapsed
+	}
+	g.state.Accounting.ActiveSince = time.Time{}
+}
+
+func (g *Graph) enforceAggregateBudgetLocked(now time.Time, atBoundary bool) error {
+	status := g.budgetStatusLocked(now)
+	exhausted := func(used float64, limit float64) bool {
+		if atBoundary {
+			return used >= limit
+		}
+		return used > limit
+	}
+	reason := ""
+	switch {
+	case exhausted(float64(status.Usage.Iterations), float64(status.Limits.MaxIterations)):
+		reason = fmt.Sprintf("aggregate provider-iteration budget exhausted: %d/%d", status.Usage.Iterations, status.Limits.MaxIterations)
+	case exhausted(float64(status.Usage.InputTokens+status.Usage.OutputTokens), float64(status.Limits.MaxTokens)):
+		reason = fmt.Sprintf("aggregate token budget exhausted: %d/%d", status.Usage.InputTokens+status.Usage.OutputTokens, status.Limits.MaxTokens)
+	case status.CostEnforceable && exhausted(status.Usage.CostUSD, status.Limits.MaxCostUSD):
+		reason = fmt.Sprintf("aggregate estimated-cost budget exhausted: $%.6f/$%.6f", status.Usage.CostUSD, status.Limits.MaxCostUSD)
+	case exhausted(status.ActiveElapsed.Seconds(), float64(status.Limits.MaxActiveWallSeconds)):
+		reason = fmt.Sprintf("aggregate active-wall budget exhausted: %s/%s", formatGraphElapsed(status.ActiveElapsed), formatGraphElapsed(time.Duration(status.Limits.MaxActiveWallSeconds)*time.Second))
+	}
+	if reason == "" {
+		return nil
+	}
+	g.exhaustAggregateLocked(now, reason)
+	return ErrAggregateBudget
+}
+
+func (g *Graph) exhaustAggregateLocked(now time.Time, reason string) {
+	reason = strings.TrimSpace(reason)
+	for i := range g.state.Attempts {
+		attempt := &g.state.Attempts[i]
+		if attempt.State == AttemptRunning {
+			attempt.State, attempt.Finished = AttemptBudgetExhausted, now
+		}
+	}
+	for i := range g.state.Nodes {
+		node := &g.state.Nodes[i]
+		if node.State == NodeDone {
+			continue
+		}
+		attemptID := node.ActiveAttemptID
+		node.State, node.ActiveAttemptID, node.Reason = NodeBudgetExhausted, "", reason
+		g.queueUpdateLocked(node.ID, attemptID, string(NodeBudgetExhausted), reason)
+	}
+	g.stopActiveLocked(now)
+	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, reason
+	g.clearPauseLocked()
+	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), reason)
 }
 
 func formatWorkUsage(usage WorkUsage) string {
@@ -1908,9 +2221,15 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 	fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", maxGraphNodes, g.state.MaxAttemptsPerNode, g.state.MaxRevisions)
 	fmt.Fprintf(&b, "Read fan-out: %d/%d starts · %d/%d tokens · at most %d concurrent · %ds wall bound\n", g.state.ReadFanout.Starts, g.state.ReadFanout.MaxStarts, g.state.ReadFanout.UsedTokens, g.state.ReadFanout.MaxTokens, g.state.ReadFanout.MaxConcurrent, g.state.ReadFanout.MaxWallSeconds)
 	usage := g.usageSummaryLocked(g.now().UTC())
-	fmt.Fprintf(&b, "Aggregate model work: %s · %s elapsed\n", formatWorkUsage(usage.Total), formatGraphElapsed(usage.Elapsed))
+	budget := g.budgetStatusLocked(g.now().UTC())
+	fmt.Fprintf(&b, "Aggregate model work: %s · %s active (%s elapsed)\n", formatWorkUsage(usage.Total), formatGraphElapsed(usage.ActiveElapsed), formatGraphElapsed(usage.Elapsed))
 	fmt.Fprintf(&b, "  Primary (proposal + serial lane): %s\n", formatWorkUsage(usage.Primary))
 	fmt.Fprintf(&b, "  Automatic reads: %s\n", formatWorkUsage(usage.AutomaticReads))
+	costBound := fmt.Sprintf("$%.2f when pricing is complete", budget.Limits.MaxCostUSD)
+	if budget.CostEnforceable {
+		costBound = fmt.Sprintf("$%.6f/$%.2f", budget.Usage.CostUSD, budget.Limits.MaxCostUSD)
+	}
+	fmt.Fprintf(&b, "Aggregate envelope: %d/%d provider iterations · %d/%d tokens · %s · %s/%s active wall\n", budget.Usage.Iterations, budget.Limits.MaxIterations, budget.Usage.InputTokens+budget.Usage.OutputTokens, budget.Limits.MaxTokens, costBound, formatGraphElapsed(budget.ActiveElapsed), formatGraphElapsed(time.Duration(budget.Limits.MaxActiveWallSeconds)*time.Second))
 	b.WriteString("Execution: dependency-ready read_only nodes may use bounded automatic workers; one serial primary lane owns primary work and every parent-workspace write.\n")
 	b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when the action is proposed.\n")
 	b.WriteString("Authority: every action still uses ordinary permissions; approval grants no publication or additional tool access.\n")
@@ -2069,6 +2388,7 @@ func (g *Graph) reduceOutcomeLocked() {
 	if allDone {
 		g.state.Outcome = OutcomeDone
 		g.state.Reason = "all required nodes passed runtime acceptance gates"
+		g.stopActiveLocked(g.now().UTC())
 		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeDone), g.state.Reason)
 		return
@@ -2078,12 +2398,14 @@ func (g *Graph) reduceOutcomeLocked() {
 		// is materially blocked cannot make the approved goal complete and only
 		// spends authority/budget after the truthful terminal state is known.
 		g.state.Outcome, g.state.Reason = OutcomeBlocked, strings.Join(blockers, "; ")
+		g.stopActiveLocked(g.now().UTC())
 		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeBlocked), g.state.Reason)
 		return
 	}
 	if len(exhausted) > 0 && !running {
 		g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, strings.Join(exhausted, "; ")
+		g.stopActiveLocked(g.now().UTC())
 		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
 	}
