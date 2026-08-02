@@ -87,6 +87,11 @@ type Agent struct {
 	completionPlan      *plan.Board
 	goalGraph           *goalgraph.Graph
 	goalStateToken      func(context.Context) (string, error)
+	delegateConfig      appconfig.Config
+	delegateApprover    permission.Approver
+	delegateTeam        *Team
+	delegateBoard       *plan.Board
+	delegateScheduler   *Scheduler
 	artifacts           *session.ArtifactManager
 	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
@@ -923,9 +928,9 @@ func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 	return a.registry.Definitions(func(tool tools.Tool) bool {
 		name := tool.Definition().Name
 		if a.goalGraph != nil {
-			// An OG-1 graph is already approved and runtime-owned. Whole-plan
-			// replacement and every delegated-agent surface stay unavailable so
-			// this milestone proves one primary execution lane only.
+			// An approved graph is runtime-owned. Whole-plan replacement and
+			// model-directed delegation stay unavailable; automatic read claims
+			// enter only through the controller's bounded scheduling path.
 			if name == "update_plan" || name == "delegate" || name == "inspect_delegate_changes" || name == "compare_delegate_changes" || name == "verify_delegate_changes" || name == "apply_delegate_changes" {
 				return false
 			}
@@ -968,6 +973,9 @@ func planTool(name string) bool {
 }
 
 func parentOnlyTool(name string) bool {
+	if goalgraph.MetaTool(name) {
+		return true
+	}
 	switch name {
 	case "delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes":
 		return true
@@ -1066,6 +1074,13 @@ type DelegateTask struct {
 	// PlanStep associates the child result with an existing structured plan
 	// step. It does not create or autonomously execute a plan.
 	PlanStep int `json:"plan_step,omitempty"`
+	// The remaining fields are runtime-only controls for graph-owned automatic
+	// reads. They are never accepted from the delegate tool's JSON arguments.
+	RuntimeID             string `json:"-"`
+	GraphNode             bool   `json:"-"`
+	TokenBudgetOverride   int    `json:"-"`
+	TimeoutOverride       int    `json:"-"`
+	MaxIterationsOverride int    `json:"-"`
 }
 
 // AddDelegationTool registers the delegate tool: a concurrency-limited
@@ -1079,6 +1094,9 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		board = boards[0]
 	}
 	scheduler := NewScheduler(cfg.Options.DelegateMaxConcurrency, cfg.Options.DelegateProviderConcurrency)
+	a.mu.Lock()
+	a.delegateConfig, a.delegateApprover, a.delegateTeam, a.delegateBoard, a.delegateScheduler = cfg, approver, team, board, scheduler
+	a.mu.Unlock()
 	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Write tasks should declare write_paths as repository-relative files or directory prefixes ending in /; overlapping scopes are serialized, omitted scopes are workspace-wide, and out-of-scope results are reported as violations. Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
 	if cfg.Options.AgentIntegration == "reviewed" {
 		desc += " Reviewed integration is enabled: after a successful write task, inspect its exact evidence and hunks with inspect_delegate_changes, run proportionate detected child-worktree verification with verify_delegate_changes, compare candidates when useful, and only then decide whether to publish selected changes with apply_delegate_changes."
@@ -1186,6 +1204,7 @@ type DelegateResult struct {
 	InputTokens     int            `json:"input_tokens,omitempty"`
 	OutputTokens    int            `json:"output_tokens,omitempty"`
 	CostUSD         float64        `json:"cost_usd,omitempty"`
+	CostAvailable   bool           `json:"cost_available,omitempty"`
 	TokenBudget     int            `json:"token_budget,omitempty"`
 	CostBudgetUSD   float64        `json:"cost_budget_usd,omitempty"`
 	TimeoutSeconds  int            `json:"timeout_seconds"`
@@ -1408,7 +1427,10 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		name = fmt.Sprintf("task-%d", index+1)
 	}
 	task.Name = name
-	id := fmt.Sprintf("d%d-%d", time.Now().UnixNano(), delegateIDCounter.Add(1))
+	id := strings.TrimSpace(task.RuntimeID)
+	if id == "" {
+		id = fmt.Sprintf("d%d-%d", time.Now().UnixNano(), delegateIDCounter.Add(1))
+	}
 
 	var profile appconfig.AgentDefinition
 	var profileErr error
@@ -1425,10 +1447,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if profile.Model != "" {
 		model = profile.Model
 	}
-	timeoutSeconds := profile.TimeoutSeconds
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 10 * 60
-	}
+	tokenBudget, costBudget, timeoutSeconds, _ := delegateLimits(task, profile)
 	taskCtx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 	writeScopes, scopeErr := NormalizeWriteScopes(task.WritePaths, task.Write)
@@ -1437,7 +1456,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 			ID: id, Name: name, Task: task.Task, Profile: task.Agent,
 			Provider: providerName, Model: model, Write: task.Write, PlanStep: task.PlanStep,
 			WriteScopes: writeScopes,
-			TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
+			TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
 		})
 	}
 	finishError := func(err error) DelegateResult {
@@ -1448,7 +1467,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 				return delegateResult(status)
 			}
 		}
-		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), WriteScopes: writeScopes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds}
+		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), WriteScopes: writeScopes, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
 	}
 	if strings.TrimSpace(task.Task) == "" {
 		return finishError(errors.New("empty task"))
@@ -1459,8 +1478,10 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if scopeErr != nil {
 		return finishError(scopeErr)
 	}
-	if err := validatePlanAssignment(board, task.PlanStep); err != nil {
-		return finishError(err)
+	if !task.GraphNode {
+		if err := validatePlanAssignment(board, task.PlanStep); err != nil {
+			return finishError(err)
+		}
 	}
 	release, err := scheduler.AcquireScoped(taskCtx, providerName, writeScopes)
 	if err != nil {
@@ -1497,7 +1518,25 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
+}
+
+func delegateLimits(task DelegateTask, profile appconfig.AgentDefinition) (tokenBudget int, costBudget float64, timeoutSeconds, maxIterations int) {
+	tokenBudget, costBudget = profile.TokenBudget, profile.CostBudgetUSD
+	timeoutSeconds, maxIterations = profile.TimeoutSeconds, profile.MaxIterations
+	if task.TokenBudgetOverride > 0 && (tokenBudget <= 0 || task.TokenBudgetOverride < tokenBudget) {
+		tokenBudget = task.TokenBudgetOverride
+	}
+	if task.TimeoutOverride > 0 && (timeoutSeconds <= 0 || task.TimeoutOverride < timeoutSeconds) {
+		timeoutSeconds = task.TimeoutOverride
+	}
+	if task.MaxIterationsOverride > 0 && (maxIterations <= 0 || task.MaxIterationsOverride < maxIterations) {
+		maxIterations = task.MaxIterationsOverride
+	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 10 * 60
+	}
+	return tokenBudget, costBudget, timeoutSeconds, maxIterations
 }
 
 func validatePlanAssignment(board *plan.Board, stepID int) error {
@@ -1563,8 +1602,9 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		scopes, _ := NormalizeWriteScopes(task.WritePaths, true)
 		instructions = prompts.Render(prompts.DelegateWriteContract, strings.Join(scopes, ", ")) + "\n\n" + instructions
 	}
-	if profile.MaxIterations > 0 {
-		maxIter = profile.MaxIterations
+	tokenBudget, costBudget, _, delegateMaxIterations := delegateLimits(task, profile)
+	if delegateMaxIterations > 0 {
+		maxIter = delegateMaxIterations
 	}
 	childCatalog := catalog.Restrict(profile.Skills)
 	childConfig := cfg
@@ -1599,6 +1639,11 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	childRegistry.Remove("compare_delegate_changes")
 	childRegistry.Remove("verify_delegate_changes")
 	childRegistry.Remove("apply_delegate_changes")
+	// Hidden definitions are not an authorization boundary: a model can still
+	// fabricate a call by name. Remove the parent graph handles from the clone,
+	// and keep parentOnlyTool as the second enforcement layer.
+	childRegistry.Remove(goalgraph.ReviseToolName)
+	childRegistry.Remove(goalgraph.BlockToolName)
 	// A child may report suggestions in its result but must not mutate the
 	// parent's shared structured plan artifact.
 	childRegistry.Remove("update_plan")
@@ -1654,7 +1699,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		Client: client, ProviderName: providerName, Model: model, Workspace: childWorkspace,
 		ProviderConfig: providerConfig, Registry: childRegistry, Permissions: childManager,
 		Catalog: childCatalog, ProjectInstructions: instructions,
-		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
+		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
 		DisabledTools: disabled, PlanMode: childPlan, Subagent: true,
 		PersistenceError: persistenceError,
 		// A child that delegates further must keep the same reporting route
@@ -1777,7 +1822,7 @@ func delegateResult(status DelegateStatus) DelegateResult {
 		ChangedFiles: status.Changed, WriteScopes: status.WriteScopes, ScopeViolations: status.ScopeViolations,
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
 		InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens,
-		CostUSD: status.Usage.CostUSD, TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds,
+		CostUSD: status.Usage.CostUSD, CostAvailable: status.Usage.CostAvailable, TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds,
 	}
 }
 

@@ -91,6 +91,154 @@ func TestGraphSelectsDependencyReadyNodesInStableOrder(t *testing.T) {
 	}
 }
 
+func TestGraphClaimsTwoStableReadWorkersBeforePrimaryLane(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "diagnose then repair", Nodes: []NodeSpec{
+		{ID: 1, Title: "inspect API", Execution: ExecutionReadOnly, Acceptance: []string{"API evidence is grounded"}},
+		{ID: 2, Title: "inspect tests", Execution: ExecutionReadOnly, Acceptance: []string{"test evidence is grounded"}},
+		{ID: 3, Title: "repair", DependsOn: []int{1, 2}, Execution: ExecutionPrimary},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 2 || claims[0].Node.ID != 1 || claims[1].Node.ID != 2 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	if err := ValidateSnapshot(graph.Snapshot()); err != nil {
+		t.Fatalf("two running read attempts are not structurally valid: %v", err)
+	}
+	for index, claim := range claims {
+		err := graph.FinishRead(t.Context(), ReadResult{
+			AttemptID: claim.Attempt.ID, WorkerID: fmt.Sprintf("worker-%d", index+1), Status: "done",
+			Summary: fmt.Sprintf("grounded result %d", index+1), Evidence: []string{"read_file: completed — repository evidence"},
+			ToolSuccesses: 1, WorkspaceToken: "state", InputTokens: 100, OutputTokens: 20,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	node, _, err := graph.StartNext(t.Context(), "state")
+	if err != nil || node.ID != 3 || node.Execution != ExecutionPrimary {
+		t.Fatalf("dependent primary node=%+v err=%v", node, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.ReadFanout.Starts != 2 || snapshot.ReadFanout.UsedTokens != 240 {
+		t.Fatalf("fan-out usage=%+v", snapshot.ReadFanout)
+	}
+	status, err := graph.Inspect(1)
+	if err != nil || !strings.Contains(status, "worker worker-1") || !strings.Contains(status, "delegate_read") {
+		t.Fatalf("read inspection err=%v\n%s", err, status)
+	}
+}
+
+func TestGraphLeavesPrimaryOnlyAndDependencySerialWorkSerial(t *testing.T) {
+	primary, err := New(Spec{Goal: "small change", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := primary.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("primary-only graph claimed reads: claims=%+v err=%v", claims, err)
+	}
+	if node, _, err := primary.StartNext(t.Context(), "state"); err != nil || node.ID != 1 {
+		t.Fatalf("primary selection node=%+v err=%v", node, err)
+	}
+
+	serial, err := New(Spec{Goal: "serial reads", Nodes: []NodeSpec{
+		{ID: 1, Title: "first", Execution: ExecutionReadOnly},
+		{ID: 2, Title: "second", Execution: ExecutionReadOnly, DependsOn: []int{1}},
+	}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err = serial.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 1 || claims[0].Node.ID != 1 {
+		t.Fatalf("serial first wave=%+v err=%v", claims, err)
+	}
+}
+
+func TestGraphReadFanoutCancellationAndAggregateStartBound(t *testing.T) {
+	spec := Spec{Goal: "inspect", Nodes: []NodeSpec{
+		{ID: 1, Title: "one", Execution: ExecutionReadOnly},
+		{ID: 2, Title: "two", Execution: ExecutionReadOnly},
+	}}
+	cancelled, err := New(spec, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := cancelled.StartReadyReads(t.Context(), "state", 2); err != nil || len(claims) != 2 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	if err := cancelled.Cancel(t.Context(), "user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSnapshot(cancelled.Snapshot()); err != nil {
+		t.Fatalf("cancelled fan-out snapshot invalid: %v", err)
+	}
+
+	bounded, err := New(spec, 1, Options{MaxReadStarts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := bounded.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("bounded first wave=%+v err=%v", claims, err)
+	}
+	if err := bounded.FinishRead(t.Context(), ReadResult{AttemptID: claims[0].Attempt.ID, WorkerID: "worker", Status: "done", Summary: "grounded", Evidence: []string{"read_file passed"}, ToolSuccesses: 1, WorkspaceToken: "state"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bounded.StartReadyReads(t.Context(), "state", 2); !errors.Is(err, ErrGraphTerminal) {
+		t.Fatalf("aggregate start bound error=%v", err)
+	}
+	if outcome, _ := bounded.Outcome(); outcome != OutcomeBudgetExhausted {
+		t.Fatalf("outcome=%q", outcome)
+	}
+}
+
+func TestGraphRetriesReadWhoseWorkspaceFreshnessChanged(t *testing.T) {
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect", Execution: ExecutionReadOnly}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyReads(t.Context(), "before", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishRead(t.Context(), ReadResult{AttemptID: claims[0].Attempt.ID, WorkerID: "worker", Status: "done", Summary: "stale facts", Evidence: []string{"read_file passed"}, ToolSuccesses: 1, WorkspaceToken: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Nodes[0].State != NodeReady || snapshot.Attempts[0].State != AttemptRetryable {
+		t.Fatalf("freshness mismatch was not retried: node=%+v attempt=%+v", snapshot.Nodes[0], snapshot.Attempts[0])
+	}
+}
+
+func TestGraphRejectsFailedOnlyDelegateEvidence(t *testing.T) {
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect", Execution: ExecutionReadOnly}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyReads(t.Context(), "state", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishRead(t.Context(), ReadResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "worker", Status: "done",
+		Summary:  "the missing file probably contains the answer",
+		Evidence: []string{"read_file: failed — file does not exist"}, WorkspaceToken: "state",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Nodes[0].State != NodeReady || snapshot.Attempts[0].State != AttemptRetryable || snapshot.Attempts[0].ToolSuccesses != 0 {
+		t.Fatalf("failed-only evidence was accepted: node=%+v attempt=%+v", snapshot.Nodes[0], snapshot.Attempts[0])
+	}
+	if len(snapshot.Attempts[0].Failures) != 1 || snapshot.Attempts[0].Failures[0].Kind != FailureTool {
+		t.Fatalf("failed-only evidence classification=%+v", snapshot.Attempts[0].Failures)
+	}
+}
+
 func TestGraphInspectShowsBoundedOperatorEvidence(t *testing.T) {
 	fixture := &graphFixture{}
 	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "read state", Acceptance: []string{"facts are grounded"}}}}, 1, fixture.options())
@@ -390,6 +538,29 @@ func TestRestoreRejectsStructurallyFalseDoneSnapshot(t *testing.T) {
 	snapshot.Reason = "tampered terminal state"
 	if _, err := Restore(snapshot, Options{}); err == nil || !strings.Contains(err.Error(), "retains node") {
 		t.Fatalf("restore error=%v", err)
+	}
+}
+
+func TestRestoreDefaultsPreFanoutSnapshotsToPrimaryExecution(t *testing.T) {
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := graph.Snapshot()
+	legacy.Nodes[0].Execution = ""
+	legacy.Revisions[0].Spec.Nodes[0].Execution = ""
+	legacy.ReadFanout = ReadFanout{}
+	restored, err := Restore(legacy, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := restored.Snapshot()
+	if snapshot.Nodes[0].Execution != ExecutionPrimary || snapshot.ReadFanout.MaxConcurrent != defaultMaxReadConcurrency {
+		t.Fatalf("legacy defaults=%+v read=%+v", snapshot.Nodes[0], snapshot.ReadFanout)
+	}
+	claims, err := restored.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("legacy primary node was delegated: claims=%+v err=%v", claims, err)
 	}
 }
 

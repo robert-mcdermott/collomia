@@ -1,0 +1,103 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
+)
+
+const automaticReadMaxIterations = 8
+
+// runGoalReadFanout executes graph-owned read claims through the same bounded
+// delegated-agent path used by the manual delegate tool. Claims are already
+// durable and dependency-ready; this function adds no scheduling authority.
+func (a *Agent) runGoalReadFanout(ctx context.Context, claims []goalgraph.ReadClaim, send Emit) error {
+	if len(claims) == 0 {
+		return nil
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	cfg, approver, team, scheduler := a.delegateConfig, a.delegateApprover, a.delegateTeam, a.delegateScheduler
+	a.mu.RUnlock()
+	if graph == nil {
+		return errors.New("goal graph is unavailable for automatic read fan-out")
+	}
+	if scheduler == nil || team == nil {
+		return errors.New("delegated-agent scheduler is unavailable for automatic read fan-out")
+	}
+
+	results := make([]DelegateResult, len(claims))
+	var wg sync.WaitGroup
+	for index, claim := range claims {
+		wg.Add(1)
+		go func(index int, claim goalgraph.ReadClaim) {
+			defer wg.Done()
+			task := DelegateTask{
+				Name:                  fmt.Sprintf("goal-read-%d", claim.Node.ID),
+				Task:                  automaticReadPrompt(claim),
+				PlanStep:              claim.Node.ID,
+				RuntimeID:             "goal-" + claim.Attempt.ID,
+				GraphNode:             true,
+				TokenBudgetOverride:   claim.TokenBudget,
+				TimeoutOverride:       claim.TimeoutSeconds,
+				MaxIterationsOverride: automaticReadMaxIterations,
+			}
+			results[index] = a.runScheduledDelegate(ctx, index, task, cfg, approver, team, scheduler, nil)
+		}(index, claim)
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		// A turn cancellation is a graph-level terminal decision, not a set of
+		// unrelated child failures. Persist it before considering any late child
+		// inbox result so cancellation cannot be misreported as blocked.
+		_ = graph.Cancel(context.WithoutCancel(ctx), err.Error())
+		a.emitGoalUpdates(send)
+		return err
+	}
+
+	for index, result := range results {
+		token, _ := a.goalToken(ctx)
+		err := graph.FinishRead(context.WithoutCancel(ctx), goalgraph.ReadResult{
+			AttemptID: claims[index].Attempt.ID, WorkerID: result.ID, Status: result.Status,
+			Summary: result.Summary, Error: result.Error, Evidence: result.Evidence,
+			ToolSuccesses:  completedDelegateToolCount(result.Evidence),
+			WorkspaceToken: token, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+			CostUSD: result.CostUSD, CostAvailable: result.CostAvailable,
+		})
+		a.emitGoalUpdates(send)
+		if err != nil && !errors.Is(err, goalgraph.ErrGraphTerminal) {
+			return err
+		}
+	}
+	if outcome, reason := graph.Outcome(); outcome != "" {
+		return goalGraphTerminalError(outcome, reason)
+	}
+	return nil
+}
+
+func completedDelegateToolCount(evidence []string) int {
+	count := 0
+	for _, line := range evidence {
+		if strings.Contains(line, ": completed —") {
+			count++
+		}
+	}
+	return count
+}
+
+func automaticReadPrompt(claim goalgraph.ReadClaim) string {
+	criteria := ""
+	for _, criterion := range claim.Node.Acceptance {
+		criteria += "\n- " + criterion
+	}
+	return fmt.Sprintf(`Investigate one approved Orchestrated Goal node as a read-only specialist.
+
+Node %d: %s
+Acceptance criteria:%s
+
+Use available read-only repository tools to ground the answer. Return a concise result with concrete file, symbol, or observed-output references that the primary agent can consume. Do not edit files, run commands, update the shared plan, delegate, or claim that the whole goal is complete.`, claim.Node.ID, claim.Node.Title, criteria)
+}

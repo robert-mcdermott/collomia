@@ -49,8 +49,8 @@ type Runtime struct {
 	Attachments *session.AttachmentManager
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
-	// GoalGraph is non-nil for an internal OG-1 evaluation or an explicitly
-	// approved/resumed OG-2A TUI preview. Persisted state alone never sets it.
+	// GoalGraph is non-nil for an internal evaluation or an explicitly
+	// approved/resumed TUI preview. Persisted state alone never sets it.
 	GoalGraph *goalgraph.Graph
 	Team      *agent.Team
 	Processes *tools.ProcessManager
@@ -188,9 +188,9 @@ type Options struct {
 	// Asker lets the agent pause and ask the user a typed question. When
 	// nil (headless), the ask_user tool is not registered.
 	Asker func(ctx context.Context, question string, options []string) (string, error)
-	// OrchestratedGoal opts this runtime into the internal OG-1 primary-only
-	// controller using an already-approved logical plan. It remains an
-	// evaluation/embedder seam; the OG-2A user preview activates only through
+	// OrchestratedGoal opts this runtime into the internal graph controller
+	// using an already-approved logical plan. It remains an
+	// evaluation/embedder seam; the user preview activates only through
 	// an explicit runtime method called by the TUI.
 	// Supplying it while resuming a graph-bearing session restores the durable
 	// graph instead of creating a new one.
@@ -480,7 +480,7 @@ func OrchestratedProposalPrompt(goal string) string {
 
 %s
 
-Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Use no more than 12 steps. Every step must be pending, use stable non-zero IDs, declare dependencies, and include at least one concrete acceptance criterion describing observable evidence for completion. Prefer a dependency graph only where it is useful; inherently serial work should stay serial. Do not implement anything. After updating the plan, summarize its critical path, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
+Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Use no more than 12 steps. Every step must be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary or read_only. Use read_only only for bounded investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Use primary for implementation, verification, commands, ambiguity, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
 }
 
 // OrchestratedExecutionPrompt is submitted only after the user explicitly
@@ -772,7 +772,7 @@ func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board
 	_, logicalRevision := board.Snapshot()
 	spec := goalgraph.Spec{Goal: fresh.Goal, Nodes: make([]goalgraph.NodeSpec, 0, len(fresh.Steps))}
 	for _, step := range fresh.Steps {
-		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...)})
+		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution)})
 	}
 	graph, err := goalgraph.New(spec, logicalRevision, goalgraph.Options{Persist: goalGraphPersister(sess)})
 	if err != nil {
@@ -831,7 +831,7 @@ func orchestratedSpec(p *plan.Plan) (goalgraph.Spec, error) {
 		if len(step.Acceptance) == 0 {
 			return goalgraph.Spec{}, fmt.Errorf("proposal step %d (%s) needs at least one concrete acceptance criterion", step.ID, step.Title)
 		}
-		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...)})
+		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution)})
 	}
 	if err := goalgraph.ValidateSpec(spec); err != nil {
 		return goalgraph.Spec{}, fmt.Errorf("proposal graph is invalid: %w", err)
@@ -957,7 +957,8 @@ func (r *Runtime) OrchestratedGoalStatus(nodeID int) (string, error) {
 		fmt.Fprintf(&b, "Requested outcome: %s\n", r.orchestrationProposal.Goal)
 		fmt.Fprintf(&b, "Proposal state: %s\n", map[bool]string{true: "awaiting explicit approval", false: "waiting for a new structured plan"}[fresh])
 		fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", limits.MaxNodes, limits.MaxAttemptsPerNode, limits.MaxRevisions)
-		b.WriteString("Execution: one serial primary lane; automatic delegates are disabled in this preview.\n")
+		fmt.Fprintf(&b, "Automatic reads: at most %d concurrent · %d starts · %d tokens · %ds wall bound\n", limits.MaxReadConcurrency, limits.MaxReadStarts, limits.MaxReadTokens, limits.MaxReadWallSeconds)
+		b.WriteString("Execution: one serial primary lane; independently ready approved read_only nodes may use at most two automatic read-only workers.\n")
 		b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when proposed.\n")
 		b.WriteString("Authority: approval grants no tool, path, network, publication, or budget authority.\n")
 		b.WriteString("Completion: every changed workspace state needs fresh machine-observed verification.\n")

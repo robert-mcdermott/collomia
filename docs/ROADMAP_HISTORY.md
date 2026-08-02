@@ -41,6 +41,42 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-02 — OG-2B1 runtime-selected read fan-out completed
+
+- **The first automatic actor remains a read-only optimization.** A graph-owned
+  execution class now claims at most two independently
+  ready, explicitly approved read nodes in stable order. The primary workspace
+  write lane remains serial, and primary-only or dependency-serial graphs do
+  not gain a child merely because Orchestrated Goal was selected.
+- **Existing delegate safety is reused, not bypassed.** Automatic workers use
+  the same planning-mode registry, inherited-or-tighter permissions,
+  non-recursive topology, bounded evidence inbox, audit identity, cancellation,
+  and provider limits as manual read delegation.
+- **Completion is evidence- and freshness-gated.** A worker result needs a
+  bounded summary, successful tool evidence, and the same Git workspace token
+  as its durable claim. The graph stores worker identity, attempt usage, a
+  `delegate_read` evidence record, and the reason it delegated; child prose
+  alone cannot mark a node done.
+- **The aggregate envelope is fixed and persisted.** The experimental
+  controller allows two live reads, eight starts, 64,000 aggregate read tokens,
+  and fifteen minutes of read wall time. Each child is additionally capped at
+  five minutes and eight iterations, and every node retains the existing
+  two-attempt bound. Scheduler, provider, profile, cancellation, and permission
+  limits can only make those bounds tighter.
+- **Compatibility fails toward serial execution.** The additive plan/node
+  `execution`, graph read envelope, and attempt worker/usage fields stay in
+  schema 1. Snapshots written before fan-out restore omitted execution as
+  `primary` and cannot gain automatic children from an upgrade.
+- **The product path was exercised, not inferred.** One credential-free
+  evaluation proves two governed workers overlap and unlock the dependent
+  primary only after both grounded results arrive; another cancels both
+  workers and proves the graph ends `cancelled`. Unit coverage proves stable
+  claims, serial fallback, bounds, freshness retry, meta-tool isolation, and
+  legacy restore. Full test/race/vet/build and documentation checks passed.
+- **OG-2B is not complete yet.** OG-2B1 owns the runtime fan-out kernel and its
+  authority/bound tests. OG-2B2 retains pause/node controls and the comparative
+  quality, elapsed-time, and cost evidence required by the milestone exit gate.
+
 ### 2026-08-01 — OG-2A explicit primary-only preview completed
 
 - **The user surface and the autonomy increase are separate increments.**

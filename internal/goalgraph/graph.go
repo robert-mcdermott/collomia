@@ -27,6 +27,18 @@ const (
 	maxTitleBytes              = 512
 	maxAcceptanceItems         = 8
 	maxAcceptanceBytes         = 512
+	defaultMaxReadConcurrency  = 2
+	defaultMaxReadStarts       = 8
+	defaultMaxReadTokens       = 64_000
+	defaultMaxReadWallSeconds  = 15 * 60
+	defaultReadTaskWallSeconds = 5 * 60
+)
+
+type Execution string
+
+const (
+	ExecutionPrimary  Execution = "primary"
+	ExecutionReadOnly Execution = "read_only"
 )
 
 type NodeState string
@@ -85,6 +97,7 @@ const (
 	EvidenceToolResult   EvidenceKind = "tool_result"
 	EvidenceVerification EvidenceKind = "verification"
 	EvidenceNodeResult   EvidenceKind = "node_result"
+	EvidenceDelegateRead EvidenceKind = "delegate_read"
 )
 
 // Spec is one approved logical graph. Status and evidence are intentionally
@@ -96,10 +109,11 @@ type Spec struct {
 }
 
 type NodeSpec struct {
-	ID         int      `json:"id"`
-	Title      string   `json:"title"`
-	DependsOn  []int    `json:"depends_on,omitempty"`
-	Acceptance []string `json:"acceptance,omitempty"`
+	ID         int       `json:"id"`
+	Title      string    `json:"title"`
+	DependsOn  []int     `json:"depends_on,omitempty"`
+	Acceptance []string  `json:"acceptance,omitempty"`
+	Execution  Execution `json:"execution,omitempty"`
 }
 
 type Node struct {
@@ -108,6 +122,7 @@ type Node struct {
 	Title             string    `json:"title"`
 	DependsOn         []int     `json:"depends_on,omitempty"`
 	Acceptance        []string  `json:"acceptance,omitempty"`
+	Execution         Execution `json:"execution"`
 	State             NodeState `json:"state"`
 	ActiveAttemptID   string    `json:"active_attempt_id,omitempty"`
 	AcceptedAttemptID string    `json:"accepted_attempt_id,omitempty"`
@@ -153,6 +168,13 @@ type Attempt struct {
 	Failures                []Failure      `json:"failures,omitempty"`
 	EvidenceIDs             []string       `json:"evidence_ids,omitempty"`
 	Summary                 string         `json:"summary,omitempty"`
+	WorkerID                string         `json:"worker_id,omitempty"`
+	InputTokens             int            `json:"input_tokens,omitempty"`
+	OutputTokens            int            `json:"output_tokens,omitempty"`
+	CostUSD                 float64        `json:"cost_usd,omitempty"`
+	CostAvailable           bool           `json:"cost_available,omitempty"`
+	TokenBudget             int            `json:"token_budget,omitempty"`
+	TimeoutSeconds          int            `json:"timeout_seconds,omitempty"`
 	Started                 time.Time      `json:"started"`
 	Finished                time.Time      `json:"finished,omitempty"`
 }
@@ -197,10 +219,24 @@ type Snapshot struct {
 	RevisionCount      int        `json:"revision_count,omitempty"`
 	MaxAttemptsPerNode int        `json:"max_attempts_per_node"`
 	MaxRevisions       int        `json:"max_revisions"`
+	ReadFanout         ReadFanout `json:"read_fanout"`
 	Outcome            Outcome    `json:"outcome,omitempty"`
 	Reason             string     `json:"reason,omitempty"`
 	Created            time.Time  `json:"created"`
 	Updated            time.Time  `json:"updated"`
+}
+
+// ReadFanout is the durable aggregate envelope for automatic read workers.
+// Bounds are fixed for the experimental slice and persisted so resume cannot
+// silently acquire a larger budget from a newer process configuration.
+type ReadFanout struct {
+	MaxConcurrent  int       `json:"max_concurrent"`
+	MaxStarts      int       `json:"max_starts"`
+	Starts         int       `json:"starts"`
+	MaxTokens      int       `json:"max_tokens"`
+	UsedTokens     int       `json:"used_tokens"`
+	MaxWallSeconds int       `json:"max_wall_seconds"`
+	Started        time.Time `json:"started,omitempty"`
 }
 
 // Update is a bounded public lifecycle fact. It contains enough state for
@@ -226,6 +262,10 @@ type PersistFunc func(context.Context, Snapshot, bool) error
 type Options struct {
 	MaxAttemptsPerNode int
 	MaxRevisions       int
+	MaxReadConcurrency int
+	MaxReadStarts      int
+	MaxReadTokens      int
+	MaxReadWallSeconds int
 	Persist            PersistFunc
 	Now                func() time.Time
 	NewID              func(string) string
@@ -239,6 +279,10 @@ type Limits struct {
 	MaxRevisions               int
 	MaxAcceptanceItemsPerNode  int
 	MaxCompletionInterventions int
+	MaxReadConcurrency         int
+	MaxReadStarts              int
+	MaxReadTokens              int
+	MaxReadWallSeconds         int
 }
 
 func DefaultLimits() Limits {
@@ -248,6 +292,10 @@ func DefaultLimits() Limits {
 		MaxRevisions:               defaultMaxRevisions,
 		MaxAcceptanceItemsPerNode:  maxAcceptanceItems,
 		MaxCompletionInterventions: maxCompletionInterventions,
+		MaxReadConcurrency:         defaultMaxReadConcurrency,
+		MaxReadStarts:              defaultMaxReadStarts,
+		MaxReadTokens:              defaultMaxReadTokens,
+		MaxReadWallSeconds:         defaultMaxReadWallSeconds,
 	}
 }
 
@@ -262,6 +310,7 @@ type Graph struct {
 
 var (
 	ErrNoReadyNode       = errors.New("goal graph has no dependency-ready node")
+	ErrReadFanoutReady   = errors.New("goal graph has dependency-ready read-only nodes")
 	ErrGraphTerminal     = errors.New("goal graph is terminal")
 	ErrWorkspaceState    = errors.New("goal graph requires a Git-backed workspace state token before potentially mutating work")
 	ErrStaleRevision     = errors.New("goal graph revision was based on stale state")
@@ -279,10 +328,11 @@ func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
 		Schema: SchemaVersion, ID: opts.NewID("graph"), LogicalRevision: logicalRevision,
 		Generation: 1, Goal: strings.TrimSpace(spec.Goal), MaxAttemptsPerNode: opts.MaxAttemptsPerNode,
 		MaxRevisions: opts.MaxRevisions, Created: now, Updated: now,
-		Revisions: []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
+		ReadFanout: ReadFanout{MaxConcurrent: opts.MaxReadConcurrency, MaxStarts: opts.MaxReadStarts, MaxTokens: opts.MaxReadTokens, MaxWallSeconds: opts.MaxReadWallSeconds},
+		Revisions:  []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
 	}
 	for position, node := range spec.Nodes {
-		g.state.Nodes = append(g.state.Nodes, Node{ID: node.ID, Position: position, Title: strings.TrimSpace(node.Title), DependsOn: append([]int(nil), node.DependsOn...), Acceptance: append([]string(nil), node.Acceptance...), State: NodeProposed})
+		g.state.Nodes = append(g.state.Nodes, Node{ID: node.ID, Position: position, Title: strings.TrimSpace(node.Title), DependsOn: append([]int(nil), node.DependsOn...), Acceptance: append([]string(nil), node.Acceptance...), Execution: normalizeExecution(node.Execution), State: NodeProposed})
 	}
 	g.queueUpdateLocked(0, "", "created", "approved logical graph recorded")
 	g.refreshReadyLocked("dependencies accepted")
@@ -290,6 +340,7 @@ func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
 }
 
 func Restore(snapshot Snapshot, opts Options) (*Graph, error) {
+	normalizeSnapshot(&snapshot)
 	if err := ValidateSnapshot(snapshot); err != nil {
 		return nil, err
 	}
@@ -301,12 +352,52 @@ func Restore(snapshot Snapshot, opts Options) (*Graph, error) {
 	return g, nil
 }
 
+func normalizeSnapshot(snapshot *Snapshot) {
+	if snapshot == nil {
+		return
+	}
+	if snapshot.ReadFanout.MaxConcurrent == 0 {
+		snapshot.ReadFanout.MaxConcurrent = defaultMaxReadConcurrency
+	}
+	if snapshot.ReadFanout.MaxStarts == 0 {
+		snapshot.ReadFanout.MaxStarts = defaultMaxReadStarts
+	}
+	if snapshot.ReadFanout.MaxTokens == 0 {
+		snapshot.ReadFanout.MaxTokens = defaultMaxReadTokens
+	}
+	if snapshot.ReadFanout.MaxWallSeconds == 0 {
+		snapshot.ReadFanout.MaxWallSeconds = defaultMaxReadWallSeconds
+	}
+	for i := range snapshot.Nodes {
+		snapshot.Nodes[i].Execution = normalizeExecution(snapshot.Nodes[i].Execution)
+	}
+}
+
+func normalizeExecution(execution Execution) Execution {
+	if execution == "" {
+		return ExecutionPrimary
+	}
+	return execution
+}
+
 func normalizedOptions(opts Options) Options {
 	if opts.MaxAttemptsPerNode <= 0 {
 		opts.MaxAttemptsPerNode = defaultMaxAttempts
 	}
 	if opts.MaxRevisions <= 0 {
 		opts.MaxRevisions = defaultMaxRevisions
+	}
+	if opts.MaxReadConcurrency <= 0 || opts.MaxReadConcurrency > defaultMaxReadConcurrency {
+		opts.MaxReadConcurrency = defaultMaxReadConcurrency
+	}
+	if opts.MaxReadStarts <= 0 {
+		opts.MaxReadStarts = defaultMaxReadStarts
+	}
+	if opts.MaxReadTokens <= 0 {
+		opts.MaxReadTokens = defaultMaxReadTokens
+	}
+	if opts.MaxReadWallSeconds <= 0 {
+		opts.MaxReadWallSeconds = defaultMaxReadWallSeconds
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -357,6 +448,9 @@ func ValidateSpec(spec Spec) error {
 				return fmt.Errorf("nodes[%d] acceptance[%d] must be non-empty and at most %d bytes", i, criterionIndex, maxAcceptanceBytes)
 			}
 		}
+		if node.Execution != "" && node.Execution != ExecutionPrimary && node.Execution != ExecutionReadOnly {
+			return fmt.Errorf("nodes[%d] execution must be primary or read_only", i)
+		}
 		if seen[node.ID] {
 			return fmt.Errorf("duplicate node id %d", node.ID)
 		}
@@ -392,13 +486,16 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	}
 	spec := Spec{Goal: snapshot.Goal}
 	for _, node := range snapshot.Nodes {
-		spec.Nodes = append(spec.Nodes, NodeSpec{ID: node.ID, Title: node.Title, DependsOn: node.DependsOn, Acceptance: node.Acceptance})
+		spec.Nodes = append(spec.Nodes, NodeSpec{ID: node.ID, Title: node.Title, DependsOn: node.DependsOn, Acceptance: node.Acceptance, Execution: node.Execution})
 	}
 	if err := ValidateSpec(spec); err != nil {
 		return fmt.Errorf("invalid goal graph snapshot: %w", err)
 	}
 	if snapshot.MaxAttemptsPerNode <= 0 || snapshot.MaxRevisions <= 0 {
 		return errors.New("goal graph snapshot has invalid attempt or revision bounds")
+	}
+	if snapshot.ReadFanout.MaxConcurrent <= 0 || snapshot.ReadFanout.MaxConcurrent > defaultMaxReadConcurrency || snapshot.ReadFanout.MaxStarts <= 0 || snapshot.ReadFanout.Starts < 0 || snapshot.ReadFanout.Starts > snapshot.ReadFanout.MaxStarts || snapshot.ReadFanout.MaxTokens <= 0 || snapshot.ReadFanout.UsedTokens < 0 || snapshot.ReadFanout.MaxWallSeconds <= 0 {
+		return errors.New("goal graph snapshot has invalid read-fan-out bounds or usage")
 	}
 	nodes := make(map[int]Node, len(snapshot.Nodes))
 	positions := make(map[int]bool, len(snapshot.Nodes))
@@ -432,7 +529,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if _, duplicate := attempts[attempt.ID]; duplicate {
 			return fmt.Errorf("goal graph snapshot repeats attempt %q", attempt.ID)
 		}
-		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation {
+		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.TimeoutSeconds < 0 {
 			return fmt.Errorf("goal graph snapshot has invalid attempt %q state, number, or generation", attempt.ID)
 		}
 		if attempt.PendingAction != nil && attempt.State != AttemptRunning && attempt.State != AttemptInterrupted {
@@ -454,7 +551,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		}
 		evidence[item.ID] = item
 	}
-	running := 0
+	runningPrimary, runningReads := 0, 0
 	for _, node := range snapshot.Nodes {
 		if len(node.AttemptIDs) > snapshot.MaxAttemptsPerNode {
 			return fmt.Errorf("node %d exceeds its attempt bound", node.ID)
@@ -474,7 +571,11 @@ func ValidateSnapshot(snapshot Snapshot) error {
 			if attempts[node.ActiveAttemptID].State != AttemptRunning {
 				return fmt.Errorf("node %d active attempt %q is not running", node.ID, node.ActiveAttemptID)
 			}
-			running++
+			if node.Execution == ExecutionReadOnly {
+				runningReads++
+			} else {
+				runningPrimary++
+			}
 		}
 		if node.AcceptedAttemptID != "" {
 			if attempt, ok := attempts[node.AcceptedAttemptID]; !ok || attempt.NodeID != node.ID || attempt.State != AttemptAccepted {
@@ -482,8 +583,8 @@ func ValidateSnapshot(snapshot Snapshot) error {
 			}
 		}
 	}
-	if running > 1 {
-		return errors.New("primary goal graph snapshot has more than one running attempt")
+	if runningPrimary > 1 || runningReads > snapshot.ReadFanout.MaxConcurrent || (runningPrimary > 0 && runningReads > 0) {
+		return errors.New("goal graph snapshot exceeds its primary/read running-attempt bounds")
 	}
 	for _, attempt := range snapshot.Attempts {
 		for _, evidenceID := range attempt.EvidenceIDs {
@@ -496,7 +597,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if !validOutcome(snapshot.Outcome) {
 		return fmt.Errorf("goal graph snapshot has unknown outcome %q", snapshot.Outcome)
 	}
-	if snapshot.Outcome != "" && running > 0 {
+	if snapshot.Outcome != "" && runningPrimary+runningReads > 0 {
 		return errors.New("terminal goal graph snapshot retains a running attempt")
 	}
 	if snapshot.Outcome == OutcomeDone {
@@ -551,7 +652,7 @@ func validEvidence(item Evidence) bool {
 	switch item.Kind {
 	case EvidenceToolResult, EvidenceVerification:
 		return item.Status == "passed" || item.Status == "failed"
-	case EvidenceNodeResult:
+	case EvidenceNodeResult, EvidenceDelegateRead:
 		return item.Status == "accepted"
 	default:
 		return false
@@ -643,6 +744,201 @@ func (g *Graph) Active() (Node, Attempt, bool) {
 	return Node{}, Attempt{}, false
 }
 
+// ReadClaim is one durable dependency-ready read assignment. The caller runs
+// it through a read-only worker and must return exactly one ReadResult.
+type ReadClaim struct {
+	Node           Node
+	Attempt        Attempt
+	TokenBudget    int
+	TimeoutSeconds int
+}
+
+// ReadResult is the bounded worker-inbox fact accepted by the graph. Status is
+// one of done, error, cancelled, timed_out, or budget_exhausted. It carries
+// evidence text, not a child transcript or scheduling authority.
+type ReadResult struct {
+	AttemptID      string
+	WorkerID       string
+	Status         string
+	Summary        string
+	Error          string
+	Evidence       []string
+	ToolSuccesses  int
+	WorkspaceToken string
+	InputTokens    int
+	OutputTokens   int
+	CostUSD        float64
+	CostAvailable  bool
+}
+
+// StartReadyReads durably claims at most the fixed automatic fan-out bound in
+// stable plan order. Primary and read attempts never overlap in this slice.
+func (g *Graph) StartReadyReads(ctx context.Context, workspaceToken string, limit int) ([]ReadClaim, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return nil, ErrGraphTerminal
+	}
+	if g.activeAttemptLocked() != nil {
+		return nil, errors.New("goal graph already has a running attempt")
+	}
+	if g.state.WorkspaceToken != "" && workspaceToken != "" && g.state.WorkspaceToken != workspaceToken {
+		g.invalidateAllDoneLocked("combined workspace changed outside the recorded graph state")
+	}
+	if g.state.WorkspaceToken == "" && workspaceToken != "" {
+		g.state.WorkspaceToken = workspaceToken
+	}
+	g.refreshReadyLocked("dependencies accepted")
+	var ready []*Node
+	for i := range g.state.Nodes {
+		node := &g.state.Nodes[i]
+		if node.State == NodeReady && node.Execution == ExecutionReadOnly {
+			ready = append(ready, node)
+		}
+	}
+	if len(ready) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > g.state.ReadFanout.MaxConcurrent {
+		limit = g.state.ReadFanout.MaxConcurrent
+	}
+	remainingStarts := g.state.ReadFanout.MaxStarts - g.state.ReadFanout.Starts
+	remainingTokens := g.state.ReadFanout.MaxTokens - g.state.ReadFanout.UsedTokens
+	now := g.now().UTC()
+	if g.state.ReadFanout.Started.IsZero() {
+		g.state.ReadFanout.Started = now
+	}
+	remainingWall := g.state.ReadFanout.MaxWallSeconds - int(now.Sub(g.state.ReadFanout.Started).Seconds())
+	if remainingStarts <= 0 || remainingTokens <= 0 || remainingWall <= 0 {
+		reason := fmt.Sprintf("automatic read fan-out budget exhausted: starts %d/%d, tokens %d/%d, wall %ds/%ds", g.state.ReadFanout.Starts, g.state.ReadFanout.MaxStarts, g.state.ReadFanout.UsedTokens, g.state.ReadFanout.MaxTokens, max(0, g.state.ReadFanout.MaxWallSeconds-remainingWall), g.state.ReadFanout.MaxWallSeconds)
+		g.exhaustReadyReadLocked(ready[0], reason)
+		if err := g.persistLocked(ctx, true); err != nil {
+			return nil, err
+		}
+		return nil, ErrGraphTerminal
+	}
+	count := min(len(ready), limit, remainingStarts)
+	perTaskTokens := max(1, remainingTokens/count)
+	timeout := min(defaultReadTaskWallSeconds, remainingWall)
+	claims := make([]ReadClaim, 0, count)
+	for index, node := range ready[:count] {
+		number := len(node.AttemptIDs) + 1
+		if number > g.state.MaxAttemptsPerNode {
+			g.blockNodeLocked(node, "read-only node attempt budget exhausted")
+			continue
+		}
+		attempt := Attempt{
+			ID: g.newID("attempt"), NodeID: node.ID, Number: number, State: AttemptRunning,
+			GraphGeneration: g.state.Generation, BaseWorkspaceToken: workspaceToken,
+			MutationGeneration: g.state.MutationGeneration, TokenBudget: perTaskTokens,
+			TimeoutSeconds: timeout, Started: now,
+		}
+		g.state.Attempts = append(g.state.Attempts, attempt)
+		node.State, node.ActiveAttemptID = NodeRunning, attempt.ID
+		node.AttemptIDs = append(node.AttemptIDs, attempt.ID)
+		g.state.ReadFanout.Starts++
+		reason := fmt.Sprintf("automatically delegated: approved read_only node is dependency-ready (slot %d/%d)", index+1, g.state.ReadFanout.MaxConcurrent)
+		node.Reason = reason
+		g.queueUpdateLocked(node.ID, attempt.ID, "delegated_read", reason)
+		claims = append(claims, ReadClaim{Node: cloneNode(*node), Attempt: cloneAttempt(attempt), TokenBudget: perTaskTokens, TimeoutSeconds: timeout})
+	}
+	if len(claims) == 0 {
+		g.reduceOutcomeLocked()
+	}
+	if err := g.persistLocked(ctx, true); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+// FinishRead records a bounded child result against its immutable attempt.
+// Success requires grounded tool evidence and a fresh workspace token when one
+// is available; child prose alone cannot accept a logical node.
+func (g *Graph) FinishRead(ctx context.Context, result ReadResult) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return ErrGraphTerminal
+	}
+	attempt := g.attemptLocked(result.AttemptID)
+	if attempt == nil || attempt.State != AttemptRunning {
+		return fmt.Errorf("goal graph read attempt %q is not running", result.AttemptID)
+	}
+	node := g.nodeLocked(attempt.NodeID)
+	if node == nil || node.Execution != ExecutionReadOnly {
+		return fmt.Errorf("goal graph attempt %q is not a read_only node", result.AttemptID)
+	}
+	attempt.WorkerID = bounded(result.WorkerID, 256)
+	attempt.InputTokens, attempt.OutputTokens = max(0, result.InputTokens), max(0, result.OutputTokens)
+	attempt.CostUSD, attempt.CostAvailable = max(0, result.CostUSD), result.CostAvailable
+	g.state.ReadFanout.UsedTokens += attempt.InputTokens + attempt.OutputTokens
+	now := g.now().UTC()
+	// A claim made without a workspace token is necessarily best-effort (for
+	// example, outside a Git worktree). Once a base token exists, however, the
+	// worker must return the same token; a missing result token cannot silently
+	// weaken the freshness gate.
+	fresh := attempt.BaseWorkspaceToken == "" || (result.WorkspaceToken != "" && attempt.BaseWorkspaceToken == result.WorkspaceToken)
+	summary := boundedSummary(result.Summary)
+	grounded := result.ToolSuccesses > 0
+	if result.Status == "done" && summary != "" && grounded && fresh {
+		attempt.State, attempt.Finished, attempt.Summary = AttemptAccepted, now, summary
+		attempt.ToolSuccesses = result.ToolSuccesses
+		evidenceSummary := boundedSummary(strings.Join(result.Evidence, "\n"))
+		g.addEvidenceLocked(attempt, Evidence{Kind: EvidenceDelegateRead, Tool: "automatic_read_delegate", Status: "accepted", Summary: evidenceSummary, WorkspaceToken: result.WorkspaceToken, MutationGeneration: g.state.MutationGeneration, Finished: now})
+		node.State, node.ActiveAttemptID, node.AcceptedAttemptID, node.Reason = NodeDone, "", attempt.ID, ""
+		g.refreshReadyLocked("delegated read evidence accepted")
+		g.reduceOutcomeLocked()
+		g.queueUpdateLocked(node.ID, attempt.ID, string(NodeDone), "bounded delegated read evidence accepted")
+		return g.persistLocked(ctx, true)
+	}
+
+	detail := strings.TrimSpace(result.Error)
+	if detail == "" {
+		switch {
+		case !fresh:
+			detail = "workspace changed while the automatic read worker was running"
+		case !grounded:
+			detail = "automatic read worker returned no grounded tool evidence"
+		case summary == "":
+			detail = "automatic read worker returned no bounded result summary"
+		default:
+			detail = "automatic read worker ended with status " + result.Status
+		}
+	}
+	failureKind := FailureProvider
+	if !fresh {
+		failureKind = FailureWorkspaceStale
+	} else if !grounded {
+		failureKind = FailureTool
+	}
+	attempt.Failures = append(attempt.Failures, Failure{Kind: failureKind, Tool: "automatic_read_delegate", Detail: boundedReason(detail), Retryable: result.Status == "error" || result.Status == "timed_out" || !fresh || !grounded, Time: now})
+	attempt.Summary, attempt.Finished = boundedSummary(detail), now
+	node.ActiveAttemptID = ""
+	switch result.Status {
+	case "budget_exhausted":
+		attempt.State, node.State, node.Reason = AttemptBudgetExhausted, NodeBudgetExhausted, detail
+	case "cancelled":
+		attempt.State, node.State, node.Reason = AttemptCancelled, NodeBlocked, detail
+	default:
+		if len(node.AttemptIDs) < g.state.MaxAttemptsPerNode {
+			attempt.State, node.State, node.Reason = AttemptRetryable, NodeRetryable, detail
+			g.refreshReadyLocked("automatic read failure has remaining attempt budget")
+		} else {
+			attempt.State, node.State, node.Reason = AttemptBlocked, NodeBlocked, detail
+		}
+	}
+	g.queueUpdateLocked(node.ID, attempt.ID, string(node.State), node.Reason)
+	g.reduceOutcomeLocked()
+	return g.persistLocked(ctx, true)
+}
+
+func (g *Graph) exhaustReadyReadLocked(node *Node, reason string) {
+	node.State, node.Reason = NodeBudgetExhausted, strings.TrimSpace(reason)
+	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, node.Reason
+	g.queueUpdateLocked(node.ID, "", string(NodeBudgetExhausted), node.Reason)
+	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
+}
+
 func (g *Graph) StartNext(ctx context.Context, workspaceToken string) (Node, Attempt, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -659,9 +955,14 @@ func (g *Graph) StartNext(ctx context.Context, workspaceToken string) (Node, Att
 		g.state.WorkspaceToken = workspaceToken
 	}
 	g.refreshReadyLocked("dependencies accepted")
+	for i := range g.state.Nodes {
+		if g.state.Nodes[i].State == NodeReady && g.state.Nodes[i].Execution == ExecutionReadOnly {
+			return Node{}, Attempt{}, ErrReadFanoutReady
+		}
+	}
 	var selected *Node
 	for i := range g.state.Nodes {
-		if g.state.Nodes[i].State == NodeReady {
+		if g.state.Nodes[i].State == NodeReady && g.state.Nodes[i].Execution == ExecutionPrimary {
 			selected = &g.state.Nodes[i]
 			break
 		}
@@ -1012,7 +1313,7 @@ func (g *Graph) Revise(ctx context.Context, baseGeneration uint64, reason string
 		return errors.New("goal graph revision reason exceeds 4096 bytes")
 	}
 	now := g.now().UTC()
-	if active := g.activeAttemptLocked(); active != nil {
+	for _, active := range g.runningAttemptsLocked() {
 		active.State, active.Finished = AttemptFailed, now
 		active.Summary = "superseded by graph revision: " + reason
 		if node := g.nodeLocked(active.NodeID); node != nil {
@@ -1029,7 +1330,7 @@ func (g *Graph) Revise(ctx context.Context, baseGeneration uint64, reason string
 	g.state.Nodes = nil
 	changed := map[int]bool{}
 	for position, proposed := range spec.Nodes {
-		node := Node{ID: proposed.ID, Position: position, Title: strings.TrimSpace(proposed.Title), DependsOn: append([]int(nil), proposed.DependsOn...), Acceptance: append([]string(nil), proposed.Acceptance...), State: NodeProposed}
+		node := Node{ID: proposed.ID, Position: position, Title: strings.TrimSpace(proposed.Title), DependsOn: append([]int(nil), proposed.DependsOn...), Acceptance: append([]string(nil), proposed.Acceptance...), Execution: normalizeExecution(proposed.Execution), State: NodeProposed}
 		if prior, ok := old[proposed.ID]; ok && sameDefinition(prior, proposed) && prior.State == NodeDone {
 			node.State, node.AcceptedAttemptID = NodeDone, prior.AcceptedAttemptID
 			node.AttemptIDs = append([]string(nil), prior.AttemptIDs...)
@@ -1098,7 +1399,7 @@ func (g *Graph) Recover(ctx context.Context, workspaceToken string) error {
 		}
 		node.ActiveAttemptID = ""
 		if len(node.AttemptIDs) < g.state.MaxAttemptsPerNode {
-			node.State, node.Reason = NodeRetryable, "interrupted read-only attempt may be recomputed in a new attempt"
+			node.State, node.Reason = NodeRetryable, "interrupted replay-safe attempt may be recomputed in a new attempt"
 			g.queueUpdateLocked(node.ID, attempt.ID, string(NodeRetryable), node.Reason)
 		} else {
 			node.State, node.Reason = NodeBlocked, "interrupted attempt exhausted the node attempt budget"
@@ -1124,7 +1425,7 @@ func (g *Graph) Cancel(ctx context.Context, reason string) error {
 		return nil
 	}
 	now := g.now().UTC()
-	if attempt := g.activeAttemptLocked(); attempt != nil {
+	for _, attempt := range g.runningAttemptsLocked() {
 		attempt.State, attempt.Finished = AttemptCancelled, now
 		if node := g.nodeLocked(attempt.NodeID); node != nil {
 			node.State, node.ActiveAttemptID, node.Reason = NodeCancelled, "", strings.TrimSpace(reason)
@@ -1143,7 +1444,7 @@ func (g *Graph) ExhaustBudget(ctx context.Context, reason string) error {
 		return nil
 	}
 	now := g.now().UTC()
-	if attempt := g.activeAttemptLocked(); attempt != nil {
+	for _, attempt := range g.runningAttemptsLocked() {
 		attempt.State, attempt.Finished = AttemptBudgetExhausted, now
 		if node := g.nodeLocked(attempt.NodeID); node != nil {
 			node.State, node.ActiveAttemptID, node.Reason = NodeBudgetExhausted, "", strings.TrimSpace(reason)
@@ -1162,7 +1463,7 @@ func (g *Graph) Render() string {
 	fmt.Fprintf(&b, "Runtime-owned goal graph %s · generation %d\nGoal: %s\n", g.state.ID, g.state.Generation, g.state.Goal)
 	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
 	for _, node := range g.state.Nodes {
-		fmt.Fprintf(&b, "%s %d. %s · %s", marks[node.State], node.ID, node.Title, node.State)
+		fmt.Fprintf(&b, "%s %d. %s · %s · %s", marks[node.State], node.ID, node.Title, node.State, node.Execution)
 		if len(node.DependsOn) > 0 {
 			fmt.Fprintf(&b, " · after %s", joinInts(node.DependsOn))
 		}
@@ -1175,6 +1476,11 @@ func (g *Graph) Render() string {
 		b.WriteByte('\n')
 		for _, criterion := range node.Acceptance {
 			fmt.Fprintf(&b, "    acceptance: %s\n", criterion)
+		}
+		if node.Execution == ExecutionReadOnly && node.AcceptedAttemptID != "" {
+			if attempt := g.attemptLocked(node.AcceptedAttemptID); attempt != nil && attempt.Summary != "" {
+				fmt.Fprintf(&b, "    delegated result: %s\n", bounded(attempt.Summary, 2400))
+			}
 		}
 	}
 	if g.state.Outcome != "" {
@@ -1201,13 +1507,14 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Experimental Orchestrated Goal\nGraph: %s · generation %d\nGoal: %s\n", g.state.ID, g.state.Generation, g.state.Goal)
 	fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", maxGraphNodes, g.state.MaxAttemptsPerNode, g.state.MaxRevisions)
-	b.WriteString("Execution: one serial primary lane; automatic delegates are disabled in this preview.\n")
+	fmt.Fprintf(&b, "Read fan-out: %d/%d starts · %d/%d tokens · at most %d concurrent · %ds wall bound\n", g.state.ReadFanout.Starts, g.state.ReadFanout.MaxStarts, g.state.ReadFanout.UsedTokens, g.state.ReadFanout.MaxTokens, g.state.ReadFanout.MaxConcurrent, g.state.ReadFanout.MaxWallSeconds)
+	b.WriteString("Execution: dependency-ready read_only nodes may use bounded automatic workers; one serial primary lane owns primary work and every parent-workspace write.\n")
 	b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when the action is proposed.\n")
 	b.WriteString("Authority: every action still uses ordinary permissions; approval grants no publication or additional tool access.\n")
 	b.WriteString("Completion: changed workspace state requires fresh machine-observed verification.\n\n")
 	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
 	for _, node := range g.state.Nodes {
-		fmt.Fprintf(&b, "%s %d. %s · %s", marks[node.State], node.ID, node.Title, node.State)
+		fmt.Fprintf(&b, "%s %d. %s · %s · %s", marks[node.State], node.ID, node.Title, node.State, node.Execution)
 		if len(node.DependsOn) > 0 {
 			fmt.Fprintf(&b, " · after %s", joinInts(node.DependsOn))
 		}
@@ -1236,6 +1543,12 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 			continue
 		}
 		fmt.Fprintf(&b, "- %s · attempt %d · %s", attempt.ID, attempt.Number, attempt.State)
+		if attempt.WorkerID != "" {
+			fmt.Fprintf(&b, " · worker %s", attempt.WorkerID)
+		}
+		if attempt.InputTokens+attempt.OutputTokens > 0 {
+			fmt.Fprintf(&b, " · %d tokens", attempt.InputTokens+attempt.OutputTokens)
+		}
 		if attempt.Summary != "" {
 			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(attempt.Summary), 600))
 		}
@@ -1328,14 +1641,20 @@ func (g *Graph) reduceOutcomeLocked() {
 	if g.state.Outcome != "" {
 		return
 	}
-	allDone := true
-	var blockers []string
+	allDone, running := true, false
+	var blockers, exhausted []string
 	for _, node := range g.state.Nodes {
 		if node.State != NodeDone {
 			allDone = false
 		}
+		if node.State == NodeRunning {
+			running = true
+		}
 		if node.State == NodeBlocked {
 			blockers = append(blockers, fmt.Sprintf("node %d (%s): %s", node.ID, node.Title, node.Reason))
+		}
+		if node.State == NodeBudgetExhausted {
+			exhausted = append(exhausted, fmt.Sprintf("node %d (%s): %s", node.ID, node.Title, node.Reason))
 		}
 	}
 	if allDone {
@@ -1344,12 +1663,17 @@ func (g *Graph) reduceOutcomeLocked() {
 		g.queueUpdateLocked(0, "", string(OutcomeDone), g.state.Reason)
 		return
 	}
-	if len(blockers) > 0 {
+	if len(blockers) > 0 && !running {
 		// Every node is required in OG-1. Continuing independent work after one
 		// is materially blocked cannot make the approved goal complete and only
 		// spends authority/budget after the truthful terminal state is known.
 		g.state.Outcome, g.state.Reason = OutcomeBlocked, strings.Join(blockers, "; ")
 		g.queueUpdateLocked(0, "", string(OutcomeBlocked), g.state.Reason)
+		return
+	}
+	if len(exhausted) > 0 && !running {
+		g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, strings.Join(exhausted, "; ")
+		g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
 	}
 }
 
@@ -1530,6 +1854,16 @@ func (g *Graph) activeAttemptLocked() *Attempt {
 	return nil
 }
 
+func (g *Graph) runningAttemptsLocked() []*Attempt {
+	var attempts []*Attempt
+	for i := range g.state.Attempts {
+		if g.state.Attempts[i].State == AttemptRunning {
+			attempts = append(attempts, &g.state.Attempts[i])
+		}
+	}
+	return attempts
+}
+
 func (g *Graph) attemptLocked(id string) *Attempt {
 	for i := range g.state.Attempts {
 		if g.state.Attempts[i].ID == id {
@@ -1558,7 +1892,7 @@ func (g *Graph) nodeLocked(id int) *Node {
 }
 
 func sameDefinition(node Node, spec NodeSpec) bool {
-	if node.ID != spec.ID || node.Title != strings.TrimSpace(spec.Title) || !equalInts(node.DependsOn, spec.DependsOn) || len(node.Acceptance) != len(spec.Acceptance) {
+	if node.ID != spec.ID || node.Title != strings.TrimSpace(spec.Title) || node.Execution != normalizeExecution(spec.Execution) || !equalInts(node.DependsOn, spec.DependsOn) || len(node.Acceptance) != len(spec.Acceptance) {
 		return false
 	}
 	for i := range node.Acceptance {

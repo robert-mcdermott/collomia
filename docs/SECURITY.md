@@ -767,20 +767,33 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
-## Runtime-owned goal-graph boundary (experimental OG-1/OG-2A)
+## Runtime-owned goal-graph boundary (experimental OG-1/OG-2)
 
-OG-2A exposes OG-1's primary-agent controller only through a TUI action the
+Orchestrated Goal exposes the runtime controller only through a TUI action the
 user takes for one session. `/orchestrate <goal>` enters read-only proposal
 mode; it does not execute. `/orchestrate approve` accepts only a newly written
 pending plan whose every node has a concrete acceptance criterion. A graph
-approval is scheduling state, never authority. Every selected node still uses
-the primary agent's existing tool registry, permission decision, lifecycle
-hooks, sandbox, audit identity, token/cost/iteration bounds, and cancellation
-path. Whole-plan
-replacement and all delegate tools are hidden while this controller runs. Its
-two graph-control tools can only propose a bounded acyclic logical revision or
-record an exact blocker; they cannot grant a tool, path, host, publication,
-credential, or budget permission.
+approval is scheduling state, never authority. Primary work still uses the
+primary agent's existing tool registry, permission decision, lifecycle hooks,
+sandbox, audit identity, token/cost/iteration bounds, and cancellation path.
+Whole-plan replacement and model-directed delegate tools are hidden while this
+controller runs. Its two graph-control tools can only propose a bounded acyclic
+logical revision or record an exact blocker; they cannot grant a tool, path,
+host, publication, credential, or budget permission.
+
+An approved step may declare `execution: read_only`. Only independently
+dependency-ready nodes with that class are eligible for automatic assignment,
+in stable plan order, with at most two live workers. Omitted or `primary` work
+remains in the serial primary lane, as does every parent-workspace write. The
+workers reuse the governed delegated-agent path in planning mode: inherited-
+or-tighter permissions, distinct audit/task identity, no write worktree, no
+commands, no shared-plan mutation, no recursive delegation, and no graph-
+control tools. Both graph meta-tools are removed from the cloned registry and
+blocked again at call execution, so fabricating a hidden call grants nothing.
+A fixed persisted envelope limits automatic reads to eight starts, 64,000
+tokens, fifteen minutes total wall time, five minutes per attempt, two attempts
+per node, and eight child iterations; existing scheduler, provider, profile,
+permission, and cancellation limits may be tighter.
 
 Graph execution truth is separate from the model-authored plan and full
 transcript. The session stores a versioned, structurally validated snapshot
@@ -792,6 +805,14 @@ completion interventions, two attempts per node, two logical revisions, and
 twelve nodes. Every required node must be accepted; one material blocker ends
 the goal rather than spending more authority on independent work that cannot
 make the whole outcome complete.
+
+Automatic read completion has its own evidence gate. A non-empty bounded child
+summary is not enough: the worker must have at least one successful tool
+result, and when its durable claim had a Git workspace token the result must
+carry the same token. Worker identity, usage, scheduler reason, and
+`delegate_read` evidence are retained in the graph. A full read wave finishes
+before the primary lane advances. Cancellation stops the graph as `cancelled`;
+it is not recast as a provider failure or blocker.
 
 Potentially mutating tools cross a durable write-ahead transition before they
 execute. If that flush fails, the tool never starts. An interrupted read-only
@@ -817,8 +838,11 @@ The only activation surface is the `/orchestrate` TUI command family. There is
 no configuration or headless flag, and project instructions, skills, hooks,
 model output, an ordinary persisted plan, and saved graph bytes cannot activate
 it. A saved graph is inspectable but inert until `/orchestrate resume`; recovery
-then retains OG-1's non-replay rule. Automatic actors remain disabled until the
-separate OG-2B read-only fan-out increment preserves these boundaries.
+then retains OG-1's non-replay rule. Pre-fan-out schema-1 snapshots restore an
+omitted execution class as serial `primary`, so upgrading cannot cause a saved
+graph to gain automatic actors. Pause, per-node operator controls, complete
+primary-plus-worker aggregate presentation, and headless activation remain
+unimplemented.
 
 ## Delegated-agent boundary
 

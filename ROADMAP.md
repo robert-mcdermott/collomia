@@ -128,14 +128,15 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-The latest implementation wave completed **OG-2A — Explicit primary-only
-preview** on top of the OG-1 runtime controller. The TUI now exposes a
-read-only fresh proposal, explicit per-session approval, inspect/cancel/resume
-controls, acceptance criteria, experimental graph visibility, and inert saved
-state. Execution remains deliberately primary-only, and Standard
-evidence-gated execution is still the default. **OG-2B — Bounded read-only
-fan-out** is now unblocked but has not started; it is the first milestone
-allowed to increase the number of actors. See the
+The latest implementation wave completed **OG-2B1 — Runtime-selected read
+fan-out kernel** on top of the OG-2A explicit preview. An approved graph can
+now run at most two independently ready `read_only` nodes through governed
+automatic workers, ingest only grounded fresh evidence, and then return to its
+one serial primary lane. Fixed aggregate read bounds, scheduler reasons,
+cancellation, and inert saved-state compatibility are runtime-owned. Standard
+evidence-gated execution remains the default. **OG-2B2 — Operator controls and
+comparative evidence** is next; it retains pause/node controls, complete
+primary-plus-worker aggregate presentation, and the measured usefulness gate. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1675,6 +1676,15 @@ completion status.
     - [ ] **OG-2B — Bounded read-only fan-out:** automatically schedule at
       most two useful dependency-ready read-only delegates while retaining one
       serial primary write lane and the OG-2A consent/authority boundary.
+      - [x] **OG-2B1 — Runtime-selected read fan-out kernel:** add explicit
+        approved `read_only` nodes, stable dependency-ready claims, at most two
+        automatic read workers, bounded evidence/usage ingestion, and no
+        unnecessary child for primary-only or serial graphs. *(Completed
+        2026-08-02.)*
+      - [ ] **OG-2B2 — Controls and comparative evidence:** add pause and
+        necessary node controls, complete aggregate presentation, and prove a
+        useful quality or elapsed-time gain over Standard and primary-only
+        execution before completing OG-2B.
   - [ ] **OG-3 — Isolated writer candidates:** dispatch only ready,
     disjoint-scope writers on a stable base; require child verification and
     stop at reviewable candidates.
@@ -1871,21 +1881,21 @@ completion status.
 ## Recommended next sequence
 
 The setup journey, first completion controller, OG-1 runtime-owned primary
-graph, and OG-2A explicit primary-only preview are now complete. The
+graph, OG-2A explicit preview, and OG-2B1 read fan-out kernel are now complete. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
-contract. The next orchestration slice is OG-2B: bounded automatic read-only
-fan-out behind the shipped TUI-only, per-session approval surface, with the
-primary workspace's write lane remaining serial.
+contract. The next orchestration slice is OG-2B2: operator controls and
+comparative evidence around the shipped bounded automatic read-only fan-out,
+with the primary workspace's write lane remaining serial.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are missed by the
    conservative recognizer, and whether two interventions is the right bound.
    Keep this local and inspectable rather than adding telemetry by default.
-2. Take **OG-2B — Bounded read-only fan-out** from the completed OG-2A preview.
-   Keep writes serial in the primary workspace, automatically select no more
-   than two dependency-ready read-only delegates, expose aggregate bounds and
-   scheduler reasons, and compare it with Standard and primary-only graph mode
-   in the offline evaluation corpus. Do not let project configuration,
+2. Take **OG-2B2 — Controls and comparative evidence** around the completed
+   fan-out kernel. Add pause and necessary node-level controls, complete the
+   primary-plus-worker aggregate usage/cost/iteration/wall presentation, and
+   compare decomposable, cross-layer, trivial, and serial tasks with Standard
+   and primary-only graph mode. Do not let project configuration,
    instructions, skills, hooks, persisted state, or the model opt in.
 3. Only then take OG-3 through OG-5: isolated dependency-ready writer
    candidates, verified/recoverable combined-parent integration, and durable

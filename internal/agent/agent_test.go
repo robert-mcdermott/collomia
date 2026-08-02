@@ -1323,7 +1323,7 @@ func TestReadOnlyDelegateCannotMutateParentPlanArtifact(t *testing.T) {
 }
 
 func TestReviewedIntegrationToolsArePrimaryOnly(t *testing.T) {
-	for _, name := range []string{"delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes"} {
+	for _, name := range []string{"delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes", goalgraph.ReviseToolName, goalgraph.BlockToolName} {
 		if !parentOnlyTool(name) {
 			t.Fatalf("%s should be primary-only", name)
 		}

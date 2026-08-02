@@ -38,11 +38,14 @@ func TestBoardValidation(t *testing.T) {
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Acceptance: []string{""}}}}); err == nil {
 		t.Fatal("empty acceptance criterion must be rejected")
 	}
-	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "go test passed", Acceptance: []string{"tests pass"}}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err != nil {
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Execution: "parallel_write"}}}); err == nil {
+		t.Fatal("unknown execution intent must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "go test passed", Acceptance: []string{"tests pass"}, Execution: "read_only"}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err != nil {
 		t.Fatal(err)
 	}
 	rendered := board.Current().Render()
-	for _, want := range []string{"Goal: g", "[x] 1. a", "go test passed", "acceptance: tests pass", "[~] 2. b", "(after 1)"} {
+	for _, want := range []string{"Goal: g", "[x] 1. a", "go test passed", "acceptance: tests pass", "execution: read_only", "[~] 2. b", "(after 1)"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("render missing %q:\n%s", want, rendered)
 		}
@@ -96,14 +99,14 @@ func TestToolUpdatesBoardAndNotifies(t *testing.T) {
 	var persisted Plan
 	board.OnUpdate = func(p Plan) { persisted = p }
 	tool := Tool(board)
-	out, err := tool.Execute(t.Context(), json.RawMessage(`{"goal":"fix bug","steps":[{"id":1,"title":"reproduce","status":"in_progress","acceptance":["failure is reproduced"]}]}`))
+	out, err := tool.Execute(t.Context(), json.RawMessage(`{"goal":"fix bug","steps":[{"id":1,"title":"reproduce","status":"in_progress","acceptance":["failure is reproduced"],"execution":"read_only"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, "reproduce") {
 		t.Fatalf("out=%q", out)
 	}
-	if persisted.Goal != "fix bug" || len(persisted.Steps) != 1 || len(persisted.Steps[0].Acceptance) != 1 {
+	if persisted.Goal != "fix bug" || len(persisted.Steps) != 1 || len(persisted.Steps[0].Acceptance) != 1 || persisted.Steps[0].Execution != "read_only" {
 		t.Fatalf("persisted=%+v", persisted)
 	}
 }

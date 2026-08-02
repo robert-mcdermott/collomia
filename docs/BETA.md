@@ -88,13 +88,19 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   hold are the permission pipeline and the address boundary.
 - Multi-agent work is isolated and selectively integrated, but Collomia does
   not automatically reconcile conflicts or resume pending child work. The
-  runtime-owned primary graph can now be tried as a TUI-only experimental
+  runtime-owned goal graph can now be tried as a TUI-only experimental
   preview: `/orchestrate <goal>` creates a read-only proposal and only the
   separate `/orchestrate approve` action executes it. Status, node evidence,
-  cancellation, and explicit saved-graph resume are inspectable. The preview
-  remains one serial primary lane—there is no automatic fan-out yet—and it
-  cannot be enabled by configuration, a repository, a saved graph, or a
-  headless flag. Standard execution remains the default.
+  cancellation, and explicit saved-graph resume are inspectable. At most two
+  independently ready approved `read_only` nodes can run through automatic
+  governed workers before execution returns to the one serial primary lane.
+  Workers cannot write, run commands, recurse, update the plan, or control the
+  graph; their prose is accepted only with successful tool evidence and a
+  fresh workspace token. There is no pause or per-node retry/cancel control,
+  and complete primary-plus-worker aggregate cost presentation and comparative
+  benefit measurements remain roadmap work. Configuration, a repository, a
+  saved graph, and a headless flag still cannot enable the preview. Standard
+  execution remains the default.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache

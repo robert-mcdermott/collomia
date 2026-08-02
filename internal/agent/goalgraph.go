@@ -80,6 +80,23 @@ func (a *Agent) ensureGoalAttempt(ctx context.Context, send Emit) error {
 		return nil
 	}
 	token, _ := a.goalToken(ctx) // read-only graphs may run without Git state.
+	claims, readErr := a.goalGraph.StartReadyReads(ctx, token, goalgraph.DefaultLimits().MaxReadConcurrency)
+	a.emitGoalUpdates(send)
+	if errors.Is(readErr, goalgraph.ErrGraphTerminal) {
+		outcome, reason := a.goalGraph.Outcome()
+		return goalGraphTerminalError(outcome, reason)
+	}
+	if readErr != nil {
+		return readErr
+	}
+	if len(claims) > 0 {
+		if err := a.runGoalReadFanout(ctx, claims, send); err != nil {
+			return err
+		}
+		// A completed read wave may unlock another read wave. Re-enter the
+		// deterministic selector before allowing the serial primary lane to run.
+		return a.ensureGoalAttempt(ctx, send)
+	}
 	_, _, err := a.goalGraph.StartNext(ctx, token)
 	a.emitGoalUpdates(send)
 	if errors.Is(err, goalgraph.ErrGraphTerminal) {

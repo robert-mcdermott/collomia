@@ -1,9 +1,9 @@
 # Orchestrated Goal strategy
 
-**Status:** approved product and architecture strategy; OG-2A, the explicit
-primary-only preview, is complete and OG-2B is the next unblocked milestone
+**Status:** approved product and architecture strategy; OG-2B1, the bounded
+automatic read fan-out kernel, is complete and OG-2B2 is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
-**Last updated:** 2026-08-01  
+**Last updated:** 2026-08-02
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
 
 This document is the durable implementation charter for Collomia's next
@@ -551,7 +551,65 @@ Completion evidence:
 
 #### OG-2B — Bounded read-only fan-out
 
-**Status: unblocked; recommended next milestone.**
+**Status: in progress through two bounded increments.**
+
+##### OG-2B1 — Runtime-selected read fan-out kernel
+
+**Status: complete (2026-08-02).**
+
+- Extend the approved logical proposal with an explicit `read_only` execution
+  class; omitted execution remains `primary` and therefore serial.
+- Let the runtime claim only dependency-ready, user-approved `read_only`
+  nodes, in stable plan order, with at most two live automatic workers.
+- Run those workers through the existing read-only delegated-agent boundary:
+  planning-mode tools, inherited-or-tighter permissions, no nested delegation,
+  no shared-plan mutation, and no write worktree.
+- Persist worker identity, bounded result evidence, freshness, usage, and the
+  scheduler reason in the runtime graph. A child sentence cannot directly mark
+  a logical node done.
+- Add fixed experimental aggregate read-work bounds and expose them before and
+  during execution. Trivial or primary-only graphs must start no child.
+- Keep primary execution and every parent-workspace write serial; automatic
+  read workers finish before the primary lane advances.
+
+Exit gate:
+
+- two independent approved read nodes run concurrently and their grounded,
+  bounded results unlock a dependent primary node;
+- stable ordering, concurrency, aggregate-work, cancellation, freshness, and
+  read-only authority limits are enforced by runtime tests;
+- a primary-only or dependency-serial graph launches no unnecessary worker;
+- Standard mode and OG-2A activation/approval behavior remain unchanged.
+
+Completion evidence:
+
+- the graph unit suite proves stable two-worker claims, primary-only and
+  dependency-serial fallback, aggregate start/token/wall bounds, freshness
+  retry, cancellation, and additive restoration of pre-fan-out snapshots as
+  serial `primary` work;
+- the credential-free product evaluation drives a real application runtime
+  with two concurrent read-only workers, asserts their no-write/no-command/
+  no-recursion/no-graph-control surface, ingests grounded Git-fresh summaries,
+  and unlocks the dependent primary only after both workers finish;
+- a second product evaluation cancels both in-flight workers and proves the
+  runtime records a terminal `cancelled` graph rather than converting the
+  interruption into a blocker; and
+- focused plan, graph, agent, app, and evaluation suites plus the full
+  verification commands recorded in `docs/ROADMAP_HISTORY.md` passed.
+
+##### OG-2B2 — Operator controls and comparative evidence
+
+**Status: next and unblocked.**
+
+- Add pause and necessary node-level retry/cancel controls without treating an
+  OS process as safely suspended.
+- Complete aggregate token/cost/iteration/wall-clock presentation across the
+  primary and automatic workers.
+- Compare decomposable, cross-layer, trivial, and inherently serial scenarios
+  against Standard and primary-only Orchestrated execution; retain fan-out
+  only where the measured quality or elapsed-time benefit justifies its cost.
+- Finish the event/automation compatibility decision required before any
+  headless activation surface is considered.
 
 - Build on OG-2A's explicit per-session opt-in, graph approval, status,
   cancellation, and inert-resume contract without weakening it.
@@ -638,9 +696,12 @@ now cover dependency-ready success with a repository repair and fresh tests,
 recoverable tool failure in a new attempt, permission denial, and no delegated
 events. Focused state/app coverage adds provider retry, cancellation, budget
 exhaustion, stale workspace state, graph revision, durable restart, corrupt
-snapshot rejection, and ambiguous-mutation non-replay. There is deliberately
-no Standard-versus-Orchestrated performance claim yet because no user-facing
-or multi-actor Orchestrated mode exists.
+snapshot rejection, and ambiguous-mutation non-replay. OG-2B1 now adds the
+first user-facing multi-actor path: at most two runtime-selected read-only
+workers can run before the serial primary lane. It proves authority,
+freshness, cancellation, and result-ingestion semantics, but makes no
+Standard-versus-Orchestrated quality, cost, or performance claim. That
+comparative decision belongs to OG-2B2.
 
 Compare Standard and Orchestrated modes on:
 
@@ -727,17 +788,22 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed milestone: **OG-2A — Explicit primary-only preview**.
-- Active milestone: **none; OG-2B has not started**.
-- Next unblocked milestone: **OG-2B — Bounded read-only fan-out**.
-- Active implementation branch or partial patch: **OG-1 is committed on
-  `wave36`; the completed OG-2A patch is uncommitted in the current worktree**.
-- Shipped experimental mode: **TUI-only, explicit per-session, primary-only
-  Orchestrated Goal preview**.
+- Last completed milestone: **OG-2B1 — Runtime-selected read fan-out kernel**.
+- Active milestone: **none**.
+- Next unblocked milestone: **OG-2B2 — Operator controls and comparative
+  evidence**.
+- Active implementation branch or partial patch: **OG-1 and OG-2A are
+  committed on `wave36`; the completed OG-2B1 patch is uncommitted in the
+  current worktree**.
+- Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
+  Goal with one serial primary lane and at most two automatic read-only
+  workers for independently ready approved nodes**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
-- Preserved implementation constraint: OG-2A adds no automatic delegated
-  actors; OG-2B is the first milestone allowed to do so.
+- Preserved implementation constraint: only approved `read_only` nodes may be
+  automatically delegated; primary work and every parent-workspace write stay
+  serial, workers cannot recurse or control the graph, and a saved graph
+  remains inert until explicit resume.
 - Parallel program requirement: continue the remaining Phase 8 security and
   reliability campaigns alongside every orchestration wave.
 
@@ -776,9 +842,33 @@ Every agent or contributor continuing this program must:
   criteria, a separate explicit approval, and explicit resume of inert saved
   state. Defer headless activation and automatic actors.
 
+### 2026-08-02
+
+- Split OG-2B into a fan-out kernel (OG-2B1) and operator/comparative work
+  (OG-2B2), so concurrency safety can ship without claiming unmeasured product
+  benefit or incomplete aggregate presentation.
+- Make `execution` explicit logical intent: omitted/`primary` is serial;
+  `read_only` is eligible only after the graph has been explicitly approved.
+- Reuse the governed read delegate boundary and the session-wide scheduler;
+  do not create a second child runtime or permission path for orchestration.
+- Persist a fixed experimental read envelope of two concurrent workers, eight
+  starts, 64,000 tokens, and fifteen minutes total wall time. Separately cap
+  each read at five minutes, two attempts per node, and eight child iterations.
+  Tighter provider/profile/scheduler limits still win.
+- Require a non-empty bounded summary, recorded successful tool evidence, and
+  a matching Git workspace token when a base token exists before a delegated
+  read node can become done.
+- Finish a complete read wave before advancing the serial primary lane. Keep
+  manual model-directed delegation hidden during an approved graph.
+- Treat graph meta-tools as parent-only authority even when a child fabricates
+  a hidden call by name.
+- Retain pause/node controls, complete primary-plus-worker aggregate
+  presentation, comparative usefulness measurements, and the event/headless
+  decision for OG-2B2.
+
 ## Open implementation decisions
 
-These remain unresolved for OG-2B or later:
+These remain unresolved for OG-2B2 or later:
 
 - whether and how a headless CLI surface should be added;
 - the representation of user-authored verification waivers;

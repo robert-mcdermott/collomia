@@ -22,6 +22,11 @@ type Step struct {
 	Status     string   `json:"status"` // pending, in_progress, done, blocked, skipped
 	DependsOn  []int    `json:"depends_on,omitempty"`
 	Acceptance []string `json:"acceptance,omitempty"`
+	// Execution is optional logical intent for Orchestrated Goal. Empty and
+	// "primary" keep work in the serial primary lane; "read_only" permits the
+	// runtime to assign a dependency-ready node to a bounded read-only worker.
+	// Ordinary plans do not interpret this field as scheduling authority.
+	Execution string `json:"execution,omitempty"`
 	// Evidence records how completion was verified (test run, file, output).
 	Evidence string `json:"evidence,omitempty"`
 }
@@ -130,6 +135,11 @@ func Validate(p Plan) error {
 			if strings.TrimSpace(criterion) == "" {
 				return fmt.Errorf("steps[%d].acceptance[%d] must not be empty", i, criterionIndex)
 			}
+		}
+		switch step.Execution {
+		case "", "primary", "read_only":
+		default:
+			return fmt.Errorf("steps[%d].execution must be primary or read_only", i)
 		}
 		switch step.Status {
 		case "pending", "in_progress", "done", "blocked", "skipped":
@@ -280,6 +290,9 @@ func (p *Plan) Render() string {
 			}
 			fmt.Fprintf(&b, " (after %s)", strings.Join(deps, ","))
 		}
+		if step.Execution != "" && step.Execution != "primary" {
+			fmt.Fprintf(&b, " · execution: %s", step.Execution)
+		}
 		if step.Evidence != "" {
 			fmt.Fprintf(&b, " — %s", step.Evidence)
 		}
@@ -300,8 +313,8 @@ func Tool(board *Board) tools.Tool {
 	return tools.Function{
 		Def: provider.ToolDefinition{
 			Name:        "update_plan",
-			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, and evidence. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","done","blocked","skipped"]},"depends_on":{"type":"array","items":{"type":"integer"}},"acceptance":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":512}},"evidence":{"type":"string"}},"required":["id","title","status"],"additionalProperties":false}},"verification_note":{"type":"string","description":"specific reason automated verification does not apply after changed files; not machine-observed evidence"}},"required":["goal","steps"],"additionalProperties":false}`),
+			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only), and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded read-only workers. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","done","blocked","skipped"]},"depends_on":{"type":"array","items":{"type":"integer"}},"acceptance":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":512}},"execution":{"type":"string","enum":["primary","read_only"],"description":"logical execution intent; read_only is eligible for bounded runtime fan-out only after explicit Orchestrated Goal approval"},"evidence":{"type":"string"}},"required":["id","title","status"],"additionalProperties":false}},"verification_note":{"type":"string","description":"specific reason automated verification does not apply after changed files; not machine-observed evidence"}},"required":["goal","steps"],"additionalProperties":false}`),
 		},
 		Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"},
 		Run: func(_ context.Context, raw json.RawMessage) (string, error) {

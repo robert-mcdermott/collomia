@@ -2893,7 +2893,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|cancel\|resume]` | Propose, explicitly approve, inspect, cancel, or resume the experimental primary-only Orchestrated Goal preview. |
+| `/orchestrate [goal\|approve\|status [node]\|cancel\|resume]` | Propose, explicitly approve, inspect, cancel, or resume the experimental Orchestrated Goal preview with bounded automatic read-only fan-out. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -2932,9 +2932,9 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 ### Experimental Orchestrated Goal preview
 
 Orchestrated Goal is an opt-in TUI preview for running a bounded,
-runtime-owned dependency graph. It currently uses only the primary agent in one
-serial write lane; it does not automatically create delegated agents. Standard
-mode remains the default.
+runtime-owned dependency graph. It keeps one serial primary lane and can use at
+most two automatic governed workers for independently ready approved
+`read_only` nodes. Standard mode remains the default.
 
 A complete trial looks like this:
 
@@ -2948,10 +2948,13 @@ A complete trial looks like this:
 
 The first command enters read-only proposal mode. Collomia asks the model for a
 new structured plan whose steps are all pending, have valid dependencies, and
-each state at least one concrete acceptance criterion. No implementation tool
-is available during this turn. Inspect the proposal with `/orchestrate status`;
-an ordinary plan that existed before the command, a restored plan, or a plan
-without acceptance criteria cannot be approved.
+each state at least one concrete acceptance criterion. Each step also declares
+`execution: primary` or `execution: read_only`: use `read_only` only for
+bounded repository investigation that needs no file change or command; omitted
+execution is treated conservatively as serial `primary`. No implementation
+tool is available during this turn. Inspect the proposal with `/orchestrate
+status`; an ordinary plan that existed before the command, a restored plan, or
+a plan without acceptance criteria cannot be approved.
 
 `/orchestrate approve` is the explicit per-session opt-in. It converts that
 fresh proposal into durable runtime graph state and starts primary-agent
@@ -2960,6 +2963,25 @@ readiness, attempts, failure state, evidence freshness, and terminal outcome.
 Every real tool action still passes through the ordinary permission,
 publication, sandbox, cancellation, and budget controls. Writes require fresh
 verification before the graph can finish.
+
+When up to two independent `read_only` nodes are ready, the runtime—not the
+model—claims them in stable proposal order and runs them through the existing
+read-only delegated-agent boundary. These workers share the workspace for
+inspection, inherit equal-or-tighter permissions, and appear in the Session
+agent tree, but cannot write files, run commands, update the plan, delegate
+again, or control the graph. Their bounded summary becomes node evidence only
+when a successful tool result was recorded and the Git workspace token still
+matches the durable claim. Both workers finish before the primary lane moves
+on. Primary-only and dependency-serial graphs create no unnecessary child.
+
+The fixed aggregate automatic-read envelope is visible in `/orchestrate
+status`: at most two concurrent workers, eight starts, 64,000 read tokens, and
+fifteen minutes total read wall time. Each child is also capped at five minutes
+and eight iterations, and each node retains the two-attempt bound. Provider,
+profile, scheduler, permission, and cancellation limits can be tighter. The
+graph records why it delegated and the worker identity, usage, evidence,
+retry, and terminal state; complete primary-plus-worker aggregate presentation
+remains OG-2B2 work.
 
 Use `/orchestrate status [node]` at any time to inspect the graph or one node,
 including dependencies, acceptance criteria, attempts, failures, commands,
@@ -2973,8 +2995,10 @@ session content from silently opting the user back in.
 An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
 `/new`. This preview has no configuration switch, repository-controlled opt-in,
-headless flag, automatic fan-out, pause control, per-node retry/cancel control,
-or verification waiver. Those remain later Orchestrated Goal work.
+headless flag, pause control, per-node retry/cancel control, or verification
+waiver. Complete primary-plus-worker aggregate cost presentation and
+comparative quality/elapsed-time evidence also remain later Orchestrated Goal
+work.
 
 ### Workspace paths and prompt files
 
