@@ -2995,8 +2995,17 @@ fifteen minutes total read wall time. Each child is also capped at five minutes
 and eight iterations, and each node retains the two-attempt bound. Provider,
 profile, scheduler, permission, and cancellation limits can be tighter. The
 graph records why it delegated and the worker identity, usage, evidence,
-retry, and terminal state; complete primary-plus-worker aggregate presentation
-remains OG-2B2b work.
+retry, and terminal state.
+
+The same status panel shows durable aggregate model work. The primary lane
+includes the explicit proposal call plus later serial execution; automatic
+reads have their own lane. Each reports provider iterations and input/output
+tokens, and the total adds elapsed time from the start of `/orchestrate`. Cost
+appears only when every token-bearing contribution had user-configured
+pricing; otherwise the panel says `cost unavailable` rather than implying the
+work was free. Failed provider requests still count as iterations even when
+they report no tokens. These counters are measurement, not authority, and do
+not replace the existing primary/profile or automatic-read bounds.
 
 Use `/orchestrate status [node]` at any time to inspect the graph or one node,
 including dependencies, acceptance criteria, attempts, failures, commands,
@@ -3035,10 +3044,9 @@ milestones.
 An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
 `/new`. This preview has no configuration switch, repository-controlled opt-in,
-headless flag, per-node/branch cancellation, or verification waiver. Complete
-primary-plus-worker aggregate cost presentation and
-comparative quality/elapsed-time evidence also remain later Orchestrated Goal
-work.
+headless flag, per-node/branch cancellation, or verification waiver.
+Whole-graph aggregate enforcement and comparative quality/elapsed-time
+evidence remain later Orchestrated Goal work.
 
 ### Workspace paths and prompt files
 

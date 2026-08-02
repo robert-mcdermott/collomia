@@ -78,7 +78,30 @@ type orchestrationProposal struct {
 	Goal             string
 	BaseRevision     uint64
 	Started          time.Time
+	BaseUsage        provider.Usage
+	BaseIterations   int
 	PreviousPlanMode bool
+}
+
+type goalAccountingSeed struct {
+	Started time.Time
+	Primary goalgraph.WorkUsage
+}
+
+func providerUsageDelta(current, baseline provider.Usage) provider.Usage {
+	delta := provider.Usage{
+		InputTokens:      max(0, current.InputTokens-baseline.InputTokens),
+		OutputTokens:     max(0, current.OutputTokens-baseline.OutputTokens),
+		CachedTokens:     max(0, current.CachedTokens-baseline.CachedTokens),
+		CacheWriteTokens: max(0, current.CacheWriteTokens-baseline.CacheWriteTokens),
+		ReasoningTokens:  max(0, current.ReasoningTokens-baseline.ReasoningTokens),
+		CostUSD:          max(0, current.CostUSD-baseline.CostUSD),
+		CostEstimated:    current.CostEstimated,
+	}
+	if delta.InputTokens+delta.OutputTokens > 0 || delta.CostUSD > 0 {
+		delta.CostAvailable = current.CostAvailable
+	}
+	return delta
 }
 
 // auditHealth latches every reason the audit record for this session might be
@@ -721,7 +744,7 @@ func attachGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board
 	if len(sess.GoalGraphRaw) > 0 {
 		return restoreGoalGraph(ctx, sess, stateToken)
 	}
-	return createGoalGraph(ctx, approved, board, sess)
+	return createGoalGraph(ctx, approved, board, sess, nil)
 }
 
 func goalGraphPersister(sess *session.Session) goalgraph.PersistFunc {
@@ -756,7 +779,7 @@ func restoreGoalGraph(ctx context.Context, sess *session.Session, stateToken fun
 	return graph, nil
 }
 
-func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session) (*goalgraph.Graph, error) {
+func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, accounting *goalAccountingSeed) (*goalgraph.Graph, error) {
 	if approved == nil {
 		return nil, errors.New("approved logical plan is unavailable")
 	}
@@ -786,7 +809,12 @@ func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board
 	for _, step := range fresh.Steps {
 		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution)})
 	}
-	graph, err := goalgraph.New(spec, logicalRevision, goalgraph.Options{Persist: goalGraphPersister(sess)})
+	opts := goalgraph.Options{Persist: goalGraphPersister(sess)}
+	if accounting != nil {
+		opts.AccountingStarted = accounting.Started
+		opts.InitialPrimary = accounting.Primary
+	}
+	graph, err := goalgraph.New(spec, logicalRevision, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -823,7 +851,10 @@ func (r *Runtime) BeginOrchestratedProposal(goal string) (string, error) {
 	if r.orchestrationProposal != nil {
 		previousPlanMode = r.orchestrationProposal.PreviousPlanMode
 	}
-	r.orchestrationProposal = &orchestrationProposal{Goal: goal, BaseRevision: revision, Started: time.Now().UTC(), PreviousPlanMode: previousPlanMode}
+	r.orchestrationProposal = &orchestrationProposal{
+		Goal: goal, BaseRevision: revision, Started: time.Now().UTC(),
+		BaseUsage: r.Agent.Usage(), BaseIterations: r.Agent.ProviderIterations(), PreviousPlanMode: previousPlanMode,
+	}
 	r.Agent.SetPlan(true)
 	return OrchestratedProposalPrompt(goal), nil
 }
@@ -874,7 +905,15 @@ func (r *Runtime) ApproveOrchestratedGoal(ctx context.Context) (string, string, 
 	if _, err := orchestratedSpec(current); err != nil {
 		return "", "", err
 	}
-	graph, err := createGoalGraph(ctx, current, r.Plan, r.Session)
+	usage := providerUsageDelta(r.Agent.Usage(), proposal.BaseUsage)
+	iterations := max(0, r.Agent.ProviderIterations()-proposal.BaseIterations)
+	graph, err := createGoalGraph(ctx, current, r.Plan, r.Session, &goalAccountingSeed{
+		Started: proposal.Started,
+		Primary: goalgraph.WorkUsage{
+			Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+			CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
+		},
+	})
 	if err != nil {
 		return "", "", err
 	}

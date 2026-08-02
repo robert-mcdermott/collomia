@@ -1,7 +1,7 @@
 # Orchestrated Goal strategy
 
 **Status:** approved product and architecture strategy; evidence-gated durable
-execution is available experimentally through OG-2B2a, and OG-2B2b is next
+execution is available experimentally through OG-2B2b1, and OG-2B2b2 is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-02
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -55,14 +55,17 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-2B2a boundary supports one serial primary lane and
+The shipped OG-1 through OG-2B2b1 boundary supports one serial primary lane and
 at most two governed automatic read-only workers. It provides durable graph
 truth, fresh machine-observed evidence, conservative invalidation, bounded
 retry/revision, cooperative pause and resume, safe retry of eligible blocked
-nodes, and non-replay of ambiguous mutations. It does **not** yet automatically
-dispatch isolated writers, integrate their changes, cancel an optional branch
-or node, or reproduce a multi-worker scheduler exactly after restart. Those
-are OG-2B2b through OG-5 work and must not be described as current behavior.
+nodes, non-replay of ambiguous mutations, and durable primary-plus-worker
+token/cost/iteration accounting with elapsed-time presentation. It does
+**not** yet establish a measured fan-out benefit, enforce a new whole-graph
+aggregate budget, automatically dispatch isolated writers, integrate their
+changes, cancel an optional branch or node, or reproduce a multi-worker
+scheduler exactly after restart. Those are OG-2B2b2 through OG-5 work and must
+not be described as current behavior.
 
 ## Product decision
 
@@ -152,8 +155,8 @@ The difficult prerequisites are substantially present:
 
 The current experiment is still intentionally incomplete:
 
-- complete aggregate graph time/token/cost/iteration presentation across the
-  primary and automatic workers;
+- whole-graph aggregate token/cost/iteration/wall enforcement built on the
+  now-visible accounting record;
 - comparative evidence that bounded read fan-out improves suitable tasks;
 - optional-branch semantics that would make node-level cancellation useful;
 - an explicit user-owned verification-waiver interaction when meaningful
@@ -722,10 +725,56 @@ Completion evidence:
 
 ###### OG-2B2b — Aggregate presentation and comparative evidence
 
+**Status: in progress through two bounded increments.**
+
+**OG-2B2b1 — Durable aggregate accounting and presentation**
+
+**Status: complete (2026-08-02).**
+
+- Persist separate primary and automatic-read counters for provider
+  iterations, input/output tokens, cost availability, estimated cost, and the
+  start of the explicit proposal turn.
+- Include the proposal call in the primary lane so the extra work required to
+  create an Orchestrated Goal graph is not hidden from later comparisons.
+- Record primary provider failures and compaction calls as iterations even
+  when they report no tokens. Retain the same counters on an active node
+  attempt when one exists.
+- Record automatic-worker iterations with their existing tokens/cost on the
+  immutable read attempt and in the graph aggregate.
+- Show total, primary, and automatic-read work plus elapsed time in
+  `/orchestrate status`. If any token-bearing lane lacks configured pricing,
+  report cost as unavailable rather than `$0`.
+- Keep the additive record in graph schema 1. A pre-accounting snapshot
+  reconstructs only the attempt usage it actually stored; missing proposal and
+  provider-iteration history remain zero instead of being guessed.
+
+Exit gate:
+
+- the explicit proposal, serial primary work, automatic reads, provider
+  failures, and retries contribute exactly once to durable counters;
+- aggregate and per-lane status is inspectable before, during, and after graph
+  execution without granting authority or activating a saved graph;
+- incomplete pricing is unmistakably unavailable; and
+- Standard mode, existing primary/profile bounds, and the fixed automatic-read
+  envelope remain unchanged.
+
+Completion evidence:
+
+- graph and agent tests prove durable accumulation, per-attempt attribution,
+  unavailable-cost handling, failure iteration accounting, elapsed-time
+  presentation, invalid snapshot rejection, and conservative legacy restore;
+- credential-free application evaluations prove the proposal is counted and a
+  two-worker fan-out plus primary synthesis produces the exact six-iteration
+  primary/read split expected from recorded provider calls; and
+- the full verification commands recorded in `docs/ROADMAP_HISTORY.md` pass.
+
+**OG-2B2b2 — Aggregate bounds and comparative evidence**
+
 **Status: next and unblocked.**
 
-- Complete aggregate token/cost/iteration/wall-clock presentation across the
-  primary and automatic workers.
+- Enforce whole-graph aggregate token, cost, iteration, and active wall-clock
+  bounds using the durable accounting record without weakening tighter
+  primary/profile/worker bounds.
 - Compare decomposable, cross-layer, trivial, and inherently serial scenarios
   against Standard and primary-only Orchestrated execution; retain fan-out
   only where the measured quality or elapsed-time benefit justifies its cost.
@@ -739,7 +788,6 @@ Completion evidence:
 - Keep one serial primary write lane in the parent workspace.
 - Start with a guideline of at most 12 logical nodes, two graph revisions, and
   two attempts per node; measure before making these configuration surface.
-- Enforce aggregate graph token, cost, iteration, and wall-clock budgets.
 - Locally record why the scheduler delegated, serialized, retried, replanned,
   invalidated, blocked, or finished. Do not add default telemetry.
 
@@ -820,9 +868,10 @@ first user-facing multi-actor path: at most two runtime-selected read-only
 workers can run before the serial primary lane. It proves authority,
 freshness, cancellation, and result-ingestion semantics. OG-2B2a adds
 cooperative pause/resume and safe blocked-node retry without weakening the
-non-replay guarantee. Neither increment makes a Standard-versus-Orchestrated
-quality, cost, or performance claim. That comparative decision belongs to
-OG-2B2b.
+non-replay guarantee. OG-2B2b1 makes proposal, primary, and worker model work
+durably visible without claiming it is worthwhile. The
+Standard-versus-Orchestrated quality, cost, and performance decision belongs
+to OG-2B2b2.
 
 Compare Standard and Orchestrated modes on:
 
@@ -909,16 +958,18 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed milestone: **OG-2B2a — Cooperative pause and safe retry**.
+- Last completed milestone: **OG-2B2b1 — Durable aggregate accounting and
+  presentation**.
 - Active milestone: **none**.
-- Next unblocked milestone: **OG-2B2b — Aggregate presentation and comparative
+- Next unblocked milestone: **OG-2B2b2 — Aggregate bounds and comparative
   evidence**.
-- Active implementation branch or partial patch: **OG-2B2a is implemented as
-  an uncommitted patch on `wave36`**.
+- Active implementation branch or partial patch: **OG-2B2b1 is implemented as
+  an uncommitted patch on `wave36`; OG-2B2a is committed as `0aa4afc`**.
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane and at most two automatic read-only
   workers for independently ready approved nodes, plus cooperative
-  pause/resume and safe retry of eligible blocked nodes**.
+  pause/resume, safe retry of eligible blocked nodes, and durable aggregate
+  proposal/primary/automatic-read accounting**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
 - Preserved implementation constraint: only approved `read_only` nodes may be
@@ -1011,10 +1062,21 @@ Every agent or contributor continuing this program must:
 - Keep additive schema-1 pause fields and `pause_requested`, `paused`,
   `resumed`, and `retry_requested` lifecycle states under the existing
   internal-only event decision. Split remaining OG-2B2 work into OG-2B2b.
+- Split OG-2B2b into measurement infrastructure (OG-2B2b1) and the bounds plus
+  comparative decision (OG-2B2b2), so instrumentation cannot be mistaken for
+  evidence that fan-out improves the product.
+- Count the explicit proposal in the primary lane; count every completed
+  primary/worker provider request as an iteration, including failures that
+  report no tokens. Persist input/output tokens and cost only as reported.
+- Treat aggregate cost as available only when every token-bearing contribution
+  had configured pricing. Never render missing price evidence as zero cost.
+- Preserve accounting additively in graph schema 1. Legacy restore may rebuild
+  stored attempt usage but must not invent proposal work or iteration history
+  that older snapshots never recorded.
 
 ## Open implementation decisions
 
-These remain unresolved for OG-2B2b or later:
+These remain unresolved for OG-2B2b2 or later:
 
 - whether and how a headless CLI surface should be added;
 - the representation of user-authored verification waivers;

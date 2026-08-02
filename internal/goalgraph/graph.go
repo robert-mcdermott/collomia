@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -169,10 +170,13 @@ type Attempt struct {
 	EvidenceIDs             []string       `json:"evidence_ids,omitempty"`
 	Summary                 string         `json:"summary,omitempty"`
 	WorkerID                string         `json:"worker_id,omitempty"`
+	UsageRecorded           bool           `json:"usage_recorded,omitempty"`
+	Iterations              int            `json:"iterations,omitempty"`
 	InputTokens             int            `json:"input_tokens,omitempty"`
 	OutputTokens            int            `json:"output_tokens,omitempty"`
 	CostUSD                 float64        `json:"cost_usd,omitempty"`
 	CostAvailable           bool           `json:"cost_available,omitempty"`
+	CostEstimated           bool           `json:"cost_estimated,omitempty"`
 	TokenBudget             int            `json:"token_budget,omitempty"`
 	TimeoutSeconds          int            `json:"timeout_seconds,omitempty"`
 	Started                 time.Time      `json:"started"`
@@ -220,6 +224,7 @@ type Snapshot struct {
 	MaxAttemptsPerNode int        `json:"max_attempts_per_node"`
 	MaxRevisions       int        `json:"max_revisions"`
 	ReadFanout         ReadFanout `json:"read_fanout"`
+	Accounting         Accounting `json:"accounting"`
 	PauseRequested     bool       `json:"pause_requested,omitempty"`
 	PauseReached       bool       `json:"pause_reached,omitempty"`
 	PauseReason        string     `json:"pause_reason,omitempty"`
@@ -240,6 +245,39 @@ type ReadFanout struct {
 	UsedTokens     int       `json:"used_tokens"`
 	MaxWallSeconds int       `json:"max_wall_seconds"`
 	Started        time.Time `json:"started,omitempty"`
+}
+
+// WorkUsage is machine-observed model work for one runtime lane. Input token
+// counts include cached input when the provider reports it that way, matching
+// the public usage contract. CostAvailable means every token-bearing record in
+// this lane had user-configured pricing; an unavailable cost is never rendered
+// as a reassuring zero.
+type WorkUsage struct {
+	Iterations    int     `json:"iterations"`
+	InputTokens   int     `json:"input_tokens"`
+	OutputTokens  int     `json:"output_tokens"`
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	CostAvailable bool    `json:"cost_available,omitempty"`
+	CostEstimated bool    `json:"cost_estimated,omitempty"`
+}
+
+// Accounting is the durable primary-plus-worker measurement record. Started
+// is the beginning of the explicit proposal turn, so comparison does not hide
+// the extra model call needed to create an Orchestrated Goal graph.
+type Accounting struct {
+	Started        time.Time `json:"started"`
+	Primary        WorkUsage `json:"primary"`
+	AutomaticReads WorkUsage `json:"automatic_reads"`
+}
+
+// UsageSummary is the operator-facing aggregate derived from Accounting. The
+// elapsed duration is live for an active graph and freezes at its final durable
+// transition for a terminal graph.
+type UsageSummary struct {
+	Primary        WorkUsage
+	AutomaticReads WorkUsage
+	Total          WorkUsage
+	Elapsed        time.Duration
 }
 
 // Update is a bounded public lifecycle fact. It contains enough state for
@@ -269,6 +307,8 @@ type Options struct {
 	MaxReadStarts      int
 	MaxReadTokens      int
 	MaxReadWallSeconds int
+	AccountingStarted  time.Time
+	InitialPrimary     WorkUsage
 	Persist            PersistFunc
 	Now                func() time.Time
 	NewID              func(string) string
@@ -327,13 +367,21 @@ func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
 		return nil, err
 	}
 	opts = normalizedOptions(opts)
+	if !validWorkUsage(opts.InitialPrimary) {
+		return nil, errors.New("goal graph initial primary accounting is invalid")
+	}
 	now := opts.Now().UTC()
+	accountingStarted := opts.AccountingStarted.UTC()
+	if accountingStarted.IsZero() {
+		accountingStarted = now
+	}
 	g := &Graph{persist: opts.Persist, now: opts.Now, newID: opts.NewID}
 	g.state = Snapshot{
 		Schema: SchemaVersion, ID: opts.NewID("graph"), LogicalRevision: logicalRevision,
 		Generation: 1, Goal: strings.TrimSpace(spec.Goal), MaxAttemptsPerNode: opts.MaxAttemptsPerNode,
 		MaxRevisions: opts.MaxRevisions, Created: now, Updated: now,
 		ReadFanout: ReadFanout{MaxConcurrent: opts.MaxReadConcurrency, MaxStarts: opts.MaxReadStarts, MaxTokens: opts.MaxReadTokens, MaxWallSeconds: opts.MaxReadWallSeconds},
+		Accounting: Accounting{Started: accountingStarted, Primary: opts.InitialPrimary},
 		Revisions:  []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
 	}
 	for position, node := range spec.Nodes {
@@ -372,6 +420,26 @@ func normalizeSnapshot(snapshot *Snapshot) {
 	}
 	if snapshot.ReadFanout.MaxWallSeconds == 0 {
 		snapshot.ReadFanout.MaxWallSeconds = defaultMaxReadWallSeconds
+	}
+	if snapshot.Accounting.Started.IsZero() {
+		// Pre-accounting schema-1 snapshots reconstruct what their immutable
+		// attempts can prove. Primary proposal/iteration counts were not stored,
+		// so they remain visibly zero instead of being guessed.
+		snapshot.Accounting.Started = snapshot.Created
+		nodes := make(map[int]Execution, len(snapshot.Nodes))
+		for _, node := range snapshot.Nodes {
+			nodes[node.ID] = normalizeExecution(node.Execution)
+		}
+		for index := range snapshot.Attempts {
+			attempt := &snapshot.Attempts[index]
+			usage := WorkUsage{Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated}
+			if nodes[attempt.NodeID] == ExecutionReadOnly {
+				addWorkUsage(&snapshot.Accounting.AutomaticReads, usage)
+				attempt.UsageRecorded = usage != (WorkUsage{})
+			} else {
+				addWorkUsage(&snapshot.Accounting.Primary, usage)
+			}
+		}
 	}
 	for i := range snapshot.Nodes {
 		snapshot.Nodes[i].Execution = normalizeExecution(snapshot.Nodes[i].Execution)
@@ -502,6 +570,9 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if snapshot.ReadFanout.MaxConcurrent <= 0 || snapshot.ReadFanout.MaxConcurrent > defaultMaxReadConcurrency || snapshot.ReadFanout.MaxStarts <= 0 || snapshot.ReadFanout.Starts < 0 || snapshot.ReadFanout.Starts > snapshot.ReadFanout.MaxStarts || snapshot.ReadFanout.MaxTokens <= 0 || snapshot.ReadFanout.UsedTokens < 0 || snapshot.ReadFanout.MaxWallSeconds <= 0 {
 		return errors.New("goal graph snapshot has invalid read-fan-out bounds or usage")
 	}
+	if snapshot.Accounting.Started.IsZero() || !validWorkUsage(snapshot.Accounting.Primary) || !validWorkUsage(snapshot.Accounting.AutomaticReads) {
+		return errors.New("goal graph snapshot has invalid aggregate accounting")
+	}
 	if snapshot.PauseReached && !snapshot.PauseRequested {
 		return errors.New("goal graph snapshot reached pause without a pause request")
 	}
@@ -546,7 +617,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if _, duplicate := attempts[attempt.ID]; duplicate {
 			return fmt.Errorf("goal graph snapshot repeats attempt %q", attempt.ID)
 		}
-		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.TimeoutSeconds < 0 {
+		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.TimeoutSeconds < 0 {
 			return fmt.Errorf("goal graph snapshot has invalid attempt %q state, number, or generation", attempt.ID)
 		}
 		if attempt.PendingAction != nil && attempt.State != AttemptRunning && attempt.State != AttemptInterrupted {
@@ -782,10 +853,12 @@ type ReadResult struct {
 	Evidence       []string
 	ToolSuccesses  int
 	WorkspaceToken string
+	Iterations     int
 	InputTokens    int
 	OutputTokens   int
 	CostUSD        float64
 	CostAvailable  bool
+	CostEstimated  bool
 }
 
 // StartReadyReads durably claims at most the fixed automatic fan-out bound in
@@ -888,10 +961,9 @@ func (g *Graph) FinishRead(ctx context.Context, result ReadResult) error {
 	if node == nil || node.Execution != ExecutionReadOnly {
 		return fmt.Errorf("goal graph attempt %q is not a read_only node", result.AttemptID)
 	}
-	attempt.WorkerID = bounded(result.WorkerID, 256)
-	attempt.InputTokens, attempt.OutputTokens = max(0, result.InputTokens), max(0, result.OutputTokens)
-	attempt.CostUSD, attempt.CostAvailable = max(0, result.CostUSD), result.CostAvailable
-	g.state.ReadFanout.UsedTokens += attempt.InputTokens + attempt.OutputTokens
+	if err := g.recordReadUsageLocked(attempt, result); err != nil {
+		return err
+	}
 	now := g.now().UTC()
 	// A claim made without a workspace token is necessarily best-effort (for
 	// example, outside a Git worktree). Once a base token exists, however, the
@@ -952,11 +1024,127 @@ func (g *Graph) FinishRead(ctx context.Context, result ReadResult) error {
 	return g.persistLocked(ctx, true)
 }
 
+// RecordReadUsage durably retains a completed automatic worker's accounting
+// before a graph-level cancellation makes its attempt terminal. It does not
+// interpret the worker result or advance node state; FinishRead remains the
+// only path that can accept or fail a read node.
+func (g *Graph) RecordReadUsage(ctx context.Context, result ReadResult) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return ErrGraphTerminal
+	}
+	attempt := g.attemptLocked(result.AttemptID)
+	if attempt == nil || attempt.State != AttemptRunning {
+		return fmt.Errorf("goal graph read attempt %q is not running", result.AttemptID)
+	}
+	node := g.nodeLocked(attempt.NodeID)
+	if node == nil || node.Execution != ExecutionReadOnly {
+		return fmt.Errorf("goal graph attempt %q is not a read_only node", result.AttemptID)
+	}
+	if err := g.recordReadUsageLocked(attempt, result); err != nil {
+		return err
+	}
+	return g.persistLocked(ctx, false)
+}
+
+func (g *Graph) recordReadUsageLocked(attempt *Attempt, result ReadResult) error {
+	usage := WorkUsage{
+		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
+	}
+	if !validWorkUsage(usage) {
+		return errors.New("goal graph read result has invalid usage")
+	}
+	workerID := bounded(result.WorkerID, 256)
+	if attempt.UsageRecorded {
+		recorded := WorkUsage{
+			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
+			CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated,
+		}
+		if recorded != usage || attempt.WorkerID != workerID {
+			return fmt.Errorf("goal graph read attempt %q already has different usage", attempt.ID)
+		}
+		return nil
+	}
+	attempt.WorkerID = workerID
+	attempt.UsageRecorded = true
+	attempt.Iterations = usage.Iterations
+	attempt.InputTokens, attempt.OutputTokens = usage.InputTokens, usage.OutputTokens
+	attempt.CostUSD, attempt.CostAvailable = usage.CostUSD, usage.CostAvailable
+	attempt.CostEstimated = usage.CostEstimated
+	g.state.ReadFanout.UsedTokens += usage.InputTokens + usage.OutputTokens
+	addWorkUsage(&g.state.Accounting.AutomaticReads, usage)
+	return nil
+}
+
+// RecordPrimaryUsage durably accounts for one or more primary-lane provider
+// iterations. An active primary attempt receives the same bounded counters for
+// node inspection; proposal and compaction work may legitimately have no
+// active node and remains visible only in the graph aggregate.
+func (g *Graph) RecordPrimaryUsage(ctx context.Context, usage WorkUsage) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !validWorkUsage(usage) {
+		return errors.New("goal graph primary usage is invalid")
+	}
+	if usage == (WorkUsage{}) {
+		return nil
+	}
+	if g.state.Outcome != "" {
+		// A concurrent explicit cancellation owns the terminal snapshot. A late
+		// provider return must not reopen or rewrite it merely for accounting.
+		return nil
+	}
+	attempt := g.activeAttemptLocked()
+	if attempt != nil {
+		node := g.nodeLocked(attempt.NodeID)
+		if node == nil || node.Execution != ExecutionPrimary {
+			return errors.New("goal graph primary usage arrived while a read-only attempt was active")
+		}
+	}
+	addWorkUsage(&g.state.Accounting.Primary, usage)
+	if attempt != nil {
+		attemptUsage := WorkUsage{
+			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
+			CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated,
+		}
+		addWorkUsage(&attemptUsage, usage)
+		attempt.Iterations, attempt.InputTokens, attempt.OutputTokens = attemptUsage.Iterations, attemptUsage.InputTokens, attemptUsage.OutputTokens
+		attempt.CostUSD, attempt.CostAvailable, attempt.CostEstimated = attemptUsage.CostUSD, attemptUsage.CostAvailable, attemptUsage.CostEstimated
+	}
+	return g.persistLocked(ctx, false)
+}
+
 func (g *Graph) exhaustReadyReadLocked(node *Node, reason string) {
 	node.State, node.Reason = NodeBudgetExhausted, strings.TrimSpace(reason)
 	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, node.Reason
 	g.queueUpdateLocked(node.ID, "", string(NodeBudgetExhausted), node.Reason)
 	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
+}
+
+func validWorkUsage(usage WorkUsage) bool {
+	return usage.Iterations >= 0 && usage.InputTokens >= 0 && usage.OutputTokens >= 0 && usage.CostUSD >= 0 && !math.IsNaN(usage.CostUSD) && !math.IsInf(usage.CostUSD, 0)
+}
+
+func addWorkUsage(total *WorkUsage, addition WorkUsage) {
+	if total == nil {
+		return
+	}
+	totalHasPricedWork := total.InputTokens+total.OutputTokens > 0 || total.CostUSD > 0
+	additionHasPricedWork := addition.InputTokens+addition.OutputTokens > 0 || addition.CostUSD > 0
+	total.Iterations += addition.Iterations
+	total.InputTokens += addition.InputTokens
+	total.OutputTokens += addition.OutputTokens
+	total.CostUSD += addition.CostUSD
+	if additionHasPricedWork {
+		if totalHasPricedWork {
+			total.CostAvailable = total.CostAvailable && addition.CostAvailable
+		} else {
+			total.CostAvailable = addition.CostAvailable
+		}
+	}
+	total.CostEstimated = total.CostEstimated || addition.CostEstimated
 }
 
 func (g *Graph) StartNext(ctx context.Context, workspaceToken string) (Node, Attempt, error) {
@@ -1607,6 +1795,50 @@ func (g *Graph) ExhaustBudget(ctx context.Context, reason string) error {
 	return g.persistLocked(ctx, true)
 }
 
+// UsageTotals returns durable per-lane counters plus live/frozen elapsed time.
+// It does not infer missing provider usage or pricing.
+func (g *Graph) UsageTotals(now time.Time) UsageSummary {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.usageSummaryLocked(now)
+}
+
+func (g *Graph) usageSummaryLocked(now time.Time) UsageSummary {
+	primary := g.state.Accounting.Primary
+	reads := g.state.Accounting.AutomaticReads
+	total := WorkUsage{}
+	addWorkUsage(&total, primary)
+	addWorkUsage(&total, reads)
+	if now.IsZero() {
+		now = g.now()
+	}
+	end := now.UTC()
+	if g.state.Outcome != "" {
+		end = g.state.Updated
+	}
+	elapsed := end.Sub(g.state.Accounting.Started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return UsageSummary{Primary: primary, AutomaticReads: reads, Total: total, Elapsed: elapsed}
+}
+
+func formatWorkUsage(usage WorkUsage) string {
+	cost := "cost unavailable"
+	if usage.CostAvailable {
+		qualifier := "recorded"
+		if usage.CostEstimated {
+			qualifier = "estimated"
+		}
+		cost = fmt.Sprintf("$%.6f %s", usage.CostUSD, qualifier)
+	}
+	return fmt.Sprintf("%d input + %d output tokens · %d provider iterations · %s", usage.InputTokens, usage.OutputTokens, usage.Iterations, cost)
+}
+
+func formatGraphElapsed(elapsed time.Duration) string {
+	return elapsed.Round(time.Second).String()
+}
+
 func (g *Graph) Render() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1675,6 +1907,10 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 	}
 	fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", maxGraphNodes, g.state.MaxAttemptsPerNode, g.state.MaxRevisions)
 	fmt.Fprintf(&b, "Read fan-out: %d/%d starts · %d/%d tokens · at most %d concurrent · %ds wall bound\n", g.state.ReadFanout.Starts, g.state.ReadFanout.MaxStarts, g.state.ReadFanout.UsedTokens, g.state.ReadFanout.MaxTokens, g.state.ReadFanout.MaxConcurrent, g.state.ReadFanout.MaxWallSeconds)
+	usage := g.usageSummaryLocked(g.now().UTC())
+	fmt.Fprintf(&b, "Aggregate model work: %s · %s elapsed\n", formatWorkUsage(usage.Total), formatGraphElapsed(usage.Elapsed))
+	fmt.Fprintf(&b, "  Primary (proposal + serial lane): %s\n", formatWorkUsage(usage.Primary))
+	fmt.Fprintf(&b, "  Automatic reads: %s\n", formatWorkUsage(usage.AutomaticReads))
 	b.WriteString("Execution: dependency-ready read_only nodes may use bounded automatic workers; one serial primary lane owns primary work and every parent-workspace write.\n")
 	b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when the action is proposed.\n")
 	b.WriteString("Authority: every action still uses ordinary permissions; approval grants no publication or additional tool access.\n")
@@ -1715,6 +1951,12 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 		}
 		if attempt.InputTokens+attempt.OutputTokens > 0 {
 			fmt.Fprintf(&b, " · %d tokens", attempt.InputTokens+attempt.OutputTokens)
+		}
+		if attempt.Iterations > 0 {
+			fmt.Fprintf(&b, " · %d provider iterations", attempt.Iterations)
+		}
+		if attempt.CostAvailable {
+			fmt.Fprintf(&b, " · $%.6f", attempt.CostUSD)
 		}
 		if attempt.Summary != "" {
 			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(attempt.Summary), 600))

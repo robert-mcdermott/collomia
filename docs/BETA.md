@@ -104,9 +104,11 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   instead of replayed. Cooperative pause/resume is available at the next safe
   provider/scheduler boundary, and a blocked node can be retried only when its
   attempt budget and non-replay checks allow it; whole-graph cancel remains
-  immediate. There is no optional-branch/node cancellation, and complete
-  primary-plus-worker aggregate cost presentation and comparative benefit
-  measurements remain roadmap work. Automatic writer orchestration and
+  immediate. Status durably separates proposal-plus-primary and automatic-read
+  iterations, tokens, honest price availability, estimated cost, and elapsed
+  time. There is no optional-branch/node cancellation; whole-graph aggregate
+  enforcement and comparative benefit measurements remain roadmap work.
+  Automatic writer orchestration and
   exact multi-worker recovery are also not implemented. Configuration, a
   repository, a saved graph, and a headless flag still cannot enable the
   preview. Standard execution remains the default.

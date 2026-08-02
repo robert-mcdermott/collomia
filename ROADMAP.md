@@ -128,18 +128,18 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-The latest implementation wave completed **OG-2B2a — Cooperative pause and
-safe retry** on top of the OG-2B1 read fan-out kernel. `/orchestrate pause`
-now records a durable request, lets the current provider/tool/read iteration
-finish, and stops new graph work at the next safe boundary. Explicit resume
-preserves an in-process active attempt, while restored graphs remain inert.
-`/orchestrate retry <node-id>` creates a new bounded attempt only for a safely
-retryable blocked node; exhausted attempts and ambiguous mutations fail closed.
-Whole-graph cancel remains immediate. This is operator control over
-**evidence-gated durable execution** without moving execution truth out of the
-runtime. Standard evidence-gated execution remains the default. **OG-2B2b —
-Aggregate presentation and comparative evidence** is next; it completes the
-primary-plus-worker accounting and measured usefulness gate. See the
+The latest implementation wave completed **OG-2B2b1 — Durable aggregate
+accounting and presentation**. The runtime now records proposal-plus-primary
+and automatic-read provider iterations, input/output tokens, price
+availability, estimated cost, and elapsed time in durable graph state.
+`/orchestrate status` presents each lane and the total; incomplete pricing is
+reported as unavailable, never as zero. Legacy graph snapshots reconstruct
+only usage their attempts actually stored. This measurement supports
+**evidence-gated durable execution** without claiming fan-out is already
+beneficial or adding authority. Standard evidence-gated execution remains the
+default. **OG-2B2b2 — Aggregate bounds and comparative evidence** is next; it
+uses these counters to enforce a whole-graph envelope and make the measured
+usefulness decision. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1697,9 +1697,18 @@ roadmap remains the source of priority and completion status.
           immediate and defer node cancellation until optional branches exist.
           *(Completed 2026-08-02.)*
         - [ ] **OG-2B2b — Aggregate presentation and comparative evidence:**
-          complete primary-plus-worker token/cost/iteration/wall presentation,
-          compare suitable and unsuitable workloads, and finish the
-          event/automation decision before any headless activation surface.
+          make primary-plus-worker work visible and bounded, compare suitable
+          and unsuitable workloads, and finish the event/automation decision
+          before any headless activation surface.
+          - [x] **OG-2B2b1 — Durable aggregate accounting and presentation:**
+            count the explicit proposal, primary work, automatic reads, and
+            failed provider iterations exactly once; persist per-lane
+            input/output tokens and honest price availability; and show total
+            elapsed work in graph status. *(Completed 2026-08-02.)*
+          - [ ] **OG-2B2b2 — Aggregate bounds and comparative evidence:**
+            enforce a whole-graph token/cost/iteration/active-wall envelope,
+            run the comparative scenario matrix, and retain fan-out only if
+            quality or elapsed-time evidence justifies its added work.
   - [ ] **OG-3 — Isolated writer candidates:** dispatch only ready,
     disjoint-scope writers on a stable base; require child verification and
     stop at reviewable candidates.
@@ -1896,24 +1905,24 @@ roadmap remains the source of priority and completion status.
 ## Recommended next sequence
 
 The setup journey, first completion controller, OG-1 runtime-owned primary
-graph, OG-2A explicit preview, OG-2B1 read fan-out kernel, and OG-2B2a
-cooperative operator controls are now complete.
+graph, OG-2A explicit preview, OG-2B1 read fan-out kernel, OG-2B2a cooperative
+operator controls, and OG-2B2b1 aggregate accounting are now complete.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future automatic writer and exact scheduler-recovery claims. The next
-orchestration slice is OG-2B2b: aggregate presentation and comparative evidence
-around the shipped bounded automatic read-only fan-out, with the primary
+orchestration slice is OG-2B2b2: aggregate bounds and comparative evidence
+around the now-measured automatic read-only fan-out, with the primary
 workspace's write lane remaining serial.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are missed by the
    conservative recognizer, and whether two interventions is the right bound.
    Keep this local and inspectable rather than adding telemetry by default.
-2. Take **OG-2B2b — Aggregate presentation and comparative evidence** around
-   the completed fan-out and cooperative-control kernel. Complete the
-   primary-plus-worker aggregate usage/cost/iteration/wall presentation, and
+2. Take **OG-2B2b2 — Aggregate bounds and comparative evidence** around the
+   completed fan-out, cooperative-control, and measurement kernel. Enforce
+   whole-graph aggregate usage/cost/iteration/active-wall bounds, and
    compare decomposable, cross-layer, trivial, and serial tasks with Standard
    and primary-only graph mode. Do not let project configuration,
    instructions, skills, hooks, persisted state, or the model opt in.

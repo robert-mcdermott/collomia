@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,80 @@ func TestGraphClaimsTwoStableReadWorkersBeforePrimaryLane(t *testing.T) {
 	status, err := graph.Inspect(1)
 	if err != nil || !strings.Contains(status, "worker worker-1") || !strings.Contains(status, "delegate_read") {
 		t.Fatalf("read inspection err=%v\n%s", err, status)
+	}
+}
+
+func TestGraphAggregateAccountingSeparatesPrimaryAndAutomaticReads(t *testing.T) {
+	started := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	fixture := &graphFixture{now: started}
+	opts := fixture.options()
+	opts.AccountingStarted = started
+	opts.InitialPrimary = WorkUsage{Iterations: 1, InputTokens: 100, OutputTokens: 20, CostUSD: 0.001, CostAvailable: true, CostEstimated: true}
+	graph, err := New(Spec{Goal: "inspect then repair", Nodes: []NodeSpec{
+		{ID: 1, Title: "inspect", Execution: ExecutionReadOnly},
+		{ID: 2, Title: "repair", DependsOn: []int{1}},
+	}}, 1, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	if err := graph.FinishRead(t.Context(), ReadResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "reader", Status: "done", Summary: "grounded",
+		Evidence: []string{"read_file: completed — evidence"}, ToolSuccesses: 1, WorkspaceToken: "state",
+		Iterations: 2, InputTokens: 200, OutputTokens: 40, CostUSD: 0.002,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, primaryAttempt, err := graph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 1, InputTokens: 50, OutputTokens: 10, CostUSD: 0.0005, CostAvailable: true, CostEstimated: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	usage := graph.UsageTotals(started.Add(30 * time.Second))
+	if usage.Primary.Iterations != 2 || usage.Primary.InputTokens != 150 || usage.Primary.OutputTokens != 30 || math.Abs(usage.Primary.CostUSD-0.0015) > 1e-12 || !usage.Primary.CostAvailable {
+		t.Fatalf("primary usage=%+v", usage.Primary)
+	}
+	if usage.AutomaticReads.Iterations != 2 || usage.AutomaticReads.InputTokens != 200 || usage.AutomaticReads.OutputTokens != 40 || usage.AutomaticReads.CostAvailable {
+		t.Fatalf("automatic-read usage=%+v", usage.AutomaticReads)
+	}
+	if usage.Total.Iterations != 4 || usage.Total.InputTokens != 350 || usage.Total.OutputTokens != 70 || usage.Total.CostAvailable || usage.Elapsed != 30*time.Second {
+		t.Fatalf("total usage=%+v elapsed=%s", usage.Total, usage.Elapsed)
+	}
+	snapshot := graph.Snapshot()
+	primary := snapshot.Attempts[len(snapshot.Attempts)-1]
+	if primary.ID != primaryAttempt.ID || primary.Iterations != 1 || primary.InputTokens != 50 || primary.OutputTokens != 10 {
+		t.Fatalf("primary attempt accounting=%+v", primary)
+	}
+	status, err := graph.Inspect(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Aggregate model work:", "Primary (proposal + serial lane):", "Automatic reads:", "4 provider iterations", "cost unavailable"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("status missing %q:\n%s", want, status)
+		}
+	}
+
+	legacy := graph.Snapshot()
+	legacy.Accounting = Accounting{}
+	restored, err := Restore(legacy, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredUsage := restored.UsageTotals(started.Add(30 * time.Second))
+	if restoredUsage.Primary.InputTokens != 50 || restoredUsage.AutomaticReads.InputTokens != 200 || restored.Snapshot().Accounting.Started.IsZero() {
+		t.Fatalf("legacy reconstructed usage=%+v snapshot=%+v", restoredUsage, restored.Snapshot().Accounting)
+	}
+	corrupt := graph.Snapshot()
+	corrupt.Accounting.Primary.Iterations = -1
+	if _, err := Restore(corrupt, Options{}); err == nil || !strings.Contains(err.Error(), "aggregate accounting") {
+		t.Fatalf("invalid accounting restore error=%v", err)
 	}
 }
 

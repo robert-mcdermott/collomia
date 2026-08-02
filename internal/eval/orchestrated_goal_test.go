@@ -212,6 +212,20 @@ func TestOrchestratedGoalAutomaticReadFanoutEvaluation(t *testing.T) {
 	if snapshot.Outcome != goalgraph.OutcomeDone || snapshot.ReadFanout.Starts != 2 || snapshot.ReadFanout.UsedTokens != 60 {
 		t.Fatalf("graph outcome/read envelope=%q %+v", snapshot.Outcome, snapshot.ReadFanout)
 	}
+	usage := runtime.GoalGraph.UsageTotals(time.Time{})
+	if usage.Primary.Iterations != 2 || usage.Primary.InputTokens != 36 || usage.Primary.OutputTokens != 8 {
+		t.Fatalf("primary accounting=%+v", usage.Primary)
+	}
+	if usage.AutomaticReads.Iterations != 4 || usage.AutomaticReads.InputTokens != 48 || usage.AutomaticReads.OutputTokens != 12 {
+		t.Fatalf("automatic-read accounting=%+v", usage.AutomaticReads)
+	}
+	if usage.Total.Iterations != 6 || usage.Total.InputTokens != 84 || usage.Total.OutputTokens != 20 || usage.Total.CostAvailable {
+		t.Fatalf("aggregate accounting=%+v", usage.Total)
+	}
+	status, err := runtime.OrchestratedGoalStatus(0)
+	if err != nil || !strings.Contains(status, "Aggregate model work:") || !strings.Contains(status, "6 provider iterations") || !strings.Contains(status, "cost unavailable") {
+		t.Fatalf("aggregate status err=%v\n%s", err, status)
+	}
 	delegatedEvidence := 0
 	for _, evidence := range snapshot.Evidence {
 		if evidence.Kind == goalgraph.EvidenceDelegateRead && evidence.Status == "accepted" && evidence.WorkspaceToken != "" {
@@ -286,6 +300,15 @@ func TestOrchestratedGoalAutomaticReadCancellationEvaluation(t *testing.T) {
 	if outcome, _ := runtime.GoalGraph.Outcome(); outcome != goalgraph.OutcomeCancelled {
 		t.Fatalf("cancelled graph outcome=%q snapshot=%+v", outcome, runtime.GoalGraph.Snapshot())
 	}
+	usage := runtime.GoalGraph.UsageTotals(time.Time{})
+	if usage.AutomaticReads.Iterations != 2 || usage.AutomaticReads.InputTokens != 0 || usage.AutomaticReads.OutputTokens != 0 {
+		t.Fatalf("cancelled worker accounting=%+v", usage.AutomaticReads)
+	}
+	for _, attempt := range runtime.GoalGraph.Snapshot().Attempts {
+		if !attempt.UsageRecorded || attempt.Iterations != 1 {
+			t.Fatalf("cancelled attempt accounting=%+v", attempt)
+		}
+	}
 	statuses := runtime.Team.Snapshot()
 	if len(statuses) != 2 {
 		t.Fatalf("cancelled worker statuses=%+v", statuses)
@@ -324,10 +347,10 @@ func TestOrchestratedGoalExplicitPreviewEvaluation(t *testing.T) {
 				return errors.New("proposal tool surface was not read-only")
 			}
 			return nil
-		}, response: toolResponse("plan", "update_plan", `{"goal":"inspect the implementation","steps":[{"id":1,"title":"inspect current behavior","status":"pending","acceptance":["the implementation is reported from repository evidence"]}]}`)},
-		{check: requireGraphToolContains("acceptance: the implementation is reported"), response: provider.Response{Content: "The proposal is ready for explicit review."}},
-		{check: requireGraphNode(1, "inspect current behavior"), response: toolResponse("read", "read_file", `{"path":"calc.go"}`)},
-		{check: requireGraphToolContains("func Add"), response: provider.Response{Content: "The implementation is grounded in calc.go."}},
+		}, response: withEvaluationUsage(toolResponse("plan", "update_plan", `{"goal":"inspect the implementation","steps":[{"id":1,"title":"inspect current behavior","status":"pending","acceptance":["the implementation is reported from repository evidence"]}]}`), 10, 2)},
+		{check: requireGraphToolContains("acceptance: the implementation is reported"), response: withEvaluationUsage(provider.Response{Content: "The proposal is ready for explicit review."}, 11, 3)},
+		{check: requireGraphNode(1, "inspect current behavior"), response: withEvaluationUsage(toolResponse("read", "read_file", `{"path":"calc.go"}`), 12, 2)},
+		{check: requireGraphToolContains("func Add"), response: withEvaluationUsage(provider.Response{Content: "The implementation is grounded in calc.go."}, 13, 4)},
 	}}
 	runtime, err := app.New(t.Context(), app.Options{Workspace: workspace})
 	if err != nil {
@@ -353,6 +376,10 @@ func TestOrchestratedGoalExplicitPreviewEvaluation(t *testing.T) {
 	if runtime.GoalGraph == nil || !strings.Contains(status, "one serial primary lane") {
 		t.Fatalf("approval did not attach the visible primary graph: %s", status)
 	}
+	proposalUsage := runtime.GoalGraph.UsageTotals(time.Time{}).Primary
+	if proposalUsage.Iterations != 2 || proposalUsage.InputTokens != 21 || proposalUsage.OutputTokens != 5 {
+		t.Fatalf("proposal accounting=%+v", proposalUsage)
+	}
 	answer, err := runtime.Agent.Run(t.Context(), executionPrompt, runtime.LogEvent)
 	if err != nil {
 		t.Fatal(err)
@@ -363,6 +390,15 @@ func TestOrchestratedGoalExplicitPreviewEvaluation(t *testing.T) {
 	if outcome, _ := runtime.GoalGraph.Outcome(); outcome != goalgraph.OutcomeDone {
 		t.Fatalf("explicit preview outcome=%q", outcome)
 	}
+	finalUsage := runtime.GoalGraph.UsageTotals(time.Time{}).Primary
+	if finalUsage.Iterations != 4 || finalUsage.InputTokens != 46 || finalUsage.OutputTokens != 11 {
+		t.Fatalf("proposal + primary accounting=%+v", finalUsage)
+	}
+}
+
+func withEvaluationUsage(response provider.Response, input, output int) provider.Response {
+	response.Usage = provider.Usage{InputTokens: input, OutputTokens: output}
+	return response
 }
 
 // TestOrchestratedGoalPrimaryGraphEvaluation exercises OG-1 as a product

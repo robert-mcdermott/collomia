@@ -848,9 +848,12 @@ no new graph work, and is reached only after the current provider/tool/read
 iteration completes; cancel remains the immediate stop. Resume clears only
 pause state. A retry is accepted only for a blocked node with remaining budget
 and no unresolved non-replayable action or ambiguous mutation, and it preserves
-the blocked attempt as history. Optional-branch/node cancellation, complete
-primary-plus-worker aggregate presentation, and headless activation remain
-unimplemented.
+the blocked attempt as history. Provider iterations, input/output tokens,
+price availability, estimated cost, and elapsed time are durable runtime facts
+split between proposal-plus-primary and automatic-read lanes; they grant no
+permission and never substitute for completion evidence. Optional-branch/node
+cancellation, whole-graph aggregate enforcement, comparative usefulness
+evidence, and headless activation remain unimplemented.
 
 ## Delegated-agent boundary
 

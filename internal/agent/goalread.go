@@ -52,8 +52,12 @@ func (a *Agent) runGoalReadFanout(ctx context.Context, claims []goalgraph.ReadCl
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
 		// A turn cancellation is a graph-level terminal decision, not a set of
-		// unrelated child failures. Persist it before considering any late child
-		// inbox result so cancellation cannot be misreported as blocked.
+		// unrelated child failures. Retain completed provider accounting first,
+		// then persist the terminal decision so cancellation cannot be misreported
+		// as blocked or erase work that the runtime actually observed.
+		for index, result := range results {
+			_ = graph.RecordReadUsage(context.WithoutCancel(ctx), readResultFromDelegate(claims[index].Attempt.ID, result, ""))
+		}
 		_ = graph.Cancel(context.WithoutCancel(ctx), err.Error())
 		a.emitGoalUpdates(send)
 		return err
@@ -61,13 +65,7 @@ func (a *Agent) runGoalReadFanout(ctx context.Context, claims []goalgraph.ReadCl
 
 	for index, result := range results {
 		token, _ := a.goalToken(ctx)
-		err := graph.FinishRead(context.WithoutCancel(ctx), goalgraph.ReadResult{
-			AttemptID: claims[index].Attempt.ID, WorkerID: result.ID, Status: result.Status,
-			Summary: result.Summary, Error: result.Error, Evidence: result.Evidence,
-			ToolSuccesses:  completedDelegateToolCount(result.Evidence),
-			WorkspaceToken: token, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
-			CostUSD: result.CostUSD, CostAvailable: result.CostAvailable,
-		})
+		err := graph.FinishRead(context.WithoutCancel(ctx), readResultFromDelegate(claims[index].Attempt.ID, result, token))
 		a.emitGoalUpdates(send)
 		if err != nil && !errors.Is(err, goalgraph.ErrGraphTerminal) {
 			return err
@@ -77,6 +75,16 @@ func (a *Agent) runGoalReadFanout(ctx context.Context, claims []goalgraph.ReadCl
 		return goalGraphTerminalError(outcome, reason)
 	}
 	return nil
+}
+
+func readResultFromDelegate(attemptID string, result DelegateResult, workspaceToken string) goalgraph.ReadResult {
+	return goalgraph.ReadResult{
+		AttemptID: attemptID, WorkerID: result.ID, Status: result.Status,
+		Summary: result.Summary, Error: result.Error, Evidence: result.Evidence,
+		ToolSuccesses: completedDelegateToolCount(result.Evidence), WorkspaceToken: workspaceToken,
+		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
+	}
 }
 
 func completedDelegateToolCount(evidence []string) int {

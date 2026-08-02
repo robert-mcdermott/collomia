@@ -51,6 +51,22 @@ func (a *Agent) goalToken(ctx context.Context) (string, error) {
 	return a.goalStateToken(ctx)
 }
 
+func (a *Agent) recordGoalProviderUsage(ctx context.Context, usage provider.Usage, iterations int) error {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph == nil {
+		return nil
+	}
+	return graph.RecordPrimaryUsage(ctx, goalgraph.WorkUsage{
+		Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
+	})
+}
+
 func (a *Agent) emitGoalUpdates(send Emit) {
 	if !a.graphEnabled() {
 		return

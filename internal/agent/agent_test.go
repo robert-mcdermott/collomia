@@ -122,6 +122,10 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 		tools.Function{Def: provider.ToolDefinition{Name: "delegate"}, Action: tools.Action{Risk: tools.RiskRead}, Run: func(context.Context, json.RawMessage) (string, error) { return "must not run", nil }},
 		goalgraph.RevisionTool{Graph: graph}, goalgraph.BlockTool{Graph: graph},
 	)
+	withUsage := func(response provider.Response) provider.Response {
+		response.Usage = provider.Usage{InputTokens: 10, OutputTokens: 5}
+		return response
+	}
 	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
 		meta := map[string]bool{}
 		for _, definition := range request.Tools {
@@ -138,20 +142,20 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 			if !requestContains(request, "1. inspect source · running") {
 				t.Fatal("first node was not pinned as running")
 			}
-			return graphToolResponse("inspect-1", "inspect", `{}`), nil
+			return withUsage(graphToolResponse("inspect-1", "inspect", `{}`)), nil
 		case 2:
-			return provider.Response{Content: "source inspected"}, nil
+			return withUsage(provider.Response{Content: "source inspected"}), nil
 		case 3:
 			if !requestContains(request, "2. inspect tests · running") {
 				t.Fatal("dependent node was not selected after its dependency")
 			}
-			return graphToolResponse("inspect-2", "inspect", `{}`), nil
+			return withUsage(graphToolResponse("inspect-2", "inspect", `{}`)), nil
 		default:
-			return provider.Response{Content: "all inspections complete"}, nil
+			return withUsage(provider.Response{Content: "all inspections complete"}), nil
 		}
 	}}
 	agentRuntime := New(Options{
-		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100, Pricing: &appconfig.Pricing{InputPerMillion: 1, OutputPerMillion: 2}},
 		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
 		MaxIterations: 8, GoalGraph: graph,
 	})
@@ -170,6 +174,13 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 	}
 	if outcome, _ := graph.Outcome(); outcome != goalgraph.OutcomeDone {
 		t.Fatalf("outcome=%q snapshot=%+v", outcome, graph.Snapshot())
+	}
+	usage := graph.UsageTotals(time.Time{}).Primary
+	if usage.Iterations != 4 || usage.InputTokens != 40 || usage.OutputTokens != 20 || !usage.CostAvailable || !usage.CostEstimated || math.Abs(usage.CostUSD-0.00008) > 1e-12 {
+		t.Fatalf("primary graph usage=%+v", usage)
+	}
+	if agentRuntime.ProviderIterations() != 4 {
+		t.Fatalf("provider iterations=%d", agentRuntime.ProviderIterations())
 	}
 }
 
@@ -353,6 +364,9 @@ func TestGoalGraphControllerRetriesNormalizedProviderFailureInFreshAttempt(t *te
 	snapshot := graph.Snapshot()
 	if snapshot.Outcome != goalgraph.OutcomeDone || len(snapshot.Attempts) != 2 || snapshot.Attempts[0].State != goalgraph.AttemptRetryable || snapshot.Attempts[1].State != goalgraph.AttemptAccepted {
 		t.Fatalf("snapshot=%+v", snapshot)
+	}
+	if snapshot.Accounting.Primary.Iterations != 3 || snapshot.Attempts[0].Iterations != 1 || snapshot.Attempts[1].Iterations != 2 {
+		t.Fatalf("provider-failure accounting=%+v attempts=%+v", snapshot.Accounting.Primary, snapshot.Attempts)
 	}
 }
 

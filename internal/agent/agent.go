@@ -67,6 +67,7 @@ type Agent struct {
 	projectInstructions string
 	messages            []provider.Message
 	usage               provider.Usage
+	providerIterations  int
 	cacheGaps           *cacheGapStats
 	lastInputTokens     int
 	usageWatermark      int
@@ -400,6 +401,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		// how long the model then took to answer it.
 		a.cacheGapStatsOrInit().observeRequest()
 		var streamedUsage atomic.Bool
+		a.beginProviderIteration()
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" {
 				e := event.New(event.KindTextDelta)
@@ -429,6 +431,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				send(e)
 			}
 		})
+		response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
+		if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {
+			return response.Content, reportError(send, graphErr)
+		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 				a.cancelGoalGraph(err.Error(), send)
@@ -458,7 +464,6 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			err = reportError(send, err)
 			return "", err
 		}
-		response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 		a.mu.Lock()
 		a.usage.InputTokens += response.Usage.InputTokens
 		a.usage.OutputTokens += response.Usage.OutputTokens
@@ -1209,10 +1214,12 @@ type DelegateResult struct {
 	Worktree        string         `json:"worktree,omitempty"`
 	Branch          string         `json:"branch,omitempty"`
 	BaseCommit      string         `json:"base_commit,omitempty"`
+	Iterations      int            `json:"iterations,omitempty"`
 	InputTokens     int            `json:"input_tokens,omitempty"`
 	OutputTokens    int            `json:"output_tokens,omitempty"`
 	CostUSD         float64        `json:"cost_usd,omitempty"`
 	CostAvailable   bool           `json:"cost_available,omitempty"`
+	CostEstimated   bool           `json:"cost_estimated,omitempty"`
 	TokenBudget     int            `json:"token_budget,omitempty"`
 	CostBudgetUSD   float64        `json:"cost_budget_usd,omitempty"`
 	TimeoutSeconds  int            `json:"timeout_seconds"`
@@ -1501,7 +1508,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	}
 
 	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "write_scopes": writeScopes, "agent": task.Agent, "token_budget": profile.TokenBudget, "cost_budget_usd": profile.CostBudgetUSD, "timeout_seconds": timeoutSeconds}})
-	output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
+	output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
 	violations := writeScopeViolations(writeScopes, changed)
 	if len(violations) > 0 {
 		scopeViolationErr := fmt.Errorf("delegated agent changed files outside its declared write_paths: %s", strings.Join(violations, ", "))
@@ -1519,6 +1526,8 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		if status, ok := team.Get(id); ok {
 			result := delegateResult(status)
 			result.ChangedHunks = boundedDelegateHunks(hunks)
+			result.Iterations = iterations
+			result.CostEstimated = usage.CostEstimated
 			return result
 		}
 	}
@@ -1526,7 +1535,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
 }
 
 func delegateLimits(task DelegateTask, profile appconfig.AgentDefinition) (tokenBudget int, costBudget float64, timeoutSeconds, maxIterations int) {
@@ -1586,7 +1595,7 @@ func boundedDelegateHunks(hunks []DelegateHunk) []DelegateHunk {
 	return bounded
 }
 
-func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch, baseCommit string, usage provider.Usage, runErr error) {
+func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch, baseCommit string, iterations int, usage provider.Usage, runErr error) {
 	a.mu.RLock()
 	client, providerName, model, providerConfig := a.client, a.providerName, a.model, a.providerConfig
 	workspace, parentRegistry := a.workspace, a.registry
@@ -1662,7 +1671,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	if task.Write {
 		childPlan = false
 		if !isGitRepo(ctx, workspace) {
-			return "", nil, nil, nil, "", "", "", provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
+			return "", nil, nil, nil, "", "", "", 0, provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
 		}
 		var err error
 		// Git mutates shared administrative state under .git/worktrees while
@@ -1672,13 +1681,13 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		wt, err = newWorktree(ctx, workspace, task.Name)
 		a.worktreeMu.Unlock()
 		if err != nil {
-			return "", nil, nil, nil, "", "", "", provider.Usage{}, err
+			return "", nil, nil, nil, "", "", "", 0, provider.Usage{}, err
 		}
 		childWorkspace = wt.path
 		reg, _, childProcs, buildErr := tools.Builtins(wt.path, childConfig)
 		if buildErr != nil {
 			wt.remove(ctx)
-			return "", nil, nil, nil, "", "", "", provider.Usage{}, buildErr
+			return "", nil, nil, nil, "", "", "", 0, provider.Usage{}, buildErr
 		}
 		defer childProcs.StopAll()
 		if discovered, discoverErr := skills.Discover(childWorkspace, cfg.ProjectTrusted); discoverErr == nil {
@@ -1771,6 +1780,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		team.SetAction(id, "calling "+providerName+"/"+model)
 	}
 	output, runErr = child.Run(ctx, task.Task, emit)
+	iterations = child.ProviderIterations()
 	usage = child.Usage()
 	if wt != nil {
 		changed = wt.changedFiles(context.WithoutCancel(ctx))
@@ -1781,7 +1791,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			branch, worktreePath, baseCommit = wt.branch, wt.path, wt.baseCommit
 		}
 	}
-	return output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr
+	return output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, usage, runErr
 }
 
 func restrictAgentPermissions(parent appconfig.Permissions, child appconfig.AgentPermissions) appconfig.Permissions {
@@ -1994,6 +2004,21 @@ func (a *Agent) ProviderHealth() provider.Health {
 }
 
 func (a *Agent) Usage() provider.Usage { a.mu.RLock(); defer a.mu.RUnlock(); return a.usage }
+
+// ProviderIterations reports every provider request made by this Agent,
+// including compaction. Delegated agents are one-shot, so this is also their
+// exact bounded iteration contribution to graph accounting.
+func (a *Agent) ProviderIterations() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.providerIterations
+}
+
+func (a *Agent) beginProviderIteration() {
+	a.mu.Lock()
+	a.providerIterations++
+	a.mu.Unlock()
+}
 
 // CacheGaps reports how this session's request cadence sits against the
 // prompt-cache lifetime. See cachegap.go for why this is the measurement the
@@ -2275,11 +2300,15 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 		reasoningEffort = a.providerConfig.Reasoning.Effort
 	}
 	req := provider.Request{Model: model, System: prompts.Text(prompts.CompactSystem), Messages: []provider.Message{{Role: "user", Content: instructions + "\n\n---\n" + serialized.String()}}, MaxTokens: requestMaxTokens, ReasoningEffort: reasoningEffort}
+	a.beginProviderIteration()
 	response, err := client.Chat(ctx, req, nil)
+	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
+	if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {
+		return 0, graphErr
+	}
 	if err != nil {
 		return 0, err
 	}
-	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 	a.mu.Lock()
 	a.usage.InputTokens += response.Usage.InputTokens
 	a.usage.OutputTokens += response.Usage.OutputTokens

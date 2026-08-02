@@ -27,7 +27,8 @@ agents, provider platforms, and the Model Context Protocol specification.
    combined-parent verification/ranking, exact multi-worker recovery, and
    fuller transcript audit (Phase 6 now has the OG-1 durable controller,
    explicit TUI-only OG-2A preview, OG-2B1 bounded automatic read fan-out, and
-   OG-2B2a cooperative pause/resume plus safe blocked-node retry,
+   OG-2B2a cooperative pause/resume plus safe blocked-node retry, and OG-2B2b1
+   durable primary-plus-worker accounting and status presentation,
    in addition to named primary/delegated profiles, portable reasoning,
    durable token/cost budgets, restrictive permissions,
    scheduling/isolation, declared-scope serialization, structured results,
@@ -42,6 +43,37 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-02 — OG-2B2b1 durable aggregate accounting completed
+
+- **The comparison inputs are now runtime-owned.** Graph schema 1 stores
+  separate primary and automatic-read provider iterations, input/output
+  tokens, cost availability, estimated cost, and the start of the explicit
+  proposal turn. The proposal is part of the primary lane, so Orchestrated
+  Goal cannot look cheaper by hiding its design call.
+- **Failures and retries remain visible work.** Every completed primary or
+  child provider request contributes one iteration even when a failure reports
+  no tokens. Active primary and read attempts retain their own counters while
+  the graph keeps the aggregate.
+- **Status distinguishes facts from missing price data.** `/orchestrate status`
+  shows total, proposal-plus-primary, and automatic-read work with elapsed
+  time. Cost appears only when every token-bearing contribution had configured
+  pricing; otherwise the status says `cost unavailable` rather than `$0`.
+- **Compatibility does not invent history.** The accounting object and attempt
+  iteration/cost-estimate fields are additive schema-1 data. A pre-accounting
+  snapshot reconstructs only token/cost facts already present on immutable
+  attempts and leaves unavailable proposal/iteration history at zero.
+- **The product path proves the split.** State and agent tests cover durable
+  accumulation, provider failures, retries, per-attempt attribution,
+  unavailable pricing, elapsed time, corruption rejection, and legacy restore.
+  Credential-free evaluations prove an explicit two-call proposal is retained
+  and a two-worker investigation plus primary synthesis records exactly four
+  read iterations and two primary iterations. Full test/race/vet/build and
+  documentation checks passed.
+- **Instrumentation is not a favorable verdict.** OG-2B2b2 still owns
+  whole-graph aggregate enforcement, Standard/primary-only/fan-out comparative
+  scenarios, the usefulness decision, and the event/headless compatibility
+  decision.
 
 ### 2026-08-02 — OG-2B2a cooperative pause and safe retry completed
 
