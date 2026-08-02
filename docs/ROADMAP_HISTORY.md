@@ -39,6 +39,39 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-01 — Evidence-gated goal completion
+
+- **A final-sounding sentence is no longer a completion signal.** In primary
+  execution mode, a tool-free response is checked against the plan active in this turn,
+  terminal-step evidence/reasons, tracked writes newer than recognized
+  verification, and unresolved tool failures. Informational turns without
+  those signals still finish normally; planning mode can still return pending
+  execution steps, and a terminal plan from an older turn remains history
+  unless updated.
+  Delegated work keeps its isolated-worktree review and parent-verification
+  contract; the goal-owning primary agent is the controller boundary in this
+  first slice.
+- **The plan now has completion semantics rather than only display shape.** New
+  plan writes require non-empty goals/steps, known acyclic dependencies,
+  dependency-ready active/done steps, evidence for done steps, and reasons for
+  blocked/skipped steps. Completion assessment also covers restored older plans
+  that predate those validators.
+- **Verification freshness is runtime state.** Every successful tracked write
+  invalidates earlier verification in the turn. A later successful direct
+  conventional build/lint/test command restores it; compound/success-masked
+  shell commands do not. `verification_note` records the exceptional case
+  where no meaningful automated check applies and is labelled model-authored,
+  not machine evidence.
+- **Recovery is required but bounded.** A failed tool must be followed by a
+  successful tool path or an explicitly blocked plan step. The controller
+  injects at most two deterministic continuation notices, each charged to the
+  existing iteration/token/cost limits, before ending blocked. The ordinary
+  iteration ceiling is now a budget-exhausted outcome.
+- **Automation can distinguish process status from goal status.** Schema-v1
+  `run.result.status` remains `ok`/`error`/`cancelled`; the additive `outcome`
+  field reports `done`/`blocked`/`cancelled`/`budget_exhausted`. Replay validates
+  their pairing and remains compatible with older traces that omit `outcome`.
+
 ### 2026-08-01 — Launch to a verified session
 
 - **A fresh installation is now honestly unconfigured.** `config.Defaults()`

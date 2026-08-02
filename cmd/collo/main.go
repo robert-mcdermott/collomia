@@ -478,7 +478,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 }
 
 func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options, answer string, refused, progressed bool, runErr error, started time.Time) {
-	result := event.RunResult{Status: "ok", Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds(), Version: version.Version, Commit: version.Commit}
+	result := event.RunResult{Status: "ok", Outcome: string(agent.GoalOutcomeFor(runErr)), Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds(), Version: version.Version, Commit: version.Commit}
 	var usage *event.Usage
 	if runtime != nil {
 		result.ChangedFiles = runtime.Changes.Changed()
@@ -536,7 +536,7 @@ func failureFor(err error) event.Failure {
 	if errors.Is(err, permission.ErrDenied) {
 		return event.Failure{ID: id, Kind: event.FailurePermission}
 	}
-	if errors.Is(err, agent.ErrTokenBudgetExceeded) || errors.Is(err, agent.ErrCostBudgetExceeded) {
+	if errors.Is(err, agent.ErrTokenBudgetExceeded) || errors.Is(err, agent.ErrCostBudgetExceeded) || errors.Is(err, agent.ErrIterationBudgetExceeded) {
 		return event.Failure{ID: id, Kind: event.FailureUsage}
 	}
 	var validation appconfig.ValidationError

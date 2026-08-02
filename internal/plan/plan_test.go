@@ -8,6 +8,12 @@ import (
 
 func TestBoardValidation(t *testing.T) {
 	board := NewBoard()
+	if err := board.Set(Plan{Steps: []Step{{ID: 1, Title: "a", Status: "pending"}}}); err == nil {
+		t.Fatal("empty goal must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g"}); err == nil {
+		t.Fatal("empty steps must be rejected")
+	}
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "banana"}}}); err == nil {
 		t.Fatal("invalid status must be rejected")
 	}
@@ -17,6 +23,18 @@ func TestBoardValidation(t *testing.T) {
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{9}}}}); err == nil {
 		t.Fatal("unknown dependency must be rejected")
 	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{1}}}}); err == nil {
+		t.Fatal("self dependency must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}}, {ID: 2, Title: "b", Status: "pending", DependsOn: []int{1}}}}); err == nil {
+		t.Fatal("dependency cycle must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done"}}}); err == nil {
+		t.Fatal("terminal step without evidence must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending"}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err == nil {
+		t.Fatal("in-progress step with unfinished dependency must be rejected")
+	}
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "go test passed"}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -25,6 +43,44 @@ func TestBoardValidation(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("render missing %q:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestPlanCompletionAssessment(t *testing.T) {
+	tests := []struct {
+		name  string
+		plan  *Plan
+		state CompletionState
+	}{
+		{name: "none", state: CompletionReady},
+		{name: "pending", plan: &Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "work", Status: "pending"}}}, state: CompletionIncomplete},
+		{name: "legacy missing evidence", plan: &Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "work", Status: "done"}}}, state: CompletionIncomplete},
+		{name: "done", plan: &Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "work", Status: "done", Evidence: "go test passed"}}}, state: CompletionReady},
+		{name: "blocked", plan: &Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "work", Status: "blocked", Evidence: "dependency unavailable"}}}, state: CompletionBlocked},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := test.plan.AssessCompletion()
+			if got.State != test.state {
+				t.Fatalf("completion=%+v, want %s", got, test.state)
+			}
+		})
+	}
+}
+
+func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
+	board := NewBoard()
+	_, before := board.Snapshot()
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}}, {ID: 2, Title: "b", Status: "done", Evidence: "observed"}}}); err != nil {
+		t.Fatal(err)
+	}
+	current, after := board.Snapshot()
+	if after <= before {
+		t.Fatalf("revision did not advance: before=%d after=%d", before, after)
+	}
+	current.Steps[0].DependsOn[0] = 99
+	if got := board.Current().Steps[0].DependsOn[0]; got != 2 {
+		t.Fatalf("snapshot aliased board dependency: %d", got)
 	}
 }
 

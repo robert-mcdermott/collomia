@@ -238,6 +238,7 @@
       "additionalProperties": true,
       "properties": {
         "status": { "enum": ["ok", "error", "cancelled"] },
+        "outcome": { "enum": ["done", "blocked", "cancelled", "budget_exhausted"] },
         "answer": { "type": "string" },
         "error": { "type": "string" },
         "failure": { "$ref": "#/$defs/failure" },

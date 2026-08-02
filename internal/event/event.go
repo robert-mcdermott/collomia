@@ -118,10 +118,15 @@ type FileChange struct {
 }
 
 // RunResult is the final summary of a non-interactive run. Consumers should
-// use Status — not the presence of an error event mid-stream — to decide how
-// the run ended: "ok", "error", or "cancelled".
+// use Status — not the presence of an error event mid-stream — for the process
+// contract, and Outcome for the goal-level terminal state.
 type RunResult struct {
-	Status  string   `json:"status"`
+	Status string `json:"status"`
+	// Outcome is the goal-level terminal state: done, blocked, cancelled, or
+	// budget_exhausted. Status retains its schema-v1 process contract
+	// (ok/error/cancelled); Outcome distinguishes why an error-status run
+	// stopped without making automation parse Error.
+	Outcome string   `json:"outcome,omitempty"`
 	Answer  string   `json:"answer,omitempty"`
 	Error   string   `json:"error,omitempty"`
 	Failure *Failure `json:"failure,omitempty"`

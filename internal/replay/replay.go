@@ -316,6 +316,23 @@ func validateResult(line int, result *event.RunResult, eventFailureID string, ra
 	default:
 		return lineError(line, "unsupported result status %q", result.Status)
 	}
+	switch result.Outcome {
+	case "": // Legacy schema-v1 trace written before goal outcomes were added.
+	case "done":
+		if result.Status != "ok" {
+			return lineError(line, "result outcome %q requires status %q", result.Outcome, "ok")
+		}
+	case "cancelled":
+		if result.Status != "cancelled" {
+			return lineError(line, "result outcome %q requires status %q", result.Outcome, "cancelled")
+		}
+	case "blocked", "budget_exhausted":
+		if result.Status != "error" {
+			return lineError(line, "result outcome %q requires status %q", result.Outcome, "error")
+		}
+	default:
+		return lineError(line, "unsupported result outcome %q", result.Outcome)
+	}
 	if result.Ephemeral && result.SessionID != "" {
 		return lineError(line, "ephemeral result cannot include a session_id")
 	}
@@ -606,6 +623,11 @@ func (t *Trace) Render(w io.Writer) error {
 	result := t.Result
 	if _, err := fmt.Fprintf(w, "\nRESULT · %s · %d ms", strings.ToUpper(result.Status), result.DurationMS); err != nil {
 		return err
+	}
+	if result.Outcome != "" {
+		if _, err := fmt.Fprintf(w, " · outcome %s", result.Outcome); err != nil {
+			return err
+		}
 	}
 	if result.Partial {
 		if _, err := fmt.Fprint(w, " · partial"); err != nil {

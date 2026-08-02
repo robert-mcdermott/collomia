@@ -3393,6 +3393,7 @@ The last line is always `run.result`:
   "kind": "run.result",
   "result": {
     "status": "ok",
+    "outcome": "done",
     "answer": "...",
     "session_id": "20260719-120000-a1b2c3",
     "changed_files": ["main.go"],
@@ -3405,10 +3406,12 @@ The last line is always `run.result`:
 }
 ```
 
-`status` is `ok`, `error`, or `cancelled`. Schema v1 adds optional structured
-`failure`, `partial`, and `refused` fields without changing those established
-status values. Error results make `collo` exit non-zero after writing the final
-record. Exit codes are 0 for success, 1 for execution/provider failure, 2 for
+`status` is `ok`, `error`, or `cancelled`. The additive `outcome` field is
+`done`, `blocked`, `cancelled`, or `budget_exhausted`, separating goal progress
+from the established process-status contract. Schema v1 also carries optional
+structured `failure`, `partial`, and `refused` fields. Error results make
+`collo` exit non-zero after writing the final record. Exit codes are 0 for
+success, 1 for execution/provider/blocked/budget failure, 2 for
 usage/configuration failure, and 130 for cancellation. In shell pipelines,
 enable `pipefail` if the pipeline's exit code must reflect Collomia rather than
 the final parser:
@@ -3626,7 +3629,7 @@ question broker can make the model-visible subset smaller.
 | `format_file` | Format one file with the project's language server; an ordinary tracked, undoable write. |
 | `web_search` | Search the public web through DuckDuckGo; no API key or configuration. Default 5 results, maximum 15. |
 | `web_fetch` | Fetch one http(s) URL as readable text, markdown, or raw. Public internet only; 5 MiB response cap. |
-| `update_plan` | Maintain a structured plan persisted with the session. |
+| `update_plan` | Maintain a structured plan persisted with the session; terminal steps require evidence/reasons, dependencies are validated, and `verification_note` records why no meaningful automated check applies. |
 | `load_skill` | Load a relevant skill's full manifest and bundle map on demand. |
 | `delegate` | Run bounded parallel sub-agent tasks; omitted inside sub-agents. |
 | `ask_user` | Pause for a typed answer; interactive TUI only. |
@@ -3639,6 +3642,50 @@ session, an oversized returned string includes an opaque reference that
 `read_tool_result` can inspect in bounded ranges; in ephemeral mode it uses an
 ordinary truncation marker. In either case, omitted output is not evidence
 that an unseen operation succeeded—narrow the request or inspect the reference.
+
+### Evidence-gated completion
+
+In primary execution mode, a model response with no tool calls is a proposed
+finish, not automatically a completed turn. Collomia checks the proposal
+against structured state it can observe:
+
+- An active plan cannot still contain `pending` or `in_progress` steps.
+- `done` steps require evidence; `blocked` and `skipped` steps require a reason
+  in the same `evidence` field. Dependencies must be known and acyclic, and a
+  step cannot be active or done before its dependencies are done or skipped.
+- A successful tracked write makes earlier verification stale. A subsequent
+  direct, conventional build/lint/test command must succeed, or the plan must
+  carry a specific `verification_note` explaining why no meaningful automated
+  check applies. The note is model-authored disclosure, not machine-observed
+  proof.
+- After a tool failure, the agent must use another tool to recover or update
+  the relevant plan step to `blocked` with the exact reason.
+
+When a gap remains, Collomia adds a deterministic controller notice and gives
+the agent another iteration. It does this at most twice; the existing
+iteration, token, cost, cancellation, permission, and persistence limits still
+apply to every continuation. The resulting goal outcome is one of `done`,
+`blocked`, `cancelled`, or `budget_exhausted`.
+
+Read-only planning mode is intentionally exempt: producing a plan whose
+implementation steps remain pending is the successful result of that mode. A
+terminal plan retained from an earlier turn is also historical rather than an
+eternal gate; it becomes active again only when the agent updates it. Purely
+informational work with no active plan, tracked write, or failed tool finishes
+normally.
+
+Delegated agents retain their existing isolated-worktree review and
+parent-verification flow. This first controller slice gates the primary agent,
+which owns the shared goal and structured plan.
+
+Verification recognition is conservative. Collomia recognizes direct common
+commands such as Go build/vet/test, Cargo checks, package-manager scripts,
+pytest/Ruff/mypy, Make targets, and `git diff --check`; shell compounds and
+success-masking forms such as `go test ./... || true` never count. The write
+gate covers file mutations made through Collomia's tracked write tools. A
+command or external tool can have side effects the runtime cannot enumerate,
+so permissions, plan evidence, and the final diff remain necessary review
+surfaces.
 
 ### File editing, diff, and undo
 

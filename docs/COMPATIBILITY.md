@@ -419,7 +419,9 @@ pointing it at state already updated by a newer version.
 Use `collo schema events` to retrieve the JSON Schema embedded in the exact
 binary being run. Consumers should:
 
-- select behavior using `schema`, `kind`, and `run.result.status`;
+- select process behavior using `schema`, `kind`, and `run.result.status`, and
+  use the additive `run.result.outcome` when goal-level
+  done/blocked/cancelled/budget-exhausted behavior matters;
 - tolerate unknown optional fields;
 - avoid inferring success from streamed text or an intermediate error;
 - require the final `run.result` for a complete run;

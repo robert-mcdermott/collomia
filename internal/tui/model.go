@@ -286,12 +286,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
 			if msg.err != nil {
-				m.alert("Turn failed: " + failureid.Display(msg.err))
+				switch agent.GoalOutcomeFor(msg.err) {
+				case agent.GoalBudgetExhausted:
+					m.alert("Turn stopped: budget exhausted")
+				case agent.GoalCancelled:
+					m.alert("Turn cancelled")
+				default:
+					m.alert("Turn blocked: " + failureid.Display(msg.err))
+				}
 			} else if elapsed > 10*time.Second {
 				m.alert(fmt.Sprintf("Turn finished after %s", elapsed))
 			}
 			if msg.err != nil {
-				m.blocks = append(m.blocks, block{role: "error", content: failureid.Display(msg.err)})
+				label := "Blocked"
+				if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {
+					label = "Budget exhausted"
+				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalCancelled {
+					label = "Cancelled"
+				}
+				m.blocks = append(m.blocks, block{role: "error", content: label + ": " + failureid.Display(msg.err)})
 			} else if strings.TrimSpace(msg.final) == "" {
 				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}

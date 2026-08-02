@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -206,9 +207,34 @@ func TestRunResultEmitterProducesOneTerminalVerdict(t *testing.T) {
 	if decodeErr := json.Unmarshal([]byte(lines[0]), &final); decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	if final.Kind != event.KindRunResult || final.Result == nil || final.Result.Status != "error" ||
+	if final.Kind != event.KindRunResult || final.Result == nil || final.Result.Status != "error" || final.Result.Outcome != "blocked" ||
 		final.FailureID == "" || final.Result.Failure == nil || final.Result.Failure.ID != final.FailureID || final.Result.Failure.Kind != event.FailureUsage || !final.Result.Partial || !final.Result.Ephemeral || !final.Result.Refused || final.Result.SessionID != "" {
 		t.Fatalf("final=%+v", final)
+	}
+}
+
+func TestRunResultEmitterDistinguishesGoalOutcomes(t *testing.T) {
+	tests := []struct {
+		name, outcome, status string
+		err                   error
+	}{
+		{name: "done", outcome: "done", status: "ok"},
+		{name: "blocked", outcome: "blocked", status: "error", err: agent.ErrGoalBlocked},
+		{name: "budget", outcome: "budget_exhausted", status: "error", err: agent.ErrIterationBudgetExceeded},
+		{name: "cancelled", outcome: "cancelled", status: "cancelled", err: context.Canceled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out strings.Builder
+			emitRunResult(event.NewJSONLWriter(&out), nil, options{}, "", false, false, test.err, time.Now())
+			var final event.Event
+			if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &final); err != nil {
+				t.Fatal(err)
+			}
+			if final.Result == nil || final.Result.Status != test.status || final.Result.Outcome != test.outcome {
+				t.Fatalf("result=%+v", final.Result)
+			}
+		})
 	}
 }
 

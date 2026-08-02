@@ -138,6 +138,7 @@ readability):
   "kind": "run.result",
   "result": {
     "status": "ok",
+    "outcome": "done",
     "answer": "...",
     "session_id": "20260721-120000-a1b2c3",
     "changed_files": ["main.go"],
@@ -159,6 +160,7 @@ readability):
 | Field | Meaning |
 |---|---|
 | `status` | Stable schema-v1 status: `ok`, `error`, or `cancelled`. |
+| `outcome` | Additive goal-level state: `done`, `blocked`, `cancelled`, or `budget_exhausted`. New Collomia runs always emit it; old schema-v1 traces may omit it. |
 | `answer` | Final answer, or provider-streamed partial text when a failed stream produced some. |
 | `error` | Human-readable failure message. Do not parse it for control flow. |
 | `failure` | Stable structured failure classification for non-`ok` results. |
@@ -168,6 +170,13 @@ readability):
 | `session_id` | Durable session ID. Omitted for ephemeral or pre-session startup failures. |
 | `changed_files` | Workspace files changed through Collomia's tracked write tools. |
 | `duration_ms` | Wall-clock duration measured by the headless runner. |
+
+`status` remains the process contract used by existing schema-v1 consumers:
+`done` pairs with `ok`, `cancelled` with `cancelled`, and both `blocked` and
+`budget_exhausted` pair with `error`. Use `outcome` to distinguish a goal that
+could not prove completion from one stopped by its configured iteration,
+token, or cost ceiling. Unexpected provider/runtime failures also report
+`blocked` at the goal level while `failure.kind` preserves the specific cause.
 
 `usage` fields:
 

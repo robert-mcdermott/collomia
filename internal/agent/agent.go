@@ -83,6 +83,7 @@ type Agent struct {
 	onMessage           func(provider.Message)
 	onCompaction        func(summary provider.Message, replaced int)
 	pinnedContext       func() string
+	completionPlan      *plan.Board
 	artifacts           *session.ArtifactManager
 	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
@@ -120,6 +121,10 @@ type Options struct {
 	// PinnedContext returns authoritative session state that must survive
 	// compaction, such as the current structured plan.
 	PinnedContext func() string
+	// CompletionPlan supplies the structured plan to the deterministic
+	// completion controller. Nil preserves the legacy ungated loop for
+	// specialized embedders; the application runtime always provides its board.
+	CompletionPlan *plan.Board
 	// Artifacts retains bounded oversized tool results for on-demand reads.
 	Artifacts *session.ArtifactManager
 	// Attachments resolves session-local image references immediately before
@@ -161,7 +166,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 // attachLedger is the single site that gives a permission manager its audit
@@ -281,6 +286,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	if err := a.checkPersistence(); err != nil {
 		return "", reportError(send, err)
 	}
+	a.mu.RLock()
+	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode)
+	a.mu.RUnlock()
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
 		if err := a.checkPersistence(); err != nil {
 			return "", reportError(send, err)
@@ -435,24 +443,50 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			}
 		}
 		if len(response.ToolCalls) == 0 {
-			send(event.New(event.KindTurnEnd))
-			a.lifecycle.Fire(ctx, hooks.Payload{Event: "stop", Workspace: a.workspace, Subject: "stop", Detail: map[string]any{"iterations": iteration}})
-			return response.Content, nil
+			decision := completion.assess()
+			switch {
+			case decision.done:
+				a.endTurn(ctx, send, iteration, GoalDone)
+				return response.Content, nil
+			case decision.blocked:
+				blocked := reportError(send, fmt.Errorf("%w: %s", ErrGoalBlocked, decision.reason))
+				a.endTurn(ctx, send, iteration, GoalBlocked)
+				return response.Content, blocked
+			case iteration >= a.maxIterations:
+				budgetErr := reportError(send, fmt.Errorf("%w after %d iterations; completion evidence is still missing", ErrIterationBudgetExceeded, a.maxIterations))
+				a.endTurn(ctx, send, iteration, GoalBudgetExhausted)
+				return response.Content, budgetErr
+			default:
+				warning := event.New(event.KindWarning)
+				warning.Text = decision.notice
+				send(warning)
+				a.appendMessage(provider.Message{Role: "user", Content: decision.notice})
+				if err := a.checkPersistence(); err != nil {
+					return response.Content, reportError(send, err)
+				}
+				continue
+			}
 		}
 		for _, call := range response.ToolCalls {
 			if err := a.checkPersistence(); err != nil {
 				return response.Content, reportError(send, err)
 			}
-			result, fatalErr := a.executeTool(ctx, call, plan, send)
+			result, observation, fatalErr := a.executeTool(ctx, call, plan, send)
 			if fatalErr != nil {
 				return response.Content, reportError(send, fatalErr)
 			}
 			a.appendMessage(provider.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content, Parts: result.Parts})
+			completion.observe(observation)
 		}
 	}
-	err = fmt.Errorf("agent stopped after %d iterations", a.maxIterations)
+	err = fmt.Errorf("%w after %d iterations", ErrIterationBudgetExceeded, a.maxIterations)
 	err = reportError(send, err)
 	return "", err
+}
+
+func (a *Agent) endTurn(ctx context.Context, send Emit, iteration int, outcome GoalOutcome) {
+	send(event.New(event.KindTurnEnd))
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "stop", Workspace: a.workspace, Subject: "stop", Detail: map[string]any{"iterations": iteration, "outcome": string(outcome)}})
 }
 
 // applySteering installs queued parent guidance as an explicit conversational
@@ -558,8 +592,9 @@ func reportError(send Emit, err error) error {
 	return err
 }
 
-func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, error) {
+func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
+	observation := toolObservation{Name: call.Name}
 	a.mu.RLock()
 	disabled := a.disabled[call.Name]
 	if len(a.allowedTools) > 0 && !a.allowedTools[call.Name] {
@@ -571,22 +606,27 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	}
 	a.mu.RUnlock()
 	if disabled || (a.subagent && parentOnlyTool(call.Name)) {
-		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, nil
+		observation.Failed = true
+		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, observation, nil
 	}
 	if call.Name == "load_skill" && len(allowedSkills) > 0 {
 		var input struct {
 			Name string `json:"name"`
 		}
 		if json.Unmarshal(call.Arguments, &input) == nil && !allowedSkills[input.Name] {
-			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, nil
+			observation.Failed = true
+			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, observation, nil
 		}
 	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
-		return tools.Result{Content: "Tool error: " + err.Error()}, nil
+		observation.Failed = true
+		return tools.Result{Content: "Tool error: " + err.Error()}, observation, nil
 	}
+	observation.Action = action
 	if plan && action.Risk != tools.RiskRead {
-		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, nil
+		observation.Failed = true
+		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, observation, nil
 	}
 	permissionTool := call.Name
 	hookTool := call.Name
@@ -606,32 +646,35 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	decided.Permission = &event.Permission{Tool: permissionTool, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
 	send(decided)
 	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
-		return tools.Result{}, persistenceErr
+		return tools.Result{}, observation, persistenceErr
 	}
 	allowed := err == nil
 	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: permissionTool, Tool: permissionTool, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
 	if err != nil {
-		return tools.Result{Content: "Tool denied: " + err.Error()}, nil
+		observation.Failed = true
+		return tools.Result{Content: "Tool denied: " + err.Error()}, observation, nil
 	}
 	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
 		if observer, ok := item.(tools.ExecutionObserver); hasItem && ok {
 			observer.ObserveExecution(call.Arguments, hookErr)
 		}
-		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, nil
+		observation.Failed = true
+		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, observation, nil
 	}
 	args := call.Arguments
 	if grant.ContentOverride != nil {
 		var overridden error
 		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
 		if overridden != nil {
-			return tools.Result{Content: "Tool error: " + overridden.Error()}, nil
+			observation.Failed = true
+			return tools.Result{Content: "Tool error: " + overridden.Error()}, observation, nil
 		}
 	}
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
 	send(start)
 	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
-		return tools.Result{}, persistenceErr
+		return tools.Result{}, observation, persistenceErr
 	}
 	onOutput := func(chunk string) {
 		e := event.New(event.KindToolOutput)
@@ -663,6 +706,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	}
 	result.Parts = a.retainToolParts(call.Name, result.Parts, send)
 	if err != nil {
+		observation.Failed = true
 		if result.Content != "" {
 			result.Content += "\n"
 		}
@@ -679,7 +723,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if err == nil && action.Risk == tools.RiskWrite && len(action.Paths) > 0 {
 		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
 	}
-	return result, nil
+	return result, observation, nil
 }
 
 func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, send Emit) []provider.ContentPart {

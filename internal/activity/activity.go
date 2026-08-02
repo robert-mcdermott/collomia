@@ -196,7 +196,11 @@ func FromEvent(e event.Event) (Item, bool) {
 		if e.Result == nil {
 			return Item{}, false
 		}
-		item.Category, item.Title = CategoryTurn, "Run "+e.Result.Status
+		terminal := e.Result.Status
+		if e.Result.Outcome != "" {
+			terminal = e.Result.Outcome
+		}
+		item.Category, item.Title = CategoryTurn, "Run "+terminal
 		item.Status = StatusSuccess
 		if e.Result.Status == "cancelled" {
 			item.Status = StatusWarning

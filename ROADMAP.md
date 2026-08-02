@@ -105,6 +105,15 @@ tool-calling path have been proved. The same flow remains available later for
 adding or changing providers, while headless use receives an actionable
 configuration failure instead of a prompt or a dead localhost request.
 
+The wave after it closed the first goal-completion gap. A tool-free model
+response is no longer accepted merely because it contains the language of
+completion: execution mode compares it with the active structured plan,
+terminal-step evidence and reasons, tracked writes since recognized
+verification, and unresolved tool failures. It can deterministically continue
+the model twice, then ends with a goal-level done, blocked, cancelled, or
+budget-exhausted outcome instead of looping without bound. Planning mode and
+unrelated informational turns retain ordinary completion.
+
 The reliability wave before it took the P0 by running the failures rather
 than reasoning about them, and each one was a defect rather than a
 confirmation: terminal loss orphaned every background process, the session was
@@ -119,10 +128,58 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-No wave is currently active; the launch-to-verified-session slice is complete.
+No wave is currently active; the evidence-gated-goal-completion slice is
+complete.
 See
 [Recommended next sequence](#recommended-next-sequence) for what the dependency
 order argues for next.
+
+## Completed wave — evidence-gated goal completion
+
+**Goal:** accept a final answer only when the runtime's structured evidence
+supports done or explicitly supports blocked, without weakening any existing
+limit or turning a confused model into an unbounded loop.
+
+- [x] Replace the unconditional “no tool calls means done” branch in primary
+  execution mode with a deterministic controller. An active plan with pending or
+  in-progress work causes a continuation notice rather than immediate
+  completion; a terminal historical plan does not poison unrelated later
+  turns, and read-only planning mode can still succeed by producing pending
+  implementation steps.
+- [x] Make terminal plan state meaningful. New plans require a non-empty goal
+  and steps, known acyclic non-duplicated dependencies, dependency-ready active
+  or done steps, evidence for `done`, and reasons for `blocked`/`skipped`.
+  Restored older plans are assessed at completion even if they predate those
+  write-time checks.
+- [x] Make successful tracked writes stale the turn's verification evidence.
+  A later successful direct conventional build/lint/test command clears the
+  gate; shell compounds and success masking such as `go test ./... || true`
+  never count. Where no meaningful automated check exists, the plan can record
+  a specific `verification_note`, explicitly labelled model-authored rather
+  than machine-observed.
+- [x] Retain failed tools as unresolved evidence. The agent must use another
+  tool to retry or take an alternative, or update the relevant step to blocked
+  with an exact reason before a tool-free answer can terminate truthfully.
+- [x] Bound controller intervention at two and spend every continuation from
+  the existing iteration, token, and cost budgets. Cancellation, permission,
+  persistence, and provider failures keep their existing boundaries; the
+  ordinary iteration ceiling is now classified as budget exhaustion rather
+  than an undifferentiated runtime stop.
+- [x] Preserve the schema-v1 `ok`/`error`/`cancelled` process-status contract
+  and add an optional `run.result.outcome` carrying `done`, `blocked`,
+  `cancelled`, or `budget_exhausted`. Replay validates the pairing and accepts
+  older schema-v1 traces that omit the additive field.
+
+**What it is not.** This controller does not parse prose to decide whether a
+claim sounds convincing, execute plan nodes automatically, or infer every
+side effect of a shell/MCP/external tool. The stale-write gate covers
+Collomia's tracked write actions, and verification recognition deliberately
+accepts a conservative direct-command vocabulary. Those limits keep the first
+slice deterministic and make automatic replanning and dependency-ready node
+selection the next agentic work rather than hiding them inside heuristics.
+Delegated agents remain governed by their isolated-worktree review and parent
+verification flow; this slice gates the primary agent that owns the goal and
+shared plan.
 
 ## Completed wave — launch to a verified session
 
@@ -1772,61 +1829,24 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-Several waves in a row were P1 or P2 while the items that actually gate 1.0 did
-not move. The audit ledger — the cheapest of the remaining P0s, and the one an
-independent assessment starts from — has been taken; Windows ConPTY closed the
-last platform-parity gap; and the publication wave closed the finding that
-assessment would most likely have opened with. The rest, in order:
+The setup journey and the first completion controller are now shipped. The
+next agentic work should deepen the controller's decisions before it increases
+the number of actors or permissions:
 
-1. Close the distance to a first successful session, because the beta feedback
-   this list has opened with for several waves is blocked on it rather than on
-   anyone's willingness. Three segments of the path from *hears about Collomia*
-   to *has a working session* are unbuilt, and all three were already on this
-   roadmap as deferred items: **getting the binary** (Phase 8 package
-   managers — no Homebrew, Scoop, or Winget; `curl | sh` and `irm | iex` are
-   the only routes), **trusting it** (Phase 8 native release signing — unsigned
-   on macOS and Windows, provenance-attested only), and **configuring a
-   provider** (Phase 4 first-run setup — `collo init` writes a static starter
-   file, `config.Defaults()` asserts a provider it has never contacted, and
-   `collo doctor` makes no network request, so nothing between installation and
-   the first prompt ever dials the endpoint being configured). Add
-   `collo feedback` beside them so that what comes back is cheap to send.
-
-   Native signing is the one segment with an external dependency —
-   certificates cost money and need CI secrets — so it is a decision to take
-   rather than work to schedule, and the other three do not wait on it. Every
-   wave since v0.1.7 has added depth to a product that is still meaningfully
-   hard to start using; this is the same asymmetry the publication wave fixed,
-   in a different place. A control nobody leaves on and a product nobody can
-   easily install fail for the same reason.
-   The first sustained beta report has now arrived, from the one person using
-   Collomia daily, and it did not name a missing capability: it named the
-   configuration file. Extensive documentation has to be read — or handed to an
-   AI to read — before a provider block can be written, and `max_tokens` and
-   `context_window` in particular had to be corrected by hand because the
-   defaults were too small for the models actually in use. That is a concrete,
-   already-diagnosed defect rather than a preference. **That slice has now
-   shipped**, which leaves the three original segments — getting the binary,
-   trusting it, configuring a provider — with the third substantially closed and
-   the first two untouched. **Both halves of the configuration complaint have
-   now shipped** — discovered token limits, then a generated editor schema and
-   an effective-configuration view — so the third segment is closed as far as
-   the reported evidence goes, and what is left of Phase 7's
-   configuration-surface item is an interactive posture editor nobody has asked
-   for. Package managers are the next segment worth taking: Homebrew and Scoop
-   need no signed binary, the release workflow already produces everything their
-   manifests would reference, and `curl | sh` remains the only route to a first
-   install.
-2. Gather further beta feedback on named primary profiles, cost estimates,
-   verified delegated results, scoped scheduling, three-way review, and the
-   new postures — including scoped egress, whose allowlist ergonomics are best
-   judged against real toolchains rather than predicted. This is the stated
-   prerequisite for item 3 and has not happened yet.
-3. Add opt-in plan-graph execution using verified results, write scopes,
-   dependency readiness, and stale-state invalidation, then explicit
-   combined-parent verification and conservative result-ranking criteria
-   without turning a score into permission. `collo audit --actor` is now the
-   surface that can say what each agent in such a graph was permitted to do.
+1. Gather real-session evidence from the completion gate: how often each rule
+   intervenes, which verification commands are missed by the conservative
+   recognizer, and whether two interventions is the right bound. Keep this
+   local and inspectable rather than adding telemetry by default.
+2. Add automatic replanning after a recoverable failure and dependency-ready
+   node selection for the primary agent. A plan step may become ready, stale,
+   or blocked, but executing it still uses the ordinary tool/permission path;
+   this is scheduling state, not new authority.
+3. Only then add opt-in plan-graph delegation using verified results, declared
+   write scopes, dependency readiness, and stale-state invalidation. Before a
+   graph can publish combined work, add explicit combined-parent verification
+   and conservative result comparison without turning a score or a passing
+   child test into permission. `collo audit --actor` is the surface that can
+   say what each participant was permitted to do.
 4. Continue Phase 8 security campaigns in parallel with every feature wave,
    and take the performance budgets while the prompt-cache wave's measurement
    harness is still warm. **The reliability half has now shipped** — terminal

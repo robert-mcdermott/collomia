@@ -119,6 +119,9 @@ _Reviewed against Collomia v0.2.1, commit `ecadfac`. Features are implemented un
 
   - Structured plans can be created and updated through a dedicated planning tool.
   - Plans are persisted with sessions and can remain pinned in the interface.
+  - In primary execution mode, a bounded completion controller refuses an ordinary final response while an active plan is unfinished, a terminal plan step lacks evidence/reason, a tracked write is newer than successful verification, or a tool failure has not been recovered or recorded as blocked.
+  - The controller provides at most two deterministic continuation notices. Planning mode remains able to finish with pending implementation steps, and an old terminal plan does not block an unrelated later question.
+  - Headless results preserve the schema-v1 `ok`/`error`/`cancelled` process status and add a goal-level `done`/`blocked`/`cancelled`/`budget_exhausted` outcome.
   - The agent can request structured user decisions through a terminal dialog.
   - Tool iterations, tokens, cost, and elapsed time can be bounded.
   - Named profiles can define provider, model, role, reasoning effort, tools, skills, iteration limits, and financial or time budgets.
