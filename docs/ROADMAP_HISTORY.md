@@ -22,9 +22,11 @@ agents, provider platforms, and the Model Context Protocol specification.
 1. **Enforced endpoint-scoped egress and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; declared endpoints, host-scoped rules, scoped/allowlist postures, and per-capability grants shipped 2026-07-24, and credential-store protection shipped 2026-07-25, but OS-level endpoint-scoped egress confinement remains open).
 2. **Provider platform hardening**: Azure deployment/project discovery, general Responses routing, and explicit routing/fallback (Phase 4 — optional macOS/Windows keychain credential storage shipped 2026-07-25 — capability declarations/discovery/preflight, normalized cross-adapter streaming including Bedrock `ConverseStream`, resilience, recorded/live protocol contracts, and refreshable Azure Entra authentication shipped 2026-07-19).
 3. **MCP ecosystem remainder**: OAuth authentication, experimental tasks, resource subscriptions, audio/annotation passthrough, and argument-level permission scoping (Phase 5 — skills, hooks, lifecycle/resources/prompts/elicitation/progress/pinning, bounded image passthrough, external-data provenance framing, safe list-change refresh, and conformance fixtures have shipped).
-4. **Multi-agent orchestration polish**: automatic plan-graph execution,
-   combined-parent verification/ranking, safe pending-work recovery, and fuller
-   transcript audit (Phase 6 — named primary/delegated profiles, portable
+4. **Multi-agent orchestration polish**: user-approved Orchestrated Goal
+   execution, automatic read fan-out, combined-parent verification/ranking,
+   safe delegated pending-work recovery, and fuller transcript audit (Phase 6
+   now also has the internal OG-1 durable primary graph controller in addition
+   to named primary/delegated profiles, portable
    reasoning, durable token/cost budgets, restrictive permissions,
    scheduling/isolation, declared-scope serialization, structured results,
    plan-step association, durable outcomes, a live parent/child tree,
@@ -38,6 +40,63 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-01 — OG-1 runtime-owned primary graph controller completed
+
+- **Execution truth moved into a bounded state machine.** A separate
+  `internal/goalgraph` package owns at most twelve required logical nodes,
+  stable dependency-order readiness, immutable attempt IDs, typed failures,
+  machine evidence, two retries/revisions, conservative staleness, and the
+  terminal `done`, `blocked`, `cancelled`, or `budget_exhausted` outcome. The
+  model can propose an optimistic-concurrency revision or exact blocker but
+  cannot replace attempts, evidence, permissions, or runtime state with prose.
+- **Primary execution stayed on the existing authority path.** OG-1 schedules
+  only the primary agent, filters whole-plan/delegate tools, and uses the same
+  registry, permission manager, hooks, sandbox, audit identity, and usage/
+  cancellation limits as Standard mode. Controller meta tools change only
+  graph scheduling and remain available under restrictive profile tool lists;
+  no automatic actor, CLI flag, slash command, configuration field, or
+  repository-controlled opt-in was added.
+- **Completion is state- and mutation-bound.** Git-backed tokens cover HEAD,
+  binary index/worktree diffs, and non-ignored untracked paths, modes, and
+  bytes. A successful structured write that leaves the combined token unchanged
+  is not work, and any potential mutation requires a recognized passing
+  command recorded after it against the current token and mutation generation.
+  Read-only graphs remain usable outside Git; write-bearing ones block there.
+- **Recovery cannot guess.** Full schema-1 graph snapshots are appended to the
+  session. A non-replayable action is fsynced as pending before execution; a
+  crash after that boundary restores an explicit reconciliation blocker rather
+  than repeating the action. Interrupted reads can use a fresh attempt. Graph
+  sessions cannot switch, reset, or rewind beneath the controller.
+- **Visibility and compatibility are explicit.** Bounded
+  `goal.graph.update` events project into Activity and headless progress and are
+  validated by the embedded schema/replay contract. The schema-v1 addition is
+  internal-only: Standard streams remain unchanged, older strict replay rejects
+  an internal graph trace, and OG-2 must revisit event versioning before real
+  automation users can opt in.
+- **The exit gate was run, not inferred.** Credential-free product evaluations
+  drive a real dependency-ordered read/repair/test, recover from a failed read,
+  and prove a denied write never starts. App/session tests restore an ambiguous
+  action as blocked; unit tests cover stable selection, provider/tool retry,
+  revision/invalidation, no-op/unverified writes, persistence failure before
+  mutation, cancellation, budgets, corrupt state, and read/mutation recovery.
+  `go test -count=1 ./...`, `go test -race -count=1 ./...`, `go vet ./...`, and
+  `go build ./...` passed. OG-2 is unblocked but not started.
+
+### 2026-08-01 — OG-1 implementation wave started
+
+- **The next agentic wave is primary-only.** Work began on a durable runtime
+  graph and immutable attempt ledger, deterministic dependency-ready selection,
+  state-bound evidence, bounded repair/replanning, conservative invalidation,
+  and mutation-safe resume. It adds no automatic actors and exposes no
+  `/orchestrate` or CLI mode.
+- **Durability is part of the controller rather than an afterthought.** A
+  potentially mutating graph action must be recorded and flushed before it is
+  executed, so an interrupted action resumes as an explicit reconciliation
+  blocker instead of being repeated because its last result record was lost.
+- **The user-facing experiment remains OG-2.** OG-1 will be exercised through
+  programmatic offline product evaluations, with Standard mode held unchanged,
+  before per-session opt-in, graph approval, or read-only fan-out is exposed.
 
 ### 2026-08-01 — Orchestrated Goal strategy recorded
 

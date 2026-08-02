@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/logging"
 	mcpclient "github.com/robert-mcdermott/collomia/internal/mcp"
@@ -47,10 +49,13 @@ type Runtime struct {
 	Attachments *session.AttachmentManager
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
-	Team        *agent.Team
-	Processes   *tools.ProcessManager
-	Warnings    []error
-	Hooks       *hooks.Runner
+	// GoalGraph is non-nil only for the internal OG-1 evaluation path. The
+	// ordinary CLI and interactive runtime do not expose graph orchestration.
+	GoalGraph *goalgraph.Graph
+	Team      *agent.Team
+	Processes *tools.ProcessManager
+	Warnings  []error
+	Hooks     *hooks.Runner
 	// Steering carries guidance typed while the primary agent is mid-turn.
 	// It lives on the runtime rather than in the TUI because the agent is
 	// constructed here and every surface — TUI, browser terminal, a future
@@ -173,9 +178,21 @@ type Options struct {
 	// Asker lets the agent pause and ask the user a typed question. When
 	// nil (headless), the ask_user tool is not registered.
 	Asker func(ctx context.Context, question string, options []string) (string, error)
+	// OrchestratedGoal opts this runtime into the internal OG-1 primary-only
+	// controller using an already-approved logical plan. It is intentionally
+	// not populated by config, project files, or CLI flags in this wave.
+	// Supplying it while resuming a graph-bearing session restores the durable
+	// graph instead of creating a new one.
+	OrchestratedGoal *plan.Plan
 }
 
 func New(ctx context.Context, opts Options) (*Runtime, error) {
+	if opts.OrchestratedGoal != nil && opts.Plan {
+		return nil, fmt.Errorf("orchestrated goal execution cannot run in read-only planning mode")
+	}
+	if opts.OrchestratedGoal != nil && opts.Ephemeral {
+		return nil, fmt.Errorf("orchestrated goal execution requires durable session persistence")
+	}
 	workspace, err := filepath.Abs(opts.Workspace)
 	if err != nil {
 		return nil, err
@@ -340,6 +357,17 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if sess != nil {
 		attachBoard(board, sess)
 	}
+	goalStateToken := func(tokenCtx context.Context) (string, error) {
+		return goalgraph.WorkspaceStateToken(tokenCtx, workspace)
+	}
+	goal, err := attachGoalGraph(ctx, opts.OrchestratedGoal, board, sess, goalStateToken)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrated goal: %w", err)
+	}
+	if goal != nil {
+		registry.Add(goalgraph.RevisionTool{Graph: goal})
+		registry.Add(goalgraph.BlockTool{Graph: goal})
+	}
 	artifacts := session.NewArtifactManager()
 	artifacts.Use(sess)
 	attachments := session.NewAttachmentManager()
@@ -372,7 +400,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if profile.MaxIterations > 0 {
 		maxIterations = profile.MaxIterations
 	}
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, PinnedContext: func() string {
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
 			return ""
@@ -409,9 +437,10 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime = &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health}
+	runtime = &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health}
 	runtime.alignChangeTurns()
 	runtime.addReviewedIntegrationTools()
+	runtime.logGoalGraphUpdates()
 	return runtime, nil
 }
 
@@ -637,6 +666,85 @@ func attachBoard(board *plan.Board, sess *session.Session) {
 	board.Clear()
 }
 
+// attachGoalGraph creates or restores the OG-1 runtime-owned graph. Requiring
+// an explicit approved plan here is the activation boundary: persisted data,
+// project configuration, and model output cannot turn Standard mode into
+// orchestrated execution on their own.
+func attachGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, stateToken func(context.Context) (string, error)) (*goalgraph.Graph, error) {
+	if approved == nil {
+		return nil, nil
+	}
+	if sess == nil {
+		return nil, errors.New("durable session persistence is unavailable")
+	}
+	persist := goalgraph.PersistFunc(func(_ context.Context, snapshot goalgraph.Snapshot, durable bool) error {
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			return err
+		}
+		return sess.AppendGoalGraph(data, durable)
+	})
+	graphOptions := goalgraph.Options{Persist: persist}
+	if sess != nil && len(sess.GoalGraphRaw) > 0 {
+		var snapshot goalgraph.Snapshot
+		if err := json.Unmarshal(sess.GoalGraphRaw, &snapshot); err != nil {
+			return nil, fmt.Errorf("decode saved graph: %w", err)
+		}
+		graph, err := goalgraph.Restore(snapshot, graphOptions)
+		if err != nil {
+			return nil, fmt.Errorf("restore saved graph: %w", err)
+		}
+		token, _ := stateToken(ctx)
+		if err := graph.Recover(ctx, token); err != nil {
+			return nil, fmt.Errorf("recover saved graph: %w", err)
+		}
+		return graph, nil
+	}
+
+	fresh := *approved
+	fresh.Steps = append([]plan.Step(nil), approved.Steps...)
+	for i := range fresh.Steps {
+		fresh.Steps[i].DependsOn = append([]int(nil), approved.Steps[i].DependsOn...)
+		// An approved logical plan seeds execution; model-authored progress from
+		// a caller is never imported as runtime evidence.
+		fresh.Steps[i].Status = "pending"
+		fresh.Steps[i].Evidence = ""
+	}
+	fresh.VerificationNote = ""
+	if err := board.Set(fresh); err != nil {
+		return nil, fmt.Errorf("approved plan: %w", err)
+	}
+	_, logicalRevision := board.Snapshot()
+	spec := goalgraph.Spec{Goal: fresh.Goal, Nodes: make([]goalgraph.NodeSpec, 0, len(fresh.Steps))}
+	for _, step := range fresh.Steps {
+		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...)})
+	}
+	graph, err := goalgraph.New(spec, logicalRevision, graphOptions)
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.Persist(ctx, true); err != nil {
+		return nil, err
+	}
+	return graph, nil
+}
+
+func (r *Runtime) logGoalGraphUpdates() {
+	if r == nil || r.GoalGraph == nil {
+		return
+	}
+	for _, update := range r.GoalGraph.DrainUpdates() {
+		e := event.New(event.KindGoalGraphUpdate)
+		e.Time = update.Time
+		e.GoalGraph = &event.GoalGraphStatus{
+			ID: update.GraphID, Generation: update.Generation, NodeID: update.NodeID,
+			AttemptID: update.AttemptID, State: update.State, Reason: update.Reason,
+			Ready: append([]int(nil), update.Ready...), Outcome: string(update.Outcome),
+		}
+		r.LogEvent(e)
+	}
+}
+
 // attachTeam binds process-local delegated-agent observability to the active
 // durable session. Stored queued/running states are restored as interrupted by
 // Team.Restore and are never submitted back to the scheduler.
@@ -676,6 +784,9 @@ func attachTeam(team *agent.Team, sess *session.Session) {
 // conversation, plan, and persistence hooks all move over. The previous
 // session file is closed; nothing about it is lost.
 func (r *Runtime) SwitchSession(id string) error {
+	if r.GoalGraph != nil {
+		return fmt.Errorf("switching sessions during an internal orchestrated-goal evaluation is not supported")
+	}
 	if r.Sessions == nil {
 		return fmt.Errorf("session persistence is unavailable")
 	}
@@ -706,6 +817,9 @@ func (r *Runtime) SwitchSession(id string) error {
 
 // NewSession starts a fresh session, leaving the previous one saved.
 func (r *Runtime) NewSession() error {
+	if r.GoalGraph != nil {
+		return fmt.Errorf("starting a new session during an internal orchestrated-goal evaluation is not supported")
+	}
 	if r.Sessions == nil {
 		return fmt.Errorf("session persistence is unavailable")
 	}
@@ -736,6 +850,9 @@ func (r *Runtime) NewSession() error {
 // RewindSession creates and switches to a non-destructive branch ending at a
 // completed turn. The source session and workspace remain unchanged.
 func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error) {
+	if r.GoalGraph != nil {
+		return "", "", fmt.Errorf("rewinding a session during an internal orchestrated-goal evaluation is not supported")
+	}
 	if r.Sessions == nil || r.Session == nil {
 		return "", "", fmt.Errorf("session persistence is unavailable")
 	}

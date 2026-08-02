@@ -128,13 +128,18 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-No implementation wave is currently active; the evidence-gated-goal-completion
-slice is complete. The next agentic program has an approved durable strategy:
-[Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md). Its strategy-and-continuity
-milestone is complete, but no plan-graph execution capability is implemented.
-See
-[Recommended next sequence](#recommended-next-sequence) for what the dependency
-order argues for next.
+The latest implementation wave completed **OG-1 — Runtime-owned primary graph
+controller**. Its programmatic evaluation path now has the durable graph,
+immutable attempts, dependency-ready primary scheduling, typed bounded
+retry/replanning, conservative state invalidation, combined-workspace evidence,
+lifecycle visibility, and mutation-safe resume. It remains deliberately
+primary-only and not user-exposed; Standard evidence-gated execution is still
+the only product mode. **OG-2 — Experimental Orchestrated Goal** is now
+unblocked but not started; it must add proposal review and explicit per-session
+opt-in before any automatic read-only actor exists. See the
+[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
+[Recommended next sequence](#recommended-next-sequence) for its contract and
+exit gate.
 
 ## Completed wave — evidence-gated goal completion
 
@@ -1655,10 +1660,11 @@ completion status.
   large autonomy jump:
   - [x] **OG-0 — Strategy and continuity:** record the durable charter,
     cross-agent handoff, milestone order, and safety/graduation contract.
-  - [ ] **OG-1 — Runtime-owned primary graph controller:** add the durable
+  - [x] **OG-1 — Runtime-owned primary graph controller:** add the durable
     node/attempt state machine, dependency-ready primary execution, bounded
     replanning, conservative invalidation, and combined-workspace completion
-    gates without adding automatic actors.
+    gates without adding automatic actors. *(Completed 2026-08-01 through an
+    internal programmatic evaluation path; no user-facing mode.)*
   - [ ] **OG-2 — Experimental Orchestrated Goal:** require explicit
     per-session opt-in and graph approval; add bounded automatic read-only
     fan-out while keeping one serial primary write lane.
@@ -1857,33 +1863,29 @@ completion status.
 
 ## Recommended next sequence
 
-The setup journey and the first completion controller are now shipped. The
-[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is approved and
-its continuity milestone is complete. The next agentic work remains deliberately
-primary-only: deepen the controller's decisions before increasing the number
-of actors or permissions.
+The setup journey, first completion controller, and OG-1 runtime-owned primary
+graph are now complete. The
+[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
+contract. The next orchestration work is the still-experimental OG-2 product
+surface; it must make opt-in and graph approval explicit before increasing the
+number of actors or permissions.
 
-1. Gather real-session evidence from the completion gate: how often each rule
-   intervenes, which verification commands are missed by the conservative
-   recognizer, and whether two interventions is the right bound. Keep this
-   local and inspectable rather than adding telemetry by default.
-2. Implement **OG-1 — Runtime-owned primary graph controller**. Add automatic
-   replanning after a recoverable failure and dependency-ready node selection
-   for the primary agent, plus durable attempts, conservative invalidation,
-   activity evidence, and combined-workspace completion gates. A step may
-   become ready, stale, or blocked, but execution still uses the ordinary
-   tool/permission path; this is scheduling state, not new authority. OG-1
-   must add no automatic delegated actors.
-3. Expose **OG-2 — Experimental Orchestrated Goal** only after OG-1's exit gate
-   passes. Require explicit per-session opt-in and graph approval, begin with
+1. Gather real-session evidence from the Standard completion gate: how often
+   each rule intervenes, which verification commands are missed by the
+   conservative recognizer, and whether two interventions is the right bound.
+   Keep this local and inspectable rather than adding telemetry by default.
+2. Begin **OG-2 — Experimental Orchestrated Goal** from the completed OG-1
+   kernel. Require explicit per-session opt-in and graph proposal approval,
+   provide a visible way to inspect node/attempt/evidence state, and begin with
    bounded read-only fan-out, keep writes serial in the primary workspace, and
-   compare it with Standard mode in the offline evaluation corpus.
-4. Only then take OG-3 through OG-5: isolated dependency-ready writer
+   compare it with Standard mode in the offline evaluation corpus. Do not let
+   project configuration, instructions, skills, hooks, or the model opt in.
+3. Only then take OG-3 through OG-5: isolated dependency-ready writer
    candidates, verified/recoverable combined-parent integration, and durable
    graph recovery. A score, child test, or plan approval never grants
    permission. `collo audit --actor` remains the surface that can say what each
    participant was permitted to do.
-5. Continue Phase 8 security campaigns in parallel with every feature wave,
+4. Continue Phase 8 security campaigns in parallel with every feature wave,
    and take the performance budgets while the prompt-cache wave's measurement
    harness is still warm. **The reliability half has now shipped** — terminal
    loss, power-loss durability, filesystem exhaustion, and a cancellation gate

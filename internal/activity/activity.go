@@ -172,6 +172,17 @@ func FromEvent(e event.Event) (Item, bool) {
 	case event.KindPlanUpdate:
 		item.Category, item.Status, item.Title = CategoryPlan, StatusInfo, "Plan updated"
 		item.Detail = e.Text
+	case event.KindGoalGraphUpdate:
+		if e.GoalGraph == nil {
+			return Item{}, false
+		}
+		item.Category = CategoryPlan
+		item.Status = goalGraphStatus(e.GoalGraph.State)
+		item.Title = "Goal graph · " + strings.ReplaceAll(e.GoalGraph.State, "_", " ")
+		if e.GoalGraph.NodeID != 0 {
+			item.Title = fmt.Sprintf("Goal node %d · %s", e.GoalGraph.NodeID, strings.ReplaceAll(e.GoalGraph.State, "_", " "))
+		}
+		item.Detail = e.GoalGraph.Reason
 	case event.KindDelegateUpdate:
 		if e.Delegate == nil {
 			return Item{}, false
@@ -217,6 +228,21 @@ func FromEvent(e event.Event) (Item, bool) {
 	item.Title = boundedText(item.Title)
 	item.Detail = boundedText(item.Detail)
 	return item, true
+}
+
+func goalGraphStatus(status string) Status {
+	switch status {
+	case "done", "action_completed", "accepted":
+		return StatusSuccess
+	case "blocked", "cancelled", "budget_exhausted", "action_failed":
+		return StatusError
+	case "ready", "running", "action_started", "retryable":
+		return StatusActive
+	case "stale", "completion_deferred", "blocked_action":
+		return StatusWarning
+	default:
+		return StatusInfo
+	}
 }
 
 func turnTitle(prefix string, turn int) string {

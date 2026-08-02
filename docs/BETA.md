@@ -87,8 +87,14 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   guides a model rather than constraining it, and the controls that actually
   hold are the permission pipeline and the address boundary.
 - Multi-agent work is isolated and selectively integrated, but Collomia does
-  not automatically reconcile conflicts, resume pending child work, or execute
-  a complete plan graph autonomously.
+  not automatically reconcile conflicts or resume pending child work. The
+  OG-1 runtime-owned primary graph controller now exists as an internal,
+  programmatically activated evaluation path: it has durable attempts,
+  dependency-ready selection, bounded retry/revision, combined-workspace
+  verification, and mutation-safe resume, but it adds no automatic actors and
+  has no CLI, slash-command, or configuration opt-in. Standard execution
+  remains the only user-facing mode until OG-2 adds proposal review and an
+  explicit per-session experiment.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache

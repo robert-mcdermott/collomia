@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -54,9 +56,16 @@ func GoalOutcomeFor(err error) GoalOutcome {
 }
 
 type toolObservation struct {
-	Name   string
-	Action tools.Action
-	Failed bool
+	Name          string
+	Action        tools.Action
+	Failed        bool
+	FailureKind   goalgraph.FailureKind
+	FailureDetail string
+	ResultSummary string
+	Retryable     bool
+	Started       time.Time
+	Finished      time.Time
+	GraphRecorded bool
 }
 
 type completionController struct {

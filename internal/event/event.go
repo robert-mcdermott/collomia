@@ -33,6 +33,7 @@ const (
 	KindPermissionDecision Kind = "permission.decision"
 	KindFileChange         Kind = "file.change"
 	KindPlanUpdate         Kind = "plan.update"
+	KindGoalGraphUpdate    Kind = "goal.graph.update"
 	KindDelegateUpdate     Kind = "delegate.update"
 	KindUsage              Kind = "usage"
 	KindCompaction         Kind = "context.compaction"
@@ -58,6 +59,7 @@ type Event struct {
 	File       *FileChange      `json:"file,omitempty"`
 	Usage      *Usage           `json:"usage,omitempty"`
 	ToolCall   *ToolCallDelta   `json:"tool_call,omitempty"`
+	GoalGraph  *GoalGraphStatus `json:"goal_graph,omitempty"`
 	Delegate   *DelegateStatus  `json:"delegate,omitempty"`
 	Result     *RunResult       `json:"result,omitempty"`
 	Provider   *ProviderFailure `json:"provider,omitempty"`
@@ -65,6 +67,21 @@ type Event struct {
 	// FailureID is an opaque per-failure correlation value. It contains no
 	// session, provider, path, prompt, or credential material.
 	FailureID string `json:"failure_id,omitempty"`
+}
+
+// GoalGraphStatus is one bounded runtime-owned graph transition. The complete
+// versioned graph snapshot lives in the durable session record; this public
+// payload is intentionally smaller so headless/activity consumers do not
+// become coupled to scheduler internals.
+type GoalGraphStatus struct {
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	NodeID     int    `json:"node_id,omitempty"`
+	AttemptID  string `json:"attempt_id,omitempty"`
+	State      string `json:"state"`
+	Reason     string `json:"reason,omitempty"`
+	Ready      []int  `json:"ready,omitempty"`
+	Outcome    string `json:"outcome,omitempty"`
 }
 
 // ToolCallDelta carries an incremental provider tool request. ArgumentsDelta

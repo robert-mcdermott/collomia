@@ -146,7 +146,7 @@ func TestEmbeddedJSONSchemaPublishesEveryEventKind(t *testing.T) {
 	wantKinds := []Kind{
 		KindSessionStart, KindTurnStart, KindTextDelta, KindReasoningDelta, KindToolCallDelta,
 		KindToolStart, KindToolOutput, KindToolResult, KindPermissionRequest, KindPermissionDecision,
-		KindFileChange, KindPlanUpdate, KindDelegateUpdate, KindUsage, KindCompaction, KindWarning, KindError, KindTurnEnd, KindRunResult,
+		KindFileChange, KindPlanUpdate, KindGoalGraphUpdate, KindDelegateUpdate, KindUsage, KindCompaction, KindWarning, KindError, KindTurnEnd, KindRunResult,
 	}
 	for _, kind := range wantKinds {
 		if !slices.Contains(schema.Properties.Kind.Enum, string(kind)) {
@@ -155,6 +155,22 @@ func TestEmbeddedJSONSchemaPublishesEveryEventKind(t *testing.T) {
 	}
 	if len(schema.Properties.Kind.Enum) != len(wantKinds) {
 		t.Fatalf("published kinds=%v; want exactly %v", schema.Properties.Kind.Enum, wantKinds)
+	}
+}
+
+func TestGoalGraphUpdateRoundTrips(t *testing.T) {
+	e := New(KindGoalGraphUpdate)
+	e.GoalGraph = &GoalGraphStatus{ID: "graph-1", Generation: 2, NodeID: 3, AttemptID: "attempt-4", State: "running", Reason: "dependencies accepted", Ready: []int{3, 4}}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.GoalGraph == nil || decoded.GoalGraph.ID != "graph-1" || decoded.GoalGraph.NodeID != 3 || len(decoded.GoalGraph.Ready) != 2 {
+		t.Fatalf("goal graph round trip=%+v", decoded.GoalGraph)
 	}
 }
 

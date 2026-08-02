@@ -3378,8 +3378,11 @@ turn.end               run.result
 ```
 
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
-and `plan.update` kinds for consumers that share the event model; do not assume
-those reserved kinds appear in every current CLI stream.
+`plan.update`, `goal.graph.update`, and `delegate.update` kinds for consumers
+that share the event model. `goal.graph.update` currently belongs only to the
+internal, programmatically activated OG-1 evaluation path; Standard mode and
+all documented CLI/TUI commands remain unchanged. Do not assume reserved kinds
+appear in every current CLI stream.
 
 `tool.call.delta.arguments_delta` may be incomplete JSON while streaming.
 Collomia does not execute it until the provider completes and the adapter
@@ -5076,8 +5079,11 @@ manual inspection.
 
 Every run creates or resumes a durable per-workspace session. The append-only
 JSONL file includes metadata, full messages, runtime events, compaction
-markers, structured plan updates, and bounded delegated-agent lifecycle/outcome
-snapshots. These agent records are observational and are never replayed as work.
+markers, structured plan updates, bounded delegated-agent lifecycle/outcome
+snapshots, and—only for the internal OG-1 evaluation path—complete versioned
+goal-graph snapshots. Graph attempts and evidence are restored as state, never
+replayed as work; an interrupted non-replayable action becomes a reconciliation
+blocker.
 
 ### Session commands
 

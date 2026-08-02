@@ -121,6 +121,7 @@ _Reviewed against Collomia v0.2.1, commit `ecadfac`. Features are implemented un
   - Plans are persisted with sessions and can remain pinned in the interface.
   - In primary execution mode, a bounded completion controller refuses an ordinary final response while an active plan is unfinished, a terminal plan step lacks evidence/reason, a tracked write is newer than successful verification, or a tool failure has not been recovered or recorded as blocked.
   - The controller provides at most two deterministic continuation notices. Planning mode remains able to finish with pending implementation steps, and an old terminal plan does not block an unrelated later question.
+  - The experimental OG-1 foundation is available only to programmatic offline evaluations: a separate runtime-owned graph selects dependency-ready primary work, durably records immutable attempts and state-bound evidence, bounds retry/revision, and blocks ambiguous mutation replay. It has no CLI/config/slash-command activation and creates no automatic agents; Standard mode remains unchanged while OG-2 designs the explicit user opt-in.
   - Headless results preserve the schema-v1 `ok`/`error`/`cancelled` process status and add a goal-level `done`/`blocked`/`cancelled`/`budget_exhausted` outcome.
   - The agent can request structured user decisions through a terminal dialog.
   - Tool iterations, tokens, cost, and elapsed time can be bounded.

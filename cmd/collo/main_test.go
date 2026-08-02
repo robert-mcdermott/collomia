@@ -243,11 +243,25 @@ func TestRunObservationTracksPartialTextAndRefusal(t *testing.T) {
 	textEvent := event.New(event.KindTextDelta)
 	textEvent.Text = "partial answer"
 	observation.Observe(textEvent)
+	graphEvent := event.New(event.KindGoalGraphUpdate)
+	graphEvent.GoalGraph = &event.GoalGraphStatus{ID: "graph-1", Generation: 1, State: "running"}
+	observation.Observe(graphEvent)
 	permissionEvent := event.New(event.KindPermissionDecision)
 	permissionEvent.Permission = &event.Permission{Allowed: false}
 	observation.Observe(permissionEvent)
 	answer, refused, progressed := observation.Snapshot()
 	if answer != "partial answer" || !refused || !progressed {
+		t.Fatalf("observation answer=%q refused=%t progressed=%t", answer, refused, progressed)
+	}
+}
+
+func TestRunObservationTracksGoalGraphProgress(t *testing.T) {
+	var observation runObservation
+	graphEvent := event.New(event.KindGoalGraphUpdate)
+	graphEvent.GoalGraph = &event.GoalGraphStatus{ID: "graph-1", Generation: 1, State: "running"}
+	observation.Observe(graphEvent)
+	answer, refused, progressed := observation.Snapshot()
+	if answer != "" || refused || !progressed {
 		t.Fatalf("observation answer=%q refused=%t progressed=%t", answer, refused, progressed)
 	}
 }

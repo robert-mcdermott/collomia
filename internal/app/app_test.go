@@ -15,6 +15,8 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
+	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -74,6 +76,14 @@ func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testi
 	}
 	if info, err := os.Stat(filepath.Join(home, ".collomia", "audit")); err != nil || !info.IsDir() {
 		t.Fatalf("audit infrastructure should remain available: info=%v err=%v", info, err)
+	}
+}
+
+func TestOrchestratedGoalRejectsEphemeralExecution(t *testing.T) {
+	isolateGlobalFiles(t)
+	approved := &plan.Plan{Goal: "change safely", Steps: []plan.Step{{ID: 1, Title: "change source"}}}
+	if _, err := New(t.Context(), Options{Workspace: t.TempDir(), Ephemeral: true, OrchestratedGoal: approved}); err == nil || !strings.Contains(err.Error(), "durable session") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -419,6 +429,61 @@ func TestSessionResumeAcrossRestart(t *testing.T) {
 	defer continued.Close()
 	if continued.Session.Meta.ID != id {
 		t.Fatalf("continue resumed %s, want %s", continued.Session.Meta.ID, id)
+	}
+}
+
+func TestOrchestratedGoalRestoresAmbiguousMutationAsBlocker(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	approved := &plan.Plan{Goal: "change safely", Steps: []plan.Step{{ID: 1, Title: "change source"}}}
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GoalGraph == nil || first.Session == nil {
+		t.Fatal("internal orchestrated runtime did not create a durable graph")
+	}
+	_, attempt, err := first.GoalGraph.StartNext(t.Context(), "workspace-before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.GoalGraph.BeginTool(t.Context(), attempt.ID, goalgraph.ToolAction{
+		Tool: "write_file", Risk: string(tools.RiskWrite), Summary: "change source",
+		PotentialMutation: true, NonReplayable: true,
+	}, "workspace-before"); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+	standard, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standard.GoalGraph != nil {
+		t.Fatal("persisted graph data activated orchestration without the programmatic option")
+	}
+	if _, exists := standard.Registry.Get(goalgraph.ReviseToolName); exists {
+		t.Fatal("standard resume exposed internal graph-control tools")
+	}
+	standard.Close()
+
+	resumed, err := New(t.Context(), Options{Workspace: workspace, Resume: id, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if outcome, reason := resumed.GoalGraph.Outcome(); outcome != goalgraph.OutcomeBlocked || !strings.Contains(reason, "may have taken effect") {
+		t.Fatalf("outcome=%q reason=%q", outcome, reason)
+	}
+	if err := resumed.NewSession(); err == nil || !strings.Contains(err.Error(), "orchestrated-goal") {
+		t.Fatalf("graph runtime allowed an unsafe session reset: %v", err)
+	}
+	restored := resumed.GoalGraph.Snapshot()
+	if len(restored.Attempts) != 1 || restored.Attempts[0].State != goalgraph.AttemptInterrupted {
+		t.Fatalf("restored attempts=%+v", restored.Attempts)
+	}
+	if len(resumed.Session.GoalGraphRaw) == 0 {
+		t.Fatal("recovered graph was not persisted back to the session")
 	}
 }
 

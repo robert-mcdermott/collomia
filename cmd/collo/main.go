@@ -368,7 +368,7 @@ func (o *runObservation) Observe(e event.Event) {
 	case event.KindTextDelta:
 		o.streamedAnswer.WriteString(e.Text)
 		o.progressed = true
-	case event.KindReasoningDelta, event.KindToolCallDelta, event.KindToolStart, event.KindToolOutput, event.KindToolResult:
+	case event.KindReasoningDelta, event.KindToolCallDelta, event.KindToolStart, event.KindToolOutput, event.KindToolResult, event.KindGoalGraphUpdate:
 		o.progressed = true
 	case event.KindPermissionDecision:
 		o.progressed = true

@@ -17,6 +17,7 @@ without rewriting it.
 | User/project configuration | `schema_version: 1` | A missing version is legacy version 1. Normal loading tolerates unknown fields; strict validation rejects them. A newer version is rejected before activation. |
 | Headless runtime events | `schema: 1` | Optional additive fields are allowed. Unknown event kinds, incompatible required fields, and other schema versions are rejected by `collo replay`. |
 | Durable session records | `schema_version: 1` | New records carry the version on every JSONL line. Legacy records without it are version 1. Unknown optional fields are ignored; a newer version is rejected without appending to the session. |
+| Runtime-owned goal-graph snapshots | `schema: 1` | Internal OG-1 snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled. |
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
@@ -403,7 +404,10 @@ Durable session JSONL is append-only. Current releases:
 - discard only a malformed final line, treating it as a possible crash-torn
   write;
 - reject an unsupported record version before opening the session for append;
-- never execute a stored tool call during load, replay, fork, or rewind.
+- never execute a stored tool call during load, replay, fork, or rewind;
+- restore an internal `goal_graph` record only when that programmatic mode is
+  explicitly requested, then retry interrupted read-only work in a new attempt
+  while converting any ambiguous non-replayable action into a blocker.
 
 Before a major upgrade, back up `~/.collomia/` on macOS/Linux or
 `%USERPROFILE%\.collomia\` on Windows if the sessions are important. Do not
@@ -430,6 +434,16 @@ binary being run. Consumers should:
 Adding a new event kind is not treated like adding an optional field: existing
 strict replay clients reject unknown kinds, so the change requires an explicit
 compatibility decision.
+
+The OG-1 decision is deliberately narrow: `goal.graph.update` is added to
+schema v1 for a new, internal-only programmatic evaluation path. Existing
+Standard CLI/TUI/headless streams never emit it, and no persisted setting can
+activate it. A consumer of an OG-1 evaluation trace must use a binary/schema
+that knows the kind; an older strict replay correctly rejects that trace. The
+established meanings and required payloads of every pre-existing schema-v1
+kind remain byte-compatible, so this isolated addition does not renumber all
+ordinary automation events before the experimental user mode exists. OG-2 must
+revisit this decision when it exposes orchestration to real automation users.
 
 ## Release and developer checklist
 

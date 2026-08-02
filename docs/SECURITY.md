@@ -767,6 +767,53 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
+## Runtime-owned goal-graph boundary (internal OG-1)
+
+OG-1 adds an internal, programmatically activated primary-agent controller; it
+does not add a user-facing mode or another actor. A graph approval is scheduling
+state, never authority. Every selected node still uses the primary agent's
+existing tool registry, permission decision, lifecycle hooks, sandbox, audit
+identity, token/cost/iteration bounds, and cancellation path. Whole-plan
+replacement and all delegate tools are hidden while this controller runs. Its
+two graph-control tools can only propose a bounded acyclic logical revision or
+record an exact blocker; they cannot grant a tool, path, host, publication,
+credential, or budget permission.
+
+Graph execution truth is separate from the model-authored plan and full
+transcript. The session stores a versioned, structurally validated snapshot
+containing immutable attempts, typed failures, evidence identity, mutation
+generation, and terminal outcome. A model's tool-free response only proposes
+completion. The runtime requires a successful bounded result, rejects
+unresolved permission/hook/tool/provider failures, and allows at most two
+completion interventions, two attempts per node, two logical revisions, and
+twelve nodes. Every required node must be accepted; one material blocker ends
+the goal rather than spending more authority on independent work that cannot
+make the whole outcome complete.
+
+Potentially mutating tools cross a durable write-ahead transition before they
+execute. If that flush fails, the tool never starts. An interrupted read-only
+attempt can be recomputed under a fresh attempt ID, but an action that may have
+written or caused an external effect becomes a reconciliation blocker on
+resume and is never repeated automatically. Internal graph runs cannot switch,
+rewind, or replace their session while active.
+
+Primary writes fail closed outside a Git-backed workspace. The combined-state
+token covers repository root and HEAD, index and worktree binary diffs, and
+the path, mode, and contents of non-ignored untracked regular files, within a
+fixed time/size bound. A structured write that leaves this token unchanged is
+not accepted as work. Any potential mutation advances a separate generation,
+and `done` after one requires a recognized successful verification result
+bound to the current token and generation. External drift stales accepted
+nodes conservatively. Ignored generated output is excluded from the token; it
+still advances the in-process mutation generation when Collomia ran the action,
+but an out-of-process change only to ignored data is intentionally outside the
+claim. A model-authored verification note is not a waiver.
+
+The mode remains unavailable through CLI flags, slash commands, configuration,
+project instructions, skills, or hooks. OG-2 must add explicit per-session
+proposal review before any user can opt in, and must preserve these boundaries
+before it adds bounded read-only fan-out.
+
 ## Delegated-agent boundary
 
 Delegated agents use the same security boundary as the parent and can only be

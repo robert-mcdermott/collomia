@@ -74,6 +74,7 @@ Current one-shot runs emit these events when applicable:
 | `tool.output` | `tool` | Live bounded tool output. |
 | `tool.result` | `tool` | Completed tool result and error flag. |
 | `permission.decision` | `permission` | Allow/deny decision, source, matched rule, and resources. |
+| `goal.graph.update` | `goal_graph` | Bounded runtime-owned graph transition: graph/generation identity, optional node/attempt, state, reason, ready node IDs, and terminal outcome. Reserved for the internal OG-1 evaluation path until the experimental mode is exposed. |
 | `usage` | `usage` | Provider-reported input/output/cached/cache-write/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. `input_tokens` counts the whole prompt including cached tokens; see [final result](#final-result). |
 | `context.compaction` | `text` | Context was compacted. |
 | `warning` | `text` | Non-fatal runtime/provider warning. |
@@ -81,9 +82,12 @@ Current one-shot runs emit these events when applicable:
 | `run.result` | `result`, optional `usage`, optional `failure_id` | Exactly one terminal verdict. |
 
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
-`plan.update`, and `delegate.update` for consumers sharing the runtime event
-model. `delegate.update` carries the latest bounded child status used by
-durable interactive sessions; one-shot JSONL runs do not currently promise it.
+`plan.update`, `goal.graph.update`, and `delegate.update` for consumers sharing
+the runtime event model. `goal.graph.update` is emitted only by the
+programmatically activated OG-1 evaluation path in this release; there is no
+CLI, slash command, or configuration switch for it. `delegate.update` carries
+the latest bounded child status used by durable interactive sessions; one-shot
+JSONL runs do not currently promise either internal lifecycle kind.
 Do not assume every reserved kind appears in every current CLI stream.
 
 When present, its `delegate` object includes stable identity/profile/provider,

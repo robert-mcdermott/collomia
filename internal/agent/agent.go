@@ -17,6 +17,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/failureid"
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/plan"
@@ -84,6 +85,8 @@ type Agent struct {
 	onCompaction        func(summary provider.Message, replaced int)
 	pinnedContext       func() string
 	completionPlan      *plan.Board
+	goalGraph           *goalgraph.Graph
+	goalStateToken      func(context.Context) (string, error)
 	artifacts           *session.ArtifactManager
 	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
@@ -125,6 +128,14 @@ type Options struct {
 	// completion controller. Nil preserves the legacy ungated loop for
 	// specialized embedders; the application runtime always provides its board.
 	CompletionPlan *plan.Board
+	// GoalGraph enables the internal OG-1 primary-only execution controller.
+	// The application exposes no user-facing switch yet; offline product
+	// evaluations provide an approved logical graph programmatically.
+	GoalGraph *goalgraph.Graph
+	// GoalStateToken returns the current combined-workspace token. A nil
+	// function makes write-bearing graph nodes fail closed while allowing
+	// read-only graph evaluation.
+	GoalStateToken func(context.Context) (string, error)
 	// Artifacts retains bounded oversized tool results for on-demand reads.
 	Artifacts *session.ArtifactManager
 	// Attachments resolves session-local image references immediately before
@@ -166,7 +177,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 // attachLedger is the single site that gives a permission manager its audit
@@ -303,11 +314,19 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 		select {
 		case <-ctx.Done():
+			a.cancelGoalGraph(ctx.Err().Error(), send)
 			err := reportError(send, ctx.Err())
 			return "", err
 		default:
 		}
 		a.applySteering()
+		if a.graphEnabled() {
+			if graphErr := a.ensureGoalAttempt(ctx, send); graphErr != nil {
+				graphErr = reportError(send, graphErr)
+				a.endTurn(ctx, send, iteration, GoalOutcomeFor(graphErr))
+				return "", graphErr
+			}
+		}
 		a.mu.RLock()
 		messages := append([]provider.Message(nil), a.messages...)
 		client := a.client
@@ -343,6 +362,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		defs := a.toolDefinitions(plan)
 		requestMaxTokens, budgetErr := a.nextRequestMaxTokens()
 		if budgetErr != nil {
+			a.exhaustGoalGraph(budgetErr.Error(), send)
 			budgetErr = reportError(send, budgetErr)
 			return "", budgetErr
 		}
@@ -393,6 +413,31 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			}
 		})
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				a.cancelGoalGraph(err.Error(), send)
+				err = reportError(send, err)
+				return "", err
+			}
+			if a.graphEnabled() {
+				decision, graphErr := a.recordProviderFailure(ctx, err, send)
+				if graphErr != nil {
+					return "", reportError(send, graphErr)
+				}
+				if decision.Kind == goalgraph.DecisionRetry {
+					if strings.TrimSpace(decision.Notice) != "" {
+						warning := event.New(event.KindWarning)
+						warning.Text = decision.Notice
+						send(warning)
+						a.appendMessage(provider.Message{Role: "user", Content: decision.Notice})
+					}
+					continue
+				}
+				if decision.Kind == goalgraph.DecisionBlocked {
+					blocked := fmt.Errorf("%w: %s", ErrGoalBlocked, decision.Reason)
+					a.endTurn(ctx, send, iteration, GoalBlocked)
+					return "", reportError(send, blocked)
+				}
+			}
 			err = reportError(send, err)
 			return "", err
 		}
@@ -429,20 +474,67 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 		if budget > 0 && usage.InputTokens+usage.OutputTokens > budget {
 			err := fmt.Errorf("%w: provider reported %d tokens after a limit of %d", ErrTokenBudgetExceeded, usage.InputTokens+usage.OutputTokens, budget)
+			a.exhaustGoalGraph(err.Error(), send)
 			err = reportError(send, err)
 			return response.Content, err
 		}
 		if costBudget > 0 {
 			if !response.Usage.CostAvailable {
 				err := fmt.Errorf("%w: provider did not return usable token accounting for configured pricing", ErrCostBudgetExceeded)
+				a.exhaustGoalGraph(err.Error(), send)
 				return response.Content, reportError(send, err)
 			}
 			if usage.CostUSD > costBudget {
 				err := fmt.Errorf("%w: estimated spend $%.6f exceeded $%.6f", ErrCostBudgetExceeded, usage.CostUSD, costBudget)
+				a.exhaustGoalGraph(err.Error(), send)
 				return response.Content, reportError(send, err)
 			}
 		}
 		if len(response.ToolCalls) == 0 {
+			if a.graphEnabled() {
+				decision, graphErr := a.assessGoalCompletion(ctx, response.Content, send)
+				if graphErr != nil {
+					graphErr = reportError(send, graphErr)
+					return response.Content, graphErr
+				}
+				switch decision.Kind {
+				case goalgraph.DecisionDone:
+					a.endTurn(ctx, send, iteration, GoalDone)
+					return response.Content, nil
+				case goalgraph.DecisionBlocked:
+					blocked := reportError(send, fmt.Errorf("%w: %s", ErrGoalBlocked, decision.Reason))
+					a.endTurn(ctx, send, iteration, GoalBlocked)
+					return response.Content, blocked
+				case goalgraph.DecisionContinue, goalgraph.DecisionAccepted, goalgraph.DecisionRetry:
+					if iteration >= a.maxIterations {
+						reason := fmt.Sprintf("goal graph exhausted the %d-iteration run budget", a.maxIterations)
+						a.exhaustGoalGraph(reason, send)
+						budgetErr := reportError(send, fmt.Errorf("%w after %d iterations; graph work remains", ErrIterationBudgetExceeded, a.maxIterations))
+						a.endTurn(ctx, send, iteration, GoalBudgetExhausted)
+						return response.Content, budgetErr
+					}
+					if decision.Kind == goalgraph.DecisionAccepted || decision.Kind == goalgraph.DecisionRetry {
+						if graphErr := a.ensureGoalAttempt(ctx, send); graphErr != nil {
+							graphErr = reportError(send, graphErr)
+							return response.Content, graphErr
+						}
+					}
+					if strings.TrimSpace(decision.Notice) != "" {
+						if decision.Kind != goalgraph.DecisionAccepted {
+							warning := event.New(event.KindWarning)
+							warning.Text = decision.Notice
+							send(warning)
+						}
+						a.appendMessage(provider.Message{Role: "user", Content: decision.Notice})
+						if err := a.checkPersistence(); err != nil {
+							return response.Content, reportError(send, err)
+						}
+					}
+					continue
+				default:
+					return response.Content, reportError(send, errors.New("goal graph returned an unknown completion decision"))
+				}
+			}
 			decision := completion.assess()
 			switch {
 			case decision.done:
@@ -473,13 +565,25 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			}
 			result, observation, fatalErr := a.executeTool(ctx, call, plan, send)
 			if fatalErr != nil {
+				if errors.Is(fatalErr, context.Canceled) {
+					a.cancelGoalGraph(fatalErr.Error(), send)
+				}
 				return response.Content, reportError(send, fatalErr)
 			}
 			a.appendMessage(provider.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content, Parts: result.Parts})
-			completion.observe(observation)
+			if a.graphEnabled() {
+				if observation.Failed {
+					if graphErr := a.recordGoalFailure(ctx, observation, send); graphErr != nil {
+						return response.Content, reportError(send, graphErr)
+					}
+				}
+			} else {
+				completion.observe(observation)
+			}
 		}
 	}
 	err = fmt.Errorf("%w after %d iterations", ErrIterationBudgetExceeded, a.maxIterations)
+	a.exhaustGoalGraph(err.Error(), send)
 	err = reportError(send, err)
 	return "", err
 }
@@ -607,6 +711,8 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	a.mu.RUnlock()
 	if disabled || (a.subagent && parentOnlyTool(call.Name)) {
 		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = "tool is not available to this agent"
 		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, observation, nil
 	}
 	if call.Name == "load_skill" && len(allowedSkills) > 0 {
@@ -615,17 +721,24 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		}
 		if json.Unmarshal(call.Arguments, &input) == nil && !allowedSkills[input.Name] {
 			observation.Failed = true
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = "skill is not available to the active agent profile"
 			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, observation, nil
 		}
 	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
 		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = err.Error()
+		observation.Retryable = true
 		return tools.Result{Content: "Tool error: " + err.Error()}, observation, nil
 	}
 	observation.Action = action
 	if plan && action.Risk != tools.RiskRead {
 		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = "planning mode is read-only"
 		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, observation, nil
 	}
 	permissionTool := call.Name
@@ -652,6 +765,8 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: permissionTool, Tool: permissionTool, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
 	if err != nil {
 		observation.Failed = true
+		observation.FailureKind = goalgraph.FailurePermission
+		observation.FailureDetail = err.Error()
 		return tools.Result{Content: "Tool denied: " + err.Error()}, observation, nil
 	}
 	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
@@ -659,6 +774,8 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			observer.ObserveExecution(call.Arguments, hookErr)
 		}
 		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureHook
+		observation.FailureDetail = hookErr.Error()
 		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, observation, nil
 	}
 	args := call.Arguments
@@ -667,8 +784,22 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
 		if overridden != nil {
 			observation.Failed = true
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = overridden.Error()
+			observation.Retryable = true
 			return tools.Result{Content: "Tool error: " + overridden.Error()}, observation, nil
 		}
+	}
+	graphStarted, graphErr := a.beginGoalTool(ctx, call.Name, action, send)
+	if graphErr != nil {
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureStateUnavailable
+		observation.FailureDetail = graphErr.Error()
+		observation.GraphRecorded = graphStarted
+		if errors.Is(graphErr, goalgraph.ErrWorkspaceState) {
+			return tools.Result{Content: "Tool blocked by goal graph: " + graphErr.Error()}, observation, nil
+		}
+		return tools.Result{}, observation, graphErr
 	}
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
@@ -681,7 +812,9 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
 	}
+	observation.Started = time.Now().UTC()
 	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
+	observation.Finished = time.Now().UTC()
 	a.permissions.RecordOutcome(permissionTool, action, err)
 	if len(result.Content) > a.maxToolOutput {
 		original := result.Content
@@ -707,11 +840,15 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	result.Parts = a.retainToolParts(call.Name, result.Parts, send)
 	if err != nil {
 		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = err.Error()
+		observation.Retryable = true
 		if result.Content != "" {
 			result.Content += "\n"
 		}
 		result.Content += "Tool error: " + err.Error()
 	}
+	observation.ResultSummary = result.Content
 	done := event.New(event.KindToolResult)
 	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil}
 	send(done)
@@ -720,6 +857,17 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		endPayload.Error = err.Error()
 	}
 	a.lifecycle.Fire(ctx, endPayload)
+	if graphStarted {
+		observation.GraphRecorded = true
+		if graphErr := a.finishGoalTool(ctx, observation, send); graphErr != nil {
+			return result, observation, graphErr
+		}
+	} else if a.graphEnabled() && goalgraph.MetaTool(call.Name) {
+		// The graph-control tool performs its own validated transition. Drain
+		// those updates without treating the meta operation as node evidence.
+		a.emitGoalUpdates(send)
+		observation.GraphRecorded = err == nil
+	}
 	if err == nil && action.Risk == tools.RiskWrite && len(action.Paths) > 0 {
 		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
 	}
@@ -766,6 +914,21 @@ func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, s
 func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
 	return a.registry.Definitions(func(tool tools.Tool) bool {
 		name := tool.Definition().Name
+		if a.goalGraph != nil {
+			// An OG-1 graph is already approved and runtime-owned. Whole-plan
+			// replacement and every delegated-agent surface stay unavailable so
+			// this milestone proves one primary execution lane only.
+			if name == "update_plan" || name == "delegate" || name == "inspect_delegate_changes" || name == "compare_delegate_changes" || name == "verify_delegate_changes" || name == "apply_delegate_changes" {
+				return false
+			}
+			// These tools mutate only the bounded runtime state machine and grant
+			// no tool, path, network, publication, or budget authority. They must
+			// survive an ordinary profile tool allowlist or the controller could
+			// lose its only typed replan/block routes after activation.
+			if goalgraph.MetaTool(name) {
+				return !plan
+			}
+		}
 		disabled := a.disabled[name]
 		if len(a.allowedTools) > 0 && !a.allowedTools[name] {
 			disabled = true
@@ -847,10 +1010,16 @@ func (a *Agent) systemPrompt(plan bool) string {
 // the conversation cannot accumulate stale copies of a plan and compaction has
 // nothing to preserve — the board is the single source of truth either way.
 func (a *Agent) turnState() (provider.Message, bool) {
-	if a.pinnedContext == nil {
-		return provider.Message{}, false
+	var sections []string
+	if a.pinnedContext != nil {
+		if value := strings.TrimSpace(a.pinnedContext()); value != "" {
+			sections = append(sections, value)
+		}
 	}
-	value := strings.TrimSpace(a.pinnedContext())
+	if a.goalGraph != nil {
+		sections = append(sections, a.goalGraph.Render())
+	}
+	value := strings.TrimSpace(strings.Join(sections, "\n\n"))
 	if value == "" {
 		return provider.Message{}, false
 	}

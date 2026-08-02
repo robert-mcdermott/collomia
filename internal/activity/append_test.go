@@ -208,6 +208,7 @@ func TestEveryProjectableEventKindProducesACategoryAndStatus(t *testing.T) {
 		{Kind: event.KindPermissionDecision, Permission: &event.Permission{Tool: "run_command", Allowed: true}},
 		{Kind: event.KindFileChange, File: &event.FileChange{Operation: "write", Path: "a.go"}},
 		{Kind: event.KindPlanUpdate},
+		{Kind: event.KindGoalGraphUpdate, GoalGraph: &event.GoalGraphStatus{ID: "g1", Generation: 1, NodeID: 2, State: "running"}},
 		{Kind: event.KindDelegateUpdate, Delegate: &event.DelegateStatus{Name: "r", Status: "running"}},
 		{Kind: event.KindCompaction},
 		{Kind: event.KindWarning},

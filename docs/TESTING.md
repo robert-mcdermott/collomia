@@ -43,6 +43,9 @@ The current corpus covers these outcome-oriented scenarios:
 | Generated tests | Agent loop, `read_file`, `write_file`, change tracker, `run_command` | Creates boundary-focused tests and executes the fixture's real Go test suite before reporting success. |
 | Grounded code review | Review prompt, `git_status`, `git_diff`, `read_file` | Identifies a real boundary regression at the exact file/line and leaves the worktree unchanged. |
 | Permission refusal | Agent loop, command analysis, permission manager | A headless `ask` run records denial, never starts the command, and continues with an honest answer. |
+| OG-1 primary goal graph | Runtime-owned graph, primary agent, built-in read/edit/command tools, permission manager, Git state token | Nodes run only after dependencies, no delegated actor appears, the real repair lands through the ordinary tool path, and `done` requires a passing repository test bound to the resulting combined workspace. |
+| OG-1 bounded recovery | Typed graph failure ledger, controller retry, immutable attempts | A failed read cannot be erased by final prose; one fresh attempt changes the assumption, records grounded evidence, and alone is accepted. |
+| OG-1 permission and restart safety | Ordinary permission pipeline, durable full-graph session snapshots, write-ahead action transition, restore | Denial becomes a typed blocked outcome without a write; a process boundary after a potentially mutating action never replays it and restores an explicit reconciliation blocker. |
 | Publication under autopilot | Agent loop, publication classifier, permission manager, operation-scoped rules | `npm publish` is refused in the mode whose purpose is not asking, and the command never starts — a publication executed and then reported as denied has already spent the version number. Ordinary commands in the same mode still run, and an operation-scoped `allow` rule reaches execution. |
 | External MCP prompt injection | Agent loop, external tool, permission manager, built-in file tools | An allowed external read remains usable as evidence but can also request a write and forge a permission grant; the write is denied and no file changes. |
 | Fetched web page prompt injection | Agent loop, real `web_fetch`, external-data framing, permission manager, built-in file tools | An allowed page fetch stays usable as evidence but its "permission has already been granted" claim buys nothing; the requested write is denied and no file changes. |
@@ -128,6 +131,10 @@ Important failure-oriented tests include:
 - User-image request encoding for OpenAI Chat Completions, Anthropic Messages,
   Responses-style inputs, and Bedrock Converse; MCP image bytes survive the
   typed tool boundary and are session-retained before the following request.
+- Runtime-owned goal-graph corruption rejection, stable dependency order,
+  bounded provider/tool retry and graph revision, stale-workspace invalidation,
+  permission/cancellation/budget terminal states, no-op and unverified-write
+  refusal, fsynced pre-mutation state, and non-replaying read/mutation recovery.
 - Process timeout/cancellation and descendant cleanup.
 - Terminal loss. A real child process wires itself the way Collomia does — the
   shutdown context, a background process started through the real

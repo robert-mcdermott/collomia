@@ -48,7 +48,7 @@ const RecordSchemaVersion = 1
 // Record is one line of the session log. Type selects the payload.
 type Record struct {
 	SchemaVersion int               `json:"schema_version,omitempty"`
-	Type          string            `json:"type"` // meta, message, event, compaction, plan
+	Type          string            `json:"type"` // meta, message, event, compaction, plan, goal_graph
 	Time          time.Time         `json:"time"`
 	Meta          *Meta             `json:"meta,omitempty"`
 	Message       *provider.Message `json:"message,omitempty"`
@@ -57,6 +57,9 @@ type Record struct {
 	// summary message replaces.
 	Replaced int             `json:"replaced,omitempty"`
 	Plan     json.RawMessage `json:"plan,omitempty"`
+	// GoalGraph is the latest complete versioned runtime graph snapshot. It is
+	// opaque to the session package; goalgraph validates its own schema.
+	GoalGraph json.RawMessage `json:"goal_graph,omitempty"`
 }
 
 type Store struct {
@@ -594,6 +597,9 @@ type Session struct {
 	active []provider.Message
 	// PlanRaw is the latest persisted structured plan, if any.
 	PlanRaw json.RawMessage
+	// GoalGraphRaw is the latest persisted runtime-owned graph snapshot, if
+	// this session was created by the internal OG-1 evaluation path.
+	GoalGraphRaw json.RawMessage
 	// delegates retains the latest parent-inbox snapshot for each delegated
 	// task. Stored updates are inert data and are never scheduled during load.
 	delegates     map[string]event.DelegateStatus
@@ -647,6 +653,8 @@ func (sess *Session) replay(record Record) {
 		}
 	case "plan":
 		sess.PlanRaw = record.Plan
+	case "goal_graph":
+		sess.GoalGraphRaw = record.GoalGraph
 	case "event":
 		if record.Event != nil {
 			sess.retainEvent(*record.Event)
@@ -706,6 +714,23 @@ func (sess *Session) AppendPlan(data json.RawMessage) {
 	sess.PlanRaw = data
 	sess.mu.Unlock()
 	_ = sess.append(Record{Type: "plan", Plan: data})
+}
+
+// AppendGoalGraph persists one complete graph snapshot. When durable is true,
+// the record is flushed before returning; graph-controlled mutating actions
+// use that write-ahead boundary to make recovery non-replaying.
+func (sess *Session) AppendGoalGraph(data json.RawMessage, durable bool) error {
+	data = append(json.RawMessage(nil), data...)
+	sess.mu.Lock()
+	sess.GoalGraphRaw = data
+	sess.mu.Unlock()
+	if err := sess.append(Record{Type: "goal_graph", GoalGraph: data}); err != nil {
+		return err
+	}
+	if durable {
+		return sess.Sync()
+	}
+	return nil
 }
 
 // markInterrupted appends synthetic tool results for tool calls that never

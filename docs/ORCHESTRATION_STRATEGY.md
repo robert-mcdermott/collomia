@@ -1,7 +1,7 @@
 # Orchestrated Goal strategy
 
-**Status:** approved product and architecture strategy; product implementation
-has not started  
+**Status:** approved product and architecture strategy; OG-1 is complete and
+OG-2 is the next unstarted milestone
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-01  
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -115,6 +115,7 @@ The difficult prerequisites are substantially present:
 | --- | --- |
 | Structured plan | Goals, stable step IDs, acyclic known dependencies, terminal reasons/evidence, persistence, and revisions. |
 | Goal completion | Tool-free answers are checked against open plan state, stale verification after tracked writes, and unresolved tool failures. Outcomes are `done`, `blocked`, `cancelled`, or `budget_exhausted`. |
+| Primary graph controller | OG-1 durably owns required-node readiness, immutable attempts/evidence, typed retry/revision, conservative Git freshness, verification, terminal state, and non-replaying recovery through an internal programmatic evaluation seam. |
 | Delegation | Bounded batches, named profiles, plan-step association, per-agent budgets, steering, cancellation, durable results, and no recursive delegation. |
 | Scheduling | Session-wide FIFO admission, global/provider limits, declared write scopes, concurrent disjoint writers, and serialization of overlapping or workspace-wide writers. |
 | Isolation | Write delegates operate in separate Git worktrees and cannot directly mutate the parent workspace. |
@@ -124,15 +125,14 @@ The difficult prerequisites are substantially present:
 
 The remaining prerequisites are not cosmetic:
 
-- a runtime-owned node lifecycle and attempt ledger;
-- deterministic dependency-ready node selection for the primary agent;
-- bounded graph revision and replanning after classified failures;
-- structured evidence references that the model cannot manufacture or replace
-  with prose;
-- conservative repository-assumption invalidation;
-- explicit verification of the combined parent workspace;
-- mutation-safe graph resume and scheduler recovery;
-- graph-specific UI, event contracts, evaluations, and compatibility rules.
+- an explicit per-session opt-in and reviewable logical-graph proposal;
+- a user-facing graph/node/attempt/evidence inspection and blocker/waiver flow;
+- bounded assignment of dependency-ready read nodes to existing delegates;
+- aggregate graph time/token/cost accounting across primary and workers;
+- conservative freshness and synthesis of returned read-only results;
+- later isolated-writer eligibility, guarded integration, fresh combined-parent
+  verification, and mutation-safe multi-worker scheduler recovery;
+- a final event/automation compatibility decision for the exposed experiment.
 
 ## Authority model
 
@@ -413,7 +413,7 @@ roadmap updates, and future agent handoffs.
 
 ### OG-1 — Runtime-owned primary graph controller
 
-**Status: not started. This is the next implementation slice.**
+**Status: complete (2026-08-01).**
 
 Do not increase the number of automatic actors.
 
@@ -429,6 +429,50 @@ Do not increase the number of automatic actors.
 - Preserve current permission, cancellation, persistence, and budget behavior.
 - Add product evaluations before exposing an experimental user mode.
 
+Implemented contract and refinements:
+
+- OG-1 is one milestone delivered through two internal increments: first the
+  pure durable graph/state contract, then its primary-agent execution,
+  recovery, visibility, and evaluation path. Neither increment is a shipped
+  product mode on its own.
+- The graph is exercised programmatically by offline product evaluations in
+  OG-1. CLI/slash-command opt-in and graph approval remain OG-2 work.
+- Potentially mutating actions require a durable write-ahead graph transition
+  before execution. Resume may retry interrupted read-only work in a new
+  attempt, but an ambiguous mutation becomes a reconciliation blocker and is
+  never replayed.
+- Initial primary-write state tokens are Git-backed. Read-only graphs can be
+  repository-agnostic; a write-bearing graph whose combined workspace cannot
+  be state-bound blocks rather than claiming verified completion. Standard
+  mode retains its existing non-Git behavior.
+- A model-authored verification note is not a graph waiver. Until OG-2 adds an
+  explicit user-owned waiver interaction, unavailable meaningful verification
+  blocks the graph honestly.
+- The graph is bounded to 12 required nodes, two attempts per node, two graph
+  revisions, eight acceptance criteria per node, and two completion
+  interventions. A material blocker ends the required graph immediately.
+- `propose_goal_graph_revision` uses optimistic graph-generation concurrency
+  and cannot rewrite immutable attempts or evidence. `block_goal_node` records
+  an exact blocker. Both change scheduling state only, bypass restrictive
+  profile tool allowlists for controller availability, and grant no action.
+- Schema-1 graph snapshots are embedded as additive `goal_graph` session
+  records. Mutating or external actions cross a durable write-ahead transition;
+  active sessions cannot switch, rewind, or reset underneath the controller.
+- `goal.graph.update` is a bounded schema-v1 lifecycle event projected into the
+  activity timeline and headless progress. This is an explicit internal-only
+  compatibility addition: Standard event streams never emit it, and OG-2 must
+  revisit the decision before exposing the mode to automation consumers.
+- The Git combined-workspace token covers HEAD, index and working-tree binary
+  diffs, and non-ignored untracked regular-file paths, modes, and bytes. A
+  structured write that leaves the token unchanged is not accepted. Successful
+  verification records bounded output, exact command, status, token, mutation
+  generation, and time.
+- Normalized retryable provider failures and recoverable tool failures consume
+  a fresh immutable node attempt. Permission, hook, unavailable-state, and
+  ambiguous-action failures block instead of being routed around. Cancellation
+  and all existing token, cost, and iteration limits retain their terminal
+  outcomes.
+
 Exit gate:
 
 - a primary-only graph survives success, recoverable failure, permission
@@ -437,9 +481,22 @@ Exit gate:
 - no mutation is duplicated during recovery;
 - Standard mode behavior and compatibility remain unchanged.
 
+Exit-gate evidence:
+
+- `go test -count=1 ./...`
+- `go test -race -count=1 ./...`
+- `go vet ./...`
+- `go build ./...`
+- The credential-free OG-1 product evaluations drive real primary
+  read/edit/command tools, permission decisions, Git state tokens, repository
+  tests, recoverable failure, and denial. App/session tests prove an ambiguous
+  write-ahead action restores as blocked; state-machine tests prove stable
+  readiness, stale invalidation, bounded revision/retry, cancellation, budget
+  exhaustion, corrupt-snapshot rejection, and no mutation replay.
+
 ### OG-2 — Experimental Orchestrated Goal with read fan-out
 
-**Status: blocked on OG-1.**
+**Status: unblocked; not started.**
 
 - Add the explicit per-session opt-in and graph proposal approval.
 - Allow at most two automatically selected concurrent read-only delegates by
@@ -506,7 +563,8 @@ Exit gate:
 
 **Status: blocked on OG-4.**
 
-- Restore scheduler order and graph bounds exactly.
+- Extend OG-1's exact primary-graph restoration to multi-worker scheduler
+  order, claims, and aggregate bounds.
 - Restart only safe pending read-only work.
 - Reconcile interrupted writer and integration states without replay.
 - Complete security, reliability, compatibility, and performance campaigns.
@@ -517,6 +575,15 @@ Graduation does not imply universal automatic use. Even a graduated graph
 engine should be selected only for work that benefits from decomposition.
 
 ## Evaluation and graduation
+
+OG-1 establishes the internal primary-only baseline: real product evaluations
+now cover dependency-ready success with a repository repair and fresh tests,
+recoverable tool failure in a new attempt, permission denial, and no delegated
+events. Focused state/app coverage adds provider retry, cancellation, budget
+exhaustion, stale workspace state, graph revision, durable restart, corrupt
+snapshot rejection, and ambiguous-mutation non-replay. There is deliberately
+no Standard-versus-Orchestrated performance claim yet because no user-facing
+or multi-actor Orchestrated mode exists.
 
 Compare Standard and Orchestrated modes on:
 
@@ -603,13 +670,16 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed milestone: **OG-0 — Strategy and continuity**.
-- Next milestone: **OG-1 — Runtime-owned primary graph controller**.
-- Active implementation branch or partial patch: **none recorded**.
+- Last completed milestone: **OG-1 — Runtime-owned primary graph controller**.
+- Next milestone: **OG-2 — Experimental Orchestrated Goal with read fan-out
+  (not started)**.
+- Active implementation branch or partial patch: **the completed OG-1
+  implementation is present in the current worktree; no OG-2 implementation
+  has started, and no user mode is shipped**.
 - Shipped experimental mode: **none**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
-- First implementation constraint: OG-1 adds no automatic delegated actors.
+- Preserved implementation constraint: OG-1 adds no automatic delegated actors.
 - Parallel program requirement: continue the remaining Phase 8 security and
   reliability campaigns alongside every orchestration wave.
 
@@ -633,24 +703,30 @@ Every agent or contributor continuing this program must:
 - Do not run arbitrary model-generated orchestration code in the initial
   program.
 - Do not add authority or external publication side effects to graph mode.
+- Persist graph schema 1 inside additive durable-session `goal_graph` records;
+  reject unsupported or structurally false snapshots before scheduling.
+- Emit bounded `goal.graph.update` lifecycle events under the internal-only
+  schema-v1 compatibility decision documented above.
+- Use `propose_goal_graph_revision` and `block_goal_node` as the only model
+  graph-control tools; both are scheduling-only meta tools.
+- Use one conservative whole-Git-workspace token for OG-1 rather than claiming
+  precise read footprints. Treat a no-op structured write as unproven work.
+- End a required graph on the first material node blocker rather than spending
+  more authority on independent nodes that cannot make the goal complete.
 
 ## Open implementation decisions
 
-These are deliberately unresolved and should be decided with code and
-evaluation evidence during OG-1 or OG-2:
+These remain unresolved for OG-2 or later:
 
 - final CLI and slash-command spelling;
-- the persisted execution-graph record version and whether it is embedded in
-  session records or referenced as its own artifact;
-- exact node/attempt event vocabulary and compatibility rollout;
-- the graph-revision tool schema;
 - the representation of user-authored verification waivers;
-- state-token granularity for built-in file reads and conservative external
-  reads;
 - whether the initial guideline limits become user configuration after
   measurement;
 - the precise targeted-versus-full combined verification policy by repository
-  type.
+  type;
+- whether later built-in reads earn narrower freshness footprints than OG-1's
+  conservative whole-workspace token;
+- the final event-version decision when real automation users can opt in.
 
 An implementation may resolve these questions, but must record the decision
 and its evidence here before declaring the relevant milestone complete.

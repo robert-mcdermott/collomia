@@ -158,7 +158,7 @@ func validateEvent(line int, e event.Event, fields map[string]json.RawMessage) e
 	if !knownKind(e.Kind) {
 		return lineError(line, "unsupported event kind %q", e.Kind)
 	}
-	for _, name := range []string{"turn", "text", "tool", "permission", "file", "usage", "tool_call", "delegate", "result", "provider", "error"} {
+	for _, name := range []string{"turn", "text", "tool", "permission", "file", "usage", "tool_call", "goal_graph", "delegate", "result", "provider", "error"} {
 		if raw, ok := fields[name]; ok && string(raw) == "null" {
 			return lineError(line, "field %q cannot be null", name)
 		}
@@ -247,6 +247,16 @@ func validateEvent(line int, e event.Event, fields map[string]json.RawMessage) e
 		}
 		if e.Delegate.FailureID != "" && !failureid.Valid(e.Delegate.FailureID) {
 			return lineError(line, "delegate failure_id has an invalid format")
+		}
+	case event.KindGoalGraphUpdate:
+		if err := require("goal_graph", e.GoalGraph); err != nil {
+			return err
+		}
+		if _, err := requireObjectFields(line, string(e.Kind), "goal_graph", fields["goal_graph"], "id", "generation", "state"); err != nil {
+			return err
+		}
+		if strings.TrimSpace(e.GoalGraph.ID) == "" || e.GoalGraph.Generation == 0 || strings.TrimSpace(e.GoalGraph.State) == "" {
+			return lineError(line, "goal graph id, generation, and state must be non-empty")
 		}
 	case event.KindError:
 		if _, ok := fields["error"]; !ok || strings.TrimSpace(e.Error) == "" {
@@ -415,7 +425,7 @@ func knownKind(kind event.Kind) bool {
 	case event.KindSessionStart, event.KindTurnStart, event.KindTextDelta, event.KindReasoningDelta,
 		event.KindToolCallDelta, event.KindToolStart, event.KindToolOutput, event.KindToolResult,
 		event.KindPermissionRequest, event.KindPermissionDecision, event.KindFileChange,
-		event.KindPlanUpdate, event.KindDelegateUpdate, event.KindUsage, event.KindCompaction, event.KindWarning,
+		event.KindPlanUpdate, event.KindGoalGraphUpdate, event.KindDelegateUpdate, event.KindUsage, event.KindCompaction, event.KindWarning,
 		event.KindError, event.KindTurnEnd, event.KindRunResult:
 		return true
 	default:
