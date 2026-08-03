@@ -2958,11 +2958,17 @@ The first command enters read-only proposal mode. Collomia asks the model for a
 new structured plan whose steps are all pending, have valid dependencies, and
 each state at least one concrete acceptance criterion. Each step also declares
 `execution: primary`, `execution: read_only`, or `execution: isolated_write`.
-The proposal prompt prefers four to six substantive outcome nodes and treats
-twelve as a hard maximum, not a target. Serial file/layer changes that share a
-scope and verification surface should be one coherent node; distinct
+The proposal prompt prefers one to three substantive outcome nodes for a
+scoped change and four to six only for a broad goal; twelve is a hard maximum,
+not a target. Serial file/layer changes that share a scope and verification
+surface should be one coherent node; distinct
 dependency, permission, write-scope, isolation, or recovery boundaries remain
-separate.
+separate. Within a node, related operations should be batched. After its final
+successful verifier, the model must return a tool-free completion proposal
+instead of beginning work assigned to a later node.
+Inspection performed to design the proposal is grounding and should not become
+a graph node merely to repeat it. Use a pending `read_only` node only when
+fresh post-approval investigation is itself an explicit dependency.
 Use `read_only` only for bounded repository investigation that needs no file
 change or command. End-to-end build/change goals should use `primary` for all
 implementation nodes. `isolated_write` is currently only for an explicitly
@@ -2979,6 +2985,10 @@ a plan without acceptance criteria cannot be approved.
 fresh proposal into durable runtime graph state and starts primary-agent
 execution. The graph, rather than a final-sounding model message, owns node
 readiness, attempts, failure state, evidence freshness, and terminal outcome.
+Model-authored proposal statuses and evidence are never imported as those
+facts: even if the planning model labels a step `done` or `in_progress`,
+approval initializes every runtime node pending, clears that evidence, and
+creates no attempt until scheduling selects the node.
 Every real tool action still passes through the ordinary permission,
 publication, sandbox, cancellation, and budget controls. Writes require fresh
 verification before the graph can finish.
@@ -2992,6 +3002,17 @@ structured write must also have changed that token. A model-authored “tests
 passed” statement, an earlier test result, a no-op write, or a success-masked
 command is not proof. Later workspace drift invalidates accepted evidence
 conservatively.
+
+A passing recognized verifier returns an explicit node-boundary receipt. If
+the running node's criteria are satisfied, the next response must be tool-free
+so the runtime can assess and accept it; the model must not begin another node
+until the pinned graph marks that node running. After a non-final node is
+accepted, Collomia replaces the active model context with a compact
+runtime-authored handoff. The next node therefore receives the authoritative
+graph and acceptance notice without repeatedly resending the previous node's
+tool loop. Bounded accepted dependency summaries remain in the pinned graph
+for later synthesis. This handoff makes no provider request and does not remove anything
+from the durable transcript.
 
 Run verification as the direct command whose exit status should become proof.
 Leading environment assignments, virtual-environment executable paths, and
@@ -3130,6 +3151,12 @@ Session tab and `/context` therefore show the per-request prompt/window and the
 whole-graph cumulative usage together. Compaction requests consume and record
 tokens like every other provider call.
 
+Accepted-node handoffs are different from those model-authored summaries:
+they are deterministic runtime state transitions, cost no provider iteration
+or tokens, and replace the entire prior node context for the next request. The
+append-only session still retains every original message, tool result, graph
+snapshot, and the handoff marker.
+
 Use `/orchestrate status [node]` at any time to inspect the graph or one node,
 including dependencies, acceptance criteria, attempts, failures, commands,
 evidence, and the fixed preview bounds. `/tasks` and the Session/context-rail
@@ -3147,6 +3174,13 @@ shows `GOAL… · EXP` while the boundary is pending and `GOAL ‖ · EXP` once 
 is reached. `/orchestrate resume` clears only pause state and starts the next
 turn, so an in-process active attempt, its evidence, and its bounds remain
 intact. `/orchestrate cancel` remains the immediate whole-graph stop.
+If the graph is already terminal, cancel instead archives it as the session's
+current resumable graph and reports that the session is ready for another
+`/orchestrate <goal>`; it does not delete the earlier transcript or evidence.
+During an unapproved proposal, `/orchestrate cancel` returns to the mode that
+was active before the proposal. `/plan off` is also an explicit escape: it
+cancels the proposal and returns directly to execution mode. Neither command
+approves the plan or runs an implementation tool.
 
 If a graph ends `blocked`, `/orchestrate retry <node-id>` creates a new attempt
 only when that node has attempt budget remaining and no non-replayable action
@@ -3177,8 +3211,13 @@ recovery, exact in-flight worktree reconciliation, and reviewed integration
 are later milestones.
 
 An active graph prevents session switching and rewind. After it reaches
-`done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
-`/new`. This preview has no configuration switch, repository-controlled opt-in,
+`done`, `blocked`, `cancelled`, or `budget_exhausted`, start another wave in
+the same session with `/orchestrate <new-goal>`. Collomia durably tombstones
+the old graph as the resumable graph and detaches its controls while retaining
+all old snapshots, evidence, and transcript records. The same behavior applies
+to a terminal saved graph after reopening the session; a nonterminal saved
+graph still requires explicit resume or cancellation. This preview has no
+configuration switch, repository-controlled opt-in,
 headless flag, per-node/branch cancellation, or verification waiver.
 Controlled credential-free comparisons support the current narrow fan-out
 decision: substantive independent repository-fact and cross-layer source/test
@@ -3871,7 +3910,7 @@ question broker can make the model-visible subset smaller.
 | Tool | Purpose and important bounds |
 | --- | --- |
 | `read_file` | UTF-8 text with line numbers; defaults to 400 lines, maximum 5,000; files over 1 MiB must be read in chunks. |
-| `list_files` | Directory tree including hidden files; skips `.git` and session data; depth 1-8; maximum 5,000 entries. |
+| `list_files` | Directory tree including hidden source files; skips VCS metadata, dependency trees, build output, caches, virtual environments, and session data; depth 1-8; maximum 5,000 entries. |
 | `search_files` | Go-regular-expression search with path/glob and result limits. |
 | `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
 | `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |

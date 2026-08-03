@@ -45,6 +45,81 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-3A.7 proposal-state authority and escape paths corrected
+
+- **The third successful Kanban6 wave exposed a proposal-state mismatch, not
+  an execution failure.** The earlier application and SQLite waves completed.
+  For the drag-and-drop wave, the model used ordinary plan semantics during
+  read-only proposal design: it inspected the frontend, marked that
+  investigation node `done` with evidence, and left the implementation node
+  pending. Approval then rejected the otherwise valid topology with `proposal
+  step 1 must be pending`, leaving the session correctly read-only but without
+  the intuitive transition the user expected.
+- **Model-authored plan progress no longer becomes runtime graph truth.** The
+  approval path already rebuilt accepted plans with every status pending and
+  evidence empty, but an earlier validator contradicted that boundary by
+  rejecting non-pending annotations first. That rejection is removed. A
+  `done` or `in_progress` proposal step can describe what the planning model
+  believes, but approval imports only topology, execution class, dependencies,
+  scopes, and acceptance criteria; the runtime starts every node fresh and
+  unproven.
+- **Proposal design avoids repeating its own inspection.** The proposal prompt
+  now tells the model that investigation used to formulate the graph is
+  grounding, not a completed graph node. It should include a pending
+  `read_only` node only when a fresh post-approval investigation is a real
+  dependency.
+- **Both escape paths are explicit and tested.** `/orchestrate cancel` still
+  cancels an unapproved proposal. `/plan off` now means “cancel this proposal
+  and restore execution mode” instead of refusing and pointing elsewhere; its
+  completion description says so while a proposal is active. Neither path
+  approves or executes the saved plan, and ordinary permission boundaries are
+  unchanged.
+- **Regression evidence** recreates a `done` read-only proposal node followed
+  by an `in_progress` primary node, proves approval normalizes both to pending
+  with no evidence or attempts, and exercises both TUI cancellation paths.
+
+### 2026-08-03 — OG-3A.6 multi-wave lifecycle and node-boundary efficiency corrected
+
+- **The first successful end-to-end trial exposed two lifecycle and context
+  defects on its follow-up wave.** A completed graph remained attached and
+  refused a new `/orchestrate <goal>`; cancelling it was a terminal no-op, so
+  starting the SQLite wave required leaving Collomia. In that second wave,
+  runtime node 1 consumed 47 provider responses, 854,663 input tokens, 39,710
+  output tokens, and 57 successful tools. The model implemented work assigned
+  to all five nodes and passed 25 tests while the runtime still correctly
+  showed only node 1 accepted. Starting node 2 then failed aggregate admission:
+  the next approximately 9,683-token prompt could not fit the remaining
+  5,011-token allowance. Total graph usage was 56 responses and 994,989 tokens.
+- **Terminal graphs now yield without destroying history.** Starting a new
+  `/orchestrate <goal>` automatically appends a durable tombstone for an
+  attached or saved terminal graph, detaches its controls, and enters a fresh
+  proposal in the same session. `/orchestrate cancel` on an already-terminal
+  graph performs the same explicit archive action. Every earlier graph
+  snapshot, transcript message, and evidence record remains in the append-only
+  session log; only the pointer identifying the graph eligible for resume is
+  cleared. A nonterminal saved or attached graph still requires resume or
+  cancellation and cannot be displaced silently.
+- **Accepted nodes now have a hard context boundary.** A passing verifier tells
+  the model to return a tool-free completion proposal and forbids later-node
+  work until runtime selection. The pinned graph repeats that instruction.
+  Once the runtime accepts a nonterminal node, it replaces the active model
+  context with a small runtime-authored handoff before starting the next
+  provider request. The pinned graph retains bounded accepted dependency
+  summaries needed by downstream nodes. This handoff costs no provider call, preserves the full
+  durable transcript, and prevents the next node from repeatedly paying for
+  the previous node's tool loop.
+- **Graph and inspection overhead are smaller by construction.** Proposal
+  guidance now prefers one to three coherent nodes for a scoped change and
+  four to six only for broad work, batches related operations, and requires an
+  immediate tool-free proposal after final verification. `list_files` and
+  `search_files` omit VCS metadata, dependency trees, build output, caches, and
+  virtual environments while retaining hidden source files.
+- **Regression evidence** covers terminal attached and saved graphs beginning
+  another wave, explicit terminal cancel/archive, append-only graph tombstones,
+  zero-provider node-boundary handoff with the prior tool transcript absent
+  from the next request, explicit verifier/node-boundary receipts, scaled
+  proposal guidance, and generated-tree filtering.
+
 ### 2026-08-02 — OG-3A.5 repair progress and verifier bootstrap corrected
 
 - **Kanban5 exposed an overcorrection at the exact blocking boundary.** The

@@ -104,7 +104,14 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   instead of replayed. Cooperative pause/resume is available at the next safe
   provider/scheduler boundary, and a blocked node can be retried only when its
   attempt budget and non-replay checks allow it; whole-graph cancel remains
-  immediate. An explicit retry can reattach its saved blocked graph directly
+  immediate. A terminal graph yields to a fresh `/orchestrate <goal>` in the
+  same session through an append-only tombstone, and cancel on an already-
+  terminal graph performs the same archive action without deleting evidence.
+  Proposal-time `done` or `in_progress` annotations are never imported as
+  runtime state: approval starts every node pending with no model-authored
+  evidence. `/plan off` safely cancels an unapproved proposal and restores
+  execution mode; it does not approve or execute the saved plan.
+  An explicit retry can reattach its saved blocked graph directly
   after the exact conversation is reopened; restored bytes remain inert until
   that user action. Status durably separates proposal-plus-primary and automatic-read
   iterations, tokens, honest price availability, estimated cost, elapsed
@@ -119,11 +126,14 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   completion gap is open, a separate four-cycle lease renews for an actual
   workspace repair, a novel machine-observed verification failure, or evidence
   that closes the gate. Identical failures, command variation, and unrelated
-  output do not prolong it. Proposal guidance requires the first mutating node
+  output do not prolong it. Proposal guidance prefers one to three nodes for a
+  scoped change and four to six only for broad work, and requires the first mutating node
   in a project without an applicable test surface to create a focused smoke
   test. Passing verification is acknowledged as recorded against the current workspace, and
   later process/network actions do not stale it unless the observed repository
-  token changes. Approval
+  token changes. The receipt also tells the model to stop at the current node;
+  after runtime acceptance, a zero-provider handoff replaces that node's active
+  tool-loop context while the complete transcript remains durable. Approval
   compacts proposal history once,
   and later cumulative-budget pressure can compact again; these requests are
   counted rather than treated as free work. Controlled

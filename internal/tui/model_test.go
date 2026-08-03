@@ -167,6 +167,40 @@ func TestOrchestratedGoalPreviewIsVisibleAndInspectable(t *testing.T) {
 	}
 }
 
+func TestPlanOffCancelsOrchestratedProposalAndRestoresExecutionMode(t *testing.T) {
+	m := newTestModel(t)
+	if _, err := m.runtime.BeginOrchestratedProposal("improve the interface"); err != nil {
+		t.Fatal(err)
+	}
+	if !m.runtime.Agent.Plan() || m.runtime.OrchestratedGoalPhase() != "proposal" {
+		t.Fatalf("proposal did not enter plan mode: plan=%t phase=%q", m.runtime.Agent.Plan(), m.runtime.OrchestratedGoalPhase())
+	}
+	matches := m.argumentMatches("/plan", "off")
+	if len(matches) != 1 || !strings.Contains(matches[0].desc, "cancel goal proposal") {
+		t.Fatalf("plan-off completion did not expose proposal cancellation: %+v", matches)
+	}
+	if quit, cmd := (&m).slash("/plan off"); quit || cmd != nil {
+		t.Fatalf("plan off should be a local proposal cancellation: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.runtime.Agent.Plan() || m.runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("plan off left proposal trap active: plan=%t phase=%q", m.runtime.Agent.Plan(), m.runtime.OrchestratedGoalPhase())
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "panel" || !strings.Contains(last.content, "proposal cancelled") {
+		t.Fatalf("proposal cancellation was not explained: %+v", last)
+	}
+
+	if _, err := m.runtime.BeginOrchestratedProposal("try another proposal"); err != nil {
+		t.Fatal(err)
+	}
+	if quit, cmd := (&m).slash("/orchestrate cancel"); quit || cmd != nil {
+		t.Fatalf("orchestrate cancel should remain a local recovery path: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.runtime.Agent.Plan() || m.runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("orchestrate cancel left proposal active: plan=%t phase=%q", m.runtime.Agent.Plan(), m.runtime.OrchestratedGoalPhase())
+	}
+}
+
 func TestSessionTabShowsWorkspaceHealthAndRecentActivity(t *testing.T) {
 	m := newTestModel(t)
 	m.workspaceLoading = false

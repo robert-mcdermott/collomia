@@ -674,6 +674,41 @@ func TestSessionPersistsLatestGoalGraphSnapshot(t *testing.T) {
 	}
 }
 
+func TestSessionGoalGraphTombstoneClearsCurrentSnapshotButRetainsHistory(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.AppendGoalGraph(json.RawMessage(`{"schema":1,"id":"graph-1","outcome":"done"}`), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.ClearGoalGraph(true); err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.GoalGraphRaw) != 0 {
+		t.Fatalf("live goal graph was not cleared: %s", sess.GoalGraphRaw)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+
+	data, err := os.ReadFile(store.path(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"id":"graph-1"`) || strings.Count(string(data), `"type":"goal_graph"`) != 2 {
+		t.Fatalf("append-only graph history missing snapshot or tombstone:\n%s", data)
+	}
+	restored, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if len(restored.GoalGraphRaw) != 0 {
+		t.Fatalf("tombstoned graph became resumable: %s", restored.GoalGraphRaw)
+	}
+}
+
 func TestListRenameArchiveDelete(t *testing.T) {
 	store := testStore(t)
 	a, _ := store.New("p", "m")

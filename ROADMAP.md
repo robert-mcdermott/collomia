@@ -142,7 +142,7 @@ dependency-serial reads do not overlap. **OG-3A — One verified isolated-writer
 candidate wave** adds explicitly
 scoped pairwise-disjoint writers on a clean stable Git base, retained child
 worktrees, and fresh child verification while stopping before parent
-integration. Five trial-driven follow-ups then calibrated the cumulative
+integration. Seven trial-driven follow-ups then calibrated the cumulative
 token envelope and corrected the primary execution loop: `max_iterations` is
 now a consecutive no-progress lease inside one immutable graph attempt rather
 than an accidental lifetime cutoff, unchanged repository state no longer
@@ -161,7 +161,14 @@ machine-observed verification failure and an actual repository mutation renew
 the short completion-gap window so the agent can add or fix a focused test,
 while repeating the same failure does not. Proposal guidance now requires the
 first mutating node to establish a focused test when the repository has no
-applicable verification surface yet.
+applicable verification surface yet. The sixth correction makes terminal
+graphs yield to a new wave in the same session and creates a zero-provider,
+runtime-authored context handoff after every accepted node, preventing one
+node's transcript and work from silently consuming the next node's budget.
+The seventh correction keeps proposal progress on the model side of the
+authority boundary: approval always initializes runtime nodes pending, and
+both `/orchestrate cancel` and `/plan off` provide visible recovery from an
+unapproved read-only proposal.
 Standard evidence-gated execution remains the default.
 **OG-3 — Isolated writer candidates** is now in progress: OG-3B adversarial and
 recovery closure is next. See the
@@ -1781,6 +1788,22 @@ roadmap remains the source of priority and completion status.
       runner with no collected tests; allow an explicit safe retry to reattach
       its saved blocked graph without a separate resume step. *(Completed
       2026-08-02.)*
+    - [x] **OG-3A.6 — Multi-wave lifecycle and node-boundary efficiency:**
+      let a new `/orchestrate <goal>` archive a terminal attached or saved
+      graph without leaving the session, make cancel on an already-terminal
+      graph explicitly release it, retain prior graph snapshots and evidence
+      in the append-only log, scale proposals to 1–3 nodes for scoped changes,
+      stop models at the current node's verification boundary, replace the
+      accepted node's active transcript with a zero-provider runtime handoff,
+      and exclude generated/dependency/cache trees from ordinary file
+      discovery. *(Completed 2026-08-03.)*
+    - [x] **OG-3A.7 — Proposal-state authority and escape paths:** treat
+      proposal-time status/evidence as model-authored annotations rather than
+      runtime completion, normalize every approved node to pending with no
+      imported evidence, discourage graph nodes that only repeat inspection
+      already performed during proposal design, retain direct
+      `/orchestrate cancel`, and make `/plan off` explicitly cancel an
+      unapproved proposal and restore execution mode. *(Completed 2026-08-03.)*
     - [ ] **OG-3B — Adversarial and recovery closure:** finish cancellation,
       provider-failure, scope/drift, retained-worktree, restore, and operator-
       inspection campaigns; resolve any candidate-state/recovery gaps before
@@ -1979,7 +2002,7 @@ roadmap remains the source of priority and completion status.
 
 The setup journey, first completion controller, OG-1 runtime-owned primary
 graph, the complete OG-2 experimental read-only orchestration program, and
-OG-3A's first verified isolated-writer candidate wave and five trial-driven
+OG-3A's first verified isolated-writer candidate wave and seven trial-driven
 controller corrections are now complete.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The

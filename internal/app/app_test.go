@@ -32,10 +32,81 @@ type scriptedClient struct {
 
 func TestOrchestratedProposalPromptPrefersCoherentGraphNodes(t *testing.T) {
 	prompt := OrchestratedProposalPrompt("build a small application")
-	for _, want := range []string{"Prefer 4–6 substantive outcome nodes", "12 steps is a hard maximum, not a target", "Coalesce serial changes that touch the same scope", "Default to primary for end-to-end build and change goals", "every isolated_write node must be a terminal leaf", "first mutating node must create a focused smoke test"} {
+	for _, want := range []string{"Proposal-phase inspection is grounding, not an already-completed graph node", "prefer 1–3 substantive outcome nodes for a scoped change", "4–6 only for a broad goal", "12 steps is a hard maximum, not a target", "Coalesce serial changes that touch the same scope", "Do not begin future-node work", "return a tool-free completion proposal immediately", "runtime initializes every node pending regardless of model-authored plan status", "Default to primary for end-to-end build and change goals", "every isolated_write node must be a terminal leaf", "first mutating node must create a focused smoke test"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("proposal prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestTerminalOrchestratedGoalAllowsAnotherWaveInSameSession(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.GoalGraph.Cancel(t.Context(), "first wave complete for fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.Session.GoalGraphRaw) == 0 {
+		t.Fatal("terminal fixture graph was not persisted")
+	}
+
+	prompt, err := runtime.BeginOrchestratedProposal("second wave")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph != nil || len(runtime.Session.GoalGraphRaw) != 0 || runtime.OrchestratedGoalPhase() != "proposal" || !runtime.Agent.Plan() {
+		t.Fatalf("terminal graph did not yield to a new proposal: graph=%v raw=%d phase=%q plan=%t", runtime.GoalGraph, len(runtime.Session.GoalGraphRaw), runtime.OrchestratedGoalPhase(), runtime.Agent.Plan())
+	}
+	if !strings.Contains(prompt, "second wave") {
+		t.Fatalf("new proposal prompt=%q", prompt)
+	}
+}
+
+func TestCancelOnTerminalOrchestratedGoalArchivesItForAnotherWave(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := runtime.CancelOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph != nil || len(runtime.Session.GoalGraphRaw) != 0 || !strings.Contains(status, "ready for /orchestrate <goal>") {
+		t.Fatalf("terminal cancel did not archive graph: graph=%v raw=%d status=%q", runtime.GoalGraph, len(runtime.Session.GoalGraphRaw), status)
+	}
+}
+
+func TestSavedTerminalOrchestratedGoalAllowsAnotherWaveWithoutResume(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	restored, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if _, err := restored.BeginOrchestratedProposal("second wave"); err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Session.GoalGraphRaw) != 0 || restored.OrchestratedGoalPhase() != "proposal" {
+		t.Fatalf("saved terminal graph was not archived: raw=%d phase=%q", len(restored.Session.GoalGraphRaw), restored.OrchestratedGoalPhase())
 	}
 }
 
@@ -192,6 +263,38 @@ func TestOrchestratedSpecPreservesScopedIsolatedWriterIntent(t *testing.T) {
 	proposal.Steps[0].WritePaths[0] = "mutated"
 	if spec.Nodes[0].WritePaths[0] != "docs/USER_GUIDE.md" {
 		t.Fatal("orchestrated spec aliased the mutable plan write scope")
+	}
+}
+
+func TestOrchestratedApprovalNormalizesModelAuthoredProposalProgress(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.BeginOrchestratedProposal("improve the interface"); err != nil {
+		t.Fatal(err)
+	}
+	proposal := plan.Plan{Goal: "improve the interface", Steps: []plan.Step{
+		{ID: 1, Title: "inspect current interface", Status: "done", Execution: "read_only", Acceptance: []string{"current behavior is grounded"}, Evidence: "proposal-phase files were inspected"},
+		{ID: 2, Title: "implement and verify", Status: "in_progress", DependsOn: []int{1}, Acceptance: []string{"the interaction test passes"}},
+	}}
+	if err := runtime.Plan.Set(proposal); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err != nil {
+		t.Fatalf("model-authored proposal progress should not become runtime state or block approval: %v", err)
+	}
+	normalized, _ := runtime.Plan.Snapshot()
+	for _, step := range normalized.Steps {
+		if step.Status != "pending" || step.Evidence != "" {
+			t.Fatalf("approved step imported model progress as runtime truth: %+v", step)
+		}
+	}
+	snapshot := runtime.GoalGraph.Snapshot()
+	if len(snapshot.Attempts) != 0 || snapshot.Outcome != "" {
+		t.Fatalf("approved graph imported proposal execution state: %+v", snapshot)
 	}
 }
 

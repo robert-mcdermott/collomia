@@ -2912,9 +2912,13 @@ func (g *Graph) Render() string {
 		for _, criterion := range node.Acceptance {
 			fmt.Fprintf(&b, "    acceptance: %s\n", criterion)
 		}
-		if node.Execution == ExecutionReadOnly && node.AcceptedAttemptID != "" {
+		if node.AcceptedAttemptID != "" {
 			if attempt := g.attemptLocked(node.AcceptedAttemptID); attempt != nil && attempt.Summary != "" {
-				fmt.Fprintf(&b, "    delegated result: %s\n", bounded(attempt.Summary, 2400))
+				label := "accepted result"
+				if node.Execution == ExecutionReadOnly {
+					label = "delegated result"
+				}
+				fmt.Fprintf(&b, "    %s: %s\n", label, bounded(attempt.Summary, 2400))
 			}
 		}
 	}
@@ -2925,7 +2929,7 @@ func (g *Graph) Render() string {
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString("The runtime owns node state and evidence. Graph state grants no tool permission. Work only on the running node; use propose_goal_graph_revision for a bounded replan or block_goal_node for an exact blocker. A tool-free response proposes completion but cannot mark a node done by itself.")
+	b.WriteString("NODE BOUNDARY — the runtime owns node state and evidence, and graph state grants no tool permission. Work only on the node marked running. After that node's final successful verifier, return a tool-free completion proposal immediately; do not begin a later node until the runtime selects it. Use propose_goal_graph_revision for a bounded replan or block_goal_node for an exact blocker. Model prose cannot mark a node done by itself.")
 	return b.String()
 }
 

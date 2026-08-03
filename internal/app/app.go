@@ -530,7 +530,7 @@ func OrchestratedProposalPrompt(goal string) string {
 
 %s
 
-Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Prefer 4–6 substantive outcome nodes. Use more only when a distinct dependency, permission, write-scope, isolation, or recovery boundary requires it; 12 steps is a hard maximum, not a target. Coalesce serial changes that touch the same scope and share one verification surface instead of creating a node for every file, layer, or command. Every step must be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary, read_only, or isolated_write. For every primary node that can change files, include a direct build, lint, or test command that can verify that node after its last mutation. If the project has no applicable test surface yet, the first mutating node must create a focused smoke test so the detected verifier has real work to run; a server-start or model-authored success claim alone cannot satisfy the runtime evidence gate. Use read_only only for bounded investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Default to primary for end-to-end build and change goals. Use isolated_write only when the user explicitly requests terminal retained candidates for manual review: each needs an explicit narrow write_paths contract disjoint from sibling writers, the candidate-only graph may include read_only prerequisites but no primary nodes, and every isolated_write node must be a terminal leaf. Never make later work depend on isolated_write because the current preview does not select or integrate candidates or let them unlock dependents. One bounded wave of at most two eligible nodes may create independently verified worktree candidates from one clean Git base and then stop for review. Use primary for parent-workspace changes, final integration, combined verification, ambiguity, overlapping scopes, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected read/write fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
+Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Proposal-phase inspection is grounding, not an already-completed graph node: do not add a node merely to repeat investigation you just performed. Include a pending read_only node only when fresh bounded investigation must run after approval as an explicit dependency. Use the smallest coherent graph: prefer 1–3 substantive outcome nodes for a scoped change and 4–6 only for a broad goal. Use more only when a distinct dependency, permission, write-scope, isolation, or recovery boundary requires it; 12 steps is a hard maximum, not a target. Coalesce serial changes that touch the same scope and share one verification surface instead of creating a node for every file, layer, or command. Within a node, batch independent reads and related edits when the available tools support it. Do not begin future-node work: after a node's final successful verifier, return a tool-free completion proposal immediately so the runtime can advance the graph. Every proposed execution step should be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary, read_only, or isolated_write. At approval the runtime initializes every node pending regardless of model-authored plan status; proposal prose and evidence never become runtime completion. For every primary node that can change files, include a direct build, lint, or test command that can verify that node after its last mutation. If the project has no applicable test surface yet, the first mutating node must create a focused smoke test so the detected verifier has real work to run; a server-start or model-authored success claim alone cannot satisfy the runtime evidence gate. Use read_only only for bounded repository investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Default to primary for end-to-end build and change goals. Use isolated_write only when the user explicitly requests terminal retained candidates for manual review: each needs an explicit narrow write_paths contract disjoint from sibling writers, the candidate-only graph may include read_only prerequisites but no primary nodes, and every isolated_write node must be a terminal leaf. Never make later work depend on isolated_write because the current preview does not select or integrate candidates or let them unlock dependents. One bounded wave of at most two eligible nodes may create independently verified worktree candidates from one clean Git base and then stop for review. Use primary for parent-workspace changes, final integration, combined verification, ambiguity, overlapping scopes, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected read/write fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
 }
 
 // OrchestratedExecutionPrompt is submitted only after the user explicitly
@@ -869,10 +869,17 @@ func (r *Runtime) BeginOrchestratedProposal(goal string) (string, error) {
 	r.orchestrationMu.Lock()
 	defer r.orchestrationMu.Unlock()
 	if r.GoalGraph != nil {
-		return "", errors.New("an Orchestrated Goal graph is already attached; inspect or cancel it first")
+		if outcome, _ := r.GoalGraph.Outcome(); outcome == "" {
+			return "", errors.New("an Orchestrated Goal graph is already attached; inspect or cancel it first")
+		}
+		if err := r.archiveTerminalGoalGraphLocked(); err != nil {
+			return "", err
+		}
 	}
 	if len(r.Session.GoalGraphRaw) > 0 {
-		return "", errors.New("this session has a saved Orchestrated Goal graph; use /orchestrate resume or /new")
+		if err := r.archiveSavedTerminalGoalGraphLocked(); err != nil {
+			return "", err
+		}
 	}
 	_, revision := r.Plan.Snapshot()
 	previousPlanMode := r.Agent.Plan()
@@ -896,9 +903,6 @@ func orchestratedSpec(p *plan.Plan) (goalgraph.Spec, error) {
 	}
 	spec := goalgraph.Spec{Goal: strings.TrimSpace(p.Goal), Nodes: make([]goalgraph.NodeSpec, 0, len(p.Steps))}
 	for _, step := range p.Steps {
-		if step.Status != "pending" {
-			return goalgraph.Spec{}, fmt.Errorf("proposal step %d must be pending, got %q", step.ID, step.Status)
-		}
 		if len(step.Acceptance) == 0 {
 			return goalgraph.Spec{}, fmt.Errorf("proposal step %d (%s) needs at least one concrete acceptance criterion", step.ID, step.Title)
 		}
@@ -1085,6 +1089,12 @@ func (r *Runtime) CancelOrchestratedGoal(ctx context.Context) (string, error) {
 	r.orchestrationMu.Lock()
 	defer r.orchestrationMu.Unlock()
 	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome != "" {
+			if err := r.archiveTerminalGoalGraphLocked(); err != nil {
+				return "", err
+			}
+			return "Terminal Orchestrated Goal archived. Its transcript and evidence remain in the session log; this session is ready for /orchestrate <goal>.", nil
+		}
 		if err := r.GoalGraph.Cancel(ctx, "cancelled explicitly by the user"); err != nil {
 			return "", err
 		}
@@ -1099,6 +1109,54 @@ func (r *Runtime) CancelOrchestratedGoal(ctx context.Context) (string, error) {
 		return "Orchestrated Goal proposal cancelled. The structured plan remains available in /tasks, but it cannot be approved without starting a new proposal.", nil
 	}
 	return "", errors.New("there is no active Orchestrated Goal proposal or graph")
+}
+
+func (r *Runtime) archiveSavedTerminalGoalGraphLocked() error {
+	if r == nil || r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+		return nil
+	}
+	var snapshot goalgraph.Snapshot
+	if err := json.Unmarshal(r.Session.GoalGraphRaw, &snapshot); err != nil {
+		return fmt.Errorf("decode saved graph: %w", err)
+	}
+	graph, err := goalgraph.Restore(snapshot, goalgraph.Options{})
+	if err != nil {
+		return fmt.Errorf("inspect saved graph: %w", err)
+	}
+	if outcome, _ := graph.Outcome(); outcome == "" {
+		return errors.New("this session has a saved active Orchestrated Goal graph; use /orchestrate resume or /new")
+	}
+	return r.archiveTerminalGoalGraphLocked()
+}
+
+// archiveTerminalGoalGraphLocked releases a terminal graph as the session's
+// current graph while retaining every prior snapshot and transcript record.
+// The caller must hold orchestrationMu.
+func (r *Runtime) archiveTerminalGoalGraphLocked() error {
+	if r == nil || r.Session == nil {
+		return errors.New("Orchestrated Goal requires durable session persistence")
+	}
+	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome == "" {
+			return errors.New("cannot archive an active Orchestrated Goal graph")
+		}
+	}
+	if err := r.Session.ClearGoalGraph(true); err != nil {
+		return fmt.Errorf("archive terminal Orchestrated Goal: %w", err)
+	}
+	if r.Agent != nil {
+		if err := r.Agent.SetGoalGraph(nil); err != nil {
+			return err
+		}
+		r.Agent.SetPlan(false)
+	}
+	if r.Registry != nil {
+		r.Registry.Remove(goalgraph.ReviseToolName)
+		r.Registry.Remove(goalgraph.BlockToolName)
+	}
+	r.GoalGraph = nil
+	r.orchestrationProposal = nil
+	return nil
 }
 
 // OrchestratedGoalStatus exposes process-local proposal state or durable graph

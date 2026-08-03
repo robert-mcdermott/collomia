@@ -767,7 +767,7 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
-## Evidence-gated durable goal-graph boundary (experimental OG-1–OG-3A.5)
+## Evidence-gated durable goal-graph boundary (experimental OG-1–OG-3A.7)
 
 Orchestrated Goal is evidence-gated durable execution: the model proposes
 logical work and interprets results, while the runtime owns operational graph
@@ -783,6 +783,15 @@ Whole-plan replacement and model-directed delegate tools are hidden while this
 controller runs. Its two graph-control tools can only propose a bounded acyclic
 logical revision or record an exact blocker; they cannot grant a tool, path,
 host, publication, credential, or budget permission.
+
+Proposal plan status and evidence remain on the model side of that boundary.
+Approval imports topology, execution class, scopes, dependencies, and
+acceptance criteria, but initializes every runtime node pending with no attempt
+or imported proof. A proposal-time `done` claim can neither complete a node nor
+block approval before this normalization. Cancelling the proposal grants no
+execution authority: `/orchestrate cancel` restores the previous mode, while
+an explicit `/plan off` cancels it and restores ordinary execution mode under
+the unchanged permission and sandbox controls.
 
 The primary `max_iterations` setting is a consecutive no-progress lease in
 this mode, not an authority grant or a renewable whole-graph budget. Novel
@@ -861,6 +870,16 @@ twelve nodes. Every required node must be accepted; one material blocker ends
 the goal rather than spending more authority on independent work that cannot
 make the whole outcome complete.
 
+The current-node boundary is runtime-pinned, not merely conversational advice.
+A successful recognized verifier returns a receipt instructing the model to
+make a tool-free completion proposal and not begin later-node work. After a
+non-final node is accepted, the active provider context is replaced with a
+deterministic runtime handoff before the next request. This handoff makes no
+provider call and carries the accepted-node notice plus the authoritative
+pinned graph, including bounded accepted dependency summaries needed by later
+nodes; prior tool-loop messages remain in the append-only session but
+are no longer repeatedly resent as authority for the next node.
+
 Automatic read completion has its own evidence gate. A non-empty bounded child
 summary is not enough: the worker must have at least one successful tool
 result, and when its durable claim had a Git workspace token the result must
@@ -874,8 +893,12 @@ execute. If that flush fails, the tool never starts. An interrupted read-only
 attempt can be recomputed under a fresh attempt ID, but an action that may have
 written or caused an external effect becomes a reconciliation blocker on
 resume and is never repeated automatically. Active graph runs cannot switch,
-rewind, or replace their session. A terminal graph rejects unrelated later
-prompts before a provider call; `/new` detaches it and begins ordinary work.
+rewind, or replace their session. A terminal graph still rejects unrelated
+ordinary prompts before a provider call, but a fresh `/orchestrate <goal>`
+durably tombstones it as the resumable graph and starts a new proposal in the
+same session. Cancel on an already-terminal graph performs the same archive
+transition. Earlier snapshots, transcript, and evidence remain append-only;
+nonterminal graphs cannot be displaced this way.
 
 Primary writes fail closed outside a Git-backed workspace. The combined-state
 token covers repository root and HEAD, index and worktree binary diffs, and
@@ -909,7 +932,9 @@ aggregate ceilings limit new graphs to 96 provider iterations, 1,000,000 tokens,
 $5 estimated cost when pricing is complete, and 30 minutes of active
 post-approval execution. Project/config/model content cannot widen them, and
 restored graphs retain their stored ceiling. Approval-boundary and later
-budget-pressure compactions are ordinary accounted provider requests;
+budget-pressure compactions are ordinary accounted provider requests. The
+accepted-node runtime handoff is instead a zero-provider deterministic
+compaction marker;
 unpriced work remains bounded by tokens, iterations, and active wall rather
 than receiving a fictitious dollar verdict. Active time stops at a reached
 pause or process boundary and restarts only after explicit resume.

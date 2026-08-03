@@ -162,7 +162,16 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		phase := m.runtime.OrchestratedGoalPhase()
 		if phase == "proposal" && !enabled {
-			m.addError(fmt.Errorf("the Orchestrated Goal proposal is a read-only design phase; use /orchestrate cancel instead of disabling planning mode"))
+			status, err := m.runtime.CancelOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			// `/plan off` is an explicit request for execution mode even when
+			// the proposal began from an already-enabled ordinary plan mode.
+			m.runtime.Agent.SetPlan(false)
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal proposal cancelled · execution mode restored", status)
 			break
 		}
 		if phase != "" && phase != "proposal" {

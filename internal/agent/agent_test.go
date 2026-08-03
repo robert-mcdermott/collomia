@@ -126,6 +126,7 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 		response.Usage = provider.Usage{InputTokens: 10, OutputTokens: 5}
 		return response
 	}
+	compacted := 0
 	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
 		meta := map[string]bool{}
 		for _, definition := range request.Tools {
@@ -149,6 +150,9 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 			if !requestContains(request, "2. inspect tests · running") {
 				t.Fatal("dependent node was not selected after its dependency")
 			}
+			if !requestContains(request, "[Runtime-owned Orchestrated Goal node handoff]") || !requestContains(request, "accepted result: source inspected") || requestContains(request, "observed") {
+				t.Fatalf("next node inherited prior tool transcript instead of a bounded runtime handoff: %+v", request.Messages)
+			}
 			return withUsage(graphToolResponse("inspect-2", "inspect", `{}`)), nil
 		default:
 			return withUsage(provider.Response{Content: "all inspections complete"}), nil
@@ -157,7 +161,12 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 	agentRuntime := New(Options{
 		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100, Pricing: &appconfig.Pricing{InputPerMillion: 1, OutputPerMillion: 2}},
 		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
-		MaxIterations: 8, GoalGraph: graph,
+		MaxIterations: 8, GoalGraph: graph, OnCompaction: func(summary provider.Message, replaced int) {
+			if replaced < 4 || !strings.Contains(summary.Content, "selects the next dependency-ready node") {
+				t.Errorf("invalid node handoff: replaced=%d summary=%q", replaced, summary.Content)
+			}
+			compacted++
+		},
 	})
 	agentRuntime.ApplyProfile(ProfileSettings{Tools: []string{"inspect"}, MaxIterations: 8})
 	graphEvents := 0
@@ -169,8 +178,8 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "all inspections complete" || client.calls != 4 || graphEvents == 0 {
-		t.Fatalf("result=%q calls=%d graphEvents=%d", result, client.calls, graphEvents)
+	if result != "all inspections complete" || client.calls != 4 || graphEvents == 0 || compacted != 1 {
+		t.Fatalf("result=%q calls=%d graphEvents=%d compactions=%d", result, client.calls, graphEvents, compacted)
 	}
 	if outcome, _ := graph.Outcome(); outcome != goalgraph.OutcomeDone {
 		t.Fatalf("outcome=%q snapshot=%+v", outcome, graph.Snapshot())
@@ -574,7 +583,7 @@ func TestGoalGraphControllerRequiresFreshVerificationAfterPrimaryWrite(t *testin
 			}
 			return graphToolResponse("verify", "run_command", `{}`), nil
 		default:
-			if !requestContains(request, "Collomia verification evidence: recorded against the post-command workspace state") {
+			if !requestContains(request, "Collomia verification evidence: recorded against the post-command workspace state") || !requestContains(request, "Do not start another node until the runtime selects it") {
 				t.Fatal("successful graph verification receipt was not returned to the model")
 			}
 			return provider.Response{Content: "changed and verified"}, nil

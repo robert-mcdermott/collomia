@@ -21,6 +21,13 @@ without rewriting it.
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
+OG-3A.6 does not change either schema version. Ending a graph's role as the
+session's current resumable graph appends a `goal_graph` record with no graph
+payload. Replay already applies the latest record, so that tombstone clears
+only the live pointer while older snapshots remain in the append-only file.
+Accepted-node handoffs use the existing `compaction` record and preserve the
+full transcript under the established compaction contract.
+
 Image attachment blobs do not contain an executable schema. Their session
 references carry type, size, and SHA-256 metadata, all of which are rechecked
 before provider delivery.
@@ -476,6 +483,15 @@ evidence can renew the bounded remediation window, while equivalent failures
 cannot. Existing blocked attempts remain immutable; an eligible operator retry
 can explicitly reattach the saved terminal graph and starts a fresh attempt
 under the corrected behavior without changing the schema.
+OG-3A.6 likewise keeps schema 1. A payload-free `goal_graph` record is a
+session-current tombstone: older graph snapshots remain in the append-only log,
+but replay leaves no graph eligible for resume. The deterministic accepted-
+node handoff uses the existing compaction record, so the complete transcript
+continues to survive while only active provider context is replaced.
+OG-3A.7 changes no persisted shape. Proposal plan status/evidence fields keep
+their existing meanings in ordinary plans, while Orchestrated Goal approval
+continues to write a fresh pending plan and schema-1 graph rather than treating
+those model-authored fields as execution history.
 
 ## Release and developer checklist
 

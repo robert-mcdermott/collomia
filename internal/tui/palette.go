@@ -95,7 +95,11 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 			{"autopilot", "auto-approve workspace actions (hard denials remain)"},
 		}
 	case "/plan":
-		candidates = []candidate{{"on", "read-only planning mode"}, {"off", "execution mode"}}
+		off := "execution mode"
+		if m.runtime.OrchestratedGoalPhase() == "proposal" {
+			off = "cancel goal proposal and restore execution mode"
+		}
+		candidates = []candidate{{"on", "read-only planning mode"}, {"off", off}}
 	case "/orchestrate":
 		candidates = []candidate{
 			{"approve", "approve the fresh visible proposal and execute once"},

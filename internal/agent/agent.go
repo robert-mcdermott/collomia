@@ -593,6 +593,12 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 							graphErr = reportError(send, graphErr)
 							return response.Content, graphErr
 						}
+						if decision.Kind == goalgraph.DecisionAccepted {
+							if err := a.compactAcceptedGoalNode(ctx, decision.Notice, send); err != nil {
+								return response.Content, reportError(send, err)
+							}
+							continue
+						}
 					}
 					if strings.TrimSpace(decision.Notice) != "" {
 						if decision.Kind != goalgraph.DecisionAccepted {
@@ -966,7 +972,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			if result.Content != "" {
 				result.Content += "\n\n"
 			}
-			result.Content += "Collomia verification evidence: recorded against the post-command workspace state. It remains current unless a later tool changes that state."
+			result.Content += "Collomia verification evidence: recorded against the post-command workspace state. It remains current unless a later tool changes that state.\n\nNode boundary: this proof belongs to the current runtime-selected node. If its acceptance criteria are satisfied, your next response must be tool-free so the runtime can accept it. Do not start another node until the runtime selects it. If they are not satisfied, continue only the current node."
 		}
 	} else if a.graphEnabled() && goalgraph.MetaTool(call.Name) {
 		// The graph-control tool performs its own validated transition. Drain
@@ -2412,6 +2418,41 @@ func (a *Agent) clearGoalBoundaryCompaction() {
 	a.mu.Lock()
 	a.goalBoundaryCompact = false
 	a.mu.Unlock()
+}
+
+// compactAcceptedGoalNode replaces the active provider context with a
+// runtime-authored handoff after one graph node is accepted. This costs no
+// provider request, leaves the full durable transcript intact, and prevents
+// the next node from paying to resend or reinterpret the previous node's tool
+// loop. The pinned runtime graph supplies the authoritative next-node state.
+func (a *Agent) compactAcceptedGoalNode(ctx context.Context, notice string, send Emit) error {
+	notice = strings.TrimSpace(notice)
+	summary := provider.Message{Role: "user", Content: "[Runtime-owned Orchestrated Goal node handoff]\n" + notice + "\nThe full prior transcript remains in the durable session log. The pinned runtime graph is authoritative for current state and selects the next dependency-ready node. Work only on that running node, reread workspace files as needed, and return a tool-free response immediately after its acceptance criteria have fresh evidence. Do not begin work assigned to later nodes."}
+	a.mu.Lock()
+	replaced := len(a.messages)
+	if replaced == 0 {
+		a.mu.Unlock()
+		return nil
+	}
+	a.messages = []provider.Message{summary}
+	a.lastInputTokens = 0
+	a.usageWatermark = 0
+	a.goalBoundaryCompact = false
+	notify := a.onCompaction
+	a.mu.Unlock()
+	if notify != nil {
+		notify(summary, replaced)
+	}
+	if err := a.checkPersistence(); err != nil {
+		return err
+	}
+	if send != nil {
+		e := event.New(event.KindCompaction)
+		e.Text = fmt.Sprintf("created a runtime node handoff and compacted %d messages", replaced)
+		send(e)
+	}
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "compaction", Workspace: a.workspace, Subject: "goal_node_handoff", Detail: map[string]any{"replaced_messages": replaced}})
+	return nil
 }
 
 // Compact summarizes older conversation into one message, keeping the most

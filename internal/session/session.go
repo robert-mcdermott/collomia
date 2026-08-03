@@ -733,6 +733,13 @@ func (sess *Session) AppendGoalGraph(data json.RawMessage, durable bool) error {
 	return nil
 }
 
+// ClearGoalGraph appends a tombstone for the session's current graph. Earlier
+// snapshots remain in the append-only transcript for audit and recovery, but
+// the session no longer advertises one of them as the graph to resume.
+func (sess *Session) ClearGoalGraph(durable bool) error {
+	return sess.AppendGoalGraph(nil, durable)
+}
+
 // markInterrupted appends synthetic tool results for tool calls that never
 // completed, so a resumed model knows the call may or may not have run and
 // nothing is silently replayed.

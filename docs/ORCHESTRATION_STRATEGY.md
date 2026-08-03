@@ -57,7 +57,7 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-3A.5 boundary supports one serial primary lane, at
+The shipped OG-1 through OG-3A.7 boundary supports one serial primary lane, at
 most two governed automatic read-only workers, and—only in a candidate-only
 graph—one bounded wave of at most two pairwise-disjoint terminal isolated
 writers from a clean stable Git commit. It provides durable graph
@@ -857,7 +857,7 @@ Completion evidence and retained decision:
 
 ### OG-3 — Isolated writer candidates
 
-**Status: in progress; OG-3A complete (2026-08-02), OG-3B next.**
+**Status: in progress; OG-3A plus trial corrections through OG-3A.7 complete (2026-08-03), OG-3B next.**
 
 - Automatically dispatch only dependency-ready writers with declared disjoint
   scopes and a stable base.
@@ -1048,6 +1048,63 @@ OG-3A.5 repair-progress and verifier-bootstrap correction:
   graph and perform the already bounded safe-retry transition in one action.
   Ordinary nonterminal continuation still uses `/orchestrate resume`.
 
+OG-3A.6 multi-wave lifecycle and node-boundary efficiency correction:
+
+- The first complete application wave proved the mode can deliver an
+  end-to-end project, but its follow-up SQLite wave showed that terminal graph
+  attachment was incorrectly session-long and that a model could continue
+  implementing future logical nodes inside the current runtime attempt.
+- A terminal attached or inert saved graph now yields automatically when the
+  user starts `/orchestrate <new-goal>`. The runtime appends a durable
+  `goal_graph` tombstone and detaches graph-only controls while leaving every
+  prior snapshot, transcript message, and evidence record auditable.
+  `/orchestrate cancel` against an already-terminal graph performs the same
+  explicit archive operation. Active graphs still cannot be displaced.
+- Successful current-state verification now returns an explicit node-boundary
+  instruction: if the running node's criteria are satisfied, the next model
+  response must be tool-free; work assigned to later nodes must wait for the
+  runtime. The authoritative pinned graph repeats this contract every request.
+- After the runtime accepts any non-final node, it performs a deterministic,
+  zero-provider handoff compaction. The next request contains a bounded
+  runtime-authored acceptance/next-node notice plus the pinned graph, not the
+  previous node's growing tool transcript. The graph retains bounded accepted
+  dependency summaries needed for later synthesis. The complete transcript survives
+  unchanged in durable session history, so auditability does not require
+  paying to resend it.
+- Proposal size follows scope: one to three coherent nodes for a scoped change,
+  four to six only for broad work, and twelve remains the fixed maximum.
+  Serial work sharing state and verification is coalesced. Built-in file
+  listing/search also skips dependency, cache, virtual-environment, and build
+  trees so generated data does not dominate inspection context.
+- This correction deliberately does not widen the one-million-token ceiling.
+  The observed exhaustion happened because one logical attempt crossed five
+  node boundaries and resent a growing uncached prompt, not because the fixed
+  envelope was too small for the resulting code. Recalibration remains an
+  evidence-based option after another clean trial.
+
+OG-3A.7 proposal-state authority and escape-path correction:
+
+- A successful Kanban6 application wave and same-session SQLite follow-up
+  validated OG-3A.6. A third drag-and-drop wave then exposed a distinct
+  proposal problem: the model marked its proposal-time read investigation
+  `done`, and the approval validator rejected that annotation before the
+  runtime could perform its existing fresh-pending normalization.
+- Proposal plan status and evidence are model-authored design annotations, not
+  operational state. Approval imports only the goal, node identity/topology,
+  execution class, write scope, and acceptance criteria. It initializes every
+  runtime node pending, clears proposal evidence, and creates no attempt until
+  the runtime scheduler selects one. This is the same authority boundary used
+  for completion claims.
+- Proposal instructions now distinguish investigation needed to formulate the
+  graph from a post-approval `read_only` dependency. Work already performed to
+  understand the request should not become a graph node merely so it can be
+  repeated; a fresh pending read node remains available when later work
+  genuinely depends on runtime-recorded investigation.
+- `/orchestrate cancel` remains the direct proposal escape. `/plan off` now
+  safely aliases “cancel the unapproved proposal and return to execution mode”
+  rather than leaving the user in a read-only dead end. It does not approve the
+  plan, expose execution tools within the proposal, or import plan evidence.
+
 OG-3B remaining contract:
 
 - complete the cancellation/provider-failure and retained-worktree campaigns;
@@ -1204,12 +1261,12 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-3A.5 — Repair-progress and verifier-bootstrap
+- Last completed slice: **OG-3A.7 — Proposal-state authority and escape-path
   correction**, following OG-3A's verified isolated-writer candidate wave and
-  its four earlier trial-driven corrections.
+  its six earlier trial-driven corrections.
 - Active milestone: **OG-3 — Isolated writer candidates**.
 - Next unblocked slice: **OG-3B — Adversarial and recovery closure**.
-- Active implementation branch or partial patch: **OG-3A and OG-3A.1–5 are
+- Active implementation branch or partial patch: **OG-3A and OG-3A.1–7 are
   implemented as one uncommitted patch on `wave36`; OG-2B2b2 is committed as
   `e3b1dd9`**.
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
