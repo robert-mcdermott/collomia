@@ -1,7 +1,9 @@
 # Orchestrated Goal strategy
 
 **Status:** approved product and architecture strategy; evidence-gated durable
-execution is available experimentally through completed OG-2, and OG-3 is next
+execution is available experimentally through completed OG-2, OG-3A's
+verified isolated-writer candidate wave, and OG-3A.1–.5 trial-driven
+controller corrections; OG-3B is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-02
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -55,16 +57,20 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-2 boundary supports one serial primary lane and
-at most two governed automatic read-only workers. It provides durable graph
+The shipped OG-1 through OG-3A.5 boundary supports one serial primary lane, at
+most two governed automatic read-only workers, and—only in a candidate-only
+graph—one bounded wave of at most two pairwise-disjoint terminal isolated
+writers from a clean stable Git commit. It provides durable graph
 truth, fresh machine-observed evidence, conservative invalidation, bounded
 retry/revision, cooperative pause and resume, safe retry of eligible blocked
 nodes, non-replay of ambiguous mutations, durable primary-plus-worker
 accounting, fixed whole-graph aggregate enforcement, and a bounded comparative
-case for substantive independent read fan-out. It does **not** automatically
-dispatch isolated writers, integrate their changes, cancel an optional branch
-or node, or reproduce a multi-worker scheduler exactly after restart. Those
-are OG-3 through OG-5 work and must not be described as current behavior.
+case for substantive independent read fan-out. Writer results remain in their
+own worktrees, require fresh detected-command verification tied to child state,
+and stop the graph for review. It does **not** select or integrate a candidate,
+cancel an optional branch or node, or reproduce a multi-worker scheduler
+exactly after restart. Those are remaining OG-3 through OG-5 work and must not
+be described as current behavior.
 
 ## Product decision
 
@@ -73,7 +79,7 @@ Collomia will retain two distinct execution modes:
 | Mode | Contract |
 | --- | --- |
 | Standard | The current model-directed tool loop with evidence-gated completion. It remains the default. |
-| Orchestrated Goal — experimental | Evidence-gated durable execution: the model proposes a dependency graph; the runtime owns readiness, attempts, evidence freshness, recovery decisions, and terminal state. Current automatic fan-out is read-only; writers and integration remain staged milestones. |
+| Orchestrated Goal — experimental | Evidence-gated durable execution: the model proposes a dependency graph; the runtime owns readiness, attempts, evidence freshness, recovery decisions, and terminal state. Current automatic work includes bounded reads plus one retained isolated-writer candidate wave; candidate selection and parent integration remain staged milestones. |
 
 Planning mode remains separate. `/plan` means read-only analysis and must not
 implicitly start execution or delegation. An orchestrated run begins with an
@@ -181,6 +187,9 @@ Graph execution changes scheduling, not authority:
 
 - every tool call passes through the existing registry, permission manager,
   hooks, sandbox, network, audit, timeout, cancellation, and output bounds;
+- the runtime enforces the model-visible tool set again before decoding tool
+  arguments; hiding `update_plan` or model-directed delegation after graph
+  approval is an authority boundary, not merely prompt guidance;
 - a denied operation blocks the node or asks the user; the coordinator may not
   delegate the same operation to bypass the denial;
 - child profiles can only tighten the parent's effective permissions;
@@ -780,7 +789,7 @@ Completion evidence:
 Implemented contract:
 
 - Persist fixed, non-configurable experimental ceilings of 96 aggregate
-  provider iterations, 192,000 aggregate input/output tokens, $5 estimated
+  provider iterations, 1,000,000 aggregate input/output tokens, $5 estimated
   cost when every token-bearing contribution has configured pricing, and 30
   minutes of active execution after approval.
 - Apply the limit at provider/scheduler admission and again after recorded
@@ -803,6 +812,13 @@ Implemented contract:
 - Keep aggregate accounting in the internal graph snapshot and TUI status.
   Do not add event kinds or `goal.graph.update` usage fields before a headless
   activation surface has an actual compatibility consumer.
+- Compact proposal history once at the approval-to-execution boundary when
+  enough history exists. During execution, compact again when one estimated
+  prompt reaches one-eighth of the remaining cumulative token allowance. The
+  summary request remains ordinary recorded primary-lane provider work.
+- Preserve the immutable stored ceiling on older graphs, including graphs
+  created under the initial 192,000-token preview. A software upgrade may
+  raise the ceiling for a newly approved graph but never widen saved authority.
 
 - Build on OG-2A's explicit per-session opt-in, graph approval, status,
   cancellation, and inert-resume contract without weakening it.
@@ -841,7 +857,7 @@ Completion evidence and retained decision:
 
 ### OG-3 — Isolated writer candidates
 
-**Status: next and unblocked.**
+**Status: in progress; OG-3A complete (2026-08-02), OG-3B next.**
 
 - Automatically dispatch only dependency-ready writers with declared disjoint
   scopes and a stable base.
@@ -850,6 +866,196 @@ Completion evidence and retained decision:
 - Produce reviewable candidates and deterministic eligibility facts.
 - Do not automatically select or integrate a competing candidate.
 - Retain conflicting, stale, failed, or out-of-scope worktrees for inspection.
+
+OG-3A implemented contract:
+
+- `execution: isolated_write` is valid only with an explicit normalized scope
+  narrower than the whole workspace. The runtime, not the model, selects at
+  most two dependency-ready nodes in stable order and excludes every scope
+  that overlaps an earlier claim.
+- Every claim in the wave is durably bound to the same clean parent-workspace
+  state token and exact Git commit. Worktree creation names that commit rather
+  than resolving a later `HEAD`; parent drift makes the candidate ineligible.
+- Dispatch reuses the ordinary `delegate` write permission decision,
+  `permission_decision`/`tool_start` hooks, shared scheduler, non-recursive
+  child runtime, declared-scope enforcement, bounded provider accounting, and
+  retained `collomia/…` worktree identity.
+- The application redetects repository-standard verification commands inside
+  each retained child worktree. Every command receives its ordinary
+  `run_command` permission and hook decision. A candidate is eligible only
+  when all detected commands pass against one unchanged child-state token,
+  changed files remain in scope, the child base matches, and the parent token
+  is unchanged.
+- An eligible result becomes immutable attempt state `candidate` with bounded
+  worker/worktree/branch/base, changed-file, scope, verification-command, and
+  state-token facts. Its logical node becomes `blocked` with a review-required
+  reason; dependents do not unlock and the parent workspace is untouched.
+- A process boundary while a writer is running becomes an interrupted-action
+  blocker and cannot be retried automatically or through the safe-retry path.
+  Exact association/reconciliation of an orphaned in-flight worktree remains
+  OG-3B/OG-5 work.
+
+OG-3A.1 aggregate-budget usability correction:
+
+- A real eleven-node application proposal consumed 67,149 tokens before
+  approval and another 119,977 tokens in seven primary execution calls. The
+  controller correctly refused a 17,793-token next request with only 4,874
+  tokens left, but the initial 192,000-token envelope made the preview
+  impractical before it reached an isolated writer.
+- New graphs therefore use a fixed 1,000,000-token ceiling. The 96-iteration,
+  conditionally enforceable $5 cost, and 30-minute active-wall limits remain
+  unchanged, as do tighter provider/profile/worker bounds.
+- `/context` and the Session tab distinguish the estimated prompt for one
+  request from cumulative proposal-plus-execution consumption. Proposal status
+  shows the exact usage that approval will seed and the remaining allowance
+  before the approval-boundary summary request.
+- This is calibration, not added authority: configuration, repository text,
+  skills, hooks, or the model still cannot widen the hard maximum, and
+  compaction never deletes the durable transcript or escapes accounting.
+
+OG-3A.2 primary-loop budget and evidence-diagnostic correction:
+
+- A real primary execution used eight provider iterations in a recoverable
+  first attempt and sixteen in its replacement, then hit the ordinary
+  24-iteration turn counter even though the graph had used only 31 of its 96
+  aggregate iterations. `max_iterations` now bounds one immutable primary
+  attempt and renews only at a runtime-recorded accepted or retry boundary;
+  the stored 96-iteration whole-graph envelope remains the outer ceiling.
+- The same run repeatedly invoked passing pytest commands through
+  `2>&1; echo "EXIT_CODE=$?"`. Rejecting that compound as proof was correct—the
+  final `echo` can mask pytest's status—but returning only a later generic
+  completion gap caused an avoidable loop. Verification-like rejected
+  commands now return the exact reason and a direct-command suggestion;
+  leading environment assignments and virtual-environment executable paths
+  remain eligible when the command is otherwise direct.
+- Once a graph is approved, model-directed `update_plan` and delegation tools
+  are absent by design. The execution path now enforces the same availability
+  decision before argument assessment, so a remembered or fabricated hidden
+  call cannot reach its decoder or implementation and does not poison the
+  active work node.
+- This is a bounded-loop correction, not a larger autonomy grant: each attempt
+  retains the configured primary limit, retries and graph attempts remain
+  finite, and token, cost, active-wall, permission, cancellation, and
+  persistence gates are unchanged.
+
+OG-3A.3 progress-aware primary control and workspace-evidence correction:
+
+- A third fresh-project trial reached 24 provider cycles in one productive
+  primary attempt. The attempt had created application and test files, repaired
+  dependency and import failures, passed five tests, and completed a live
+  health check. Its final allowed action produced fresh recognized pytest
+  evidence, but the lifetime attempt counter stopped before the model could
+  submit the completion proposal. The fixed number 24 came from the ordinary
+  `options.max_iterations` default; it was not a tool-call limit and did not
+  describe lack of progress.
+- In Orchestrated Goal, `max_iterations` now measures consecutive provider
+  cycles since the last novel durable successful tool evidence. A new result,
+  resolved failure outcome, changed workspace token, or verification bound to
+  a new workspace generation renews that lease inside the same immutable
+  attempt. Repeating equivalent evidence does not. Standard mode still uses
+  `max_iterations` as its total turn bound, while the graph's fixed 96
+  provider-iteration, token, conditional-cost, and active-wall envelope
+  remains the non-renewable outer bound.
+- Write-ahead safety and evidence freshness now use separate generations.
+  Every potentially mutating or external action still advances the global
+  durable generation before execution, preserving the rule that an
+  interrupted non-replayable action is ambiguous and never replayed. When the
+  action returns with the same machine-observed Git workspace token it began
+  with, the active attempt retains its prior observed workspace generation.
+  Starting a server, reading its output, or issuing a smoke-check request can
+  therefore no longer stale passing tests when repository bytes did not
+  change. A changed or unavailable post-action token remains conservative and
+  still requires fresh verification.
+- Successful direct verification returns a positive receipt to the model that
+  it was recorded against the post-command workspace state. Direct
+  `python -m pytest`, virtual-environment Python module forms, and `uv run
+  python -m pytest` join the recognized commands; compound shell status
+  masking remains ineligible.
+- Proposal guidance now prefers four to six substantive outcome nodes and
+  treats twelve as a hard maximum rather than a target. Serial changes sharing
+  a write scope and verification surface should be coalesced. This reduces
+  provider/context overhead without weakening dependency, isolation,
+  permission, or acceptance boundaries.
+
+OG-3A.4 completion-gap and executable-topology correction:
+
+- A fourth clean-project trial exposed two different failures after the
+  ordinary progress lease was repaired. The first scaffold node consumed 54
+  provider iterations and 900,582 tokens while repeatedly varying passing
+  pytest commands. Only the final direct `uv run pytest -q` qualified, even
+  though earlier commands were the equivalent verifier wrapped in an exact
+  workspace `cd`, an environment assignment, and `2>&1`. The controller then
+  accepted that node but immediately blocked the next isolated writer because
+  primary scaffolding had necessarily left the parent workspace dirty.
+- Safe verification canonicalization now removes only an exact redundant
+  `cd` to the current workspace (or `.`) followed by `&&`, plus a final literal
+  `2>&1`. Those wrappers preserve the verifier's exit status. Other
+  directories, pipes, semicolons, `||`, and status-masking composition remain
+  ineligible and receive direct-command guidance.
+- A durable completion-gap fingerprint and provider-iteration watermark now
+  bound remediation. Once the runtime records an unmet gate, only evidence
+  capable of changing that gate renews its four-cycle lease: recognized
+  verification for a verification gap, an observed state token for a missing-
+  state gap, a real workspace change for a no-op-write gap, or the first
+  successful bounded result where none existed. Different command strings,
+  repeated passing output, and unrelated reads remain inspectable evidence but
+  no longer buy an unbounded sequence of retries. An exhausted gap ends
+  truthfully `blocked`; aggregate, permission, cancellation, and non-replay
+  bounds are unchanged.
+- Approval now validates the current controller's actual schedulability.
+  End-to-end build/change proposals must use `primary`. Because OG-3A retains
+  candidates without selecting or integrating them, `isolated_write` is valid
+  only in a candidate-only graph (optionally after `read_only` prerequisites),
+  every writer must be a terminal leaf, and no node may depend on it. Bounded
+  graph revisions obey the same rule.
+- Candidate-only approval observes the same stable Git base as dispatch and
+  refuses a dirty, missing, or changing base before durable execution state is
+  created. Dirty failures list the observed paths and tell the operator to
+  commit or reconcile them. The proposal remains available after correction
+  instead of becoming an immediately blocked graph.
+
+OG-3A.5 repair-progress and verifier-bootstrap correction:
+
+- The next fresh Kanban trial confirmed that OG-3A.4 stopped churn but made
+  the lease too literal. Node 1 installed dependencies, imported the FastAPI
+  app, started Uvicorn, and received HTTP 200 from both `/` and `/health`,
+  satisfying its model-authored acceptance criteria. The generic mutation gate
+  still required a conventional detected verifier. Because pytest had been
+  installed but no test existed yet, the final correctly formed
+  `uv run pytest -q` returned exit 5 (“no tests collected”). The controller
+  then blocked at the provider boundary before the model could see that useful
+  failure and create the missing smoke test.
+- The completion-gap watermark now advances on three bounded machine facts: a
+  successful result that directly closes a gate, an actual Git workspace-state
+  change that constitutes repair work, or a novel recognized verification
+  failure whose output differs from prior failure evidence. The failed command
+  spelling is deliberately excluded from equivalence, so running the same
+  failure through another wrapper or executable does not renew the lease.
+  Repeated identical output, unrelated reads, and rejected command forms still
+  stop after four provider iterations; the fixed aggregate envelope remains
+  unchanged.
+- Failed verification evidence now retains its bounded tool output as well as
+  the typed failure, allowing the runtime to distinguish “no tests collected”
+  from a later assertion, import, or syntax failure. A later successful run of
+  the same governed command resolves the recoverable failure normally.
+- Proposal guidance now requires every mutating primary node to name a direct
+  build/lint/test verification surface. If none exists yet, the first mutating
+  node must create a focused smoke test before proposing completion. The
+  controller notice gives the same instruction when a detected runner reports
+  no tests, rather than encouraging another command wrapper.
+- Saved graph bytes remain inert after reopening a conversation, but an
+  explicit `/orchestrate retry <node-id>` can now restore a terminal blocked
+  graph and perform the already bounded safe-retry transition in one action.
+  Ordinary nonterminal continuation still uses `/orchestrate resume`.
+
+OG-3B remaining contract:
+
+- complete the cancellation/provider-failure and retained-worktree campaigns;
+- exercise permission/hook refusal, overlapping and case-folded scopes,
+  post-claim parent drift, child verification drift/failure, and corrupted
+  candidate snapshots through application-level paths; and
+- confirm the inspection/recovery handoff is sufficient before marking OG-3
+  complete or beginning automatic reviewed integration.
 
 Exit gate:
 
@@ -998,23 +1204,27 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed milestone: **OG-2B2b2 — Aggregate bounds and comparative
-  evidence**, completing OG-2.
-- Active milestone: **none**.
-- Next unblocked milestone: **OG-3 — Isolated writer candidates**.
-- Active implementation branch or partial patch: **OG-2B2b2 is implemented as
-  an uncommitted patch on `wave36`; OG-2B2b1 is committed as `d85acc4`**.
+- Last completed slice: **OG-3A.5 — Repair-progress and verifier-bootstrap
+  correction**, following OG-3A's verified isolated-writer candidate wave and
+  its four earlier trial-driven corrections.
+- Active milestone: **OG-3 — Isolated writer candidates**.
+- Next unblocked slice: **OG-3B — Adversarial and recovery closure**.
+- Active implementation branch or partial patch: **OG-3A and OG-3A.1–5 are
+  implemented as one uncommitted patch on `wave36`; OG-2B2b2 is committed as
+  `e3b1dd9`**.
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
-  Goal with one serial primary lane and at most two automatic read-only
-  workers for independently ready approved nodes, plus cooperative
+  Goal with one serial primary lane, at most two automatic read-only workers
+  for independently ready approved nodes, and one bounded verified retained-
+  candidate wave for pairwise-disjoint isolated writers, plus cooperative
   pause/resume, safe retry of eligible blocked nodes, durable aggregate
   accounting, and a fixed whole-graph execution envelope**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
-- Preserved implementation constraint: only approved `read_only` nodes may be
-  automatically delegated; primary work and every parent-workspace write stay
-  serial, workers cannot recurse or control the graph, and a saved graph
-  remains inert until explicit resume.
+- Preserved implementation constraint: only approved `read_only` and narrowly
+  scoped `isolated_write` nodes may be automatically delegated; writers never
+  touch the parent workspace, no candidate is selected or integrated, primary
+  parent writes stay serial, workers cannot recurse or control the graph, and
+  a saved graph remains inert until explicit resume.
 - Parallel program requirement: continue the remaining Phase 8 security and
   reliability campaigns alongside every orchestration wave.
 
@@ -1112,9 +1322,16 @@ Every agent or contributor continuing this program must:
 - Preserve accounting additively in graph schema 1. Legacy restore may rebuild
   stored attempt usage but must not invent proposal work or iteration history
   that older snapshots never recorded.
-- Store fixed whole-graph ceilings of 96 provider iterations, 192,000 tokens,
-  $5 estimated cost when pricing is complete, and 30 minutes active execution.
-  Project/config/model content cannot widen them; tighter existing limits win.
+- Initially store fixed whole-graph ceilings of 96 provider iterations,
+  192,000 tokens, $5 estimated cost when pricing is complete, and 30 minutes
+  active execution. After the first realistic eleven-node trial demonstrated
+  that repeated full-context input exhausted the token ceiling before one node
+  completed, recalibrate newly approved graphs to 1,000,000 tokens while
+  preserving older graphs' stored 192,000-token ceiling. Project/config/model
+  content cannot widen the current maximum; tighter existing limits win.
+- Compact once after approval and later when the current prompt reaches one-
+  eighth of the remaining aggregate allowance. Count every summary request in
+  the primary lane; compaction changes future context, not past usage.
 - Count active time only while approved execution is attached and runnable.
   Stop it at a reached pause, terminal state, or process boundary, and restart
   it only through explicit resume. Do not count user review or downtime.
@@ -1125,6 +1342,26 @@ Every agent or contributor continuing this program must:
 - Keep `goal.graph.update` unchanged and internal-only. Aggregate snapshot/TUI
   presentation has no headless event consumer yet, so additive event fields
   would create compatibility surface without product value.
+- Split OG-3 into OG-3A's first bounded candidate wave and OG-3B's adversarial
+  and recovery closure. Shipping the worktree path is not enough evidence to
+  declare the writer milestone complete.
+- Require automatic writers to start from one clean, twice-observed stable Git
+  state and exact commit. Do not copy uncommitted parent bytes into a child or
+  let a later `HEAD` silently change the durable claim's base.
+- Treat `isolated_write` scopes as approved logical intent, not permission.
+  Require a narrow explicit scope, select pairwise-disjoint ready writers in
+  stable order, then obtain the ordinary delegate write decision and hooks.
+- Reuse the reviewed-delegate detected verification suite for automatic
+  candidates. Each child command keeps its ordinary `run_command` decision;
+  a passing child proves only that retained worktree state and never grants
+  integration.
+- End OG-3A at a review-required blocked node with the candidate retained.
+  Do not unlock dependents, choose a winner, apply a hunk, commit, merge, push,
+  or publish. Those authority and combined-evidence transitions belong to
+  OG-4.
+- Treat an interrupted isolated writer as an ambiguous mutation even though
+  the parent is unchanged: block and preserve history rather than starting a
+  second writer that could duplicate work or abandon an unknown worktree.
 
 ## Open implementation decisions
 

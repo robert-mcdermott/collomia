@@ -104,17 +104,49 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   instead of replayed. Cooperative pause/resume is available at the next safe
   provider/scheduler boundary, and a blocked node can be retried only when its
   attempt budget and non-replay checks allow it; whole-graph cancel remains
-  immediate. Status durably separates proposal-plus-primary and automatic-read
+  immediate. An explicit retry can reattach its saved blocked graph directly
+  after the exact conversation is reopened; restored bytes remain inert until
+  that user action. Status durably separates proposal-plus-primary and automatic-read
   iterations, tokens, honest price availability, estimated cost, elapsed
   time, and active time. A fixed whole-graph envelope limits the preview to 96
-  provider iterations, 192,000 tokens, $5 estimated cost when pricing is
-  complete, and 30 minutes of active post-approval execution. Controlled
+  provider iterations, 1,000,000 tokens, $5 estimated cost when pricing is
+  complete, and 30 minutes of active post-approval execution. Older saved
+  graphs retain their stored ceiling. The ordinary `max_iterations` value is a
+  provider-response-cycle limit, not a tool-call count. In this mode it bounds
+  consecutive cycles without novel durable successful tool evidence inside a
+  primary attempt; productive evidence renews that lease, equivalent repeated
+  evidence does not, and 96 remains the whole-graph outer limit. Once an exact
+  completion gap is open, a separate four-cycle lease renews for an actual
+  workspace repair, a novel machine-observed verification failure, or evidence
+  that closes the gate. Identical failures, command variation, and unrelated
+  output do not prolong it. Proposal guidance requires the first mutating node
+  in a project without an applicable test surface to create a focused smoke
+  test. Passing verification is acknowledged as recorded against the current workspace, and
+  later process/network actions do not stale it unless the observed repository
+  token changes. Approval
+  compacts proposal history once,
+  and later cumulative-budget pressure can compact again; these requests are
+  counted rather than treated as free work. Controlled
   comparisons retain two-worker fan-out for substantive independent reads
   while showing its extra model work; trivial and dependency-serial work stays
-  serial. There is no optional-branch/node cancellation. Automatic writer orchestration and
-  exact multi-worker recovery are also not implemented. Configuration, a
-  repository, a saved graph, and a headless flag still cannot enable the
-  preview. Standard execution remains the default.
+  serial. End-to-end change graphs use the primary lane. An explicitly
+  candidate-only graph can instead declare narrowly scoped terminal
+  `isolated_write` nodes; it cannot mix those retained candidates with primary
+  work or make later nodes depend on them. Approval first checks the clean Git
+  base and names dirty paths without consuming the proposal. One bounded wave starts at most two ready,
+  pairwise-disjoint writers from the same clean commit, keeps them in isolated
+  worktrees, and requires ordinary dispatch permission plus fresh detected
+  child verification. Passing candidates stop the graph for review; Collomia
+  does not select or integrate them, and the parent workspace remains
+  unchanged. An interrupted writer is blocked rather than replayed. There is
+  deterministic feedback when a verification-like shell command cannot count
+  as evidence; exact redundant workspace `cd ... &&` and final `2>&1` wrappers
+  can qualify because they preserve exit status. Graph-hidden plan/delegation tools are blocked again before
+  their arguments are decoded. There is
+  no optional-branch/node cancellation, automatic candidate integration, or
+  exact multi-worker recovery. Configuration, a repository, a saved graph,
+  and a headless flag still cannot enable the preview. Standard execution
+  remains the default.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache

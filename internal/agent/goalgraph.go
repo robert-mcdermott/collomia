@@ -13,6 +13,8 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
+const maxGoalCompletionRemediationIterations = 4
+
 func (a *Agent) graphEnabled() bool {
 	if a == nil {
 		return false
@@ -42,6 +44,18 @@ func (a *Agent) SetGoalGraph(graph *goalgraph.Graph) error {
 		a.planMode = false
 	}
 	return nil
+}
+
+// SetGoalWriterVerifier connects graph-owned retained candidates to the
+// application's ordinary detected-command verification path. It adds no new
+// command authority: each command is still independently permission-gated.
+func (a *Agent) SetGoalWriterVerifier(verify func(context.Context, string) ([]DelegateVerification, error)) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.goalWriterVerifier = verify
+	a.mu.Unlock()
 }
 
 func (a *Agent) goalToken(ctx context.Context) (string, error) {
@@ -86,6 +100,52 @@ func (a *Agent) emitGoalUpdates(send Emit) {
 		}
 		send(e)
 	}
+}
+
+// goalAttemptNoProgressBudget reports whether the active primary attempt has
+// consumed its ordinary per-agent slice without recording novel durable
+// evidence. Useful work renews the lease inside the same immutable attempt;
+// the fixed graph aggregate remains the hard outer bound across all work.
+func (a *Agent) goalAttemptNoProgressBudget() (goalgraph.Node, goalgraph.Attempt, bool) {
+	if a == nil || a.maxIterations <= 0 {
+		return goalgraph.Node{}, goalgraph.Attempt{}, false
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph == nil {
+		return goalgraph.Node{}, goalgraph.Attempt{}, false
+	}
+	node, attempt, active := graph.Active()
+	withoutProgress := attempt.Iterations - attempt.LastProgressIteration
+	return node, attempt, active && withoutProgress >= a.maxIterations
+}
+
+// goalCompletionGapBudget is narrower than the ordinary progress lease. Once
+// the runtime has named an exact acceptance gap, only concrete repair or
+// gate-changing evidence renews this bounded remediation window.
+func (a *Agent) goalCompletionGapBudget() (goalgraph.Node, goalgraph.Attempt, bool) {
+	if a == nil {
+		return goalgraph.Node{}, goalgraph.Attempt{}, false
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph == nil {
+		return goalgraph.Node{}, goalgraph.Attempt{}, false
+	}
+	node, attempt, active := graph.Active()
+	withoutGateProgress := attempt.Iterations - attempt.CompletionGapIteration
+	return node, attempt, active && attempt.CompletionGap != "" && withoutGateProgress >= maxGoalCompletionRemediationIterations
+}
+
+func (a *Agent) blockStalledGoalCompletion(ctx context.Context, node goalgraph.Node, attempt goalgraph.Attempt, send Emit) error {
+	reason := fmt.Sprintf("node %d completion gap made no repair or gate-changing progress for %d provider iterations: %s; repeated tool output, identical verification failures, or equivalent unrecognized verification variants are not progress", node.ID, maxGoalCompletionRemediationIterations, attempt.CompletionGap)
+	if err := a.goalGraph.BlockActive(context.WithoutCancel(ctx), attempt.ID, reason); err != nil {
+		return err
+	}
+	a.emitGoalUpdates(send)
+	return fmt.Errorf("%w: %s", ErrGoalBlocked, reason)
 }
 
 // ensureGoalAttempt makes exactly one deterministic node active. It is called
@@ -134,6 +194,27 @@ func (a *Agent) ensureGoalAttempt(ctx context.Context, send Emit) error {
 		// A completed read wave may unlock another read wave. Re-enter the
 		// deterministic selector before allowing the serial primary lane to run.
 		return a.ensureGoalAttempt(ctx, send)
+	}
+	if a.goalGraph.HasReadyWriters() {
+		base, baseErr := a.stableGoalWriterBase(ctx)
+		if baseErr != nil {
+			base.Problem = baseErr.Error()
+		}
+		writerClaims, writerErr := a.goalGraph.StartReadyWriters(ctx, base, goalgraph.DefaultLimits().MaxWriterConcurrency)
+		a.emitGoalUpdates(send)
+		if errors.Is(writerErr, goalgraph.ErrGraphTerminal) {
+			outcome, reason := a.goalGraph.Outcome()
+			return goalGraphTerminalError(outcome, reason)
+		}
+		if writerErr != nil {
+			return writerErr
+		}
+		if len(writerClaims) > 0 {
+			if err := a.runGoalWriteFanout(ctx, writerClaims, send); err != nil {
+				return err
+			}
+			return a.ensureGoalAttempt(ctx, send)
+		}
 	}
 	_, _, err := a.goalGraph.StartNext(ctx, token)
 	a.emitGoalUpdates(send)
@@ -205,7 +286,7 @@ func (a *Agent) finishGoalTool(ctx context.Context, observation toolObservation,
 	if !active {
 		return errors.New("goal graph lost its active attempt during tool execution")
 	}
-	verification := observation.Name == "run_command" && isVerificationCommand(observation.Action.Command, a.workspace)
+	verification := observation.Name == "run_command" && observation.Verification
 	token := ""
 	if observation.Action.Risk == tools.RiskWrite || observation.Action.Risk == tools.RiskExecute || verification {
 		// A cancelled command may still have changed bytes. Token inspection must
@@ -234,7 +315,7 @@ func firstNonemptyGraphText(values ...string) string {
 }
 
 func (a *Agent) recordGoalFailure(ctx context.Context, observation toolObservation, send Emit) error {
-	if !a.graphEnabled() || goalgraph.MetaTool(observation.Name) || observation.GraphRecorded {
+	if !a.graphEnabled() || goalgraph.MetaTool(observation.Name) || observation.GraphRecorded || observation.IgnoreGraphFailure {
 		a.emitGoalUpdates(send)
 		return nil
 	}

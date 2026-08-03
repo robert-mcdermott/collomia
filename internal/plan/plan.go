@@ -14,6 +14,7 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
+	"github.com/robert-mcdermott/collomia/internal/writescope"
 )
 
 type Step struct {
@@ -24,9 +25,12 @@ type Step struct {
 	Acceptance []string `json:"acceptance,omitempty"`
 	// Execution is optional logical intent for Orchestrated Goal. Empty and
 	// "primary" keep work in the serial primary lane; "read_only" permits the
-	// runtime to assign a dependency-ready node to a bounded read-only worker.
-	// Ordinary plans do not interpret this field as scheduling authority.
-	Execution string `json:"execution,omitempty"`
+	// runtime to assign a dependency-ready node to a bounded read-only worker;
+	// "isolated_write" permits a retained worktree candidate only when
+	// WritePaths declares narrow repository-relative scope. Ordinary plans do
+	// not interpret these fields as scheduling authority.
+	Execution  string   `json:"execution,omitempty"`
+	WritePaths []string `json:"write_paths,omitempty"`
 	// Evidence records how completion was verified (test run, file, output).
 	Evidence string `json:"evidence,omitempty"`
 }
@@ -88,6 +92,7 @@ func (b *Board) Snapshot() (*Plan, uint64) {
 	for i := range clone.Steps {
 		clone.Steps[i].DependsOn = append([]int(nil), b.current.Steps[i].DependsOn...)
 		clone.Steps[i].Acceptance = append([]string(nil), b.current.Steps[i].Acceptance...)
+		clone.Steps[i].WritePaths = append([]string(nil), b.current.Steps[i].WritePaths...)
 	}
 	return &clone, b.revision
 }
@@ -138,8 +143,22 @@ func Validate(p Plan) error {
 		}
 		switch step.Execution {
 		case "", "primary", "read_only":
+			if _, err := writescope.Normalize(step.WritePaths, false); err != nil {
+				return fmt.Errorf("steps[%d]: %w", i, err)
+			}
+		case "isolated_write":
+			if len(step.WritePaths) == 0 {
+				return fmt.Errorf("steps[%d].write_paths must declare explicit scope for isolated_write", i)
+			}
+			normalized, err := writescope.Normalize(step.WritePaths, true)
+			if err != nil {
+				return fmt.Errorf("steps[%d]: %w", i, err)
+			}
+			if len(normalized) == 1 && normalized[0] == writescope.Workspace {
+				return fmt.Errorf("steps[%d].write_paths must be narrower than the whole workspace for isolated_write", i)
+			}
 		default:
-			return fmt.Errorf("steps[%d].execution must be primary or read_only", i)
+			return fmt.Errorf("steps[%d].execution must be primary, read_only, or isolated_write", i)
 		}
 		switch step.Status {
 		case "pending", "in_progress", "done", "blocked", "skipped":
@@ -293,6 +312,9 @@ func (p *Plan) Render() string {
 		if step.Execution != "" && step.Execution != "primary" {
 			fmt.Fprintf(&b, " · execution: %s", step.Execution)
 		}
+		if len(step.WritePaths) > 0 {
+			fmt.Fprintf(&b, " · write paths: %s", strings.Join(step.WritePaths, ", "))
+		}
 		if step.Evidence != "" {
 			fmt.Fprintf(&b, " — %s", step.Evidence)
 		}
@@ -310,11 +332,10 @@ func (p *Plan) Render() string {
 // Tool returns the update_plan tool bound to a board. Updating the plan is
 // read-risk: it changes agent state, never the repository.
 func Tool(board *Board) tools.Tool {
-	return tools.Function{
+	tool := tools.Function{
 		Def: provider.ToolDefinition{
 			Name:        "update_plan",
-			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only), and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded read-only workers. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","done","blocked","skipped"]},"depends_on":{"type":"array","items":{"type":"integer"}},"acceptance":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":512}},"execution":{"type":"string","enum":["primary","read_only"],"description":"logical execution intent; read_only is eligible for bounded runtime fan-out only after explicit Orchestrated Goal approval"},"evidence":{"type":"string"}},"required":["id","title","status"],"additionalProperties":false}},"verification_note":{"type":"string","description":"specific reason automated verification does not apply after changed files; not machine-observed evidence"}},"required":["goal","steps"],"additionalProperties":false}`),
+			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only|isolated_write), optional write_paths, and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded readers or isolated_write nodes with explicit narrow write_paths to retained worktree candidates. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
 		},
 		Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"},
 		Run: func(_ context.Context, raw json.RawMessage) (string, error) {
@@ -328,4 +349,35 @@ func Tool(board *Board) tools.Tool {
 			return "Plan updated:\n" + board.Current().Render(), nil
 		},
 	}
+	tool.Def.InputSchema = isolatedWriterPlanSchema
+	return tool
 }
+
+var isolatedWriterPlanSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "goal": {"type": "string", "minLength": 1},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "title": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]},
+          "depends_on": {"type": "array", "items": {"type": "integer"}},
+          "acceptance": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+          "execution": {"type": "string", "enum": ["primary", "read_only", "isolated_write"], "description": "logical execution intent; isolated_write requires explicit narrow write_paths and produces only a retained candidate after explicit Orchestrated Goal approval"},
+          "write_paths": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1024}, "description": "repository-relative files or directory prefixes ending in /; allowed only with execution=isolated_write"},
+          "evidence": {"type": "string"}
+        },
+        "required": ["id", "title", "status"],
+        "additionalProperties": false
+      }
+    },
+    "verification_note": {"type": "string", "description": "specific reason automated verification does not apply after changed files; not machine-observed evidence"}
+  },
+  "required": ["goal", "steps"],
+  "additionalProperties": false
+}`)

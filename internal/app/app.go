@@ -104,6 +104,30 @@ func providerUsageDelta(current, baseline provider.Usage) provider.Usage {
 	return delta
 }
 
+// OrchestratedGoalTokenBudget reports the cumulative graph allowance beside
+// the per-request context window without activating saved state. During a
+// proposal, it reports the exact work that approval would seed into the graph.
+func (r *Runtime) OrchestratedGoalTokenBudget() (phase string, used, limit int, ok bool) {
+	if r == nil || r.Agent == nil {
+		return "", 0, 0, false
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		status := r.GoalGraph.BudgetStatus(time.Now())
+		phase = "active"
+		if outcome, _ := r.GoalGraph.Outcome(); outcome != "" {
+			phase = string(outcome)
+		}
+		return phase, status.Usage.InputTokens + status.Usage.OutputTokens, status.Limits.MaxTokens, true
+	}
+	if r.orchestrationProposal == nil {
+		return "", 0, 0, false
+	}
+	usage := providerUsageDelta(r.Agent.Usage(), r.orchestrationProposal.BaseUsage)
+	return "proposal", usage.InputTokens + usage.OutputTokens, goalgraph.DefaultLimits().MaxAggregateTokens, true
+}
+
 // auditHealth latches every reason the audit record for this session might be
 // incomplete — an unopenable ledger at startup, a write that failed later,
 // from the primary agent or from any delegated one. A status surface asking
@@ -472,6 +496,9 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
 	runtime = &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
+	agentRuntime.SetGoalWriterVerifier(func(verifyCtx context.Context, id string) ([]agent.DelegateVerification, error) {
+		return runtime.VerifyDelegateSuite(verifyCtx, id, nil)
+	})
 	runtime.alignChangeTurns()
 	runtime.addReviewedIntegrationTools()
 	runtime.logGoalGraphUpdates()
@@ -503,7 +530,7 @@ func OrchestratedProposalPrompt(goal string) string {
 
 %s
 
-Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Use no more than 12 steps. Every step must be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary or read_only. Use read_only only for bounded investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Use primary for implementation, verification, commands, ambiguity, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
+Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Prefer 4–6 substantive outcome nodes. Use more only when a distinct dependency, permission, write-scope, isolation, or recovery boundary requires it; 12 steps is a hard maximum, not a target. Coalesce serial changes that touch the same scope and share one verification surface instead of creating a node for every file, layer, or command. Every step must be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary, read_only, or isolated_write. For every primary node that can change files, include a direct build, lint, or test command that can verify that node after its last mutation. If the project has no applicable test surface yet, the first mutating node must create a focused smoke test so the detected verifier has real work to run; a server-start or model-authored success claim alone cannot satisfy the runtime evidence gate. Use read_only only for bounded investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Default to primary for end-to-end build and change goals. Use isolated_write only when the user explicitly requests terminal retained candidates for manual review: each needs an explicit narrow write_paths contract disjoint from sibling writers, the candidate-only graph may include read_only prerequisites but no primary nodes, and every isolated_write node must be a terminal leaf. Never make later work depend on isolated_write because the current preview does not select or integrate candidates or let them unlock dependents. One bounded wave of at most two eligible nodes may create independently verified worktree candidates from one clean Git base and then stop for review. Use primary for parent-workspace changes, final integration, combined verification, ambiguity, overlapping scopes, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected read/write fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
 }
 
 // OrchestratedExecutionPrompt is submitted only after the user explicitly
@@ -795,6 +822,7 @@ func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board
 	for i := range fresh.Steps {
 		fresh.Steps[i].DependsOn = append([]int(nil), approved.Steps[i].DependsOn...)
 		fresh.Steps[i].Acceptance = append([]string(nil), approved.Steps[i].Acceptance...)
+		fresh.Steps[i].WritePaths = append([]string(nil), approved.Steps[i].WritePaths...)
 		// An approved logical plan seeds execution; model-authored progress from
 		// a caller is never imported as runtime evidence.
 		fresh.Steps[i].Status = "pending"
@@ -807,7 +835,7 @@ func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board
 	_, logicalRevision := board.Snapshot()
 	spec := goalgraph.Spec{Goal: fresh.Goal, Nodes: make([]goalgraph.NodeSpec, 0, len(fresh.Steps))}
 	for _, step := range fresh.Steps {
-		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution)})
+		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution), WritePaths: append([]string(nil), step.WritePaths...)})
 	}
 	opts := goalgraph.Options{Persist: goalGraphPersister(sess)}
 	if accounting != nil {
@@ -874,9 +902,9 @@ func orchestratedSpec(p *plan.Plan) (goalgraph.Spec, error) {
 		if len(step.Acceptance) == 0 {
 			return goalgraph.Spec{}, fmt.Errorf("proposal step %d (%s) needs at least one concrete acceptance criterion", step.ID, step.Title)
 		}
-		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution)})
+		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution), WritePaths: append([]string(nil), step.WritePaths...)})
 	}
-	if err := goalgraph.ValidateSpec(spec); err != nil {
+	if err := goalgraph.ValidateExecutableSpec(spec); err != nil {
 		return goalgraph.Spec{}, fmt.Errorf("proposal graph is invalid: %w", err)
 	}
 	return spec, nil
@@ -902,8 +930,18 @@ func (r *Runtime) ApproveOrchestratedGoal(ctx context.Context) (string, string, 
 	if revision <= proposal.BaseRevision {
 		return "", "", errors.New("the proposal turn did not create a new structured plan; refine the proposal before approving it")
 	}
-	if _, err := orchestratedSpec(current); err != nil {
+	spec, err := orchestratedSpec(current)
+	if err != nil {
 		return "", "", err
+	}
+	if goalgraph.HasIsolatedWriters(spec) {
+		base, baseErr := r.Agent.GoalWriterBase(ctx)
+		if baseErr != nil {
+			return "", "", fmt.Errorf("proposal cannot start isolated candidates: %w", baseErr)
+		}
+		if baseErr := goalgraph.ValidateWriterBase(base); baseErr != nil {
+			return "", "", fmt.Errorf("proposal cannot start isolated candidates: %w", baseErr)
+		}
 	}
 	usage := providerUsageDelta(r.Agent.Usage(), proposal.BaseUsage)
 	iterations := max(0, r.Agent.ProviderIterations()-proposal.BaseIterations)
@@ -920,6 +958,7 @@ func (r *Runtime) ApproveOrchestratedGoal(ctx context.Context) (string, string, 
 	if err := r.Agent.SetGoalGraph(graph); err != nil {
 		return "", "", err
 	}
+	r.Agent.RequestGoalBoundaryCompaction()
 	r.Registry.Add(goalgraph.RevisionTool{Graph: graph})
 	r.Registry.Add(goalgraph.BlockTool{Graph: graph})
 	r.GoalGraph = graph
@@ -1007,16 +1046,34 @@ func (r *Runtime) RetryOrchestratedNode(ctx context.Context, nodeID int) (status
 	}
 	r.orchestrationMu.Lock()
 	defer r.orchestrationMu.Unlock()
-	if r.GoalGraph == nil {
-		return "", "", false, errors.New("there is no attached Orchestrated Goal graph to retry")
+	graph := r.GoalGraph
+	restored := false
+	if graph == nil {
+		if r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+			return "", "", false, errors.New("there is no attached or saved Orchestrated Goal graph to retry")
+		}
+		graph, err = restoreGoalGraph(ctx, r.Session, r.goalStateToken)
+		if err != nil {
+			return "", "", false, err
+		}
+		restored = true
 	}
-	if err := r.GoalGraph.RetryNode(ctx, nodeID, "retry requested explicitly by the user"); err != nil {
+	if err := graph.RetryNode(ctx, nodeID, "retry requested explicitly by the user"); err != nil {
 		return "", "", false, err
 	}
+	if restored {
+		if err := r.Agent.SetGoalGraph(graph); err != nil {
+			return "", "", false, err
+		}
+		r.Registry.Add(goalgraph.RevisionTool{Graph: graph})
+		r.Registry.Add(goalgraph.BlockTool{Graph: graph})
+		r.GoalGraph = graph
+		r.orchestrationProposal = nil
+	}
 	r.logGoalGraphUpdates()
-	status, _ = r.GoalGraph.Inspect(nodeID)
-	requested, _, _ := r.GoalGraph.PauseState()
-	return status, OrchestratedRetryPrompt(r.GoalGraph.Snapshot().Goal, nodeID), !requested, nil
+	status, _ = graph.Inspect(nodeID)
+	requested, _, _ := graph.PauseState()
+	return status, OrchestratedRetryPrompt(graph.Snapshot().Goal, nodeID), !requested, nil
 }
 
 // CancelOrchestratedGoal cancels either the unapproved process-local proposal
@@ -1069,9 +1126,14 @@ func (r *Runtime) OrchestratedGoalStatus(nodeID int) (string, error) {
 		fmt.Fprintf(&b, "Proposal state: %s\n", map[bool]string{true: "awaiting explicit approval", false: "waiting for a new structured plan"}[fresh])
 		fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", limits.MaxNodes, limits.MaxAttemptsPerNode, limits.MaxRevisions)
 		fmt.Fprintf(&b, "Automatic reads: at most %d concurrent · %d starts · %d tokens · %ds wall bound\n", limits.MaxReadConcurrency, limits.MaxReadStarts, limits.MaxReadTokens, limits.MaxReadWallSeconds)
+		fmt.Fprintf(&b, "Automatic isolated writers: one candidate wave · at most %d concurrent · %d starts\n", limits.MaxWriterConcurrency, limits.MaxWriterStarts)
 		fmt.Fprintf(&b, "Aggregate envelope after approval: %d provider iterations · %d tokens · $%.2f when pricing is complete · %ds active wall\n", limits.MaxAggregateIterations, limits.MaxAggregateTokens, limits.MaxAggregateCostUSD, limits.MaxActiveWallSeconds)
-		b.WriteString("Execution: one serial primary lane; independently ready approved read_only nodes may use at most two automatic read-only workers.\n")
-		b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when proposed.\n")
+		proposalUsage := providerUsageDelta(r.Agent.Usage(), r.orchestrationProposal.BaseUsage)
+		proposalIterations := max(0, r.Agent.ProviderIterations()-r.orchestrationProposal.BaseIterations)
+		proposalTokens := proposalUsage.InputTokens + proposalUsage.OutputTokens
+		fmt.Fprintf(&b, "Proposal work to seed at approval: %d provider iterations · %d/%d tokens · %d remain before approval-boundary compaction\n", proposalIterations, proposalTokens, limits.MaxAggregateTokens, max(0, limits.MaxAggregateTokens-proposalTokens))
+		b.WriteString("Execution: end-to-end graphs use one serial primary lane; independently ready approved read_only nodes may use at most two automatic readers. An explicitly candidate-only graph may instead use one bounded wave of terminal disjoint isolated_write nodes.\n")
+		b.WriteString("Write scope: parent-workspace writes remain primary-only; retained candidates require explicit narrow scopes, a clean approval-time Git base, and ordinary dispatch/command permissions, and cannot unlock dependents.\n")
 		b.WriteString("Authority: approval grants no tool, path, network, publication, or budget authority.\n")
 		b.WriteString("Completion: every changed workspace state needs fresh machine-observed verification.\n")
 		if current != nil {

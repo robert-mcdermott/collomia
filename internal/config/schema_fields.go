@@ -269,7 +269,7 @@ var fieldDescriptions = map[fieldKey]string{
 	{"Hook", "timeout_seconds"}: "Bound on the hook run. Zero uses ten seconds.",
 
 	// Options
-	{"Options", "max_iterations"}:                "Tool-call iterations one turn may take before it stops.",
+	{"Options", "max_iterations"}:                "Provider/model response cycles one Standard turn may take, or consecutive cycles an Orchestrated Goal primary attempt may take without novel durable progress; this is not a tool-call count.",
 	{"Options", "max_tool_output_bytes"}:         "Largest tool result passed to the model. Longer output is truncated with a marker.",
 	{"Options", "delegate_max_concurrency"}:      "Session-wide limit on concurrent delegated tasks. Zero uses four.",
 	{"Options", "delegate_provider_concurrency"}: "Tighter concurrency limit for named providers. Providers omitted here inherit the session-wide limit.",

@@ -87,12 +87,14 @@ type Agent struct {
 	pinnedContext       func() string
 	completionPlan      *plan.Board
 	goalGraph           *goalgraph.Graph
+	goalBoundaryCompact bool
 	goalStateToken      func(context.Context) (string, error)
 	delegateConfig      appconfig.Config
 	delegateApprover    permission.Approver
 	delegateTeam        *Team
 	delegateBoard       *plan.Board
 	delegateScheduler   *Scheduler
+	goalWriterVerifier  func(context.Context, string) ([]DelegateVerification, error)
 	artifacts           *session.ArtifactManager
 	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
@@ -319,11 +321,20 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	a.mu.RLock()
 	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode)
 	a.mu.RUnlock()
-	for iteration := 1; iteration <= a.maxIterations; iteration++ {
+	// Ordinary turns have one model-iteration envelope. An Orchestrated Goal
+	// instead applies that same bound to each primary attempt while the graph's
+	// smaller aggregate envelope remains the cross-node/cross-worker ceiling.
+	// This lets an accepted node hand a fresh bounded slice to its successor
+	// without turning max_iterations into an accidental whole-graph limit.
+	for iteration := 1; ; iteration++ {
+		if !a.graphEnabled() && iteration > a.maxIterations {
+			break
+		}
 		if err := a.checkPersistence(); err != nil {
 			return "", reportError(send, err)
 		}
 		if a.shouldCompact() {
+			a.clearGoalBoundaryCompaction()
 			if _, err := a.compact(ctx, "", send); err != nil {
 				reportError(send, fmt.Errorf("automatic compaction failed: %w", err))
 			}
@@ -351,6 +362,18 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				graphErr = reportError(send, graphErr)
 				a.endTurn(ctx, send, iteration, GoalOutcomeFor(graphErr))
 				return "", graphErr
+			}
+			if node, attempt, exhausted := a.goalCompletionGapBudget(); exhausted {
+				blockedErr := reportError(send, a.blockStalledGoalCompletion(ctx, node, attempt, send))
+				a.endTurn(ctx, send, iteration-1, GoalBlocked)
+				return "", blockedErr
+			}
+			if node, attempt, exhausted := a.goalAttemptNoProgressBudget(); exhausted {
+				reason := fmt.Sprintf("goal graph node %d attempt %d made no novel durable progress for %d provider iterations", node.ID, attempt.Number, a.maxIterations)
+				a.exhaustGoalGraph(reason, send)
+				budgetErr := reportError(send, fmt.Errorf("%w: no novel durable progress for %d iterations in node %d attempt %d", ErrIterationBudgetExceeded, a.maxIterations, node.ID, attempt.Number))
+				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
+				return "", budgetErr
 			}
 		}
 		a.mu.RLock()
@@ -544,12 +567,22 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 					a.endTurn(ctx, send, iteration, GoalBlocked)
 					return response.Content, blocked
 				case goalgraph.DecisionContinue, goalgraph.DecisionAccepted, goalgraph.DecisionRetry:
-					if iteration >= a.maxIterations {
-						reason := fmt.Sprintf("goal graph exhausted the %d-iteration run budget", a.maxIterations)
-						a.exhaustGoalGraph(reason, send)
-						budgetErr := reportError(send, fmt.Errorf("%w after %d iterations; graph work remains", ErrIterationBudgetExceeded, a.maxIterations))
-						a.endTurn(ctx, send, iteration, GoalBudgetExhausted)
-						return response.Content, budgetErr
+					// Accepted and retryable decisions close the current attempt. An
+					// instruction to continue the same attempt remains bounded by its
+					// progress lease and the fixed whole-graph envelope.
+					if decision.Kind == goalgraph.DecisionContinue {
+						if node, attempt, exhausted := a.goalCompletionGapBudget(); exhausted {
+							blockedErr := reportError(send, a.blockStalledGoalCompletion(ctx, node, attempt, send))
+							a.endTurn(ctx, send, iteration, GoalBlocked)
+							return response.Content, blockedErr
+						}
+						if node, attempt, exhausted := a.goalAttemptNoProgressBudget(); exhausted {
+							reason := fmt.Sprintf("goal graph node %d attempt %d made no novel durable progress for %d provider iterations", node.ID, attempt.Number, a.maxIterations)
+							a.exhaustGoalGraph(reason, send)
+							budgetErr := reportError(send, fmt.Errorf("%w: no novel durable progress for %d iterations in node %d attempt %d; graph work remains", ErrIterationBudgetExceeded, a.maxIterations, node.ID, attempt.Number))
+							a.endTurn(ctx, send, iteration, GoalBudgetExhausted)
+							return response.Content, budgetErr
+						}
 					}
 					if decision.Kind == goalgraph.DecisionAccepted || decision.Kind == goalgraph.DecisionRetry {
 						if graphErr := a.ensureGoalAttempt(ctx, send); graphErr != nil {
@@ -749,22 +782,25 @@ func reportError(send Emit, err error) error {
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
 	observation := toolObservation{Name: call.Name}
-	a.mu.RLock()
-	disabled := a.disabled[call.Name]
-	if len(a.allowedTools) > 0 && !a.allowedTools[call.Name] {
-		disabled = true
-	}
-	allowedSkills := a.allowedSkills
-	if identity, ok := item.(tools.PermissionIdentity); hasItem && ok {
-		disabled = disabled || a.disabled[identity.PermissionToolName()]
-	}
-	a.mu.RUnlock()
-	if disabled || (a.subagent && parentOnlyTool(call.Name)) {
+	if hasItem && !a.toolAvailable(item, plan) {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
-		observation.FailureDetail = "tool is not available to this agent"
-		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, observation, nil
+		graphOwnedUnavailable := a.graphEnabled() && graphOwnedTool(call.Name)
+		if !graphOwnedUnavailable {
+			observation.FailureDetail = "tool is not available to this agent"
+			return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, observation, nil
+		}
+		observation.FailureDetail = "tool is not available in the current mode"
+		// Whole-plan mutation and model-directed delegation are deliberately
+		// hidden after graph approval. A remembered/fabricated call must not
+		// reach the implementation, but it is a controller-protocol mistake,
+		// not evidence that the active work node failed.
+		observation.IgnoreGraphFailure = true
+		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available in the current mode. Use the runtime-owned goal graph controls and ordinary tools exposed for this request."}, observation, nil
 	}
+	a.mu.RLock()
+	allowedSkills := a.allowedSkills
+	a.mu.RUnlock()
 	if call.Name == "load_skill" && len(allowedSkills) > 0 {
 		var input struct {
 			Name string `json:"name"`
@@ -898,6 +934,20 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		}
 		result.Content += "Tool error: " + err.Error()
 	}
+	if call.Name == "run_command" {
+		assessment := assessVerificationCommand(action.Command, a.workspace)
+		observation.Verification = assessment.Recognized
+		if err == nil && assessment.VerificationLike && !assessment.Recognized {
+			notice := "Collomia verification evidence was not recorded: " + assessment.Reason
+			if assessment.Suggestion != "" {
+				notice += " Run the verification directly so its own exit status is preserved: " + assessment.Suggestion
+			}
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += notice
+		}
+	}
 	observation.ResultSummary = result.Content
 	done := event.New(event.KindToolResult)
 	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil}
@@ -911,6 +961,12 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		observation.GraphRecorded = true
 		if graphErr := a.finishGoalTool(ctx, observation, send); graphErr != nil {
 			return result, observation, graphErr
+		}
+		if !observation.Failed && observation.Name == "run_command" && observation.Verification {
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += "Collomia verification evidence: recorded against the post-command workspace state. It remains current unless a later tool changes that state."
 		}
 	} else if a.graphEnabled() && goalgraph.MetaTool(call.Name) {
 		// The graph-control tool performs its own validated transition. Drain
@@ -962,38 +1018,53 @@ func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, s
 }
 
 func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
-	return a.registry.Definitions(func(tool tools.Tool) bool {
-		name := tool.Definition().Name
-		if a.goalGraph != nil {
-			// An approved graph is runtime-owned. Whole-plan replacement and
-			// model-directed delegation stay unavailable; automatic read claims
-			// enter only through the controller's bounded scheduling path.
-			if name == "update_plan" || name == "delegate" || name == "inspect_delegate_changes" || name == "compare_delegate_changes" || name == "verify_delegate_changes" || name == "apply_delegate_changes" {
-				return false
-			}
-			// These tools mutate only the bounded runtime state machine and grant
-			// no tool, path, network, publication, or budget authority. They must
-			// survive an ordinary profile tool allowlist or the controller could
-			// lose its only typed replan/block routes after activation.
-			if goalgraph.MetaTool(name) {
-				return !plan
-			}
-		}
-		disabled := a.disabled[name]
-		if len(a.allowedTools) > 0 && !a.allowedTools[name] {
-			disabled = true
-		}
-		if identity, ok := tool.(tools.PermissionIdentity); ok {
-			disabled = disabled || a.disabled[identity.PermissionToolName()]
-		}
-		if disabled || (a.subagent && parentOnlyTool(name)) {
+	return a.registry.Definitions(func(tool tools.Tool) bool { return a.toolAvailable(tool, plan) })
+}
+
+// toolAvailable is shared by provider-definition construction and execution.
+// Hiding a tool from the model is guidance; enforcing the same decision again
+// before argument decoding is the actual authority boundary.
+func (a *Agent) toolAvailable(tool tools.Tool, plan bool) bool {
+	name := tool.Definition().Name
+	a.mu.RLock()
+	graphEnabled := a.goalGraph != nil
+	disabled := a.disabled[name]
+	if len(a.allowedTools) > 0 && !a.allowedTools[name] {
+		disabled = true
+	}
+	if identity, ok := tool.(tools.PermissionIdentity); ok {
+		disabled = disabled || a.disabled[identity.PermissionToolName()]
+	}
+	subagent := a.subagent
+	a.mu.RUnlock()
+	if graphEnabled {
+		// An approved graph is runtime-owned. Whole-plan replacement and
+		// model-directed delegation stay unavailable; automatic claims enter
+		// only through the controller's bounded scheduling path.
+		if graphOwnedTool(name) {
 			return false
 		}
-		if !plan {
-			return true
+		// These tools mutate only the bounded runtime state machine and grant
+		// no tool, path, network, publication, or budget authority. They must
+		// survive an ordinary profile tool allowlist or the controller could
+		// lose its only typed replan/block routes after activation.
+		if goalgraph.MetaTool(name) {
+			return !plan
 		}
-		return planTool(name)
-	})
+	}
+	if disabled || (subagent && parentOnlyTool(name)) {
+		return false
+	}
+	return !plan || planTool(name)
+}
+
+func graphOwnedTool(name string) bool {
+	switch name {
+	case "update_plan", "delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes":
+		return true
+	default:
+		return false
+	}
 }
 func planTool(name string) bool {
 	switch name {
@@ -1112,13 +1183,14 @@ type DelegateTask struct {
 	// step. It does not create or autonomously execute a plan.
 	PlanStep int `json:"plan_step,omitempty"`
 	// The remaining fields are runtime-only controls for graph-owned automatic
-	// reads. They are never accepted from the delegate tool's JSON arguments.
+	// workers. They are never accepted from the delegate tool's JSON arguments.
 	RuntimeID             string  `json:"-"`
 	GraphNode             bool    `json:"-"`
 	TokenBudgetOverride   int     `json:"-"`
 	CostBudgetOverride    float64 `json:"-"`
 	TimeoutOverride       int     `json:"-"`
 	MaxIterationsOverride int     `json:"-"`
+	BaseCommitOverride    string  `json:"-"`
 }
 
 // AddDelegationTool registers the delegate tool: a concurrency-limited
@@ -1706,7 +1778,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		// adding a worktree. Serialize only this short setup operation per
 		// parent agent; child execution remains fully concurrent afterward.
 		a.worktreeMu.Lock()
-		wt, err = newWorktree(ctx, workspace, task.Name)
+		wt, err = newWorktree(ctx, workspace, task.Name, task.BaseCommitOverride)
 		a.worktreeMu.Unlock()
 		if err != nil {
 			return "", nil, nil, nil, "", "", "", 0, provider.Usage{}, err
@@ -1913,6 +1985,7 @@ func (a *Agent) Clear() {
 	a.messages = nil
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
+	a.goalBoundaryCompact = false
 	a.mu.Unlock()
 }
 
@@ -1924,6 +1997,7 @@ func (a *Agent) Reset() {
 	a.usage = provider.Usage{}
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
+	a.goalBoundaryCompact = false
 	a.mu.Unlock()
 }
 
@@ -2297,10 +2371,47 @@ const compactKeepRecent = 6
 
 func (a *Agent) shouldCompact() bool {
 	estimated, window := a.ContextEstimate()
-	if window <= 0 {
+	a.mu.RLock()
+	graph := a.goalGraph
+	boundary := a.goalBoundaryCompact
+	messageCount := len(a.messages)
+	a.mu.RUnlock()
+	if messageCount <= compactKeepRecent+2 {
 		return false
 	}
-	return estimated > window*80/100 && a.MessageCount() > compactKeepRecent+2
+	if boundary {
+		return true
+	}
+	if window > 0 && estimated > window*80/100 {
+		return true
+	}
+	if graph == nil || estimated <= 0 {
+		return false
+	}
+	remaining := graph.BudgetStatus(time.Now()).RemainingTokens
+	// Compact while there is still ample room to pay for the summary request,
+	// rather than waiting until the next ordinary request no longer fits. One
+	// eighth is deliberately conservative: repeated provider calls resend the
+	// active prompt even when very little wall-clock time has elapsed.
+	return remaining > 0 && estimated >= (remaining+7)/8
+}
+
+// RequestGoalBoundaryCompaction schedules one provider-accounted compaction
+// at the beginning of the newly approved graph's execution turn. The proposal
+// and full transcript remain durable; only the active model context changes.
+func (a *Agent) RequestGoalBoundaryCompaction() {
+	a.mu.Lock()
+	// The execution prompt is appended after approval returns, so account for
+	// that one pending message when deciding whether a compactable prefix will
+	// exist at the beginning of the execution turn.
+	a.goalBoundaryCompact = len(a.messages)+1 > compactKeepRecent+2
+	a.mu.Unlock()
+}
+
+func (a *Agent) clearGoalBoundaryCompaction() {
+	a.mu.Lock()
+	a.goalBoundaryCompact = false
+	a.mu.Unlock()
 }
 
 // Compact summarizes older conversation into one message, keeping the most

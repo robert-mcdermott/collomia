@@ -17,7 +17,7 @@ without rewriting it.
 | User/project configuration | `schema_version: 1` | A missing version is legacy version 1. Normal loading tolerates unknown fields; strict validation rejects them. A newer version is rejected before activation. |
 | Headless runtime events | `schema: 1` | Optional additive fields are allowed. Unknown event kinds, incompatible required fields, and other schema versions are rejected by `collo replay`. |
 | Durable session records | `schema_version: 1` | New records carry the version on every JSONL line. Legacy records without it are version 1. Unknown optional fields are ignored; a newer version is rejected without appending to the session. |
-| Runtime-owned goal-graph snapshots | `schema: 1` | OG-1/OG-2 snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. OG-2B2a adds optional pause request/reached/reason fields; omission restores as not paused. OG-2B2b1 adds aggregate accounting plus attempt iteration/cost-estimate fields; a legacy snapshot reconstructs only stored attempt usage and does not invent missing proposal or iteration history. OG-2B2b2 adds fixed aggregate limits, active-time state, and per-read cost/iteration bounds. Omitted limits restore to the fixed experimental defaults; restore freezes active time at the last durable update, and stored limits wider than this build's hard ceiling are rejected rather than honored. |
+| Runtime-owned goal-graph snapshots | `schema: 1` | OG-1 onward snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. OG-2B2a adds optional pause request/reached/reason fields; omission restores as not paused. OG-2B2b1 adds aggregate accounting plus attempt iteration/cost-estimate fields; a legacy snapshot reconstructs only stored attempt usage and does not invent missing proposal or iteration history. OG-2B2b2 adds fixed aggregate limits, active-time state, and per-read cost/iteration bounds. OG-3A adds explicit narrow writer scopes, a fixed writer envelope, writer accounting, stable-base identity, retained-candidate and child-verification facts, and the `candidate` attempt state. OG-3A.1 raises the hard token ceiling for newly created graphs but does not rewrite a nonzero stored limit, so a graph created under the earlier 192,000-token envelope resumes with 192,000 rather than acquiring the new 1,000,000-token allowance. OG-3A.3 adds optional attempt `last_progress_iteration` and pending-action base workspace/generation fields. OG-3A.4 adds optional `completion_gap` and `completion_gap_iteration` attempt fields; omission means no previously recorded exact gap and grants no inferred remediation progress. Omission never invents prior exact progress; an active legacy attempt with successful tool evidence receives one fresh bounded progress lease on its next accounted provider cycle, while the stored aggregate envelope remains unchanged. Omitted limits restore to current fixed experimental defaults; legacy nodes remain serial, interrupted writers become blockers, restore freezes active time at the last durable update, and stored limits wider than this build's hard ceiling are rejected rather than honored. |
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
@@ -453,6 +453,29 @@ mean serial primary execution; only an explicitly approved `read_only` step is
 eligible for the bounded automatic worker path. Goal snapshot `read_fanout`
 and attempt worker/usage fields are internal additive schema-1 state, with
 restore tests pinning the serial legacy default.
+
+OG-3A additively permits `execution: isolated_write` only alongside explicit
+narrow `plan.steps[].write_paths`. Graph node scopes, `writer_fanout`,
+automatic-writer accounting, attempt base-commit identity, bounded retained
+candidate facts, verification results/tokens, and attempt state `candidate`
+remain internal schema-1 additions. A legacy snapshot contains no
+`isolated_write` node and therefore cannot gain an automatic writer during
+normalization. Missing writer bounds restore to the fixed two-concurrent,
+two-start ceiling; stored values wider than this build are rejected. Running
+writer attempts require a stable parent token/commit and recovery converts
+them to non-replayable interruption blockers rather than scheduling new work.
+OG-3A.4 changes approval/revision policy rather than the node encoding:
+end-to-end proposals use `primary`, while `isolated_write` is accepted only in
+candidate-only executable graphs whose writers are terminal leaves. Existing
+schema-1 snapshots still restore under structural `ValidateSpec`; the stricter
+rule applies when a new proposal is approved or a live graph is revised, so an
+upgrade does not retroactively reinterpret persisted node state.
+OG-3A.5 adds no persisted field. It refines how the existing completion-gap
+watermark advances: a real observed workspace repair or novel failed-verifier
+evidence can renew the bounded remediation window, while equivalent failures
+cannot. Existing blocked attempts remain immutable; an eligible operator retry
+can explicitly reattach the saved terminal graph and starts a fresh attempt
+under the corrected behavior without changing the schema.
 
 ## Release and developer checklist
 

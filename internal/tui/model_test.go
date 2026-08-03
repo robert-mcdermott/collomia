@@ -138,6 +138,21 @@ func TestOrchestratedGoalPreviewIsVisibleAndInspectable(t *testing.T) {
 	if last.role != "panel" || !strings.Contains(last.content, "Attempts and evidence") {
 		t.Fatalf("node inspection panel=%+v", last)
 	}
+	if quit, cmd := (&m).slash("/context"); quit || cmd != nil {
+		t.Fatalf("context should be a local inspection: quit=%t cmd=%v", quit, cmd)
+	}
+	contextPanel := m.blocks[len(m.blocks)-1].content
+	for _, want := range []string{"Orchestrated Goal cumulative budget (active): 0/1000000 tokens", "Estimated current prompt for one request:"} {
+		if !strings.Contains(contextPanel, want) {
+			t.Fatalf("context panel did not distinguish graph and request budgets; missing %q:\n%s", want, contextPanel)
+		}
+	}
+	session := m.sessionContent()
+	for _, want := range []string{"goal tokens", "active · 0/1000000 cumulative", "prompt/request"} {
+		if !strings.Contains(session, want) {
+			t.Fatalf("session context did not distinguish graph and request budgets; missing %q:\n%s", want, session)
+		}
+	}
 	cancelled := false
 	m.busy = true
 	m.cancel = func() { cancelled = true }

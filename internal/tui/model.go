@@ -1212,7 +1212,10 @@ func (m *Model) sessionSections(width int) string {
 	if tokenBudget > 0 || costBudget > 0 {
 		b.WriteString(kv("budgets", fmt.Sprintf("%d tokens / $%.6f", tokenBudget, costBudget)) + "\n")
 	}
-	b.WriteString(kv("prompt", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
+	if phase, used, limit, ok := m.runtime.OrchestratedGoalTokenBudget(); ok {
+		b.WriteString(kv("goal tokens", fmt.Sprintf("%s · %d/%d cumulative · %d remain", phase, used, limit, max(0, limit-used))) + "\n")
+	}
+	b.WriteString(kv("prompt/request", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
 	b.WriteString(kv("messages", fmt.Sprintf("%d", m.runtime.Agent.MessageCount())) + "\n")
 	b.WriteString("  " + contextGauge(m.theme, estimate, window, 30) + "\n\n")
 

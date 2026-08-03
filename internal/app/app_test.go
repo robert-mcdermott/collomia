@@ -30,6 +30,15 @@ type scriptedClient struct {
 	requests []provider.Request
 }
 
+func TestOrchestratedProposalPromptPrefersCoherentGraphNodes(t *testing.T) {
+	prompt := OrchestratedProposalPrompt("build a small application")
+	for _, want := range []string{"Prefer 4–6 substantive outcome nodes", "12 steps is a hard maximum, not a target", "Coalesce serial changes that touch the same scope", "Default to primary for end-to-end build and change goals", "every isolated_write node must be a terminal leaf", "first mutating node must create a focused smoke test"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("proposal prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 // isolateGlobalFiles points per-user state at a scratch home so tests never
 // read or write the real ~/.collomia. It returns that home.
 func isolateGlobalFiles(t *testing.T) string {
@@ -132,6 +141,16 @@ func TestExplicitOrchestratedGoalPreviewRequiresFreshApprovedProposal(t *testing
 	if err := runtime.Plan.Set(approved); err != nil {
 		t.Fatal(err)
 	}
+	proposalStatus, err := runtime.OrchestratedGoalStatus(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(proposalStatus, "Proposal work to seed at approval:") || !strings.Contains(proposalStatus, "0/1000000 tokens") {
+		t.Fatalf("proposal status did not distinguish cumulative budget:\n%s", proposalStatus)
+	}
+	if phase, used, limit, ok := runtime.OrchestratedGoalTokenBudget(); !ok || phase != "proposal" || used != 0 || limit != 1_000_000 {
+		t.Fatalf("proposal token budget phase=%q used=%d limit=%d ok=%t", phase, used, limit, ok)
+	}
 	status, executionPrompt, err := runtime.ApproveOrchestratedGoal(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -139,10 +158,13 @@ func TestExplicitOrchestratedGoalPreviewRequiresFreshApprovedProposal(t *testing
 	if runtime.GoalGraph == nil || runtime.Agent.Plan() {
 		t.Fatalf("approval did not attach execution graph and leave planning mode: graph=%v plan=%t", runtime.GoalGraph, runtime.Agent.Plan())
 	}
-	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "Aggregate envelope:", "0/96 provider iterations", "0/192000 tokens", "acceptance: the repository test suite passes"} {
+	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "Aggregate envelope:", "0/96 provider iterations", "0/1000000 tokens", "acceptance: the repository test suite passes"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("approved status missing %q:\n%s", want, status)
 		}
+	}
+	if phase, used, limit, ok := runtime.OrchestratedGoalTokenBudget(); !ok || phase != "active" || used != 0 || limit != 1_000_000 {
+		t.Fatalf("active token budget phase=%q used=%d limit=%d ok=%t", phase, used, limit, ok)
 	}
 	if !strings.Contains(executionPrompt, "explicitly approved") {
 		t.Fatalf("execution prompt=%q", executionPrompt)
@@ -152,6 +174,73 @@ func TestExplicitOrchestratedGoalPreviewRequiresFreshApprovedProposal(t *testing
 	}
 	if err := runtime.NewSession(); err == nil || !strings.Contains(err.Error(), "active") {
 		t.Fatalf("active graph allowed a session reset: %v", err)
+	}
+}
+
+func TestOrchestratedSpecPreservesScopedIsolatedWriterIntent(t *testing.T) {
+	proposal := &plan.Plan{Goal: "update independent docs", Steps: []plan.Step{
+		{ID: 1, Title: "write user guide", Status: "pending", Execution: "isolated_write", WritePaths: []string{"docs/USER_GUIDE.md"}, Acceptance: []string{"guide check passes"}},
+		{ID: 2, Title: "write security guide", Status: "pending", Execution: "isolated_write", WritePaths: []string{"docs/SECURITY.md"}, Acceptance: []string{"security check passes"}},
+	}}
+	spec, err := orchestratedSpec(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Nodes[0].Execution != goalgraph.ExecutionIsolatedWrite || len(spec.Nodes[0].WritePaths) != 1 || spec.Nodes[0].WritePaths[0] != "docs/USER_GUIDE.md" {
+		t.Fatalf("spec=%+v", spec)
+	}
+	proposal.Steps[0].WritePaths[0] = "mutated"
+	if spec.Nodes[0].WritePaths[0] != "docs/USER_GUIDE.md" {
+		t.Fatal("orchestrated spec aliased the mutable plan write scope")
+	}
+}
+
+func TestOrchestratedSpecRejectsImpossibleEndToEndWriterGraph(t *testing.T) {
+	proposal := &plan.Plan{Goal: "build a Kanban application", Steps: []plan.Step{
+		{ID: 1, Title: "scaffold", Status: "pending", Execution: "primary", Acceptance: []string{"dependencies import"}},
+		{ID: 2, Title: "implement backend", Status: "pending", Execution: "isolated_write", WritePaths: []string{"app/"}, DependsOn: []int{1}, Acceptance: []string{"API tests pass"}},
+		{ID: 3, Title: "integrate", Status: "pending", Execution: "primary", DependsOn: []int{2}, Acceptance: []string{"end-to-end test passes"}},
+	}}
+	if _, err := orchestratedSpec(proposal); err == nil || !strings.Contains(err.Error(), "use primary nodes for an end-to-end goal") {
+		t.Fatalf("impossible proposal error=%v", err)
+	}
+}
+
+func TestOrchestratedApprovalPreflightsDirtyCandidateBase(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	runGitTest(t, workspace, "init")
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, workspace, "add", "README.md")
+	runGitTest(t, workspace, "commit", "-m", "base")
+	runtime, err := New(t.Context(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.BeginOrchestratedProposal("produce a docs candidate for review"); err != nil {
+		t.Fatal(err)
+	}
+	proposal := plan.Plan{Goal: "produce a docs candidate", Steps: []plan.Step{{ID: 1, Title: "write docs candidate", Status: "pending", Execution: "isolated_write", WritePaths: []string{"docs/"}, Acceptance: []string{"docs check passes"}}}}
+	if err := runtime.Plan.Set(proposal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "dirty.txt"), []byte("not committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "dirty (1 paths: dirty.txt)") {
+		t.Fatalf("dirty candidate approval error=%v", err)
+	}
+	if runtime.GoalGraph != nil || runtime.OrchestratedGoalPhase() != "proposal" {
+		t.Fatalf("failed preflight consumed proposal: graph=%v phase=%q", runtime.GoalGraph, runtime.OrchestratedGoalPhase())
+	}
+	if err := os.Remove(filepath.Join(workspace, "dirty.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err != nil {
+		t.Fatalf("clean candidate approval failed after correction: %v", err)
 	}
 }
 
@@ -225,6 +314,45 @@ func TestSavedOrchestratedGoalRemainsInertUntilExplicitResume(t *testing.T) {
 	}
 	if resumed.GoalGraph == nil || !runnable || prompt == "" || !strings.Contains(status, "inspect the repository") {
 		t.Fatalf("explicit resume did not reattach runnable graph: graph=%v runnable=%t prompt=%q status=%q", resumed.GoalGraph, runnable, prompt, status)
+	}
+}
+
+func TestSavedBlockedGoalCanBeExplicitlyRetriedWithoutSeparateResume(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	approved := &plan.Plan{Goal: "repair safely", Steps: []plan.Step{{ID: 1, Title: "repair", Acceptance: []string{"repository evidence is recorded"}}}}
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := first.GoalGraph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.GoalGraph.BlockActive(t.Context(), attempt.ID, "bounded remediation stopped"); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	restored, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.GoalGraph != nil {
+		t.Fatal("saved blocked graph activated without an explicit user action")
+	}
+	status, prompt, runnable, err := restored.RetryOrchestratedNode(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.GoalGraph == nil || !runnable || prompt == "" || !strings.Contains(status, "repair · ready") {
+		t.Fatalf("direct saved retry graph=%v runnable=%t prompt=%q status=%q", restored.GoalGraph, runnable, prompt, status)
+	}
+	snapshot := restored.GoalGraph.Snapshot()
+	if snapshot.Outcome != "" || len(snapshot.Attempts) != 1 || snapshot.Attempts[0].State != goalgraph.AttemptBlocked || snapshot.Nodes[0].State != goalgraph.NodeReady {
+		t.Fatalf("direct saved retry did not preserve the blocker and reopen the node: %+v", snapshot)
 	}
 }
 

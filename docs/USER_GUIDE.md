@@ -1278,7 +1278,7 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 
 | Field | Meaning |
 | --- | --- |
-| `max_iterations` | Maximum model/tool iterations in one turn; defaults to `24`. |
+| `max_iterations` | Maximum provider/model response cycles in one Standard turn, or consecutive cycles an Orchestrated Goal primary attempt may take without novel durable successful tool evidence; defaults to `24`. It is not a tool-call count. |
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
@@ -2935,9 +2935,12 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 Orchestrated Goal is Collomia's opt-in TUI preview for **evidence-gated durable
 execution**. The model proposes and interprets a bounded dependency graph; the
 runtime owns readiness, attempts, evidence freshness, recovery treatment,
-aggregate bounds, and the terminal outcome. It keeps one serial primary lane and can use at most two
-automatic governed workers for independently ready approved `read_only`
-nodes. Standard mode remains the default.
+aggregate bounds, and the terminal outcome. End-to-end graphs keep one serial
+primary lane and can use at most two automatic governed workers for
+independently ready approved `read_only` nodes. As a separate candidate-only
+shape, the preview can produce one bounded wave of verified retained terminal
+candidates for narrowly scoped `isolated_write` nodes. Standard mode
+remains the default.
 
 A complete trial looks like this:
 
@@ -2954,8 +2957,19 @@ A complete trial looks like this:
 The first command enters read-only proposal mode. Collomia asks the model for a
 new structured plan whose steps are all pending, have valid dependencies, and
 each state at least one concrete acceptance criterion. Each step also declares
-`execution: primary` or `execution: read_only`: use `read_only` only for
-bounded repository investigation that needs no file change or command; omitted
+`execution: primary`, `execution: read_only`, or `execution: isolated_write`.
+The proposal prompt prefers four to six substantive outcome nodes and treats
+twelve as a hard maximum, not a target. Serial file/layer changes that share a
+scope and verification surface should be one coherent node; distinct
+dependency, permission, write-scope, isolation, or recovery boundaries remain
+separate.
+Use `read_only` only for bounded repository investigation that needs no file
+change or command. End-to-end build/change goals should use `primary` for all
+implementation nodes. `isolated_write` is currently only for an explicitly
+requested candidate-only preview: it may follow `read_only` prerequisites but
+cannot coexist with `primary`, each writer needs narrow repository-relative
+`write_paths`, and every writer must be a terminal leaf because retained
+candidates cannot unlock dependents before reviewed integration. Omitted
 execution is treated conservatively as serial `primary`. No implementation
 tool is available during this turn. Inspect the proposal with `/orchestrate
 status`; an ordinary plan that existed before the command, a restored plan, or
@@ -2979,6 +2993,31 @@ passed” statement, an earlier test result, a no-op write, or a success-masked
 command is not proof. Later workspace drift invalidates accepted evidence
 conservatively.
 
+Run verification as the direct command whose exit status should become proof.
+Leading environment assignments, virtual-environment executable paths, and
+direct Python module invocation are recognized, so commands such as
+`UV_CACHE_DIR=.uv-cache uv run pytest -v`, `.venv/bin/pytest -v`, and
+`.venv/bin/python -m pytest -v` can qualify. Collomia also safely removes an
+exact redundant `cd` to the current workspace (or `.`) followed by `&&`, and a
+final literal `2>&1`; these wrappers preserve the verifier's exit status.
+Other directories, pipes, semicolons, `||`, and shell composition remain
+ineligible because a later operation can hide that status.
+If a successful command looks like verification but is ineligible, its tool
+result says why and shows the direct form to run; for example,
+`pytest -v 2>&1; echo "$?"` is rejected and suggests `pytest -v`.
+
+After the runtime names a completion gap, remediation is deliberately narrow.
+The agent receives four provider responses to produce concrete repair or
+gate-changing evidence. A real workspace mutation, a novel machine-observed
+verification failure, or evidence that closes the exact gate renews that short
+window. This lets the agent react to a useful failure—for example, adding a
+focused smoke test when the detected verifier reports that no tests exist—and
+then run the verifier directly against current workspace state. Different
+command spellings, an identical failure against unchanged files, and unrelated
+reads remain visible in evidence but do not renew the lease. If the gate still
+does not advance, the node stops `blocked` with the exact reason instead of
+spending the entire graph budget.
+
 When up to two independent `read_only` nodes are ready, the runtime—not the
 model—claims them in stable proposal order and runs them through the existing
 read-only delegated-agent boundary. These workers share the workspace for
@@ -2990,6 +3029,35 @@ matches the durable claim. Both workers finish before the primary lane moves
 on. Primary-only graphs create no child; dependency-serial `read_only` work
 never has more than one worker active and gains no parallelism.
 
+For an explicitly candidate-only proposal, when one or two pairwise-disjoint
+`isolated_write` nodes are dependency-ready,
+the runtime may claim one candidate wave in stable proposal order. The parent
+Git workspace must be clean and unchanged across state checks, and every child
+is created from the same exact commit. `/orchestrate approve` performs this
+preflight before creating durable execution state. If the workspace has
+staged, unstaged, or untracked files, approval names the observed paths and
+keeps the proposal awaiting approval instead of silently omitting those bytes
+or creating an immediately blocked graph. Commit or otherwise reconcile that
+work, then run `/orchestrate approve` again.
+
+Before writer dispatch, Collomia asks for the ordinary `delegate` write
+permission and runs configured hooks. Each writer stays in a separate retained
+`collomia/…` worktree, inherits equal-or-tighter permissions, cannot delegate
+or control the graph, and is checked against its declared `write_paths`.
+Afterward Collomia redetects the repository's standard verification commands
+inside the child worktree and applies the ordinary `run_command` permission and
+hooks to each one. All commands must pass against one unchanged child-state
+token, the base and parent tokens must still match, and every changed path must
+remain in scope.
+
+A passing writer is a candidate, not completed parent work. `/orchestrate
+status <node-id>` shows its retained worktree, branch, base, changed files, and
+verification state. The graph stops `blocked` with “reviewed integration is
+required,” dependents remain closed, and the parent workspace is unchanged.
+Use the displayed worktree and the Session agent view to inspect the result.
+Automatic candidate selection and integration are OG-4 work; this preview does
+not apply, commit, merge, push, or publish the candidate.
+
 The fixed aggregate automatic-read envelope is visible in `/orchestrate
 status`: at most two concurrent workers, eight starts, 64,000 read tokens, and
 fifteen minutes total read wall time. Each child is also capped at five minutes
@@ -2999,7 +3067,7 @@ graph records why it delegated and the worker identity, usage, evidence,
 retry, and terminal state.
 
 The whole graph also has a fixed experimental envelope: 96 provider
-iterations, 192,000 aggregate input/output tokens, $5 estimated cost when
+iterations, 1,000,000 aggregate input/output tokens, $5 estimated cost when
 every token-bearing contribution has configured pricing, and 30 minutes of
 active execution after approval. These limits are stored with the graph and
 cannot be widened by configuration, repository content, instructions, skills,
@@ -3007,13 +3075,40 @@ hooks, or the model. Reaching an exact limit prevents another provider or
 scheduler admission; a response that crosses one records its usage and ends
 the graph `budget_exhausted`. Automatic workers inherit a share of the
 remaining allowance, while tighter primary/profile/read limits continue to
-win. If pricing is incomplete, Collomia says cost is unavailable and relies on
+win. Older saved graphs retain the ceiling stored when they were created; an
+upgrade never silently grants an in-progress graph more budget. If pricing is
+incomplete, Collomia says cost is unavailable and relies on
 the token, iteration, and active-wall limits—it does not pretend the dollar
 ceiling was observed.
 
+`options.max_iterations` counts provider/model response cycles, not individual
+tool calls: one response may contain several tool calls. In Standard mode it
+limits the whole turn. In Orchestrated Goal it is a consecutive no-progress
+lease inside one immutable primary node attempt. A novel successful tool
+result, newly observed workspace state, fresh verification, or resolution of a
+recoverable failure renews the lease; repeating equivalent evidence does not.
+This leaves room for the model to submit a completion proposal after a final
+productive action instead of stopping at the same boundary. The fixed
+96-iteration aggregate remains the outer limit across the proposal, all
+primary attempts, compaction, and automatic workers. This prevents a
+multi-node graph from exhausting an ordinary 24-iteration setting merely
+because earlier work was productive, without making the graph unbounded.
+
+Potentially mutating and external actions still receive a durable write-ahead
+generation before they run. That is the recovery record used to prevent replay
+after an interrupted side effect. Evidence freshness separately follows the
+machine-observed Git workspace token: if a completed process, command, or
+network smoke check leaves that token unchanged, earlier verification remains
+current; if it changes or cannot be observed, fresh verification is required.
+A successful recognized direct verification command returns an explicit
+receipt in the tool result. Direct `python -m pytest`, virtual-environment
+Python module forms, and `uv run python -m pytest` are recognized; shell
+composition that can mask the verifier's exit status is still rejected with a
+safe direct-command suggestion.
+
 The same status panel shows durable aggregate model work. The primary lane
 includes the explicit proposal call plus later serial execution; automatic
-reads have their own lane. Each reports provider iterations and input/output
+reads and automatic isolated writers have their own lanes. Each reports provider iterations and input/output
 tokens, and the total shows both elapsed time from the start of `/orchestrate`
 and active post-approval execution time. Cost
 appears only when every token-bearing contribution had user-configured
@@ -3024,13 +3119,29 @@ boundary freezes active time; explicit resume restarts it, so user review,
 paused time, and downtime do not consume the active allowance. These counters
 are measurement, not authority, and do not replace tighter existing bounds.
 
+After approval, Collomia performs one provider-accounted compaction before the
+first graph node executes when enough proposal history exists. During later
+execution it also compacts proactively when the estimated prompt for one call
+would consume at least one-eighth of the graph's remaining cumulative token
+allowance. This trigger is independent of the ordinary 80%-of-context-window
+trigger: a 17,000-token prompt may fit easily in a 500,000-token context window
+while repeated calls still consume a one-million-token graph allowance. The
+Session tab and `/context` therefore show the per-request prompt/window and the
+whole-graph cumulative usage together. Compaction requests consume and record
+tokens like every other provider call.
+
 Use `/orchestrate status [node]` at any time to inspect the graph or one node,
 including dependencies, acceptance criteria, attempts, failures, commands,
 evidence, and the fixed preview bounds. `/tasks` and the Session/context-rail
 views project the active graph rather than showing a stale logical plan.
+After approval, whole-plan replacement and model-directed delegation tools are
+not part of the primary tool surface; the runtime owns graph transitions and
+automatic claims. Collomia enforces that tool set again before decoding or
+executing a call, so a model's remembered `update_plan` or `delegate` call is
+blocked rather than allowed to cross the runtime authority boundary.
 `/orchestrate pause` is also available in the limited command lane while a turn
 is running. It durably prevents new graph scheduling, lets the current
-provider/tool/read iteration finish, and then records a safe paused boundary;
+provider/tool/worker iteration finish, and then records a safe paused boundary;
 it does not pretend to suspend an operating-system process. The status bar
 shows `GOAL… · EXP` while the boundary is pending and `GOAL ‖ · EXP` once it
 is reached. `/orchestrate resume` clears only pause state and starts the next
@@ -3039,24 +3150,31 @@ intact. `/orchestrate cancel` remains the immediate whole-graph stop.
 
 If a graph ends `blocked`, `/orchestrate retry <node-id>` creates a new attempt
 only when that node has attempt budget remaining and no non-replayable action
-is unresolved. The blocked attempt and its evidence remain inspectable. Retry
-fails closed after attempt exhaustion or when an interrupted mutation may
-already have happened; it never converts model prose into proof or repeats an
-ambiguous side effect. There is no node-cancel command because every current
-node is required—cancelling one would be equivalent to cancelling the graph.
+is unresolved. That explicit retry action can also reattach a saved blocked
+graph after the exact conversation is reopened, without first running
+`/orchestrate resume`. The blocked attempt and its evidence remain inspectable.
+Retry fails closed after attempt exhaustion or when an interrupted mutation
+may already have happened; it never converts model prose into proof or repeats
+an ambiguous side effect. There is no node-cancel command because every
+current node is required—cancelling one would be equivalent to cancelling the
+graph.
 
 A saved graph is visible but deliberately inert after reopening a session;
-`/orchestrate resume` is required to reattach a nonterminal graph and clears a
-saved pause only as part of that explicit action. This prevents persisted
+`/orchestrate resume` reattaches a nonterminal graph and clears a saved pause
+only as part of that explicit action. For a terminal blocked graph, an explicit
+`/orchestrate retry <node-id>` may reattach and safely reopen that node in one
+step. Neither command runs merely because persisted bytes exist, preventing
 project or session content from silently opting the user back in.
 
 Resume is mutation-safe, but not yet an exact replay of a multi-worker
 schedule. An interrupted replay-safe read may be recomputed only as a fresh
-bounded attempt. A potentially mutating or external action is durably marked
+bounded attempt. An interrupted isolated writer blocks for inspection and
+cannot use safe retry, because its retained worktree may already have changed.
+A potentially mutating or external parent action is durably marked
 before it starts; if its outcome is ambiguous after interruption, the graph
 blocks for reconciliation and never automatically repeats it. Exact scheduler
-recovery, isolated automatic writers, and reviewed integration are later
-milestones.
+recovery, exact in-flight worktree reconciliation, and reviewed integration
+are later milestones.
 
 An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another goal with
@@ -3067,8 +3185,8 @@ decision: substantive independent repository-fact and cross-layer source/test
 investigations produced the same grounded result faster than Standard and
 primary-only graph runs, while their extra iterations and tokens stayed
 visible. This is not a claim that orchestration is always faster or cheaper.
-Automatic isolated writer candidates and exact multi-worker recovery remain
-later Orchestrated Goal work.
+Automatic candidate selection/integration and exact multi-worker recovery
+remain later Orchestrated Goal work.
 
 ### Workspace paths and prompt files
 
@@ -5388,7 +5506,10 @@ Orchestrated Goal preview, `/tasks` instead shows the runtime graph and its live
 node states so a completed proposal cannot be mistaken for execution truth.
 
 When estimated active context exceeds 80% of a known window and enough messages
-exist, Collomia asks the active provider to summarize older history. It keeps
+exist, Collomia asks the active provider to summarize older history. An
+approved Orchestrated Goal additionally compacts at its proposal/execution
+boundary and when one current prompt reaches one-eighth of its remaining
+cumulative token allowance. It keeps
 the six most recent messages verbatim and never splits a tool call from its
 results. Up to three recent failure results, bounded to 16 KiB in total, are
 copied verbatim into the summary record rather than trusting the provider to
@@ -5398,7 +5519,8 @@ manually.
 
 Compaction changes only the model's active context. The full durable transcript
 is retained in the session JSONL file. Compaction itself consumes a provider
-request and tokens.
+request and tokens; graph-triggered compaction is included in durable graph
+accounting.
 
 ### Session image storage
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -65,16 +66,18 @@ func GoalOutcomeFor(err error) GoalOutcome {
 }
 
 type toolObservation struct {
-	Name          string
-	Action        tools.Action
-	Failed        bool
-	FailureKind   goalgraph.FailureKind
-	FailureDetail string
-	ResultSummary string
-	Retryable     bool
-	Started       time.Time
-	Finished      time.Time
-	GraphRecorded bool
+	Name               string
+	Action             tools.Action
+	Failed             bool
+	FailureKind        goalgraph.FailureKind
+	FailureDetail      string
+	ResultSummary      string
+	Retryable          bool
+	Started            time.Time
+	Finished           time.Time
+	GraphRecorded      bool
+	IgnoreGraphFailure bool
+	Verification       bool
 }
 
 type completionController struct {
@@ -246,7 +249,83 @@ func completionNotice(issues []string, intervention int) string {
 // checks. Shell compounds and redirections are excluded: `tests || true` must
 // never become machine-observed passing evidence merely because the shell
 // returned zero.
+type verificationAssessment struct {
+	Recognized       bool
+	VerificationLike bool
+	Reason           string
+	Suggestion       string
+}
+
 func isVerificationCommand(command, workspace string) bool {
+	return assessVerificationCommand(command, workspace).Recognized
+}
+
+func assessVerificationCommand(command, workspace string) verificationAssessment {
+	candidate := strings.TrimSpace(command)
+	candidate = stripSafeVerificationStderrMerge(candidate)
+	candidate, _ = stripSafeVerificationWorkspaceCD(candidate, workspace)
+	normalized := strings.Join(strings.Fields(candidate), " ")
+	if normalized == "" {
+		return verificationAssessment{}
+	}
+	if compoundAt := verificationShellOperator(candidate); compoundAt >= 0 {
+		direct := verificationDirectPrefix(candidate, compoundAt)
+		if directVerificationCommand(direct, workspace) {
+			return verificationAssessment{
+				VerificationLike: true,
+				Reason:           "the command contains shell composition or redirection, so the shell's final status may mask the verification command's exit status",
+				Suggestion:       strings.Join(strings.Fields(direct), " "),
+			}
+		}
+		return verificationAssessment{}
+	}
+	if directVerificationCommand(normalized, workspace) {
+		return verificationAssessment{Recognized: true, VerificationLike: true}
+	}
+	return verificationAssessment{}
+}
+
+// stripSafeVerificationWorkspaceCD removes only the redundant working-
+// directory wrapper that run_command itself already supplies. The exact
+// workspace (or .) followed by && is safe because a failed cd is non-zero and,
+// after a successful cd, the verifier remains the final command whose status
+// the shell returns. Every other compound form remains ineligible.
+func stripSafeVerificationWorkspaceCD(command, workspace string) (string, bool) {
+	operator := strings.Index(command, "&&")
+	if operator < 0 {
+		return command, false
+	}
+	prefix := strings.TrimSpace(command[:operator])
+	if !strings.HasPrefix(prefix, "cd ") {
+		return command, false
+	}
+	argument := strings.TrimSpace(strings.TrimPrefix(prefix, "cd "))
+	cleanWorkspace := filepath.Clean(strings.TrimSpace(workspace))
+	allowed := []string{".", "'.'", `"."`}
+	if cleanWorkspace != "." && cleanWorkspace != "" {
+		allowed = append(allowed, cleanWorkspace, "'"+cleanWorkspace+"'", `"`+cleanWorkspace+`"`)
+	}
+	if !slices.Contains(allowed, argument) {
+		return command, false
+	}
+	remainder := strings.TrimSpace(command[operator+2:])
+	if remainder == "" {
+		return command, false
+	}
+	return remainder, true
+}
+
+// A final stderr-to-stdout merge changes presentation, not the command's exit
+// status. It is the only shell redirection accepted around verification.
+func stripSafeVerificationStderrMerge(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if strings.HasSuffix(trimmed, " 2>&1") {
+		return strings.TrimSpace(strings.TrimSuffix(trimmed, " 2>&1"))
+	}
+	return trimmed
+}
+
+func directVerificationCommand(command, workspace string) bool {
 	normalized := strings.Join(strings.Fields(command), " ")
 	if normalized == "" {
 		return false
@@ -257,13 +336,21 @@ func isVerificationCommand(command, workspace string) bool {
 			return true
 		}
 	}
-	if strings.ContainsAny(command, "\n;&|><`") || strings.Contains(command, "$(") {
-		return false
-	}
 	fields := strings.Fields(normalized)
+	for len(fields) > 0 && shellEnvironmentAssignment(fields[0]) {
+		fields = fields[1:]
+	}
 	if len(fields) == 0 {
 		return false
 	}
+	// Virtual-environment and platform-specific executable paths preserve the
+	// invoked program's exit status just as the bare executable does.
+	executable := strings.ReplaceAll(fields[0], "\\", "/")
+	if slash := strings.LastIndexByte(executable, '/'); slash >= 0 {
+		executable = executable[slash+1:]
+	}
+	executable = strings.TrimSuffix(executable, ".exe")
+	fields[0] = executable
 	verb := func(index int, allowed ...string) bool {
 		if len(fields) <= index {
 			return false
@@ -280,6 +367,8 @@ func isVerificationCommand(command, workspace string) bool {
 		return verb(1, "test", "vet", "build")
 	case "cargo":
 		return verb(1, "test", "check", "clippy", "build")
+	case "python", "python3":
+		return verb(1, "-m") && verb(2, "pytest", "mypy")
 	case "pytest", "mypy":
 		return true
 	case "ruff":
@@ -289,6 +378,9 @@ func isVerificationCommand(command, workspace string) bool {
 			return false
 		}
 		if verb(2, "pytest", "mypy") {
+			return true
+		}
+		if verb(2, "python", "python3") && verb(3, "-m") && verb(4, "pytest", "mypy") {
 			return true
 		}
 		return verb(2, "ruff") && (verb(3, "check") || (verb(3, "format") && slices.Contains(fields[4:], "--check")))
@@ -308,4 +400,42 @@ func isVerificationCommand(command, workspace string) bool {
 	default:
 		return false
 	}
+}
+
+func verificationShellOperator(command string) int {
+	index := strings.IndexAny(command, "\n;&|><`")
+	if substitution := strings.Index(command, "$("); substitution >= 0 && (index < 0 || substitution < index) {
+		index = substitution
+	}
+	return index
+}
+
+func verificationDirectPrefix(command string, operator int) string {
+	end := operator
+	if operator >= 0 && operator < len(command) && (command[operator] == '>' || command[operator] == '<') {
+		// Drop an adjacent numeric file-descriptor prefix as part of the
+		// redirection (`2>&1`), not as a spurious verification argument.
+		start := operator
+		for start > 0 && command[start-1] >= '0' && command[start-1] <= '9' {
+			start--
+		}
+		if start < operator && (start == 0 || command[start-1] == ' ' || command[start-1] == '\t') {
+			end = start
+		}
+	}
+	return strings.TrimSpace(command[:end])
+}
+
+func shellEnvironmentAssignment(field string) bool {
+	equals := strings.IndexByte(field, '=')
+	if equals <= 0 {
+		return false
+	}
+	for index, char := range field[:equals] {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char == '_' || (index > 0 && char >= '0' && char <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }

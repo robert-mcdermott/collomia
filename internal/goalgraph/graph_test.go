@@ -133,6 +133,205 @@ func TestGraphClaimsTwoStableReadWorkersBeforePrimaryLane(t *testing.T) {
 	}
 }
 
+func TestGraphClaimsOneVerifiedDisjointWriterWaveAndStopsForReview(t *testing.T) {
+	graph, err := New(Spec{Goal: "implement independent changes", Nodes: []NodeSpec{
+		{ID: 1, Title: "change API", Execution: ExecutionIsolatedWrite, WritePaths: []string{"internal/api/"}, Acceptance: []string{"API tests pass"}},
+		{ID: 2, Title: "change docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+		{ID: 3, Title: "integrate", Execution: ExecutionPrimary, DependsOn: []int{1, 2}},
+	}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 2)
+	if err != nil || len(claims) != 2 || claims[0].Node.ID != 1 || claims[1].Node.ID != 2 {
+		t.Fatalf("writer claims=%+v err=%v", claims, err)
+	}
+	if claims[0].Attempt.BaseCommit != base.Commit || claims[1].Attempt.BaseWorkspaceToken != base.WorkspaceToken {
+		t.Fatalf("claims do not share immutable base: %+v", claims)
+	}
+	for index, claim := range claims {
+		path := "internal/api/api.go"
+		if index == 1 {
+			path = "docs/guide.md"
+		}
+		token := fmt.Sprintf("child-state-%d", index+1)
+		err := graph.FinishWriter(t.Context(), WriterResult{
+			AttemptID: claim.Attempt.ID, WorkerID: fmt.Sprintf("writer-%d", index+1), Status: "done",
+			Summary: "implemented and checked candidate", Evidence: []string{"edit_file: completed — candidate changed"},
+			WritePaths: claim.WritePaths, ChangedFiles: []string{path}, Worktree: "/tmp/candidate", Branch: fmt.Sprintf("collomia/writer-%d", index+1), BaseCommit: base.Commit,
+			ParentWorkspaceToken: base.WorkspaceToken, VerificationState: "passed", VerificationToken: token,
+			Verification: []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: token}},
+			Iterations:   2, InputTokens: 100, OutputTokens: 20,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := graph.Snapshot()
+	if outcome, reason := graph.Outcome(); outcome != OutcomeBlocked || !strings.Contains(reason, "reviewed integration is required") {
+		t.Fatalf("outcome=%q reason=%q", outcome, reason)
+	}
+	if snapshot.Nodes[0].State != NodeBlocked || snapshot.Nodes[1].State != NodeBlocked || snapshot.Nodes[2].State == NodeDone {
+		t.Fatalf("candidate wave advanced logical completion: %+v", snapshot.Nodes)
+	}
+	if snapshot.Attempts[0].State != AttemptCandidate || snapshot.Attempts[0].Candidate == nil || snapshot.Attempts[1].Candidate == nil {
+		t.Fatalf("retained candidates=%+v", snapshot.Attempts)
+	}
+	if snapshot.Accounting.AutomaticWriters.Iterations != 4 || snapshot.Accounting.AutomaticWriters.InputTokens != 200 {
+		t.Fatalf("writer accounting=%+v", snapshot.Accounting.AutomaticWriters)
+	}
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("candidate snapshot is invalid: %v", err)
+	}
+	corrupted := graph.Snapshot()
+	corrupted.Attempts[0].Candidate.Verification[0].StateToken = "different-child-state"
+	if err := ValidateSnapshot(corrupted); err == nil || !strings.Contains(err.Error(), "failed or stale verification") {
+		t.Fatalf("corrupted candidate verification was accepted: %v", err)
+	}
+}
+
+func TestExecutableSpecRejectsUnschedulableCandidateTopology(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec Spec
+		want string
+	}{
+		{
+			name: "mixed primary and candidate lanes",
+			spec: Spec{Goal: "build app", Nodes: []NodeSpec{
+				{ID: 1, Title: "scaffold", Execution: ExecutionPrimary},
+				{ID: 2, Title: "backend candidate", Execution: ExecutionIsolatedWrite, WritePaths: []string{"app/"}},
+			}},
+			want: "cannot be mixed with primary",
+		},
+		{
+			name: "candidate used as dependency",
+			spec: Spec{Goal: "candidate preview", Nodes: []NodeSpec{
+				{ID: 1, Title: "backend candidate", Execution: ExecutionIsolatedWrite, WritePaths: []string{"app/"}},
+				{ID: 2, Title: "inspect candidate", Execution: ExecutionReadOnly, DependsOn: []int{1}},
+			}},
+			want: "must be a terminal leaf",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateExecutableSpec(tc.spec); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+	valid := Spec{Goal: "candidate preview", Nodes: []NodeSpec{
+		{ID: 1, Title: "inspect", Execution: ExecutionReadOnly},
+		{ID: 2, Title: "docs candidate", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, DependsOn: []int{1}},
+	}}
+	if err := ValidateExecutableSpec(valid); err != nil {
+		t.Fatalf("valid candidate-only topology rejected: %v", err)
+	}
+}
+
+func TestGraphWriterClaimsRejectDirtyBaseAndSerializeOverlappingScopes(t *testing.T) {
+	spec := Spec{Goal: "bounded writers", Nodes: []NodeSpec{
+		{ID: 1, Title: "broad", Execution: ExecutionIsolatedWrite, WritePaths: []string{"internal/"}},
+		{ID: 2, Title: "nested", Execution: ExecutionIsolatedWrite, WritePaths: []string{"internal/api/"}},
+		{ID: 3, Title: "independent", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}},
+	}}
+	graph, err := New(spec, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyWriters(t.Context(), WriterBase{WorkspaceToken: "state", Commit: "abc", Clean: true}, 2)
+	if err != nil || len(claims) != 2 || claims[0].Node.ID != 1 || claims[1].Node.ID != 3 {
+		t.Fatalf("overlapping scopes were co-scheduled: claims=%+v err=%v", claims, err)
+	}
+
+	dirty, err := New(spec, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dirty.StartReadyWriters(t.Context(), WriterBase{WorkspaceToken: "state", Commit: "abc", Clean: false, DirtyPaths: []string{"pyproject.toml", "app/"}, DirtyCount: 2}, 2); !errors.Is(err, ErrGraphTerminal) {
+		t.Fatalf("dirty base error=%v", err)
+	}
+	if outcome, reason := dirty.Outcome(); outcome != OutcomeBlocked || !strings.Contains(reason, "dirty (2 paths: pyproject.toml, app/)") || !strings.Contains(reason, "commit or reconcile") {
+		t.Fatalf("dirty outcome=%q reason=%q", outcome, reason)
+	}
+}
+
+func TestGraphWriterCandidateRejectsStaleParentAndScopeViolations(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		parent     string
+		changed    []string
+		violations []string
+		kind       FailureKind
+	}{
+		{name: "stale parent", parent: "new-parent", changed: []string{"internal/api.go"}, kind: FailureWorkspaceStale},
+		{name: "scope violation", parent: "parent", changed: []string{"README.md"}, violations: []string{"README.md"}, kind: FailureTool},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			graph, err := New(Spec{Goal: "write", Nodes: []NodeSpec{{ID: 1, Title: "change API", Execution: ExecutionIsolatedWrite, WritePaths: []string{"internal/"}}}}, 1, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims, err := graph.StartReadyWriters(t.Context(), WriterBase{WorkspaceToken: "parent", Commit: "abc", Clean: true}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = graph.FinishWriter(t.Context(), WriterResult{
+				AttemptID: claims[0].Attempt.ID, WorkerID: "writer", Status: "done", Summary: "candidate",
+				WritePaths: claims[0].WritePaths, ChangedFiles: tc.changed, ScopeViolations: tc.violations,
+				Worktree: "/tmp/candidate", Branch: "collomia/writer", BaseCommit: "abc", ParentWorkspaceToken: tc.parent,
+				VerificationState: "passed", VerificationToken: "child", Verification: []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: "child"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt := graph.Snapshot().Attempts[0]
+			if attempt.State == AttemptCandidate || len(attempt.Failures) != 1 || attempt.Failures[0].Kind != tc.kind {
+				t.Fatalf("attempt=%+v", attempt)
+			}
+		})
+	}
+}
+
+func TestGraphRecoveryNeverReplaysInterruptedIsolatedWriter(t *testing.T) {
+	graph, err := New(Spec{Goal: "write", Nodes: []NodeSpec{{ID: 1, Title: "write docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := graph.StartReadyWriters(t.Context(), WriterBase{WorkspaceToken: "parent", Commit: "abc", Clean: true}, 1); err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	restored, err := Restore(graph.Snapshot(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Recover(t.Context(), "parent"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := restored.Snapshot()
+	if outcome, reason := restored.Outcome(); outcome != OutcomeBlocked || !strings.Contains(reason, "may have changed its retained worktree") {
+		t.Fatalf("outcome=%q reason=%q", outcome, reason)
+	}
+	if snapshot.Nodes[0].State != NodeBlocked || snapshot.Attempts[0].State != AttemptInterrupted || len(snapshot.Attempts[0].Failures) != 1 || snapshot.Attempts[0].Failures[0].Kind != FailureInterruptedAction {
+		t.Fatalf("recovered snapshot=%+v", snapshot)
+	}
+	if err := restored.RetryNode(t.Context(), 1, "try again"); !errors.Is(err, ErrUnsafeNodeRetry) {
+		t.Fatalf("interrupted writer retry error=%v", err)
+	}
+}
+
+func TestGraphIsolatedWriterRequiresExplicitNarrowScope(t *testing.T) {
+	for _, scopes := range [][]string{nil, {"*"}} {
+		_, err := New(Spec{Goal: "write", Nodes: []NodeSpec{{ID: 1, Title: "write", Execution: ExecutionIsolatedWrite, WritePaths: scopes}}}, 1, Options{})
+		if err == nil {
+			t.Fatalf("invalid scope %v was accepted", scopes)
+		}
+	}
+	if _, err := New(Spec{Goal: "read", Nodes: []NodeSpec{{ID: 1, Title: "read", Execution: ExecutionReadOnly, WritePaths: []string{"docs/"}}}}, 1, Options{}); err == nil {
+		t.Fatal("read_only node accepted a write scope")
+	}
+}
+
 func TestGraphAggregateAccountingSeparatesPrimaryAndAutomaticReads(t *testing.T) {
 	started := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	fixture := &graphFixture{now: started}
@@ -204,6 +403,11 @@ func TestGraphAggregateAccountingSeparatesPrimaryAndAutomaticReads(t *testing.T)
 	corrupt.Accounting.Primary.Iterations = -1
 	if _, err := Restore(corrupt, Options{}); err == nil || !strings.Contains(err.Error(), "aggregate accounting") {
 		t.Fatalf("invalid accounting restore error=%v", err)
+	}
+	corruptProgress := graph.Snapshot()
+	corruptProgress.Attempts[len(corruptProgress.Attempts)-1].LastProgressIteration = corruptProgress.Attempts[len(corruptProgress.Attempts)-1].Iterations + 1
+	if _, err := Restore(corruptProgress, Options{}); err == nil || !strings.Contains(err.Error(), "invalid attempt") {
+		t.Fatalf("invalid progress restore error=%v", err)
 	}
 }
 
@@ -374,6 +578,16 @@ func TestGraphAggregateAllowanceNarrowsAutomaticReadClaims(t *testing.T) {
 	widened.AggregateBudget.MaxTokens = defaultMaxGraphTokens + 1
 	if _, err := Restore(widened, Options{}); err == nil || !strings.Contains(err.Error(), "aggregate budget") {
 		t.Fatalf("widened stored envelope was accepted: %v", err)
+	}
+
+	legacy := graph.Snapshot()
+	legacy.AggregateBudget.MaxTokens = 192_000
+	restoredLegacy, err := Restore(legacy, Options{})
+	if err != nil {
+		t.Fatalf("previous fixed envelope no longer restores: %v", err)
+	}
+	if got := restoredLegacy.BudgetStatus(time.Time{}).Limits.MaxTokens; got != 192_000 {
+		t.Fatalf("restore widened previous graph budget to %d", got)
 	}
 
 	oneToken, err := New(Spec{Goal: "one token remains", Nodes: []NodeSpec{
@@ -560,6 +774,150 @@ func TestPrimaryMutationRequiresFreshCombinedVerification(t *testing.T) {
 	}
 	if snapshot := graph.Snapshot(); snapshot.Outcome != OutcomeDone || snapshot.Nodes[0].State != NodeDone || len(snapshot.Evidence) < 3 {
 		t.Fatalf("terminal snapshot=%+v", snapshot)
+	}
+}
+
+func TestCompletionGapSnapshotRoundTripsAndLegacyOmissionIsSafe(t *testing.T) {
+	graph, err := New(Spec{Goal: "change", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "write_file", Risk: "write", PotentialMutation: true, NonReplayable: true}, "before"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "write_file", Risk: "write", Summary: "changed", WorkspaceToken: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if decision, err := graph.ProposeCompletion(t.Context(), "done", "after"); err != nil || decision.Kind != DecisionContinue {
+		t.Fatalf("decision=%+v error=%v", decision, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Attempts[0].CompletionGapIteration != 2 || !strings.Contains(snapshot.Attempts[0].CompletionGap, "recognized verification") {
+		t.Fatalf("completion gap=%+v", snapshot.Attempts[0])
+	}
+	if _, err := Restore(snapshot, Options{}); err != nil {
+		t.Fatalf("restore completion gap: %v", err)
+	}
+	legacy := snapshot
+	legacy.Attempts[0].CompletionGap = ""
+	legacy.Attempts[0].CompletionGapIteration = 0
+	if _, err := Restore(legacy, Options{}); err != nil {
+		t.Fatalf("restore omitted legacy gap: %v", err)
+	}
+}
+
+func TestUnchangedPotentialEffectsDoNotStaleWorkspaceVerification(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "change", Nodes: []NodeSpec{{ID: 1, Title: "implement and verify"}}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "write_file", Risk: "write", PotentialMutation: true, NonReplayable: true}, "before"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "write_file", Risk: "write", Summary: "wrote app", WorkspaceToken: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "run_command", Risk: "execute", Command: "go test ./...", PotentialMutation: true, NonReplayable: true}, "after"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "run_command", Risk: "execute", Command: "go test ./...", Summary: "tests passed", Verification: true, WorkspaceToken: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "start_process", Risk: "execute", PotentialMutation: true, NonReplayable: true}, "after"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "start_process", Risk: "execute", Summary: "server started", WorkspaceToken: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := graph.ProposeCompletion(t.Context(), "implemented, tested, and smoke checked", "after")
+	if err != nil || decision.Kind != DecisionDone {
+		t.Fatalf("unchanged external effect made verification stale: decision=%+v error=%v", decision, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.MutationGeneration != 3 || snapshot.Attempts[0].MutationGeneration != 1 {
+		t.Fatalf("write-ahead and observed generations were conflated: graph=%d attempt=%d", snapshot.MutationGeneration, snapshot.Attempts[0].MutationGeneration)
+	}
+	for _, evidence := range snapshot.Evidence {
+		if evidence.Kind == EvidenceVerification && evidence.MutationGeneration != 1 {
+			t.Fatalf("verification was bound to potential rather than observed mutation: %+v", evidence)
+		}
+	}
+}
+
+func TestLegacyActiveAttemptWithEvidenceReceivesFreshProgressLease(t *testing.T) {
+	graph, err := New(Spec{Goal: "inspect", Nodes: []NodeSpec{{ID: 1, Title: "inspect"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "read_file", Risk: "read", Summary: "observed", WorkspaceToken: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := graph.Snapshot()
+	legacy.Attempts[0].LastProgressIteration = 0
+	restored, err := Restore(legacy, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got := restored.Snapshot().Attempts[0]
+	if got.Iterations != 6 || got.LastProgressIteration != 5 {
+		t.Fatalf("legacy progress lease was not initialized from durable evidence: %+v", got)
+	}
+}
+
+func TestChangedWorkspaceStillStalesEarlierVerification(t *testing.T) {
+	graph, err := New(Spec{Goal: "change", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "before"
+	for _, action := range []struct {
+		tool, token  string
+		verification bool
+	}{
+		{tool: "write_file", token: "after-write"},
+		{tool: "run_command", token: "after-write", verification: true},
+		{tool: "run_command", token: "after-later-change"},
+	} {
+		if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: action.tool, Risk: "execute", PotentialMutation: true, NonReplayable: true}, base); err != nil {
+			t.Fatal(err)
+		}
+		if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: action.tool, Risk: "execute", Summary: "completed", Verification: action.verification, WorkspaceToken: action.token}); err != nil {
+			t.Fatal(err)
+		}
+		base = action.token
+	}
+	decision, err := graph.ProposeCompletion(t.Context(), "done", "after-later-change")
+	if err != nil || decision.Kind != DecisionContinue || !strings.Contains(decision.Notice, "no successful recognized verification") {
+		t.Fatalf("later workspace change retained stale verification: decision=%+v error=%v", decision, err)
 	}
 }
 

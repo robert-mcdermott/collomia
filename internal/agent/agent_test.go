@@ -184,6 +184,300 @@ func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.
 	}
 }
 
+func TestGoalGraphExecutionBlocksToolsHiddenByRuntimeOwnership(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect safely", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planAssessed := false
+	planRan := false
+	registry := tools.NewRegistry(
+		tools.Function{
+			Def: provider.ToolDefinition{Name: "update_plan", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			AssessFn: func(json.RawMessage) (tools.Action, error) {
+				planAssessed = true
+				return tools.Action{}, errors.New("arguments should never be decoded")
+			},
+			Run: func(context.Context, json.RawMessage) (string, error) {
+				planRan = true
+				return "must not run", nil
+			},
+		},
+		tools.Function{Def: provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"}, Run: func(context.Context, json.RawMessage) (string, error) { return "observed", nil }},
+	)
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		for _, definition := range request.Tools {
+			if definition.Name == "update_plan" {
+				t.Fatal("runtime-owned graph exposed update_plan")
+			}
+		}
+		switch call {
+		case 1:
+			return graphToolResponse("remembered", "update_plan", `{"steps":"malformed"}`), nil
+		case 2:
+			if !requestContains(request, "not available in the current mode") {
+				t.Fatal("hidden tool rejection was not returned to the model")
+			}
+			return graphToolResponse("inspect", "inspect", `{}`), nil
+		default:
+			return provider.Response{Content: "inspection complete"}, nil
+		}
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 4, GoalGraph: graph,
+	})
+	if result, err := runtime.Run(t.Context(), "inspect", nil); err != nil || result != "inspection complete" {
+		t.Fatalf("result=%q error=%v", result, err)
+	}
+	if planAssessed || planRan {
+		t.Fatalf("hidden tool crossed execution boundary: assessed=%v ran=%v", planAssessed, planRan)
+	}
+	if snapshot := graph.Snapshot(); snapshot.Outcome != goalgraph.OutcomeDone || len(snapshot.Attempts[0].Failures) != 0 {
+		t.Fatalf("controller-protocol rejection poisoned active node: %+v", snapshot)
+	}
+}
+
+func TestGoalGraphPrimaryIterationBudgetRenewsAtAcceptedNodeBoundary(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect in order", Nodes: []goalgraph.NodeSpec{
+		{ID: 1, Title: "inspect first"},
+		{ID: 2, Title: "inspect second", DependsOn: []int{1}},
+	}}, 1, goalgraph.Options{MaxAggregateIterations: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewRegistry(tools.Function{Def: provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"}, Run: func(context.Context, json.RawMessage) (string, error) { return "observed", nil }})
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call == 1 || call == 3 {
+			return graphToolResponse(fmt.Sprintf("inspect-%d", call), "inspect", `{}`), nil
+		}
+		return provider.Response{Content: fmt.Sprintf("node %d complete", call/2)}, nil
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 2, GoalGraph: graph,
+	})
+	if result, err := runtime.Run(t.Context(), "inspect both", nil); err != nil || result != "node 2 complete" {
+		t.Fatalf("result=%q calls=%d error=%v", result, client.calls, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != goalgraph.OutcomeDone || len(snapshot.Attempts) != 2 || snapshot.Attempts[0].Iterations != 2 || snapshot.Attempts[1].Iterations != 2 || snapshot.Accounting.Primary.Iterations != 4 {
+		t.Fatalf("iteration slices did not renew at node boundary: %+v", snapshot)
+	}
+}
+
+func TestGoalGraphPrimaryProgressLeaseRenewsWithinAttempt(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect source"}}}, 1, goalgraph.Options{MaxAggregateIterations: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executions := 0
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"},
+		Run: func(context.Context, json.RawMessage) (string, error) {
+			executions++
+			return fmt.Sprintf("novel observation %d", executions), nil
+		},
+	})
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call <= 2 {
+			return graphToolResponse(fmt.Sprintf("inspect-%d", call), "inspect", `{}`), nil
+		}
+		return provider.Response{Content: "inspection complete"}, nil
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 2, GoalGraph: graph,
+	})
+	result, err := runtime.Run(t.Context(), "inspect", nil)
+	if err != nil || result != "inspection complete" || client.calls != 3 {
+		t.Fatalf("result=%q calls=%d error=%v", result, client.calls, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != goalgraph.OutcomeDone || snapshot.Attempts[0].Iterations != 3 || snapshot.Attempts[0].LastProgressIteration != 2 {
+		t.Fatalf("productive attempt did not renew its progress lease: %+v", snapshot.Attempts[0])
+	}
+}
+
+func TestGoalGraphPrimaryProgressLeaseRejectsRepeatedEvidence(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect source"}}}, 1, goalgraph.Options{MaxAggregateIterations: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"},
+		Run:    func(context.Context, json.RawMessage) (string, error) { return "same observation", nil },
+	})
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		return graphToolResponse(fmt.Sprintf("inspect-%d", call), "inspect", `{}`), nil
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 2, GoalGraph: graph,
+	})
+	_, err = runtime.Run(t.Context(), "inspect", nil)
+	if !errors.Is(err, ErrIterationBudgetExceeded) || client.calls != 3 || !strings.Contains(err.Error(), "no novel durable progress") {
+		t.Fatalf("calls=%d error=%v", client.calls, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != goalgraph.OutcomeBudgetExhausted || snapshot.Attempts[0].Iterations != 3 || snapshot.Attempts[0].LastProgressIteration != 1 {
+		t.Fatalf("repeated evidence incorrectly renewed the progress lease: %+v", snapshot.Attempts[0])
+	}
+}
+
+func TestGoalGraphCompletionGapIgnoresSuperficiallyNovelEvidence(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "implement"}}}, 1, goalgraph.Options{MaxAggregateIterations: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "before"
+	reads := 0
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change source"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			token = "after"
+			return "changed", nil
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect another detail"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			reads++
+			return fmt.Sprintf("novel but non-verifying observation %d", reads), nil
+		}},
+	)
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("write", "mutate", `{}`), nil
+		case 2:
+			return provider.Response{Content: "implemented"}, nil
+		default:
+			return graphToolResponse(fmt.Sprintf("inspect-%d", call), "inspect", `{}`), nil
+		}
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 20, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
+	})
+	_, err = runtime.Run(t.Context(), "change it", nil)
+	if !errors.Is(err, ErrGoalBlocked) || !strings.Contains(err.Error(), "no repair or gate-changing progress") || client.calls != 6 {
+		t.Fatalf("calls=%d error=%v", client.calls, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != goalgraph.OutcomeBlocked || snapshot.Attempts[0].Iterations != 6 || !strings.Contains(snapshot.Attempts[0].CompletionGap, "recognized verification") {
+		t.Fatalf("completion gap did not bound remediation: %+v", snapshot)
+	}
+}
+
+func TestGoalGraphCompletionGapAllowsNovelFailureRepairAndVerification(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "implement"}}}, 1, goalgraph.Options{MaxAggregateIterations: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "before"
+	writes := 0
+	verifications := 0
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change source"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			writes++
+			token = fmt.Sprintf("after-%d", writes)
+			return "changed workspace", nil
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"}, Run: func(context.Context, json.RawMessage) (string, error) { return "observation", nil }},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: "go test ./..."}, Run: func(context.Context, json.RawMessage) (string, error) {
+			verifications++
+			if verifications == 1 {
+				return "no tests collected", errors.New("exit status 5")
+			}
+			return "tests passed", nil
+		}},
+	)
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("initial-write", "mutate", `{}`), nil
+		case 2:
+			return provider.Response{Content: "implemented"}, nil
+		case 3, 4, 5:
+			return graphToolResponse(fmt.Sprintf("inspect-%d", call), "inspect", `{}`), nil
+		case 6:
+			return graphToolResponse("first-verification", "run_command", `{}`), nil
+		case 7:
+			return graphToolResponse("repair", "mutate", `{}`), nil
+		case 8:
+			return graphToolResponse("second-verification", "run_command", `{}`), nil
+		default:
+			return provider.Response{Content: "implemented and verified"}, nil
+		}
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 20, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
+	})
+	result, err := runtime.Run(t.Context(), "change it", nil)
+	if err != nil || result != "implemented and verified" || client.calls != 9 {
+		t.Fatalf("result=%q calls=%d error=%v", result, client.calls, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != goalgraph.OutcomeDone || len(snapshot.Attempts[0].Failures) != 1 || !snapshot.Attempts[0].Failures[0].Resolved {
+		t.Fatalf("repair did not resolve the novel verification failure: %+v", snapshot)
+	}
+	retainedFailureOutput := false
+	for _, evidence := range snapshot.Evidence {
+		if evidence.Kind == goalgraph.EvidenceVerification && evidence.Status == "failed" && strings.Contains(evidence.Summary, "no tests collected") {
+			retainedFailureOutput = true
+			break
+		}
+	}
+	if !retainedFailureOutput {
+		t.Fatalf("failed verifier output was not retained: %+v", snapshot.Evidence)
+	}
+}
+
+func TestGoalGraphCompletionGapDoesNotRenewOnEquivalentVerificationFailures(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "implement"}}}, 1, goalgraph.Options{MaxAggregateIterations: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "before"
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change source"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			token = "after"
+			return "changed", nil
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: "go test ./..."}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "no tests collected", errors.New("exit status 5")
+		}},
+	)
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return graphToolResponse("write", "mutate", `{}`), nil
+		}
+		if call == 2 {
+			return provider.Response{Content: "implemented"}, nil
+		}
+		return graphToolResponse(fmt.Sprintf("verify-%d", call), "run_command", `{}`), nil
+	}}
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 20, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
+	})
+	_, err = runtime.Run(t.Context(), "change it", nil)
+	if !errors.Is(err, ErrGoalBlocked) || client.calls != 7 || !strings.Contains(err.Error(), "identical verification failures") {
+		t.Fatalf("calls=%d error=%v", client.calls, err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != goalgraph.OutcomeBlocked || snapshot.Attempts[0].CompletionGapIteration != 3 {
+		t.Fatalf("equivalent failures renewed remediation: %+v", snapshot.Attempts[0])
+	}
+}
+
 func TestGoalGraphPauseRequestedDuringProviderCallStopsAtNextBoundary(t *testing.T) {
 	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{})
 	if err != nil {
@@ -260,12 +554,13 @@ func TestGoalGraphControllerRequiresFreshVerificationAfterPrimaryWrite(t *testin
 		t.Fatal(err)
 	}
 	token := "workspace-before"
+	workspace := t.TempDir()
 	registry := tools.NewRegistry(
 		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change source"}, Run: func(context.Context, json.RawMessage) (string, error) {
 			token = "workspace-after"
 			return "changed", nil
 		}},
-		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: "go test ./..."}, Run: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: fmt.Sprintf("cd %q && go test ./... 2>&1", workspace)}, Run: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }},
 	)
 	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
 		switch call {
@@ -279,12 +574,15 @@ func TestGoalGraphControllerRequiresFreshVerificationAfterPrimaryWrite(t *testin
 			}
 			return graphToolResponse("verify", "run_command", `{}`), nil
 		default:
+			if !requestContains(request, "Collomia verification evidence: recorded against the post-command workspace state") {
+				t.Fatal("successful graph verification receipt was not returned to the model")
+			}
 			return provider.Response{Content: "changed and verified"}, nil
 		}
 	}}
 	agentRuntime := New(Options{
 		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
-		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
 		MaxIterations: 8, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
 	})
 	result, err := agentRuntime.Run(t.Context(), "change it", nil)
@@ -760,15 +1058,37 @@ func TestCompletionControllerPreservesPlanningAndIterationLimits(t *testing.T) {
 }
 
 func TestVerificationCommandRecognitionRejectsShellSuccessMasking(t *testing.T) {
-	for _, command := range []string{"go test ./...", "go test ./internal/agent -run TestAgent", "uv run pytest -q", "ruff check .", "uv run ruff format --check .", "npm run lint", "git diff --check"} {
-		if !isVerificationCommand(command, t.TempDir()) {
+	workspace := t.TempDir()
+	for _, command := range []string{"go test ./...", "go test ./internal/agent -run TestAgent", "uv run pytest -q", "UV_CACHE_DIR=.uv-cache uv run pytest -v", ".venv/bin/pytest -v", ".venv/bin/python -m pytest -v", "python3 -m mypy app", "uv run python -m pytest -q", "ruff check .", "uv run ruff format --check .", "npm run lint", "git diff --check", fmt.Sprintf("cd %q && UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1", workspace), "cd . && .venv/bin/pytest -q 2>&1"} {
+		if !isVerificationCommand(command, workspace) {
 			t.Errorf("verification command was not recognized: %q", command)
 		}
 	}
-	for _, command := range []string{"echo tests passed", "go test ./... || true", "go test ./...; echo ok", "ruff format .", "uv run ruff format .", "cat test.log"} {
-		if isVerificationCommand(command, t.TempDir()) {
+	for _, command := range []string{"echo tests passed", "go test ./... || true", "go test ./...; echo ok", "ruff format .", "uv run ruff format .", "cat test.log", fmt.Sprintf("cd %q && uv run pytest -q 2>&1 | tail -20", workspace), "cd /tmp && uv run pytest -q 2>&1"} {
+		if isVerificationCommand(command, workspace) {
 			t.Errorf("non-verification command was recognized: %q", command)
 		}
+	}
+	assessment := assessVerificationCommand(`UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1; echo "EXIT_CODE=$?"`, workspace)
+	if assessment.Recognized || !assessment.VerificationLike || assessment.Suggestion != "UV_CACHE_DIR=.uv-cache uv run pytest -v" || !strings.Contains(assessment.Reason, "mask") {
+		t.Fatalf("masked verification assessment=%+v", assessment)
+	}
+}
+
+func TestRunCommandExplainsWhyVerificationEvidenceWasRejected(t *testing.T) {
+	command := `UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1; echo "EXIT_CODE=$?"`
+	registry := tools.NewRegistry(tools.Function{
+		Def:    provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: command},
+		Run:    func(context.Context, json.RawMessage) (string, error) { return "12 passed", nil },
+	})
+	runtime := New(Options{Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil)})
+	result, observation, err := runtime.executeTool(t.Context(), provider.ToolCall{ID: "verify", Name: "run_command", Arguments: json.RawMessage(`{}`)}, false, func(event.Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Verification || !strings.Contains(result.Content, "verification evidence was not recorded") || !strings.Contains(result.Content, "UV_CACHE_DIR=.uv-cache uv run pytest -v") {
+		t.Fatalf("result=%q observation=%+v", result.Content, observation)
 	}
 }
 
@@ -934,6 +1254,60 @@ func TestAutomaticCompactionCompletesLongTask(t *testing.T) {
 	}
 	if !slices.Contains(kinds, event.KindCompaction) {
 		t.Fatalf("compaction event missing from %v", kinds)
+	}
+}
+
+func TestOrchestratedGoalCompactsAtApprovalBoundaryAndAccountsTheRequest(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "bounded work", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{MaxAggregateTokens: 100_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{chat: func(_ int, request provider.Request) (provider.Response, error) {
+		if len(request.Tools) != 0 || !strings.Contains(request.Messages[0].Content, "---") {
+			t.Fatalf("approval boundary did not use the compaction request: %+v", request)
+		}
+		return provider.Response{Content: "bounded execution summary", Usage: provider.Usage{InputTokens: 100, OutputTokens: 20}}, nil
+	}}
+	a := New(Options{Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 1_000, Context: 500_000}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), GoalGraph: graph})
+	messages := make([]provider.Message, 12)
+	for i := range messages {
+		messages[i] = provider.Message{Role: "user", Content: fmt.Sprintf("proposal message %d", i)}
+	}
+	a.SetMessages(messages)
+	a.RequestGoalBoundaryCompaction()
+	if !a.shouldCompact() {
+		t.Fatal("newly approved graph did not request boundary compaction")
+	}
+	a.clearGoalBoundaryCompaction()
+	if replaced, err := a.compact(t.Context(), "", nil); err != nil || replaced != 6 {
+		t.Fatalf("boundary compaction replaced=%d error=%v", replaced, err)
+	}
+	status := graph.BudgetStatus(time.Time{})
+	if client.calls != 1 || status.Usage.Iterations != 1 || status.Usage.InputTokens != 100 || status.Usage.OutputTokens != 20 {
+		t.Fatalf("boundary compaction calls=%d graph usage=%+v", client.calls, status.Usage)
+	}
+}
+
+func TestOrchestratedGoalCompactsBeforeCumulativeAllowanceBecomesUnusable(t *testing.T) {
+	a := New(Options{ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 1_000, Context: 500_000}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil)})
+	messages := make([]provider.Message, 10)
+	for i := range messages {
+		messages[i] = provider.Message{Role: "user", Content: strings.Repeat("context ", 100)}
+	}
+	a.SetMessages(messages)
+	estimated, window := a.ContextEstimate()
+	if estimated <= 0 || estimated >= window*80/100 {
+		t.Fatalf("fixture accidentally reached context-window compaction: estimate=%d window=%d", estimated, window)
+	}
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "bounded work", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{MaxAggregateTokens: estimated * 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetGoalGraph(graph); err != nil {
+		t.Fatal(err)
+	}
+	if !a.shouldCompact() {
+		t.Fatalf("graph pressure did not trigger compaction: estimate=%d remaining=%d", estimated, graph.BudgetStatus(time.Time{}).RemainingTokens)
 	}
 }
 
@@ -1294,6 +1668,90 @@ func TestDelegateWriteTaskUsesIsolatedWorktree(t *testing.T) {
 	}
 	exec.Command("git", "-C", workspace, "worktree", "remove", "--force", snapshot[0].Worktree).Run()
 	exec.Command("git", "-C", workspace, "branch", "-D", snapshot[0].Branch).Run()
+}
+
+func TestGoalGraphCreatesVerifiedIsolatedWriterCandidateWithoutTouchingParent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	workspace := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", workspace}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "initial")
+
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "add a candidate", Nodes: []goalgraph.NodeSpec{{
+		ID: 1, Title: "add candidate file", Execution: goalgraph.ExecutionIsolatedWrite,
+		WritePaths: []string{"new.txt"}, Acceptance: []string{"candidate passes validation"},
+	}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"new.txt","content":"candidate\n"}`)}}}, nil
+		}
+		return provider.Response{Content: "added the scoped candidate file"}, nil
+	}}
+	registry, _, processes, err := tools.Builtins(workspace, appconfig.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(processes.StopAll)
+	cfg := appconfig.Defaults()
+	cfg.Permissions.Mode = "autopilot"
+	runtime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: workspace, Registry: registry, Permissions: permission.New(cfg.Permissions, nil), MaxIterations: 4,
+		GoalGraph: graph, GoalStateToken: func(ctx context.Context) (string, error) { return goalgraph.WorkspaceStateToken(ctx, workspace) },
+	})
+	team := NewTeam()
+	runtime.AddDelegationTool(cfg, nil, team)
+	runtime.SetGoalWriterVerifier(func(ctx context.Context, id string) ([]DelegateVerification, error) {
+		status, ok := team.Get(id)
+		if !ok {
+			return nil, errors.New("missing retained candidate")
+		}
+		if out, err := exec.CommandContext(ctx, "git", "-C", status.Worktree, "diff", "--check").CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git diff --check: %w: %s", err, out)
+		}
+		token, err := goalgraph.WorkspaceStateToken(ctx, status.Worktree)
+		if err != nil {
+			return nil, err
+		}
+		result := DelegateVerification{Command: "git diff --check", Status: "passed", StateToken: token}
+		team.MarkVerificationResult(id, token, []string{result.Command}, result)
+		return []DelegateVerification{result}, nil
+	})
+
+	_, err = runtime.Run(t.Context(), "create the candidate", func(event.Event) {})
+	if !errors.Is(err, ErrGoalBlocked) || !strings.Contains(err.Error(), "reviewed integration is required") {
+		t.Fatalf("run error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("parent workspace was changed: %v", err)
+	}
+	snapshot := graph.Snapshot()
+	if len(snapshot.Attempts) != 1 || snapshot.Attempts[0].State != goalgraph.AttemptCandidate || snapshot.Attempts[0].Candidate == nil || snapshot.Attempts[0].Candidate.VerificationState != "passed" {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+	status := team.Snapshot()[0]
+	if _, err := os.Stat(filepath.Join(status.Worktree, "new.txt")); err != nil {
+		t.Fatalf("retained candidate missing: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", workspace, "worktree", "remove", "--force", status.Worktree).Run()
+		_ = exec.Command("git", "-C", workspace, "branch", "-D", status.Branch).Run()
+	})
 }
 
 func TestDelegateAgentProfileOverridesModelAndRole(t *testing.T) {

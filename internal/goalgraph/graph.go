@@ -16,35 +16,44 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/robert-mcdermott/collomia/internal/writescope"
 )
 
 const (
-	SchemaVersion               = 1
-	defaultMaxAttempts          = 2
-	defaultMaxRevisions         = 2
-	maxCompletionInterventions  = 2
-	maxGraphNodes               = 12
-	maxGoalBytes                = 2048
-	maxTitleBytes               = 512
-	maxAcceptanceItems          = 8
-	maxAcceptanceBytes          = 512
-	defaultMaxReadConcurrency   = 2
-	defaultMaxReadStarts        = 8
-	defaultMaxReadTokens        = 64_000
-	defaultMaxReadWallSeconds   = 15 * 60
-	defaultReadTaskWallSeconds  = 5 * 60
-	defaultReadTaskIterations   = 8
-	defaultMaxGraphIterations   = 96
-	defaultMaxGraphTokens       = 192_000
-	defaultMaxGraphCostUSD      = 5.00
-	defaultMaxActiveWallSeconds = 30 * 60
+	SchemaVersion                = 1
+	defaultMaxAttempts           = 2
+	defaultMaxRevisions          = 2
+	maxCompletionInterventions   = 2
+	maxGraphNodes                = 12
+	maxGoalBytes                 = 2048
+	maxTitleBytes                = 512
+	maxAcceptanceItems           = 8
+	maxAcceptanceBytes           = 512
+	defaultMaxReadConcurrency    = 2
+	defaultMaxReadStarts         = 8
+	defaultMaxReadTokens         = 64_000
+	defaultMaxReadWallSeconds    = 15 * 60
+	defaultReadTaskWallSeconds   = 5 * 60
+	defaultReadTaskIterations    = 8
+	defaultMaxWriterConcurrency  = 2
+	defaultMaxWriterStarts       = 2
+	defaultWriterTaskWallSeconds = 10 * 60
+	defaultWriterTaskIterations  = 12
+	maxWriterCandidateFiles      = 256
+	maxWriterVerification        = 16
+	defaultMaxGraphIterations    = 96
+	defaultMaxGraphTokens        = 1_000_000
+	defaultMaxGraphCostUSD       = 5.00
+	defaultMaxActiveWallSeconds  = 30 * 60
 )
 
 type Execution string
 
 const (
-	ExecutionPrimary  Execution = "primary"
-	ExecutionReadOnly Execution = "read_only"
+	ExecutionPrimary       Execution = "primary"
+	ExecutionReadOnly      Execution = "read_only"
+	ExecutionIsolatedWrite Execution = "isolated_write"
 )
 
 type NodeState string
@@ -71,6 +80,7 @@ const (
 	AttemptCancelled       AttemptState = "cancelled"
 	AttemptBudgetExhausted AttemptState = "budget_exhausted"
 	AttemptAccepted        AttemptState = "accepted"
+	AttemptCandidate       AttemptState = "candidate"
 	AttemptInterrupted     AttemptState = "interrupted"
 )
 
@@ -100,10 +110,11 @@ const (
 type EvidenceKind string
 
 const (
-	EvidenceToolResult   EvidenceKind = "tool_result"
-	EvidenceVerification EvidenceKind = "verification"
-	EvidenceNodeResult   EvidenceKind = "node_result"
-	EvidenceDelegateRead EvidenceKind = "delegate_read"
+	EvidenceToolResult    EvidenceKind = "tool_result"
+	EvidenceVerification  EvidenceKind = "verification"
+	EvidenceNodeResult    EvidenceKind = "node_result"
+	EvidenceDelegateRead  EvidenceKind = "delegate_read"
+	EvidenceDelegateWrite EvidenceKind = "delegate_write_candidate"
 )
 
 // Spec is one approved logical graph. Status and evidence are intentionally
@@ -120,6 +131,7 @@ type NodeSpec struct {
 	DependsOn  []int     `json:"depends_on,omitempty"`
 	Acceptance []string  `json:"acceptance,omitempty"`
 	Execution  Execution `json:"execution,omitempty"`
+	WritePaths []string  `json:"write_paths,omitempty"`
 }
 
 type Node struct {
@@ -129,6 +141,7 @@ type Node struct {
 	DependsOn         []int     `json:"depends_on,omitempty"`
 	Acceptance        []string  `json:"acceptance,omitempty"`
 	Execution         Execution `json:"execution"`
+	WritePaths        []string  `json:"write_paths,omitempty"`
 	State             NodeState `json:"state"`
 	ActiveAttemptID   string    `json:"active_attempt_id,omitempty"`
 	AcceptedAttemptID string    `json:"accepted_attempt_id,omitempty"`
@@ -137,14 +150,16 @@ type Node struct {
 }
 
 type PendingAction struct {
-	ID                string    `json:"id"`
-	Tool              string    `json:"tool"`
-	Risk              string    `json:"risk"`
-	Summary           string    `json:"summary,omitempty"`
-	Command           string    `json:"command,omitempty"`
-	PotentialMutation bool      `json:"potential_mutation,omitempty"`
-	NonReplayable     bool      `json:"non_replayable,omitempty"`
-	Started           time.Time `json:"started"`
+	ID                     string    `json:"id"`
+	Tool                   string    `json:"tool"`
+	Risk                   string    `json:"risk"`
+	Summary                string    `json:"summary,omitempty"`
+	Command                string    `json:"command,omitempty"`
+	PotentialMutation      bool      `json:"potential_mutation,omitempty"`
+	NonReplayable          bool      `json:"non_replayable,omitempty"`
+	BaseWorkspaceToken     string    `json:"base_workspace_token,omitempty"`
+	BaseMutationGeneration uint64    `json:"base_mutation_generation,omitempty"`
+	Started                time.Time `json:"started"`
 }
 
 type Failure struct {
@@ -157,37 +172,67 @@ type Failure struct {
 	Time      time.Time   `json:"time"`
 }
 
+// CandidateVerification is one machine-observed command result bound to the
+// retained writer worktree state. It proves child state only and grants no
+// authority to publish into the parent workspace.
+type CandidateVerification struct {
+	Command    string `json:"command"`
+	Status     string `json:"status"`
+	StateToken string `json:"state_token"`
+}
+
+// WriterCandidate is the bounded durable handoff produced by an automatic
+// isolated writer. The worktree is retained for review; the graph never
+// selects or integrates it in OG-3A.
+type WriterCandidate struct {
+	WorkerID          string                  `json:"worker_id"`
+	Worktree          string                  `json:"worktree"`
+	Branch            string                  `json:"branch"`
+	BaseCommit        string                  `json:"base_commit"`
+	WritePaths        []string                `json:"write_paths"`
+	ChangedFiles      []string                `json:"changed_files,omitempty"`
+	ScopeViolations   []string                `json:"scope_violations,omitempty"`
+	VerificationState string                  `json:"verification_state,omitempty"`
+	VerificationToken string                  `json:"verification_token,omitempty"`
+	Verification      []CandidateVerification `json:"verification,omitempty"`
+}
+
 type Attempt struct {
-	ID                      string         `json:"id"`
-	NodeID                  int            `json:"node_id"`
-	Number                  int            `json:"number"`
-	State                   AttemptState   `json:"state"`
-	GraphGeneration         uint64         `json:"graph_generation"`
-	BaseWorkspaceToken      string         `json:"base_workspace_token,omitempty"`
-	MutationGeneration      uint64         `json:"mutation_generation"`
-	MayHaveMutated          bool           `json:"may_have_mutated,omitempty"`
-	HasWorkspaceWrite       bool           `json:"has_workspace_write,omitempty"`
-	MayHaveExternalEffects  bool           `json:"may_have_external_effects,omitempty"`
-	CompletionInterventions int            `json:"completion_interventions,omitempty"`
-	ToolSuccesses           int            `json:"tool_successes,omitempty"`
-	PendingAction           *PendingAction `json:"pending_action,omitempty"`
-	Failures                []Failure      `json:"failures,omitempty"`
-	EvidenceIDs             []string       `json:"evidence_ids,omitempty"`
-	Summary                 string         `json:"summary,omitempty"`
-	WorkerID                string         `json:"worker_id,omitempty"`
-	UsageRecorded           bool           `json:"usage_recorded,omitempty"`
-	Iterations              int            `json:"iterations,omitempty"`
-	InputTokens             int            `json:"input_tokens,omitempty"`
-	OutputTokens            int            `json:"output_tokens,omitempty"`
-	CostUSD                 float64        `json:"cost_usd,omitempty"`
-	CostAvailable           bool           `json:"cost_available,omitempty"`
-	CostEstimated           bool           `json:"cost_estimated,omitempty"`
-	TokenBudget             int            `json:"token_budget,omitempty"`
-	CostBudgetUSD           float64        `json:"cost_budget_usd,omitempty"`
-	IterationBudget         int            `json:"iteration_budget,omitempty"`
-	TimeoutSeconds          int            `json:"timeout_seconds,omitempty"`
-	Started                 time.Time      `json:"started"`
-	Finished                time.Time      `json:"finished,omitempty"`
+	ID                      string           `json:"id"`
+	NodeID                  int              `json:"node_id"`
+	Number                  int              `json:"number"`
+	State                   AttemptState     `json:"state"`
+	GraphGeneration         uint64           `json:"graph_generation"`
+	BaseWorkspaceToken      string           `json:"base_workspace_token,omitempty"`
+	BaseCommit              string           `json:"base_commit,omitempty"`
+	MutationGeneration      uint64           `json:"mutation_generation"`
+	MayHaveMutated          bool             `json:"may_have_mutated,omitempty"`
+	HasWorkspaceWrite       bool             `json:"has_workspace_write,omitempty"`
+	MayHaveExternalEffects  bool             `json:"may_have_external_effects,omitempty"`
+	CompletionInterventions int              `json:"completion_interventions,omitempty"`
+	CompletionGap           string           `json:"completion_gap,omitempty"`
+	CompletionGapIteration  int              `json:"completion_gap_iteration,omitempty"`
+	ToolSuccesses           int              `json:"tool_successes,omitempty"`
+	PendingAction           *PendingAction   `json:"pending_action,omitempty"`
+	Failures                []Failure        `json:"failures,omitempty"`
+	EvidenceIDs             []string         `json:"evidence_ids,omitempty"`
+	Summary                 string           `json:"summary,omitempty"`
+	WorkerID                string           `json:"worker_id,omitempty"`
+	UsageRecorded           bool             `json:"usage_recorded,omitempty"`
+	Iterations              int              `json:"iterations,omitempty"`
+	LastProgressIteration   int              `json:"last_progress_iteration,omitempty"`
+	InputTokens             int              `json:"input_tokens,omitempty"`
+	OutputTokens            int              `json:"output_tokens,omitempty"`
+	CostUSD                 float64          `json:"cost_usd,omitempty"`
+	CostAvailable           bool             `json:"cost_available,omitempty"`
+	CostEstimated           bool             `json:"cost_estimated,omitempty"`
+	TokenBudget             int              `json:"token_budget,omitempty"`
+	CostBudgetUSD           float64          `json:"cost_budget_usd,omitempty"`
+	IterationBudget         int              `json:"iteration_budget,omitempty"`
+	TimeoutSeconds          int              `json:"timeout_seconds,omitempty"`
+	Candidate               *WriterCandidate `json:"candidate,omitempty"`
+	Started                 time.Time        `json:"started"`
+	Finished                time.Time        `json:"finished,omitempty"`
 }
 
 type Evidence struct {
@@ -231,6 +276,7 @@ type Snapshot struct {
 	MaxAttemptsPerNode int             `json:"max_attempts_per_node"`
 	MaxRevisions       int             `json:"max_revisions"`
 	ReadFanout         ReadFanout      `json:"read_fanout"`
+	WriterFanout       WriterFanout    `json:"writer_fanout"`
 	Accounting         Accounting      `json:"accounting"`
 	AggregateBudget    AggregateBudget `json:"aggregate_budget"`
 	PauseRequested     bool            `json:"pause_requested,omitempty"`
@@ -255,6 +301,14 @@ type ReadFanout struct {
 	Started        time.Time `json:"started,omitempty"`
 }
 
+// WriterFanout is the fixed OG-3A envelope for one retained candidate wave.
+// Aggregate model-work bounds remain the outer limit.
+type WriterFanout struct {
+	MaxConcurrent int `json:"max_concurrent"`
+	MaxStarts     int `json:"max_starts"`
+	Starts        int `json:"starts"`
+}
+
 // WorkUsage is machine-observed model work for one runtime lane. Input token
 // counts include cached input when the provider reports it that way, matching
 // the public usage contract. CostAvailable means every token-bearing record in
@@ -273,11 +327,12 @@ type WorkUsage struct {
 // is the beginning of the explicit proposal turn, so comparison does not hide
 // the extra model call needed to create an Orchestrated Goal graph.
 type Accounting struct {
-	Started        time.Time     `json:"started"`
-	Primary        WorkUsage     `json:"primary"`
-	AutomaticReads WorkUsage     `json:"automatic_reads"`
-	ActiveElapsed  time.Duration `json:"active_elapsed,omitempty"`
-	ActiveSince    time.Time     `json:"active_since,omitempty"`
+	Started          time.Time     `json:"started"`
+	Primary          WorkUsage     `json:"primary"`
+	AutomaticReads   WorkUsage     `json:"automatic_reads"`
+	AutomaticWriters WorkUsage     `json:"automatic_writers"`
+	ActiveElapsed    time.Duration `json:"active_elapsed,omitempty"`
+	ActiveSince      time.Time     `json:"active_since,omitempty"`
 }
 
 // AggregateBudget is the fixed runtime-owned envelope across proposal,
@@ -295,11 +350,12 @@ type AggregateBudget struct {
 // elapsed duration is live for an active graph and freezes at its final durable
 // transition for a terminal graph.
 type UsageSummary struct {
-	Primary        WorkUsage
-	AutomaticReads WorkUsage
-	Total          WorkUsage
-	Elapsed        time.Duration
-	ActiveElapsed  time.Duration
+	Primary          WorkUsage
+	AutomaticReads   WorkUsage
+	AutomaticWriters WorkUsage
+	Total            WorkUsage
+	Elapsed          time.Duration
+	ActiveElapsed    time.Duration
 }
 
 // BudgetStatus is a read-only view used by provider admission and status
@@ -342,6 +398,8 @@ type Options struct {
 	MaxReadStarts          int
 	MaxReadTokens          int
 	MaxReadWallSeconds     int
+	MaxWriterConcurrency   int
+	MaxWriterStarts        int
 	MaxAggregateIterations int
 	MaxAggregateTokens     int
 	MaxAggregateCostUSD    float64
@@ -365,6 +423,8 @@ type Limits struct {
 	MaxReadStarts              int
 	MaxReadTokens              int
 	MaxReadWallSeconds         int
+	MaxWriterConcurrency       int
+	MaxWriterStarts            int
 	MaxAggregateIterations     int
 	MaxAggregateTokens         int
 	MaxAggregateCostUSD        float64
@@ -382,6 +442,8 @@ func DefaultLimits() Limits {
 		MaxReadStarts:              defaultMaxReadStarts,
 		MaxReadTokens:              defaultMaxReadTokens,
 		MaxReadWallSeconds:         defaultMaxReadWallSeconds,
+		MaxWriterConcurrency:       defaultMaxWriterConcurrency,
+		MaxWriterStarts:            defaultMaxWriterStarts,
 		MaxAggregateIterations:     defaultMaxGraphIterations,
 		MaxAggregateTokens:         defaultMaxGraphTokens,
 		MaxAggregateCostUSD:        defaultMaxGraphCostUSD,
@@ -429,12 +491,14 @@ func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
 		Generation: 1, Goal: strings.TrimSpace(spec.Goal), MaxAttemptsPerNode: opts.MaxAttemptsPerNode,
 		MaxRevisions: opts.MaxRevisions, Created: now, Updated: now,
 		ReadFanout:      ReadFanout{MaxConcurrent: opts.MaxReadConcurrency, MaxStarts: opts.MaxReadStarts, MaxTokens: opts.MaxReadTokens, MaxWallSeconds: opts.MaxReadWallSeconds},
+		WriterFanout:    WriterFanout{MaxConcurrent: opts.MaxWriterConcurrency, MaxStarts: opts.MaxWriterStarts},
 		Accounting:      Accounting{Started: accountingStarted, Primary: opts.InitialPrimary, ActiveSince: now},
 		AggregateBudget: AggregateBudget{MaxIterations: opts.MaxAggregateIterations, MaxTokens: opts.MaxAggregateTokens, MaxCostUSD: opts.MaxAggregateCostUSD, MaxActiveWallSeconds: opts.MaxActiveWallSeconds},
 		Revisions:       []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
 	}
 	for position, node := range spec.Nodes {
-		g.state.Nodes = append(g.state.Nodes, Node{ID: node.ID, Position: position, Title: strings.TrimSpace(node.Title), DependsOn: append([]int(nil), node.DependsOn...), Acceptance: append([]string(nil), node.Acceptance...), Execution: normalizeExecution(node.Execution), State: NodeProposed})
+		writePaths, _ := writescope.Normalize(node.WritePaths, node.Execution == ExecutionIsolatedWrite)
+		g.state.Nodes = append(g.state.Nodes, Node{ID: node.ID, Position: position, Title: strings.TrimSpace(node.Title), DependsOn: append([]int(nil), node.DependsOn...), Acceptance: append([]string(nil), node.Acceptance...), Execution: normalizeExecution(node.Execution), WritePaths: writePaths, State: NodeProposed})
 	}
 	g.queueUpdateLocked(0, "", "created", "approved logical graph recorded")
 	g.refreshReadyLocked("dependencies accepted")
@@ -471,6 +535,12 @@ func normalizeSnapshot(snapshot *Snapshot) {
 	if snapshot.ReadFanout.MaxWallSeconds == 0 {
 		snapshot.ReadFanout.MaxWallSeconds = defaultMaxReadWallSeconds
 	}
+	if snapshot.WriterFanout.MaxConcurrent == 0 {
+		snapshot.WriterFanout.MaxConcurrent = defaultMaxWriterConcurrency
+	}
+	if snapshot.WriterFanout.MaxStarts == 0 {
+		snapshot.WriterFanout.MaxStarts = defaultMaxWriterStarts
+	}
 	hadAggregateBudget := snapshot.AggregateBudget.MaxIterations != 0 || snapshot.AggregateBudget.MaxTokens != 0 || snapshot.AggregateBudget.MaxCostUSD != 0 || snapshot.AggregateBudget.MaxActiveWallSeconds != 0
 	if snapshot.AggregateBudget.MaxIterations == 0 {
 		snapshot.AggregateBudget.MaxIterations = defaultMaxGraphIterations
@@ -496,10 +566,14 @@ func normalizeSnapshot(snapshot *Snapshot) {
 		for index := range snapshot.Attempts {
 			attempt := &snapshot.Attempts[index]
 			usage := WorkUsage{Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated}
-			if nodes[attempt.NodeID] == ExecutionReadOnly {
+			switch nodes[attempt.NodeID] {
+			case ExecutionReadOnly:
 				addWorkUsage(&snapshot.Accounting.AutomaticReads, usage)
 				attempt.UsageRecorded = usage != (WorkUsage{})
-			} else {
+			case ExecutionIsolatedWrite:
+				addWorkUsage(&snapshot.Accounting.AutomaticWriters, usage)
+				attempt.UsageRecorded = usage != (WorkUsage{})
+			default:
 				addWorkUsage(&snapshot.Accounting.Primary, usage)
 			}
 		}
@@ -522,6 +596,9 @@ func normalizeSnapshot(snapshot *Snapshot) {
 	}
 	for i := range snapshot.Nodes {
 		snapshot.Nodes[i].Execution = normalizeExecution(snapshot.Nodes[i].Execution)
+		if snapshot.Nodes[i].Execution == ExecutionIsolatedWrite {
+			snapshot.Nodes[i].WritePaths, _ = writescope.Normalize(snapshot.Nodes[i].WritePaths, true)
+		}
 	}
 }
 
@@ -550,6 +627,12 @@ func normalizedOptions(opts Options) Options {
 	}
 	if opts.MaxReadWallSeconds <= 0 {
 		opts.MaxReadWallSeconds = defaultMaxReadWallSeconds
+	}
+	if opts.MaxWriterConcurrency <= 0 || opts.MaxWriterConcurrency > defaultMaxWriterConcurrency {
+		opts.MaxWriterConcurrency = defaultMaxWriterConcurrency
+	}
+	if opts.MaxWriterStarts <= 0 || opts.MaxWriterStarts > defaultMaxWriterStarts {
+		opts.MaxWriterStarts = defaultMaxWriterStarts
 	}
 	if opts.MaxAggregateIterations <= 0 || opts.MaxAggregateIterations > defaultMaxGraphIterations {
 		opts.MaxAggregateIterations = defaultMaxGraphIterations
@@ -612,8 +695,24 @@ func ValidateSpec(spec Spec) error {
 				return fmt.Errorf("nodes[%d] acceptance[%d] must be non-empty and at most %d bytes", i, criterionIndex, maxAcceptanceBytes)
 			}
 		}
-		if node.Execution != "" && node.Execution != ExecutionPrimary && node.Execution != ExecutionReadOnly {
-			return fmt.Errorf("nodes[%d] execution must be primary or read_only", i)
+		switch node.Execution {
+		case "", ExecutionPrimary, ExecutionReadOnly:
+			if _, err := writescope.Normalize(node.WritePaths, false); err != nil {
+				return fmt.Errorf("nodes[%d]: %w", i, err)
+			}
+		case ExecutionIsolatedWrite:
+			if len(node.WritePaths) == 0 {
+				return fmt.Errorf("nodes[%d] isolated_write requires explicit write_paths", i)
+			}
+			normalized, err := writescope.Normalize(node.WritePaths, true)
+			if err != nil {
+				return fmt.Errorf("nodes[%d]: %w", i, err)
+			}
+			if len(normalized) == 1 && normalized[0] == writescope.Workspace {
+				return fmt.Errorf("nodes[%d] isolated_write scope must be narrower than the whole workspace", i)
+			}
+		default:
+			return fmt.Errorf("nodes[%d] execution must be primary, read_only, or isolated_write", i)
 		}
 		if seen[node.ID] {
 			return fmt.Errorf("duplicate node id %d", node.ID)
@@ -641,6 +740,50 @@ func ValidateSpec(spec Spec) error {
 	return nil
 }
 
+// ValidateExecutableSpec applies the schedulability contract of the current
+// experimental controller. Isolated writers produce retained candidates and
+// deliberately stop for review; OG-3A cannot select or integrate a candidate.
+// Consequently they are valid only in an explicitly candidate-only graph and
+// must be terminal leaves. End-to-end change graphs must use the primary lane.
+// ValidateSpec remains the durable schema validator so older snapshots and
+// lower-level controller fixtures retain their original compatibility.
+func ValidateExecutableSpec(spec Spec) error {
+	if err := ValidateSpec(spec); err != nil {
+		return err
+	}
+	if !HasIsolatedWriters(spec) {
+		return nil
+	}
+	isolated := make(map[int]bool)
+	for _, node := range spec.Nodes {
+		switch normalizeExecution(node.Execution) {
+		case ExecutionPrimary:
+			return fmt.Errorf("isolated_write is a retained-candidate preview and cannot be mixed with primary execution; use primary nodes for an end-to-end goal, or use a candidate-only graph for manual review")
+		case ExecutionIsolatedWrite:
+			isolated[node.ID] = true
+		}
+	}
+	for _, node := range spec.Nodes {
+		for _, dependency := range node.DependsOn {
+			if isolated[dependency] {
+				return fmt.Errorf("isolated_write node %d must be a terminal leaf: node %d depends on it, but retained candidates cannot unlock dependent work before reviewed integration", dependency, node.ID)
+			}
+		}
+	}
+	return nil
+}
+
+// HasIsolatedWriters reports whether a proposal needs the candidate-preview
+// stable-base preflight before approval.
+func HasIsolatedWriters(spec Spec) bool {
+	for _, node := range spec.Nodes {
+		if normalizeExecution(node.Execution) == ExecutionIsolatedWrite {
+			return true
+		}
+	}
+	return false
+}
+
 func ValidateSnapshot(snapshot Snapshot) error {
 	if snapshot.Schema != SchemaVersion {
 		return fmt.Errorf("unsupported goal graph schema %d (this build supports %d)", snapshot.Schema, SchemaVersion)
@@ -650,7 +793,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	}
 	spec := Spec{Goal: snapshot.Goal}
 	for _, node := range snapshot.Nodes {
-		spec.Nodes = append(spec.Nodes, NodeSpec{ID: node.ID, Title: node.Title, DependsOn: node.DependsOn, Acceptance: node.Acceptance, Execution: node.Execution})
+		spec.Nodes = append(spec.Nodes, NodeSpec{ID: node.ID, Title: node.Title, DependsOn: node.DependsOn, Acceptance: node.Acceptance, Execution: node.Execution, WritePaths: node.WritePaths})
 	}
 	if err := ValidateSpec(spec); err != nil {
 		return fmt.Errorf("invalid goal graph snapshot: %w", err)
@@ -661,7 +804,10 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if snapshot.ReadFanout.MaxConcurrent <= 0 || snapshot.ReadFanout.MaxConcurrent > defaultMaxReadConcurrency || snapshot.ReadFanout.MaxStarts <= 0 || snapshot.ReadFanout.Starts < 0 || snapshot.ReadFanout.Starts > snapshot.ReadFanout.MaxStarts || snapshot.ReadFanout.MaxTokens <= 0 || snapshot.ReadFanout.UsedTokens < 0 || snapshot.ReadFanout.MaxWallSeconds <= 0 {
 		return errors.New("goal graph snapshot has invalid read-fan-out bounds or usage")
 	}
-	if snapshot.Accounting.Started.IsZero() || !validWorkUsage(snapshot.Accounting.Primary) || !validWorkUsage(snapshot.Accounting.AutomaticReads) {
+	if snapshot.WriterFanout.MaxConcurrent <= 0 || snapshot.WriterFanout.MaxConcurrent > defaultMaxWriterConcurrency || snapshot.WriterFanout.MaxStarts <= 0 || snapshot.WriterFanout.MaxStarts > defaultMaxWriterStarts || snapshot.WriterFanout.Starts < 0 || snapshot.WriterFanout.Starts > snapshot.WriterFanout.MaxStarts {
+		return errors.New("goal graph snapshot has invalid writer-fan-out bounds or usage")
+	}
+	if snapshot.Accounting.Started.IsZero() || !validWorkUsage(snapshot.Accounting.Primary) || !validWorkUsage(snapshot.Accounting.AutomaticReads) || !validWorkUsage(snapshot.Accounting.AutomaticWriters) {
 		return errors.New("goal graph snapshot has invalid aggregate accounting")
 	}
 	budget := snapshot.AggregateBudget
@@ -718,11 +864,34 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if _, duplicate := attempts[attempt.ID]; duplicate {
 			return fmt.Errorf("goal graph snapshot repeats attempt %q", attempt.ID)
 		}
-		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.CostBudgetUSD < 0 || math.IsNaN(attempt.CostBudgetUSD) || math.IsInf(attempt.CostBudgetUSD, 0) || attempt.IterationBudget < 0 || attempt.TimeoutSeconds < 0 {
+		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.LastProgressIteration < 0 || attempt.LastProgressIteration > attempt.Iterations || attempt.CompletionGapIteration < 0 || attempt.CompletionGapIteration > attempt.Iterations || len(attempt.CompletionGap) > 4<<10 || (attempt.CompletionGap == "" && attempt.CompletionGapIteration != 0) || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.CostBudgetUSD < 0 || math.IsNaN(attempt.CostBudgetUSD) || math.IsInf(attempt.CostBudgetUSD, 0) || attempt.IterationBudget < 0 || attempt.TimeoutSeconds < 0 {
 			return fmt.Errorf("goal graph snapshot has invalid attempt %q state, number, or generation", attempt.ID)
+		}
+		if attempt.MutationGeneration > snapshot.MutationGeneration {
+			return fmt.Errorf("goal graph snapshot attempt %q has a future mutation generation", attempt.ID)
+		}
+		if attempt.PendingAction != nil && attempt.PendingAction.BaseMutationGeneration > snapshot.MutationGeneration {
+			return fmt.Errorf("goal graph snapshot attempt %q has a pending action with a future base generation", attempt.ID)
 		}
 		if attempt.PendingAction != nil && attempt.State != AttemptRunning && attempt.State != AttemptInterrupted {
 			return fmt.Errorf("attempt %q retains a pending action in state %q", attempt.ID, attempt.State)
+		}
+		if attempt.State == AttemptCandidate && attempt.Candidate == nil {
+			return fmt.Errorf("candidate attempt %q has no retained writer candidate", attempt.ID)
+		}
+		if attempt.State == AttemptCandidate && len(attempt.Candidate.ScopeViolations) > 0 {
+			return fmt.Errorf("candidate attempt %q retains write-scope violations", attempt.ID)
+		}
+		if attempt.State == AttemptCandidate && nodes[attempt.NodeID].State != NodeBlocked {
+			return fmt.Errorf("candidate attempt %q is not attached to a review-blocked node", attempt.ID)
+		}
+		if nodes[attempt.NodeID].Execution == ExecutionIsolatedWrite && attempt.State == AttemptRunning && (strings.TrimSpace(attempt.BaseWorkspaceToken) == "" || strings.TrimSpace(attempt.BaseCommit) == "") {
+			return fmt.Errorf("running isolated writer attempt %q lacks a stable parent base", attempt.ID)
+		}
+		if attempt.Candidate != nil {
+			if err := validateWriterCandidate(*attempt.Candidate); err != nil {
+				return fmt.Errorf("attempt %q has invalid writer candidate: %w", attempt.ID, err)
+			}
 		}
 		attempts[attempt.ID] = attempt
 	}
@@ -740,7 +909,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		}
 		evidence[item.ID] = item
 	}
-	runningPrimary, runningReads := 0, 0
+	runningPrimary, runningReads, runningWriters := 0, 0, 0
 	for _, node := range snapshot.Nodes {
 		if len(node.AttemptIDs) > snapshot.MaxAttemptsPerNode {
 			return fmt.Errorf("node %d exceeds its attempt bound", node.ID)
@@ -760,9 +929,12 @@ func ValidateSnapshot(snapshot Snapshot) error {
 			if attempts[node.ActiveAttemptID].State != AttemptRunning {
 				return fmt.Errorf("node %d active attempt %q is not running", node.ID, node.ActiveAttemptID)
 			}
-			if node.Execution == ExecutionReadOnly {
+			switch node.Execution {
+			case ExecutionReadOnly:
 				runningReads++
-			} else {
+			case ExecutionIsolatedWrite:
+				runningWriters++
+			default:
 				runningPrimary++
 			}
 		}
@@ -772,8 +944,8 @@ func ValidateSnapshot(snapshot Snapshot) error {
 			}
 		}
 	}
-	if runningPrimary > 1 || runningReads > snapshot.ReadFanout.MaxConcurrent || (runningPrimary > 0 && runningReads > 0) {
-		return errors.New("goal graph snapshot exceeds its primary/read running-attempt bounds")
+	if runningPrimary > 1 || runningReads > snapshot.ReadFanout.MaxConcurrent || runningWriters > snapshot.WriterFanout.MaxConcurrent || (runningPrimary > 0 && runningReads+runningWriters > 0) || (runningReads > 0 && runningWriters > 0) {
+		return errors.New("goal graph snapshot exceeds its primary/read/writer running-attempt bounds")
 	}
 	for _, attempt := range snapshot.Attempts {
 		for _, evidenceID := range attempt.EvidenceIDs {
@@ -786,7 +958,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	if !validOutcome(snapshot.Outcome) {
 		return fmt.Errorf("goal graph snapshot has unknown outcome %q", snapshot.Outcome)
 	}
-	if snapshot.Outcome != "" && runningPrimary+runningReads > 0 {
+	if snapshot.Outcome != "" && runningPrimary+runningReads+runningWriters > 0 {
 		return errors.New("terminal goal graph snapshot retains a running attempt")
 	}
 	if snapshot.Outcome == OutcomeDone {
@@ -830,7 +1002,7 @@ func validNodeState(state NodeState) bool {
 
 func validAttemptState(state AttemptState) bool {
 	switch state {
-	case AttemptRunning, AttemptRetryable, AttemptFailed, AttemptBlocked, AttemptCancelled, AttemptBudgetExhausted, AttemptAccepted, AttemptInterrupted:
+	case AttemptRunning, AttemptRetryable, AttemptFailed, AttemptBlocked, AttemptCancelled, AttemptBudgetExhausted, AttemptAccepted, AttemptCandidate, AttemptInterrupted:
 		return true
 	default:
 		return false
@@ -841,11 +1013,66 @@ func validEvidence(item Evidence) bool {
 	switch item.Kind {
 	case EvidenceToolResult, EvidenceVerification:
 		return item.Status == "passed" || item.Status == "failed"
-	case EvidenceNodeResult, EvidenceDelegateRead:
+	case EvidenceNodeResult, EvidenceDelegateRead, EvidenceDelegateWrite:
 		return item.Status == "accepted"
 	default:
 		return false
 	}
+}
+
+func validateWriterCandidate(candidate WriterCandidate) error {
+	if strings.TrimSpace(candidate.WorkerID) == "" || strings.TrimSpace(candidate.Worktree) == "" || strings.TrimSpace(candidate.Branch) == "" || strings.TrimSpace(candidate.BaseCommit) == "" {
+		return errors.New("candidate needs worker, worktree, branch, and base commit identity")
+	}
+	if len(candidate.WorkerID) > 256 || len(candidate.Worktree) > 4096 || len(candidate.Branch) > 512 || len(candidate.BaseCommit) > 256 || len(candidate.VerificationState) > 64 || len(candidate.VerificationToken) > 512 {
+		return errors.New("candidate identity or verification metadata exceeds its bound")
+	}
+	if len(candidate.WritePaths) == 0 || len(candidate.ChangedFiles) == 0 || len(candidate.ChangedFiles) > maxWriterCandidateFiles || len(candidate.ScopeViolations) > maxWriterCandidateFiles || len(candidate.Verification) > maxWriterVerification {
+		return errors.New("candidate has invalid scope, changed-file, violation, or verification bounds")
+	}
+	normalized, err := writescope.Normalize(candidate.WritePaths, true)
+	if err != nil || len(normalized) == 1 && normalized[0] == writescope.Workspace {
+		return errors.New("candidate write scope is invalid or workspace-wide")
+	}
+	if !equalStrings(candidate.WritePaths, normalized) {
+		return errors.New("candidate write scope is not canonical")
+	}
+	for _, value := range append(append([]string(nil), candidate.ChangedFiles...), candidate.ScopeViolations...) {
+		if strings.TrimSpace(value) == "" || len(value) > 4096 {
+			return errors.New("candidate changed-file or violation path is empty or exceeds its bound")
+		}
+	}
+	for _, violation := range writescope.Violations(normalized, candidate.ChangedFiles) {
+		if !containsString(candidate.ScopeViolations, violation) {
+			return fmt.Errorf("candidate omits observed scope violation %q", violation)
+		}
+	}
+	switch candidate.VerificationState {
+	case "", "passed", "failed", "partial", "stale", "unavailable", "blocked", "cancelled", "timed_out", "rejected", "running":
+	default:
+		return fmt.Errorf("candidate has invalid verification state %q", candidate.VerificationState)
+	}
+	for _, result := range candidate.Verification {
+		if strings.TrimSpace(result.Command) == "" || strings.TrimSpace(result.StateToken) == "" || len(result.Command) > 4096 || len(result.StateToken) > 512 {
+			return errors.New("candidate verification lacks command or state token")
+		}
+		switch result.Status {
+		case "passed", "failed", "blocked", "rejected", "cancelled", "timed_out", "stale":
+		default:
+			return fmt.Errorf("candidate verification has invalid status %q", result.Status)
+		}
+	}
+	if candidate.VerificationState == "passed" {
+		if candidate.VerificationToken == "" || len(candidate.Verification) == 0 {
+			return errors.New("passed candidate lacks verification token or results")
+		}
+		for _, result := range candidate.Verification {
+			if result.Status != "passed" || result.StateToken != candidate.VerificationToken {
+				return errors.New("passed candidate contains failed or stale verification")
+			}
+		}
+	}
+	return nil
 }
 
 func validOutcome(outcome Outcome) bool {
@@ -962,6 +1189,216 @@ type ReadResult struct {
 	CostUSD        float64
 	CostAvailable  bool
 	CostEstimated  bool
+}
+
+// WriterBase is the stable parent-workspace identity shared by every writer
+// in one candidate wave. Clean is observed by the runtime immediately before
+// claims are persisted; child work never starts from an uncommitted parent.
+type WriterBase struct {
+	WorkspaceToken string
+	Commit         string
+	Clean          bool
+	DirtyPaths     []string
+	DirtyCount     int
+	Problem        string
+}
+
+// ValidateWriterBase names the exact precondition that prevents a retained
+// candidate from starting. It is shared by approval preflight and the
+// scheduler recheck so the operator sees the same actionable diagnosis at
+// both boundaries.
+func ValidateWriterBase(base WriterBase) error {
+	if problem := strings.TrimSpace(base.Problem); problem != "" {
+		return errors.New(problem)
+	}
+	if strings.TrimSpace(base.WorkspaceToken) == "" {
+		return errors.New("isolated-writer parent workspace has no observed state token")
+	}
+	if strings.TrimSpace(base.Commit) == "" {
+		return errors.New("isolated-writer parent workspace has no Git base commit")
+	}
+	if !base.Clean {
+		if base.DirtyCount > 0 || len(base.DirtyPaths) > 0 {
+			count := base.DirtyCount
+			if count == 0 {
+				count = len(base.DirtyPaths)
+			}
+			detail := strings.Join(base.DirtyPaths, ", ")
+			if detail == "" {
+				detail = "paths unavailable"
+			}
+			return fmt.Errorf("isolated-writer parent workspace is dirty (%d paths: %s); commit or reconcile it before approving terminal candidates", count, detail)
+		}
+		return errors.New("isolated-writer parent workspace changed while its stable base was inspected; retry after the workspace is stable")
+	}
+	return nil
+}
+
+// WriterClaim is one durable dependency-ready isolated-writer assignment.
+// Every claim in a wave has the same Git base and a pairwise-disjoint scope.
+type WriterClaim struct {
+	Node           Node
+	Attempt        Attempt
+	WritePaths     []string
+	TokenBudget    int
+	CostBudgetUSD  float64
+	MaxIterations  int
+	TimeoutSeconds int
+}
+
+// WriterResult is the bounded machine inbox for an isolated writer. A passed
+// result becomes a retained candidate for review, never an accepted node or a
+// parent-workspace mutation in this slice.
+type WriterResult struct {
+	AttemptID            string
+	WorkerID             string
+	Status               string
+	FailureKind          FailureKind
+	Summary              string
+	Error                string
+	Evidence             []string
+	WritePaths           []string
+	ChangedFiles         []string
+	ScopeViolations      []string
+	Worktree             string
+	Branch               string
+	BaseCommit           string
+	ParentWorkspaceToken string
+	VerificationState    string
+	VerificationToken    string
+	Verification         []CandidateVerification
+	Iterations           int
+	InputTokens          int
+	OutputTokens         int
+	CostUSD              float64
+	CostAvailable        bool
+	CostEstimated        bool
+}
+
+// HasReadyWriters reports whether stable-base discovery could produce work.
+// It is intentionally advisory; StartReadyWriters rechecks under the lock.
+func (g *Graph) HasReadyWriters() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" || g.state.PauseRequested || g.activeAttemptLocked() != nil {
+		return false
+	}
+	for _, node := range g.state.Nodes {
+		if node.State == NodeReady && node.Execution == ExecutionIsolatedWrite {
+			return true
+		}
+	}
+	return false
+}
+
+// StartReadyWriters durably claims one bounded wave of pairwise-disjoint
+// isolated writers from a single clean, stable Git base.
+func (g *Graph) StartReadyWriters(ctx context.Context, base WriterBase, limit int) ([]WriterClaim, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return nil, ErrGraphTerminal
+	}
+	if g.state.PauseRequested {
+		return nil, ErrGraphPaused
+	}
+	if g.activeAttemptLocked() != nil {
+		return nil, errors.New("goal graph already has a running attempt")
+	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), true); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return nil, persistErr
+		}
+		return nil, err
+	}
+	if g.state.WorkspaceToken != "" && base.WorkspaceToken != "" && g.state.WorkspaceToken != base.WorkspaceToken {
+		g.invalidateAllDoneLocked("combined workspace changed outside the recorded graph state")
+	}
+	if g.state.WorkspaceToken == "" && base.WorkspaceToken != "" {
+		g.state.WorkspaceToken = base.WorkspaceToken
+	}
+	g.refreshReadyLocked("dependencies accepted")
+	var ready []*Node
+	for i := range g.state.Nodes {
+		node := &g.state.Nodes[i]
+		if node.State == NodeReady && node.Execution == ExecutionIsolatedWrite {
+			ready = append(ready, node)
+		}
+	}
+	if len(ready) == 0 {
+		return nil, nil
+	}
+	if baseErr := ValidateWriterBase(base); baseErr != nil {
+		reason := baseErr.Error()
+		g.blockNodeLocked(ready[0], reason)
+		if err := g.persistLocked(ctx, true); err != nil {
+			return nil, err
+		}
+		return nil, ErrGraphTerminal
+	}
+	if limit <= 0 || limit > g.state.WriterFanout.MaxConcurrent {
+		limit = g.state.WriterFanout.MaxConcurrent
+	}
+	remainingStarts := g.state.WriterFanout.MaxStarts - g.state.WriterFanout.Starts
+	status := g.budgetStatusLocked(g.now().UTC())
+	if remainingStarts <= 0 || status.RemainingIterations <= 0 || status.RemainingTokens <= 0 || status.RemainingActiveWall <= 0 {
+		reason := fmt.Sprintf("automatic isolated-writer budget exhausted: starts %d/%d", g.state.WriterFanout.Starts, g.state.WriterFanout.MaxStarts)
+		g.exhaustReadyWriterLocked(ready[0], reason)
+		if err := g.persistLocked(ctx, true); err != nil {
+			return nil, err
+		}
+		return nil, ErrGraphTerminal
+	}
+	selected := make([]*Node, 0, min(limit, remainingStarts))
+	for _, node := range ready {
+		if len(selected) >= limit || len(selected) >= remainingStarts || len(selected) >= status.RemainingIterations || len(selected) >= status.RemainingTokens {
+			break
+		}
+		overlaps := false
+		for _, prior := range selected {
+			if writescope.Overlap(prior.WritePaths, node.WritePaths) {
+				overlaps = true
+				break
+			}
+		}
+		if !overlaps {
+			selected = append(selected, node)
+		}
+	}
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	perTaskTokens := max(1, status.RemainingTokens/len(selected))
+	perTaskIterations := min(defaultWriterTaskIterations, max(1, status.RemainingIterations/len(selected)))
+	perTaskCost := 0.0
+	if status.CostEnforceable && status.Usage.InputTokens+status.Usage.OutputTokens > 0 {
+		perTaskCost = status.RemainingCostUSD / float64(len(selected))
+	}
+	timeout := min(defaultWriterTaskWallSeconds, max(1, int(math.Ceil(status.RemainingActiveWall.Seconds()))))
+	now := g.now().UTC()
+	claims := make([]WriterClaim, 0, len(selected))
+	for index, node := range selected {
+		number := len(node.AttemptIDs) + 1
+		attempt := Attempt{
+			ID: g.newID("attempt"), NodeID: node.ID, Number: number, State: AttemptRunning,
+			GraphGeneration: g.state.Generation, BaseWorkspaceToken: base.WorkspaceToken, BaseCommit: base.Commit,
+			MutationGeneration: g.state.MutationGeneration, TokenBudget: perTaskTokens,
+			CostBudgetUSD: perTaskCost, IterationBudget: perTaskIterations,
+			TimeoutSeconds: timeout, Started: now,
+		}
+		g.state.Attempts = append(g.state.Attempts, attempt)
+		node.State, node.ActiveAttemptID = NodeRunning, attempt.ID
+		node.AttemptIDs = append(node.AttemptIDs, attempt.ID)
+		g.state.WriterFanout.Starts++
+		reason := fmt.Sprintf("automatically delegated: approved isolated_write node is dependency-ready (slot %d/%d)", index+1, g.state.WriterFanout.MaxConcurrent)
+		node.Reason = reason
+		g.queueUpdateLocked(node.ID, attempt.ID, "delegated_write", reason)
+		claims = append(claims, WriterClaim{Node: cloneNode(*node), Attempt: cloneAttempt(attempt), WritePaths: append([]string(nil), node.WritePaths...), TokenBudget: perTaskTokens, CostBudgetUSD: perTaskCost, MaxIterations: perTaskIterations, TimeoutSeconds: timeout})
+	}
+	if err := g.persistLocked(ctx, true); err != nil {
+		return nil, err
+	}
+	return claims, nil
 }
 
 // StartReadyReads durably claims at most the fixed automatic fan-out bound in
@@ -1217,6 +1654,187 @@ func (g *Graph) recordReadUsageLocked(attempt *Attempt, result ReadResult) error
 	return nil
 }
 
+// RecordWriterUsage retains a completed writer's provider accounting before
+// one result can make the graph terminal. This preserves every sibling in a
+// parallel wave even when aggregate limits are crossed by the combined work.
+func (g *Graph) RecordWriterUsage(ctx context.Context, result WriterResult) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	terminalBudget := g.state.Outcome == OutcomeBudgetExhausted
+	if g.state.Outcome != "" && !terminalBudget {
+		return ErrGraphTerminal
+	}
+	attempt := g.attemptLocked(result.AttemptID)
+	if attempt == nil || (attempt.State != AttemptRunning && !(terminalBudget && attempt.State == AttemptBudgetExhausted)) {
+		return fmt.Errorf("goal graph writer attempt %q is not running", result.AttemptID)
+	}
+	node := g.nodeLocked(attempt.NodeID)
+	if node == nil || node.Execution != ExecutionIsolatedWrite {
+		return fmt.Errorf("goal graph attempt %q is not an isolated_write node", result.AttemptID)
+	}
+	if err := g.recordWriterUsageLocked(attempt, result); err != nil {
+		return err
+	}
+	if terminalBudget {
+		if err := g.persistLocked(ctx, false); err != nil {
+			return err
+		}
+		return ErrAggregateBudget
+	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), false); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
+	return g.persistLocked(ctx, false)
+}
+
+func (g *Graph) recordWriterUsageLocked(attempt *Attempt, result WriterResult) error {
+	usage := WorkUsage{
+		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
+	}
+	if !validWorkUsage(usage) {
+		return errors.New("goal graph writer result has invalid usage")
+	}
+	workerID := bounded(result.WorkerID, 256)
+	if attempt.UsageRecorded {
+		recorded := WorkUsage{
+			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
+			CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated,
+		}
+		if recorded != usage || attempt.WorkerID != workerID {
+			return fmt.Errorf("goal graph writer attempt %q already has different usage", attempt.ID)
+		}
+		return nil
+	}
+	attempt.WorkerID, attempt.UsageRecorded = workerID, true
+	attempt.Iterations, attempt.InputTokens, attempt.OutputTokens = usage.Iterations, usage.InputTokens, usage.OutputTokens
+	attempt.CostUSD, attempt.CostAvailable, attempt.CostEstimated = usage.CostUSD, usage.CostAvailable, usage.CostEstimated
+	addWorkUsage(&g.state.Accounting.AutomaticWriters, usage)
+	return nil
+}
+
+// FinishWriter validates a retained child candidate against the immutable
+// claim. Even a fully verified candidate stops at review: OG-3A never marks
+// the node done, selects a winner, or mutates the parent workspace.
+func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != "" {
+		return ErrGraphTerminal
+	}
+	attempt := g.attemptLocked(result.AttemptID)
+	if attempt == nil || attempt.State != AttemptRunning {
+		return fmt.Errorf("goal graph writer attempt %q is not running", result.AttemptID)
+	}
+	node := g.nodeLocked(attempt.NodeID)
+	if node == nil || node.Execution != ExecutionIsolatedWrite {
+		return fmt.Errorf("goal graph attempt %q is not an isolated_write node", result.AttemptID)
+	}
+	if err := g.recordWriterUsageLocked(attempt, result); err != nil {
+		return err
+	}
+	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), false); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
+	now := g.now().UTC()
+	normalizedScope, scopeErr := writescope.Normalize(result.WritePaths, true)
+	changed := boundedStrings(result.ChangedFiles, maxWriterCandidateFiles, 4096)
+	violations := boundedStrings(result.ScopeViolations, maxWriterCandidateFiles, 4096)
+	if scopeErr == nil {
+		for _, violation := range writescope.Violations(node.WritePaths, changed) {
+			if !containsString(violations, violation) {
+				violations = append(violations, violation)
+			}
+		}
+	}
+	candidate := &WriterCandidate{
+		WorkerID: bounded(result.WorkerID, 256), Worktree: bounded(result.Worktree, 4096),
+		Branch: bounded(result.Branch, 512), BaseCommit: bounded(result.BaseCommit, 256),
+		WritePaths: append([]string(nil), normalizedScope...), ChangedFiles: changed,
+		ScopeViolations: violations, VerificationState: bounded(result.VerificationState, 64),
+		VerificationToken: bounded(result.VerificationToken, 512),
+		Verification:      cloneCandidateVerification(result.Verification),
+	}
+	if candidate.WorkerID != "" && candidate.Worktree != "" && candidate.Branch != "" && candidate.BaseCommit != "" && len(candidate.ChangedFiles) > 0 && validateWriterCandidate(*candidate) == nil {
+		attempt.Candidate = candidate
+	}
+	freshParent := result.ParentWorkspaceToken != "" && result.ParentWorkspaceToken == attempt.BaseWorkspaceToken
+	identityMatches := result.BaseCommit != "" && result.BaseCommit == attempt.BaseCommit
+	scopeMatches := scopeErr == nil && equalStrings(normalizedScope, node.WritePaths)
+	verificationFresh := candidate.VerificationState == "passed" && candidate.VerificationToken != "" && len(candidate.Verification) > 0
+	if verificationFresh {
+		for _, verification := range candidate.Verification {
+			if verification.Status != "passed" || verification.StateToken != candidate.VerificationToken {
+				verificationFresh = false
+				break
+			}
+		}
+	}
+	valid := result.Status == "done" && strings.TrimSpace(result.Summary) != "" && attempt.Candidate != nil && freshParent && identityMatches && scopeMatches && len(violations) == 0 && verificationFresh
+	if valid {
+		attempt.State, attempt.Finished, attempt.Summary = AttemptCandidate, now, boundedSummary(result.Summary)
+		node.State, node.ActiveAttemptID = NodeBlocked, ""
+		node.Reason = fmt.Sprintf("verified isolated writer candidate %s retained at %s; reviewed integration is required before this node can complete", candidate.WorkerID, candidate.Worktree)
+		g.addEvidenceLocked(attempt, Evidence{Kind: EvidenceDelegateWrite, Tool: "automatic_write_delegate", Status: "accepted", Summary: boundedSummary(strings.Join(result.Evidence, "\n")), WorkspaceToken: candidate.VerificationToken, MutationGeneration: g.state.MutationGeneration, Finished: now})
+		g.queueUpdateLocked(node.ID, attempt.ID, "candidate_ready", node.Reason)
+		g.reduceOutcomeLocked()
+		return g.persistLocked(ctx, true)
+	}
+
+	detail := strings.TrimSpace(result.Error)
+	failureKind := FailureProvider
+	switch {
+	case result.FailureKind != "":
+		failureKind = result.FailureKind
+		if detail == "" {
+			detail = "isolated writer was blocked before execution"
+		}
+	case !freshParent || !identityMatches:
+		failureKind = FailureWorkspaceStale
+		if detail == "" {
+			detail = "parent workspace or candidate Git base changed while the isolated writer was running"
+		}
+	case !scopeMatches || len(violations) > 0:
+		failureKind = FailureTool
+		if detail == "" {
+			detail = "isolated writer changed files outside its declared write scope"
+		}
+	case !verificationFresh:
+		failureKind = FailureVerification
+		if detail == "" {
+			detail = "isolated writer candidate lacks fresh passing machine-observed verification"
+		}
+	case attempt.Candidate == nil:
+		failureKind = FailureTool
+		if detail == "" {
+			detail = "isolated writer produced no bounded retained candidate"
+		}
+	}
+	if detail == "" {
+		detail = "isolated writer ended with status " + result.Status
+	}
+	attempt.Failures = append(attempt.Failures, Failure{Kind: failureKind, Tool: "automatic_write_delegate", Detail: boundedReason(detail), Time: now})
+	attempt.Summary, attempt.Finished = boundedSummary(detail), now
+	node.ActiveAttemptID, node.State, node.Reason = "", NodeBlocked, boundedReason(detail)
+	switch result.Status {
+	case "budget_exhausted":
+		attempt.State, node.State = AttemptBudgetExhausted, NodeBudgetExhausted
+	case "cancelled":
+		attempt.State = AttemptCancelled
+	default:
+		attempt.State = AttemptBlocked
+	}
+	g.queueUpdateLocked(node.ID, attempt.ID, string(node.State), node.Reason)
+	g.reduceOutcomeLocked()
+	return g.persistLocked(ctx, true)
+}
+
 // RecordPrimaryUsage durably accounts for one or more primary-lane provider
 // iterations. An active primary attempt receives the same bounded counters for
 // node inspection; proposal and compaction work may legitimately have no
@@ -1244,6 +1862,13 @@ func (g *Graph) RecordPrimaryUsage(ctx context.Context, usage WorkUsage) error {
 	}
 	addWorkUsage(&g.state.Accounting.Primary, usage)
 	if attempt != nil {
+		// Snapshots written before progress-aware leases did not carry an exact
+		// progress iteration. A recorded successful tool result is enough to
+		// grant one fresh lease on resume; the fixed whole-graph envelope remains
+		// the outer bound.
+		if attempt.LastProgressIteration == 0 && attempt.ToolSuccesses > 0 && attempt.Iterations > 0 {
+			attempt.LastProgressIteration = attempt.Iterations
+		}
 		attemptUsage := WorkUsage{
 			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
 			CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated,
@@ -1262,6 +1887,14 @@ func (g *Graph) RecordPrimaryUsage(ctx context.Context, usage WorkUsage) error {
 }
 
 func (g *Graph) exhaustReadyReadLocked(node *Node, reason string) {
+	node.State, node.Reason = NodeBudgetExhausted, strings.TrimSpace(reason)
+	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, node.Reason
+	g.stopActiveLocked(g.now().UTC())
+	g.queueUpdateLocked(node.ID, "", string(NodeBudgetExhausted), node.Reason)
+	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
+}
+
+func (g *Graph) exhaustReadyWriterLocked(node *Node, reason string) {
 	node.State, node.Reason = NodeBudgetExhausted, strings.TrimSpace(reason)
 	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, node.Reason
 	g.stopActiveLocked(g.now().UTC())
@@ -1401,7 +2034,9 @@ func (g *Graph) BeginTool(ctx context.Context, attemptID string, action ToolActi
 	attempt.PendingAction = &PendingAction{
 		ID: g.newID("action"), Tool: action.Tool, Risk: action.Risk,
 		Summary: strings.TrimSpace(action.Summary), Command: action.Command,
-		PotentialMutation: action.PotentialMutation, NonReplayable: action.NonReplayable, Started: now,
+		PotentialMutation: action.PotentialMutation, NonReplayable: action.NonReplayable,
+		BaseWorkspaceToken: strings.TrimSpace(workspaceToken), BaseMutationGeneration: attempt.MutationGeneration,
+		Started: now,
 	}
 	if action.PotentialMutation {
 		g.state.MutationGeneration++
@@ -1433,6 +2068,56 @@ type ToolResult struct {
 	Finished       time.Time
 }
 
+// completionGapAdvanced recognizes only evidence capable of repairing or
+// changing the currently recorded acceptance gate. While a gap is open, a
+// novel command string or different read result is still useful evidence, but
+// it must not renew the controller's remediation lease on its own.
+func completionGapAdvanced(attempt *Attempt, pending *PendingAction, result ToolResult) bool {
+	if attempt == nil || attempt.CompletionGap == "" {
+		return false
+	}
+	// A machine-observed repository change is concrete repair progress even
+	// before the next verifier runs. This gives the model enough bounded room to
+	// add or fix a focused test after a useful verification failure.
+	if completionGapWorkspaceAdvanced(pending, result) {
+		return true
+	}
+	gap := attempt.CompletionGap
+	if strings.Contains(gap, "no successful bounded tool result") {
+		return true
+	}
+	if strings.Contains(gap, "combined workspace has no state token") && strings.TrimSpace(result.WorkspaceToken) != "" {
+		return true
+	}
+	if strings.Contains(gap, "successful write action produced no combined-workspace change") && strings.TrimSpace(result.WorkspaceToken) != "" && result.WorkspaceToken != attempt.BaseWorkspaceToken {
+		return true
+	}
+	if strings.Contains(gap, "no successful recognized verification bound to the current combined workspace") && result.Verification && strings.TrimSpace(result.WorkspaceToken) != "" {
+		return true
+	}
+	// A successful retry or alternative is handled independently by
+	// resolveFailuresLocked.
+	return false
+}
+
+func completionGapWorkspaceAdvanced(pending *PendingAction, result ToolResult) bool {
+	return pending != nil && pending.PotentialMutation && strings.TrimSpace(result.WorkspaceToken) != "" && result.WorkspaceToken != pending.BaseWorkspaceToken
+}
+
+func (g *Graph) hasEquivalentVerificationFailureLocked(attempt *Attempt, candidate Evidence) bool {
+	candidate.Summary = boundedSummary(candidate.Summary)
+	for _, id := range attempt.EvidenceIDs {
+		evidence := g.evidenceLocked(id)
+		// Command spelling is deliberately excluded. Re-running the same failing
+		// verifier through a different executable or flag is not new diagnostic
+		// progress unless its machine output or workspace state changed.
+		if evidence != nil && evidence.Kind == EvidenceVerification && evidence.Status == "failed" && evidence.Summary == candidate.Summary && evidence.WorkspaceToken == candidate.WorkspaceToken && evidence.MutationGeneration == candidate.MutationGeneration {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *Graph) FinishTool(ctx context.Context, attemptID string, result ToolResult) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1445,6 +2130,15 @@ func (g *Graph) FinishTool(ctx context.Context, attemptID string, result ToolRes
 	if result.Finished.IsZero() {
 		result.Finished = g.now().UTC()
 	}
+	// BeginTool advances the global generation before every action that might
+	// mutate state so an interrupted action remains conservatively ambiguous.
+	// Once the action returns, an unchanged machine-observed workspace token
+	// proves that it did not change the repository. Restore this attempt's
+	// observed workspace generation while leaving the global write-ahead
+	// generation monotonic for recovery and audit history.
+	if pending != nil && pending.PotentialMutation && result.WorkspaceToken != "" && result.WorkspaceToken == pending.BaseWorkspaceToken {
+		attempt.MutationGeneration = pending.BaseMutationGeneration
+	}
 	if result.Failed {
 		kind := result.FailureKind
 		if kind == "" {
@@ -1456,17 +2150,36 @@ func (g *Graph) FinishTool(ctx context.Context, attemptID string, result ToolRes
 		}
 		attempt.Failures = append(attempt.Failures, Failure{Kind: kind, Tool: result.Tool, Risk: result.Risk, Detail: detail, Retryable: result.Retryable, Time: result.Finished})
 		if result.Verification {
-			g.addEvidenceLocked(attempt, Evidence{Kind: EvidenceVerification, Tool: result.Tool, Command: result.Command, Status: "failed", Summary: detail, WorkspaceToken: result.WorkspaceToken, MutationGeneration: g.state.MutationGeneration, Started: result.Started, Finished: result.Finished})
+			summary := strings.TrimSpace(result.Summary)
+			if summary == "" {
+				summary = detail
+			}
+			evidence := Evidence{Kind: EvidenceVerification, Tool: result.Tool, Command: result.Command, Status: "failed", Summary: summary, WorkspaceToken: result.WorkspaceToken, MutationGeneration: attempt.MutationGeneration, Started: result.Started, Finished: result.Finished}
+			if attempt.CompletionGap != "" && (!g.hasEquivalentVerificationFailureLocked(attempt, evidence) || completionGapWorkspaceAdvanced(pending, result)) {
+				attempt.LastProgressIteration = attempt.Iterations
+				attempt.CompletionGapIteration = attempt.Iterations
+			}
+			g.addEvidenceLocked(attempt, evidence)
+		} else if attempt.CompletionGap != "" && completionGapWorkspaceAdvanced(pending, result) {
+			attempt.LastProgressIteration = attempt.Iterations
+			attempt.CompletionGapIteration = attempt.Iterations
 		}
 		g.queueUpdateLocked(attempt.NodeID, attempt.ID, "action_failed", detail)
 	} else {
 		attempt.ToolSuccesses++
-		g.resolveFailuresLocked(attempt, result.Tool, result.Risk)
+		resolvedFailure := g.resolveFailuresLocked(attempt, result.Tool, result.Risk)
 		kind := EvidenceToolResult
 		if result.Verification {
 			kind = EvidenceVerification
 		}
-		g.addEvidenceLocked(attempt, Evidence{Kind: kind, Tool: result.Tool, Command: result.Command, Status: "passed", Summary: strings.TrimSpace(result.Summary), WorkspaceToken: result.WorkspaceToken, MutationGeneration: g.state.MutationGeneration, Started: result.Started, Finished: result.Finished})
+		evidence := Evidence{Kind: kind, Tool: result.Tool, Command: result.Command, Status: "passed", Summary: strings.TrimSpace(result.Summary), WorkspaceToken: result.WorkspaceToken, MutationGeneration: attempt.MutationGeneration, Started: result.Started, Finished: result.Finished}
+		if resolvedFailure || completionGapAdvanced(attempt, pending, result) || (attempt.CompletionGap == "" && !g.hasEquivalentEvidenceLocked(attempt, evidence)) {
+			attempt.LastProgressIteration = attempt.Iterations
+			if attempt.CompletionGap != "" {
+				attempt.CompletionGapIteration = attempt.Iterations
+			}
+		}
+		g.addEvidenceLocked(attempt, evidence)
 		g.queueUpdateLocked(attempt.NodeID, attempt.ID, "action_completed", result.Tool+": "+strings.TrimSpace(result.Summary))
 	}
 	if result.WorkspaceToken != "" && (pending == nil || pending.PotentialMutation || result.Verification) {
@@ -1578,6 +2291,11 @@ func (g *Graph) ProposeCompletion(ctx context.Context, summary, workspaceToken s
 		}
 	}
 	if len(issues) > 0 {
+		gap := strings.Join(issues, "; ")
+		if attempt.CompletionGap != gap {
+			attempt.CompletionGap = gap
+			attempt.CompletionGapIteration = attempt.Iterations
+		}
 		attempt.CompletionInterventions++
 		if attempt.CompletionInterventions > maxCompletionInterventions {
 			reason := "node completion remained unproven after two controller interventions: " + strings.Join(issues, "; ")
@@ -1595,8 +2313,9 @@ func (g *Graph) ProposeCompletion(ctx context.Context, summary, workspaceToken s
 	}
 
 	now := g.now().UTC()
+	attempt.CompletionGap, attempt.CompletionGapIteration = "", 0
 	attempt.State, attempt.Finished, attempt.Summary = AttemptAccepted, now, boundedSummary(summary)
-	resultEvidence := Evidence{Kind: EvidenceNodeResult, Status: "accepted", Summary: attempt.Summary, WorkspaceToken: workspaceToken, MutationGeneration: g.state.MutationGeneration, Finished: now}
+	resultEvidence := Evidence{Kind: EvidenceNodeResult, Status: "accepted", Summary: attempt.Summary, WorkspaceToken: workspaceToken, MutationGeneration: attempt.MutationGeneration, Finished: now}
 	g.addEvidenceLocked(attempt, resultEvidence)
 	node.State, node.ActiveAttemptID, node.AcceptedAttemptID, node.Reason = NodeDone, "", attempt.ID, ""
 	if workspaceToken != "" {
@@ -1630,7 +2349,7 @@ func completionNotice(node *Node, attempt *Attempt, issues []string) string {
 	for _, issue := range issues {
 		b.WriteString("- " + issue + "\n")
 	}
-	b.WriteString("Continue this node with ordinary tools. Obtain proportionate recognized verification after the last potentially mutating action, repair a failure, propose a bounded graph revision, or explicitly block the node with an exact reason. This notice changes no permission or user scope.")
+	b.WriteString("Continue this node with ordinary tools. Obtain proportionate recognized verification after the last potentially mutating action, repair a failure, propose a bounded graph revision, or explicitly block the node with an exact reason. If the detected verifier reports that no tests exist, add a focused smoke test for this node's changed behavior when that is within scope, then run the verifier directly. Do not repeat output wrappers or an unchanged failing command. This notice changes no permission or user scope.")
 	return b.String()
 }
 
@@ -1654,7 +2373,7 @@ func (g *Graph) BlockActive(ctx context.Context, attemptID, reason string) error
 }
 
 func (g *Graph) Revise(ctx context.Context, baseGeneration uint64, reason string, spec Spec) error {
-	if err := ValidateSpec(spec); err != nil {
+	if err := ValidateExecutableSpec(spec); err != nil {
 		return err
 	}
 	g.mu.Lock()
@@ -1693,7 +2412,8 @@ func (g *Graph) Revise(ctx context.Context, baseGeneration uint64, reason string
 	g.state.Nodes = nil
 	changed := map[int]bool{}
 	for position, proposed := range spec.Nodes {
-		node := Node{ID: proposed.ID, Position: position, Title: strings.TrimSpace(proposed.Title), DependsOn: append([]int(nil), proposed.DependsOn...), Acceptance: append([]string(nil), proposed.Acceptance...), Execution: normalizeExecution(proposed.Execution), State: NodeProposed}
+		writePaths, _ := writescope.Normalize(proposed.WritePaths, proposed.Execution == ExecutionIsolatedWrite)
+		node := Node{ID: proposed.ID, Position: position, Title: strings.TrimSpace(proposed.Title), DependsOn: append([]int(nil), proposed.DependsOn...), Acceptance: append([]string(nil), proposed.Acceptance...), Execution: normalizeExecution(proposed.Execution), WritePaths: writePaths, State: NodeProposed}
 		if prior, ok := old[proposed.ID]; ok && sameDefinition(prior, proposed) && prior.State == NodeDone {
 			node.State, node.AcceptedAttemptID = NodeDone, prior.AcceptedAttemptID
 			node.AttemptIDs = append([]string(nil), prior.AttemptIDs...)
@@ -1753,6 +2473,13 @@ func (g *Graph) Recover(ctx context.Context, workspaceToken string) error {
 		node := g.nodeLocked(attempt.NodeID)
 		now := g.now().UTC()
 		attempt.State, attempt.Finished = AttemptInterrupted, now
+		if node != nil && node.Execution == ExecutionIsolatedWrite {
+			reason := "an isolated writer may have changed its retained worktree before the session stopped; inspect delegated candidates and reconcile explicitly before continuing"
+			attempt.Failures = append(attempt.Failures, Failure{Kind: FailureInterruptedAction, Tool: "automatic_write_delegate", Risk: "write", Detail: reason, Time: now})
+			node.State, node.ActiveAttemptID, node.Reason = NodeBlocked, "", reason
+			g.queueUpdateLocked(node.ID, attempt.ID, string(NodeBlocked), reason)
+			continue
+		}
 		if attempt.PendingAction != nil && attempt.PendingAction.NonReplayable {
 			reason := fmt.Sprintf("action %s may have taken effect before the session stopped; inspect and reconcile it before continuing", attempt.PendingAction.Tool)
 			attempt.Failures = append(attempt.Failures, Failure{Kind: FailureInterruptedAction, Tool: attempt.PendingAction.Tool, Risk: attempt.PendingAction.Risk, Detail: reason, Time: now})
@@ -2021,9 +2748,11 @@ func (g *Graph) UsageTotals(now time.Time) UsageSummary {
 func (g *Graph) usageSummaryLocked(now time.Time) UsageSummary {
 	primary := g.state.Accounting.Primary
 	reads := g.state.Accounting.AutomaticReads
+	writers := g.state.Accounting.AutomaticWriters
 	total := WorkUsage{}
 	addWorkUsage(&total, primary)
 	addWorkUsage(&total, reads)
+	addWorkUsage(&total, writers)
 	if now.IsZero() {
 		now = g.now()
 	}
@@ -2035,7 +2764,7 @@ func (g *Graph) usageSummaryLocked(now time.Time) UsageSummary {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	return UsageSummary{Primary: primary, AutomaticReads: reads, Total: total, Elapsed: elapsed, ActiveElapsed: g.activeElapsedLocked(now)}
+	return UsageSummary{Primary: primary, AutomaticReads: reads, AutomaticWriters: writers, Total: total, Elapsed: elapsed, ActiveElapsed: g.activeElapsedLocked(now)}
 }
 
 func (g *Graph) budgetStatusLocked(now time.Time) BudgetStatus {
@@ -2170,6 +2899,9 @@ func (g *Graph) Render() string {
 		if len(node.DependsOn) > 0 {
 			fmt.Fprintf(&b, " · after %s", joinInts(node.DependsOn))
 		}
+		if len(node.WritePaths) > 0 {
+			fmt.Fprintf(&b, " · writes %s", strings.Join(node.WritePaths, ", "))
+		}
 		if node.ActiveAttemptID != "" {
 			fmt.Fprintf(&b, " · attempt %s", node.ActiveAttemptID)
 		}
@@ -2220,18 +2952,20 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 	}
 	fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", maxGraphNodes, g.state.MaxAttemptsPerNode, g.state.MaxRevisions)
 	fmt.Fprintf(&b, "Read fan-out: %d/%d starts · %d/%d tokens · at most %d concurrent · %ds wall bound\n", g.state.ReadFanout.Starts, g.state.ReadFanout.MaxStarts, g.state.ReadFanout.UsedTokens, g.state.ReadFanout.MaxTokens, g.state.ReadFanout.MaxConcurrent, g.state.ReadFanout.MaxWallSeconds)
+	fmt.Fprintf(&b, "Isolated-writer wave: %d/%d starts · at most %d concurrent retained candidates\n", g.state.WriterFanout.Starts, g.state.WriterFanout.MaxStarts, g.state.WriterFanout.MaxConcurrent)
 	usage := g.usageSummaryLocked(g.now().UTC())
 	budget := g.budgetStatusLocked(g.now().UTC())
 	fmt.Fprintf(&b, "Aggregate model work: %s · %s active (%s elapsed)\n", formatWorkUsage(usage.Total), formatGraphElapsed(usage.ActiveElapsed), formatGraphElapsed(usage.Elapsed))
 	fmt.Fprintf(&b, "  Primary (proposal + serial lane): %s\n", formatWorkUsage(usage.Primary))
 	fmt.Fprintf(&b, "  Automatic reads: %s\n", formatWorkUsage(usage.AutomaticReads))
+	fmt.Fprintf(&b, "  Automatic isolated writers: %s\n", formatWorkUsage(usage.AutomaticWriters))
 	costBound := fmt.Sprintf("$%.2f when pricing is complete", budget.Limits.MaxCostUSD)
 	if budget.CostEnforceable {
 		costBound = fmt.Sprintf("$%.6f/$%.2f", budget.Usage.CostUSD, budget.Limits.MaxCostUSD)
 	}
 	fmt.Fprintf(&b, "Aggregate envelope: %d/%d provider iterations · %d/%d tokens · %s · %s/%s active wall\n", budget.Usage.Iterations, budget.Limits.MaxIterations, budget.Usage.InputTokens+budget.Usage.OutputTokens, budget.Limits.MaxTokens, costBound, formatGraphElapsed(budget.ActiveElapsed), formatGraphElapsed(time.Duration(budget.Limits.MaxActiveWallSeconds)*time.Second))
-	b.WriteString("Execution: dependency-ready read_only nodes may use bounded automatic workers; one serial primary lane owns primary work and every parent-workspace write.\n")
-	b.WriteString("Write scope: the primary workspace only; every concrete path is assessed by ordinary permissions when the action is proposed.\n")
+	b.WriteString("Execution: end-to-end graphs use one serial primary lane for every parent-workspace write, with bounded automatic read_only workers; an explicitly candidate-only graph may instead use one bounded pairwise-disjoint terminal isolated_write wave.\n")
+	b.WriteString("Write scope: isolated writers require explicit narrow scopes and a common clean Git base; no candidate is selected, integrated, or allowed to unlock dependents automatically.\n")
 	b.WriteString("Authority: every action still uses ordinary permissions; approval grants no publication or additional tool access.\n")
 	b.WriteString("Completion: changed workspace state requires fresh machine-observed verification.\n\n")
 	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
@@ -2239,6 +2973,9 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 		fmt.Fprintf(&b, "%s %d. %s · %s · %s", marks[node.State], node.ID, node.Title, node.State, node.Execution)
 		if len(node.DependsOn) > 0 {
 			fmt.Fprintf(&b, " · after %s", joinInts(node.DependsOn))
+		}
+		if len(node.WritePaths) > 0 {
+			fmt.Fprintf(&b, " · writes %s", strings.Join(node.WritePaths, ", "))
 		}
 		if node.Reason != "" {
 			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(node.Reason), 600))
@@ -2274,6 +3011,9 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 		if attempt.Iterations > 0 {
 			fmt.Fprintf(&b, " · %d provider iterations", attempt.Iterations)
 		}
+		if attempt.LastProgressIteration > 0 {
+			fmt.Fprintf(&b, " · novel evidence at iteration %d", attempt.LastProgressIteration)
+		}
 		if attempt.CostAvailable {
 			fmt.Fprintf(&b, " · $%.6f", attempt.CostUSD)
 		}
@@ -2281,6 +3021,10 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(attempt.Summary), 600))
 		}
 		b.WriteByte('\n')
+		if attempt.Candidate != nil {
+			fmt.Fprintf(&b, "    candidate: %s · %s · base %s · verification %s\n", attempt.Candidate.Worktree, attempt.Candidate.Branch, bounded(attempt.Candidate.BaseCommit, 16), attempt.Candidate.VerificationState)
+			fmt.Fprintf(&b, "    changed: %s\n", strings.Join(attempt.Candidate.ChangedFiles, ", "))
+		}
 		for _, failure := range attempt.Failures {
 			resolution := "unresolved"
 			if failure.Resolved {
@@ -2433,7 +3177,18 @@ func (g *Graph) finishBlockedLocked(node *Node, attempt *Attempt, reason string)
 func (g *Graph) hasFreshVerificationLocked(attempt *Attempt, token string) bool {
 	for _, id := range attempt.EvidenceIDs {
 		evidence := g.evidenceLocked(id)
-		if evidence != nil && evidence.Kind == EvidenceVerification && evidence.Status == "passed" && evidence.MutationGeneration == g.state.MutationGeneration && evidence.WorkspaceToken == token {
+		if evidence != nil && evidence.Kind == EvidenceVerification && evidence.Status == "passed" && evidence.MutationGeneration == attempt.MutationGeneration && evidence.WorkspaceToken == token {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Graph) hasEquivalentEvidenceLocked(attempt *Attempt, candidate Evidence) bool {
+	candidate.Summary = boundedSummary(candidate.Summary)
+	for _, id := range attempt.EvidenceIDs {
+		evidence := g.evidenceLocked(id)
+		if evidence != nil && evidence.Kind == candidate.Kind && evidence.Tool == candidate.Tool && evidence.Command == candidate.Command && evidence.Status == candidate.Status && evidence.Summary == candidate.Summary && evidence.WorkspaceToken == candidate.WorkspaceToken && evidence.MutationGeneration == candidate.MutationGeneration {
 			return true
 		}
 	}
@@ -2451,7 +3206,8 @@ func (g *Graph) addEvidenceLocked(attempt *Attempt, evidence Evidence) {
 	attempt.EvidenceIDs = append(attempt.EvidenceIDs, evidence.ID)
 }
 
-func (g *Graph) resolveFailuresLocked(attempt *Attempt, tool, risk string) {
+func (g *Graph) resolveFailuresLocked(attempt *Attempt, tool, risk string) bool {
+	resolved := false
 	for i := range attempt.Failures {
 		failure := &attempt.Failures[i]
 		if failure.Resolved {
@@ -2459,8 +3215,10 @@ func (g *Graph) resolveFailuresLocked(attempt *Attempt, tool, risk string) {
 		}
 		if failure.Tool == tool || (failure.Retryable && failure.Risk != "" && failure.Risk == risk) {
 			failure.Resolved = true
+			resolved = true
 		}
 	}
+	return resolved
 }
 
 func unresolvedFailures(failures []Failure) []Failure {
@@ -2630,7 +3388,8 @@ func (g *Graph) nodeLocked(id int) *Node {
 }
 
 func sameDefinition(node Node, spec NodeSpec) bool {
-	if node.ID != spec.ID || node.Title != strings.TrimSpace(spec.Title) || node.Execution != normalizeExecution(spec.Execution) || !equalInts(node.DependsOn, spec.DependsOn) || len(node.Acceptance) != len(spec.Acceptance) {
+	writePaths, _ := writescope.Normalize(spec.WritePaths, spec.Execution == ExecutionIsolatedWrite)
+	if node.ID != spec.ID || node.Title != strings.TrimSpace(spec.Title) || node.Execution != normalizeExecution(spec.Execution) || !equalInts(node.DependsOn, spec.DependsOn) || !equalStrings(node.WritePaths, writePaths) || len(node.Acceptance) != len(spec.Acceptance) {
 		return false
 	}
 	for i := range node.Acceptance {
@@ -2651,6 +3410,55 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(values []string, value string) bool {
+	for _, current := range values {
+		if current == value {
+			return true
+		}
+	}
+	return false
+}
+
+func boundedStrings(values []string, limit, byteLimit int) []string {
+	if len(values) > limit {
+		values = values[:limit]
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		result = append(result, bounded(value, byteLimit))
+	}
+	return result
+}
+
+func cloneCandidateVerification(values []CandidateVerification) []CandidateVerification {
+	if len(values) > maxWriterVerification {
+		values = values[:maxWriterVerification]
+	}
+	result := make([]CandidateVerification, 0, len(values))
+	for _, value := range values {
+		result = append(result, CandidateVerification{
+			Command: bounded(strings.TrimSpace(value.Command), 4096), Status: bounded(strings.TrimSpace(value.Status), 64), StateToken: bounded(strings.TrimSpace(value.StateToken), 512),
+		})
+	}
+	return result
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
@@ -2675,6 +3483,7 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 func cloneNode(node Node) Node {
 	node.DependsOn = append([]int(nil), node.DependsOn...)
 	node.Acceptance = append([]string(nil), node.Acceptance...)
+	node.WritePaths = append([]string(nil), node.WritePaths...)
 	node.AttemptIDs = append([]string(nil), node.AttemptIDs...)
 	return node
 }
@@ -2686,6 +3495,14 @@ func cloneAttempt(attempt Attempt) Attempt {
 		pending := *attempt.PendingAction
 		attempt.PendingAction = &pending
 	}
+	if attempt.Candidate != nil {
+		candidate := *attempt.Candidate
+		candidate.WritePaths = append([]string(nil), attempt.Candidate.WritePaths...)
+		candidate.ChangedFiles = append([]string(nil), attempt.Candidate.ChangedFiles...)
+		candidate.ScopeViolations = append([]string(nil), attempt.Candidate.ScopeViolations...)
+		candidate.Verification = append([]CandidateVerification(nil), attempt.Candidate.Verification...)
+		attempt.Candidate = &candidate
+	}
 	return attempt
 }
 
@@ -2695,6 +3512,7 @@ func cloneSpec(spec Spec) Spec {
 		clone.Nodes[i] = node
 		clone.Nodes[i].DependsOn = append([]int(nil), node.DependsOn...)
 		clone.Nodes[i].Acceptance = append([]string(nil), node.Acceptance...)
+		clone.Nodes[i].WritePaths = append([]string(nil), node.WritePaths...)
 	}
 	return clone
 }

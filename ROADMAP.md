@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-08-01
+**Status updated:** 2026-08-02
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -128,9 +128,9 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-The latest implementation wave completed **OG-2B2b2 — Aggregate bounds and
-comparative evidence**, finishing OG-2. Orchestrated Goal now applies a fixed
-runtime-owned whole-graph envelope of 96 provider iterations, 192,000 tokens,
+The completed OG-2 program gave Orchestrated Goal a fixed
+runtime-owned whole-graph envelope of 96 provider iterations, now calibrated
+to 1,000,000 tokens,
 a $5 estimated-cost ceiling when pricing is complete, and 30 minutes of active
 post-approval execution. Reached pauses and inert restart time do not consume
 that active allowance. Credential-free comparisons retain bounded two-worker
@@ -138,8 +138,33 @@ fan-out for substantive independent read investigations: decomposable and
 cross-layer scenarios produced the same grounded answer with lower controlled
 elapsed time than Standard and primary-only graph runs, while their extra
 model work remained visible. Trivial primary work launches no worker and
-dependency-serial reads do not overlap. Standard evidence-gated execution
-remains the default. **OG-3 — Isolated writer candidates** is next. See the
+dependency-serial reads do not overlap. **OG-3A — One verified isolated-writer
+candidate wave** adds explicitly
+scoped pairwise-disjoint writers on a clean stable Git base, retained child
+worktrees, and fresh child verification while stopping before parent
+integration. Five trial-driven follow-ups then calibrated the cumulative
+token envelope and corrected the primary execution loop: `max_iterations` is
+now a consecutive no-progress lease inside one immutable graph attempt rather
+than an accidental lifetime cutoff, unchanged repository state no longer
+makes valid verification stale merely because a process or network action ran,
+verification-like shell compounds receive an exact reason and direct-command
+correction, and graph-hidden tools are enforced before argument decoding.
+An exact open completion gap now has its own four-cycle lease that renews only
+when evidence can change that gate, redundant exact-workspace `cd ... &&` and
+final `2>&1` verification wrappers are recognized without accepting status-
+masking shell composition, and unschedulable isolated-writer graphs are
+rejected before approval. End-to-end change graphs default to `primary`;
+`isolated_write` remains a clean-base, candidate-only terminal preview until
+reviewed integration exists.
+The latest correction distinguishes repair progress from churn: a novel
+machine-observed verification failure and an actual repository mutation renew
+the short completion-gap window so the agent can add or fix a focused test,
+while repeating the same failure does not. Proposal guidance now requires the
+first mutating node to establish a focused test when the repository has no
+applicable verification surface yet.
+Standard evidence-gated execution remains the default.
+**OG-3 — Isolated writer candidates** is now in progress: OG-3B adversarial and
+recovery closure is next. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1713,6 +1738,53 @@ roadmap remains the source of priority and completion status.
   - [ ] **OG-3 — Isolated writer candidates:** dispatch only ready,
     disjoint-scope writers on a stable base; require child verification and
     stop at reviewable candidates.
+    - [x] **OG-3A — One verified isolated-writer candidate wave:** add
+      explicit narrow `isolated_write` scopes, claim at most two pairwise-
+      disjoint writers from one clean stable commit, reuse ordinary delegate
+      permission/hooks and isolated worktrees, require fresh detected child
+      verification, retain candidates, and stop before selection or parent
+      integration. Interrupted writers are blocked and never replayed.
+      *(Completed 2026-08-02.)*
+    - [x] **OG-3A.1 — Aggregate-budget usability correction:** recalibrate
+      new graphs from the initial 192,000-token experimental ceiling to a
+      fixed 1,000,000-token ceiling, preserve the stored ceiling on older
+      graphs, compact once at approval and proactively under cumulative-budget
+      pressure, and show per-request context beside whole-graph consumption.
+      *(Completed 2026-08-02.)*
+    - [x] **OG-3A.2 — Primary-loop budget and evidence diagnostics:** renew
+      the configured primary iteration slice only when the runtime starts a
+      new immutable node attempt, retain the fixed 96-iteration graph
+      envelope as the outer bound, explain rejected verification-like shell
+      commands with a safe direct form, and enforce graph-hidden tools before
+      their arguments can reach an implementation. *(Completed 2026-08-02.)*
+    - [x] **OG-3A.3 — Progress-aware primary control and workspace evidence:**
+      reinterpret the configured primary slice as a durable consecutive
+      no-progress lease that renews on novel machine evidence; retain 96
+      aggregate iterations as the hard graph bound; distinguish conservative
+      write-ahead mutation history from observed repository-state changes;
+      return positive verification receipts; recognize direct Python module
+      verification; and prefer coherent 4–6-node proposals rather than
+      spending graph overhead on file-by-file serial nodes. *(Completed
+      2026-08-02.)*
+    - [x] **OG-3A.4 — Completion-gap and schedulability correction:** bind
+      post-proposal remediation to the exact unmet gate rather than novel-
+      looking output; recognize only safe redundant workspace/status wrappers
+      around verification; default end-to-end graphs to the primary lane;
+      reject mixed or dependency-producing retained-candidate topologies; and
+      preflight candidate-only graphs against a clean stable Git base with
+      actionable dirty-path diagnostics. *(Completed 2026-08-02.)*
+    - [x] **OG-3A.5 — Repair-progress and verifier-bootstrap correction:**
+      preserve a bounded remediation window after a novel verification
+      failure or a real workspace repair, refuse renewal for identical failed
+      output, retain full failed-verifier evidence, and require proposals to
+      establish a focused smoke test before a mutating node relies on a test
+      runner with no collected tests; allow an explicit safe retry to reattach
+      its saved blocked graph without a separate resume step. *(Completed
+      2026-08-02.)*
+    - [ ] **OG-3B — Adversarial and recovery closure:** finish cancellation,
+      provider-failure, scope/drift, retained-worktree, restore, and operator-
+      inspection campaigns; resolve any candidate-state/recovery gaps before
+      declaring OG-3 complete.
   - [ ] **OG-4 — Reviewed integration:** add recoverable publication,
     conservative candidate synthesis, and fresh combined-parent verification
     before a logical node can finish.
@@ -1906,24 +1978,26 @@ roadmap remains the source of priority and completion status.
 ## Recommended next sequence
 
 The setup journey, first completion controller, OG-1 runtime-owned primary
-graph, and the complete OG-2 experimental read-only orchestration program are
-now complete.
+graph, the complete OG-2 experimental read-only orchestration program, and
+OG-3A's first verified isolated-writer candidate wave and five trial-driven
+controller corrections are now complete.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
-future automatic writer and exact scheduler-recovery claims. The next
-orchestration slice is **OG-3 — Isolated writer candidates**, with every
-candidate remaining in its own worktree and the primary workspace unchanged.
+future integration and exact scheduler-recovery claims. The next orchestration
+slice is **OG-3B — adversarial and recovery closure**, with every candidate
+remaining in its own worktree and the primary workspace unchanged.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are missed by the
    conservative recognizer, and whether two interventions is the right bound.
    Keep this local and inspectable rather than adding telemetry by default.
-2. Take **OG-3 — Isolated writer candidates**: automatically dispatch only
-   dependency-ready writers with declared disjoint scopes on a stable base,
-   require child verification, and stop at retained reviewable candidates.
-   Do not select, integrate, or publish a candidate in this milestone.
+2. Finish **OG-3B — adversarial and recovery closure**: exercise cancellation,
+   provider failure, parent drift, scope violations, retained-worktree
+   inspection, and restore around OG-3A's one bounded candidate wave. Keep the
+   existing no-selection/no-integration boundary until those failures are
+   proven fail-closed.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never
    grants permission. `collo audit --actor` remains the surface that can say

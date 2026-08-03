@@ -41,6 +41,15 @@ func TestBoardValidation(t *testing.T) {
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Execution: "parallel_write"}}}); err == nil {
 		t.Fatal("unknown execution intent must be rejected")
 	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Execution: "isolated_write"}}}); err == nil {
+		t.Fatal("isolated writer without scope must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Execution: "isolated_write", WritePaths: []string{"*"}}}}); err == nil {
+		t.Fatal("workspace-wide isolated writer must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Execution: "read_only", WritePaths: []string{"docs/"}}}}); err == nil {
+		t.Fatal("read-only step with write scope must be rejected")
+	}
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "go test passed", Acceptance: []string{"tests pass"}, Execution: "read_only"}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +86,7 @@ func TestPlanCompletionAssessment(t *testing.T) {
 func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
 	board := NewBoard()
 	_, before := board.Snapshot()
-	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}, Acceptance: []string{"observable"}}, {ID: 2, Title: "b", Status: "done", Evidence: "observed"}}}); err != nil {
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}, Acceptance: []string{"observable"}, Execution: "isolated_write", WritePaths: []string{"docs/"}}, {ID: 2, Title: "b", Status: "done", Evidence: "observed"}}}); err != nil {
 		t.Fatal(err)
 	}
 	current, after := board.Snapshot()
@@ -86,11 +95,28 @@ func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
 	}
 	current.Steps[0].DependsOn[0] = 99
 	current.Steps[0].Acceptance[0] = "mutated"
+	current.Steps[0].WritePaths[0] = "mutated/"
 	if got := board.Current().Steps[0].DependsOn[0]; got != 2 {
 		t.Fatalf("snapshot aliased board dependency: %d", got)
 	}
 	if got := board.Current().Steps[0].Acceptance[0]; got != "observable" {
 		t.Fatalf("snapshot aliased board acceptance: %q", got)
+	}
+	if got := board.Current().Steps[0].WritePaths[0]; got != "docs/" {
+		t.Fatalf("snapshot aliased board write scope: %q", got)
+	}
+}
+
+func TestToolAcceptsScopedIsolatedWriterIntent(t *testing.T) {
+	board := NewBoard()
+	tool := Tool(board)
+	out, err := tool.Execute(t.Context(), json.RawMessage(`{"goal":"update docs","steps":[{"id":1,"title":"write guide","status":"pending","execution":"isolated_write","write_paths":["docs/"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := board.Current().Steps[0]
+	if step.Execution != "isolated_write" || len(step.WritePaths) != 1 || step.WritePaths[0] != "docs/" || !strings.Contains(out, "write paths: docs/") {
+		t.Fatalf("step=%+v out=%q", step, out)
 	}
 }
 

@@ -127,6 +127,10 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if usage.CostAvailable {
 			cost = fmt.Sprintf("\nEstimated cost: $%.6f (from user-configured pricing)", usage.CostUSD)
 		}
+		graphBudget := ""
+		if phase, used, limit, ok := m.runtime.OrchestratedGoalTokenBudget(); ok {
+			graphBudget = fmt.Sprintf("\nOrchestrated Goal cumulative budget (%s): %d/%d tokens used across all provider calls; %d remain", phase, used, limit, max(0, limit-used))
+		}
 		sessionID := ""
 		if m.runtime.Session != nil {
 			sessionID = "\nSession: " + m.runtime.Session.Meta.ID
@@ -145,7 +149,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
 		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
-		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input / %d output%s tokens%s%s\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, usage.OutputTokens, reasoning, cacheLine, cost, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
+		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input / %d output%s tokens%s%s%s\nEstimated current prompt for one request: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, usage.OutputTokens, reasoning, cacheLine, cost, graphBudget, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
 		if len(args) > 0 {
