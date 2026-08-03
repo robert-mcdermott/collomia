@@ -41,11 +41,18 @@ const (
 	defaultWriterTaskWallSeconds = 10 * 60
 	defaultWriterTaskIterations  = 12
 	maxWriterCandidateFiles      = 256
-	maxWriterVerification        = 16
-	defaultMaxGraphIterations    = 96
-	defaultMaxGraphTokens        = 1_000_000
-	defaultMaxGraphCostUSD       = 5.00
-	defaultMaxActiveWallSeconds  = 30 * 60
+	// maxAttemptToolEvidence bounds the tool-result evidence one attempt keeps.
+	// Every transition rewrites the complete snapshot into the durable session,
+	// so unbounded evidence makes persistence cost grow with the square of a
+	// node's tool calls. Verification and node results are never pruned; only
+	// the oldest ordinary tool results past this bound are, and the attempt
+	// records how many so the record stays honest about what it dropped.
+	maxAttemptToolEvidence      = 40
+	maxWriterVerification       = 16
+	defaultMaxGraphIterations   = 96
+	defaultMaxGraphTokens       = 1_000_000
+	defaultMaxGraphCostUSD      = 5.00
+	defaultMaxActiveWallSeconds = 30 * 60
 )
 
 type Execution string
@@ -59,12 +66,17 @@ const (
 type NodeState string
 
 const (
-	NodeProposed        NodeState = "proposed"
-	NodeReady           NodeState = "ready"
-	NodeRunning         NodeState = "running"
-	NodeRetryable       NodeState = "retryable"
-	NodeStale           NodeState = "stale"
-	NodeBlocked         NodeState = "blocked"
+	NodeProposed  NodeState = "proposed"
+	NodeReady     NodeState = "ready"
+	NodeRunning   NodeState = "running"
+	NodeRetryable NodeState = "retryable"
+	NodeStale     NodeState = "stale"
+	NodeBlocked   NodeState = "blocked"
+	// NodeAwaitingReview is the successful terminal state of an isolated-writer
+	// node: a verified candidate is retained and reviewed integration is the
+	// next step. It is deliberately not "blocked", which would report the
+	// feature working as the feature failing.
+	NodeAwaitingReview  NodeState = "awaiting_review"
 	NodeCancelled       NodeState = "cancelled"
 	NodeBudgetExhausted NodeState = "budget_exhausted"
 	NodeDone            NodeState = "done"
@@ -91,6 +103,11 @@ const (
 	OutcomeBlocked         Outcome = "blocked"
 	OutcomeCancelled       Outcome = "cancelled"
 	OutcomeBudgetExhausted Outcome = "budget_exhausted"
+	// OutcomeAwaitingReview means every required node either passed its
+	// acceptance gates or produced a verified candidate for reviewed
+	// integration. Nothing failed; the graph stops because selecting and
+	// integrating a candidate is user authority this milestone does not hold.
+	OutcomeAwaitingReview Outcome = "awaiting_review"
 )
 
 type FailureKind string
@@ -106,6 +123,67 @@ const (
 	FailurePersistence       FailureKind = "persistence_failed"
 	FailureInterruptedAction FailureKind = "interrupted_action"
 )
+
+// GapKind is one typed unmet acceptance gate. The controller's remediation
+// lease renews only on evidence capable of changing a recorded gap, so these
+// are durable operational state rather than presentation: matching prose to
+// decide whether the model made progress made a reworded sentence able to
+// silently strand a productive attempt.
+type GapKind string
+
+const (
+	GapNoToolEvidence      GapKind = "no_tool_evidence"
+	GapNoStateToken        GapKind = "no_state_token"
+	GapNoOpWrite           GapKind = "no_op_write"
+	GapNoFreshVerification GapKind = "no_fresh_verification"
+)
+
+func validGapKind(kind GapKind) bool {
+	switch kind {
+	case GapNoToolEvidence, GapNoStateToken, GapNoOpWrite, GapNoFreshVerification:
+		return true
+	default:
+		return false
+	}
+}
+
+// gapDescription is the operator- and model-facing sentence for one gap. It is
+// derived from the kind, never parsed back out of it.
+func gapDescription(kind GapKind) string {
+	switch kind {
+	case GapNoToolEvidence:
+		return "the attempt has no successful bounded tool result"
+	case GapNoStateToken:
+		return "the combined workspace has no state token"
+	case GapNoOpWrite:
+		return "the successful write action produced no combined-workspace change"
+	case GapNoFreshVerification:
+		return "potentially mutating work has no successful recognized verification bound to the current combined workspace"
+	default:
+		return string(kind)
+	}
+}
+
+func gapDescriptions(kinds []GapKind) []string {
+	out := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		out = append(out, gapDescription(kind))
+	}
+	return out
+}
+
+// legacyGapKinds recovers typed kinds from a snapshot written before the gap
+// was typed. It is the only place prose is read as state, and it runs once at
+// restore rather than on every tool result.
+func legacyGapKinds(gap string) []GapKind {
+	var kinds []GapKind
+	for _, kind := range []GapKind{GapNoToolEvidence, GapNoStateToken, GapNoOpWrite, GapNoFreshVerification} {
+		if strings.Contains(gap, gapDescription(kind)) {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
 
 type EvidenceKind string
 
@@ -211,8 +289,10 @@ type Attempt struct {
 	MayHaveExternalEffects  bool             `json:"may_have_external_effects,omitempty"`
 	CompletionInterventions int              `json:"completion_interventions,omitempty"`
 	CompletionGap           string           `json:"completion_gap,omitempty"`
+	CompletionGapKinds      []GapKind        `json:"completion_gap_kinds,omitempty"`
 	CompletionGapIteration  int              `json:"completion_gap_iteration,omitempty"`
 	ToolSuccesses           int              `json:"tool_successes,omitempty"`
+	EvidencePruned          int              `json:"evidence_pruned,omitempty"`
 	PendingAction           *PendingAction   `json:"pending_action,omitempty"`
 	Failures                []Failure        `json:"failures,omitempty"`
 	EvidenceIDs             []string         `json:"evidence_ids,omitempty"`
@@ -594,6 +674,34 @@ func normalizeSnapshot(snapshot *Snapshot) {
 		}
 		snapshot.Accounting.ActiveSince = time.Time{}
 	}
+	candidateNodes := make(map[int]bool)
+	for _, attempt := range snapshot.Attempts {
+		if attempt.State == AttemptCandidate {
+			candidateNodes[attempt.NodeID] = true
+		}
+	}
+	for i := range snapshot.Nodes {
+		// Snapshots written before awaiting_review existed recorded a retained
+		// verified candidate as a blocked node. The candidate is unchanged; only
+		// the state's honesty about it is.
+		if snapshot.Nodes[i].State == NodeBlocked && candidateNodes[snapshot.Nodes[i].ID] {
+			snapshot.Nodes[i].State = NodeAwaitingReview
+		}
+	}
+	for i := range snapshot.Attempts {
+		// Snapshots written before the gap was typed carry only the rendered
+		// sentence. Recover the kinds once here so the running controller never
+		// has to interpret prose.
+		attempt := &snapshot.Attempts[i]
+		if attempt.CompletionGap != "" && len(attempt.CompletionGapKinds) == 0 {
+			attempt.CompletionGapKinds = legacyGapKinds(attempt.CompletionGap)
+			if len(attempt.CompletionGapKinds) == 0 {
+				// An unrecognizable legacy sentence cannot bound remediation
+				// honestly, so the gap is cleared rather than left unenforceable.
+				attempt.CompletionGap, attempt.CompletionGapIteration = "", 0
+			}
+		}
+	}
 	for i := range snapshot.Nodes {
 		snapshot.Nodes[i].Execution = normalizeExecution(snapshot.Nodes[i].Execution)
 		if snapshot.Nodes[i].Execution == ExecutionIsolatedWrite {
@@ -864,8 +972,16 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if _, duplicate := attempts[attempt.ID]; duplicate {
 			return fmt.Errorf("goal graph snapshot repeats attempt %q", attempt.ID)
 		}
-		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.LastProgressIteration < 0 || attempt.LastProgressIteration > attempt.Iterations || attempt.CompletionGapIteration < 0 || attempt.CompletionGapIteration > attempt.Iterations || len(attempt.CompletionGap) > 4<<10 || (attempt.CompletionGap == "" && attempt.CompletionGapIteration != 0) || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.CostBudgetUSD < 0 || math.IsNaN(attempt.CostBudgetUSD) || math.IsInf(attempt.CostBudgetUSD, 0) || attempt.IterationBudget < 0 || attempt.TimeoutSeconds < 0 {
+		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.LastProgressIteration < 0 || attempt.LastProgressIteration > attempt.Iterations || attempt.CompletionGapIteration < 0 || attempt.CompletionGapIteration > attempt.Iterations || len(attempt.CompletionGap) > 4<<10 || (attempt.CompletionGap == "" && attempt.CompletionGapIteration != 0) || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.CostBudgetUSD < 0 || math.IsNaN(attempt.CostBudgetUSD) || math.IsInf(attempt.CostBudgetUSD, 0) || attempt.IterationBudget < 0 || attempt.TimeoutSeconds < 0 || attempt.EvidencePruned < 0 {
 			return fmt.Errorf("goal graph snapshot has invalid attempt %q state, number, or generation", attempt.ID)
+		}
+		if (len(attempt.CompletionGapKinds) == 0) != (attempt.CompletionGap == "") {
+			return fmt.Errorf("goal graph snapshot attempt %q has a completion gap without typed kinds", attempt.ID)
+		}
+		for _, kind := range attempt.CompletionGapKinds {
+			if !validGapKind(kind) {
+				return fmt.Errorf("goal graph snapshot attempt %q has unknown completion gap kind %q", attempt.ID, kind)
+			}
 		}
 		if attempt.MutationGeneration > snapshot.MutationGeneration {
 			return fmt.Errorf("goal graph snapshot attempt %q has a future mutation generation", attempt.ID)
@@ -882,8 +998,8 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if attempt.State == AttemptCandidate && len(attempt.Candidate.ScopeViolations) > 0 {
 			return fmt.Errorf("candidate attempt %q retains write-scope violations", attempt.ID)
 		}
-		if attempt.State == AttemptCandidate && nodes[attempt.NodeID].State != NodeBlocked {
-			return fmt.Errorf("candidate attempt %q is not attached to a review-blocked node", attempt.ID)
+		if attempt.State == AttemptCandidate && nodes[attempt.NodeID].State != NodeAwaitingReview {
+			return fmt.Errorf("candidate attempt %q is not attached to an awaiting-review node", attempt.ID)
 		}
 		if nodes[attempt.NodeID].Execution == ExecutionIsolatedWrite && attempt.State == AttemptRunning && (strings.TrimSpace(attempt.BaseWorkspaceToken) == "" || strings.TrimSpace(attempt.BaseCommit) == "") {
 			return fmt.Errorf("running isolated writer attempt %q lacks a stable parent base", attempt.ID)
@@ -993,7 +1109,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 
 func validNodeState(state NodeState) bool {
 	switch state {
-	case NodeProposed, NodeReady, NodeRunning, NodeRetryable, NodeStale, NodeBlocked, NodeCancelled, NodeBudgetExhausted, NodeDone:
+	case NodeProposed, NodeReady, NodeRunning, NodeRetryable, NodeStale, NodeBlocked, NodeAwaitingReview, NodeCancelled, NodeBudgetExhausted, NodeDone:
 		return true
 	default:
 		return false
@@ -1077,7 +1193,7 @@ func validateWriterCandidate(candidate WriterCandidate) error {
 
 func validOutcome(outcome Outcome) bool {
 	switch outcome {
-	case "", OutcomeDone, OutcomeBlocked, OutcomeCancelled, OutcomeBudgetExhausted:
+	case "", OutcomeDone, OutcomeBlocked, OutcomeAwaitingReview, OutcomeCancelled, OutcomeBudgetExhausted:
 		return true
 	default:
 		return false
@@ -1722,11 +1838,16 @@ func (g *Graph) recordWriterUsageLocked(attempt *Attempt, result WriterResult) e
 func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.state.Outcome != "" {
+	// A sibling's usage may already have exhausted the aggregate budget while
+	// this writer was in flight. Its worktree exists either way, so the facts
+	// needed to find and review it are still recorded; only scheduling state
+	// stays terminal.
+	terminalBudget := g.state.Outcome == OutcomeBudgetExhausted
+	if g.state.Outcome != "" && !terminalBudget {
 		return ErrGraphTerminal
 	}
 	attempt := g.attemptLocked(result.AttemptID)
-	if attempt == nil || attempt.State != AttemptRunning {
+	if attempt == nil || (attempt.State != AttemptRunning && !(terminalBudget && attempt.State == AttemptBudgetExhausted)) {
 		return fmt.Errorf("goal graph writer attempt %q is not running", result.AttemptID)
 	}
 	node := g.nodeLocked(attempt.NodeID)
@@ -1734,12 +1855,6 @@ func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 		return fmt.Errorf("goal graph attempt %q is not an isolated_write node", result.AttemptID)
 	}
 	if err := g.recordWriterUsageLocked(attempt, result); err != nil {
-		return err
-	}
-	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), false); err != nil {
-		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
-			return persistErr
-		}
 		return err
 	}
 	now := g.now().UTC()
@@ -1764,6 +1879,25 @@ func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 	if candidate.WorkerID != "" && candidate.Worktree != "" && candidate.Branch != "" && candidate.BaseCommit != "" && len(candidate.ChangedFiles) > 0 && validateWriterCandidate(*candidate) == nil {
 		attempt.Candidate = candidate
 	}
+	if terminalBudget {
+		if attempt.Summary == "" {
+			attempt.Summary = boundedSummary("isolated writer finished after the aggregate budget was exhausted; its retained worktree is recorded for inspection")
+		}
+		if err := g.persistLocked(ctx, true); err != nil {
+			return err
+		}
+		return ErrAggregateBudget
+	}
+	// The aggregate budget is checked only once this attempt's retained facts
+	// are durable. A wave that crossed the limit still leaves real worktrees on
+	// disk, and a graph that forgets where they are cannot honour its promise
+	// to retain them for inspection.
+	if err := g.enforceAggregateBudgetLocked(now, false); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
 	freshParent := result.ParentWorkspaceToken != "" && result.ParentWorkspaceToken == attempt.BaseWorkspaceToken
 	identityMatches := result.BaseCommit != "" && result.BaseCommit == attempt.BaseCommit
 	scopeMatches := scopeErr == nil && equalStrings(normalizedScope, node.WritePaths)
@@ -1779,7 +1913,7 @@ func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 	valid := result.Status == "done" && strings.TrimSpace(result.Summary) != "" && attempt.Candidate != nil && freshParent && identityMatches && scopeMatches && len(violations) == 0 && verificationFresh
 	if valid {
 		attempt.State, attempt.Finished, attempt.Summary = AttemptCandidate, now, boundedSummary(result.Summary)
-		node.State, node.ActiveAttemptID = NodeBlocked, ""
+		node.State, node.ActiveAttemptID = NodeAwaitingReview, ""
 		node.Reason = fmt.Sprintf("verified isolated writer candidate %s retained at %s; reviewed integration is required before this node can complete", candidate.WorkerID, candidate.Worktree)
 		g.addEvidenceLocked(attempt, Evidence{Kind: EvidenceDelegateWrite, Tool: "automatic_write_delegate", Status: "accepted", Summary: boundedSummary(strings.Join(result.Evidence, "\n")), WorkspaceToken: candidate.VerificationToken, MutationGeneration: g.state.MutationGeneration, Finished: now})
 		g.queueUpdateLocked(node.ID, attempt.ID, "candidate_ready", node.Reason)
@@ -2073,7 +2207,7 @@ type ToolResult struct {
 // novel command string or different read result is still useful evidence, but
 // it must not renew the controller's remediation lease on its own.
 func completionGapAdvanced(attempt *Attempt, pending *PendingAction, result ToolResult) bool {
-	if attempt == nil || attempt.CompletionGap == "" {
+	if attempt == nil || len(attempt.CompletionGapKinds) == 0 {
 		return false
 	}
 	// A machine-observed repository change is concrete repair progress even
@@ -2082,18 +2216,24 @@ func completionGapAdvanced(attempt *Attempt, pending *PendingAction, result Tool
 	if completionGapWorkspaceAdvanced(pending, result) {
 		return true
 	}
-	gap := attempt.CompletionGap
-	if strings.Contains(gap, "no successful bounded tool result") {
-		return true
-	}
-	if strings.Contains(gap, "combined workspace has no state token") && strings.TrimSpace(result.WorkspaceToken) != "" {
-		return true
-	}
-	if strings.Contains(gap, "successful write action produced no combined-workspace change") && strings.TrimSpace(result.WorkspaceToken) != "" && result.WorkspaceToken != attempt.BaseWorkspaceToken {
-		return true
-	}
-	if strings.Contains(gap, "no successful recognized verification bound to the current combined workspace") && result.Verification && strings.TrimSpace(result.WorkspaceToken) != "" {
-		return true
+	token := strings.TrimSpace(result.WorkspaceToken)
+	for _, kind := range attempt.CompletionGapKinds {
+		switch kind {
+		case GapNoToolEvidence:
+			return true
+		case GapNoStateToken:
+			if token != "" {
+				return true
+			}
+		case GapNoOpWrite:
+			if token != "" && token != attempt.BaseWorkspaceToken {
+				return true
+			}
+		case GapNoFreshVerification:
+			if result.Verification && token != "" {
+				return true
+			}
+		}
 	}
 	// A successful retry or alternative is handled independently by
 	// resolveFailuresLocked.
@@ -2155,12 +2295,12 @@ func (g *Graph) FinishTool(ctx context.Context, attemptID string, result ToolRes
 				summary = detail
 			}
 			evidence := Evidence{Kind: EvidenceVerification, Tool: result.Tool, Command: result.Command, Status: "failed", Summary: summary, WorkspaceToken: result.WorkspaceToken, MutationGeneration: attempt.MutationGeneration, Started: result.Started, Finished: result.Finished}
-			if attempt.CompletionGap != "" && (!g.hasEquivalentVerificationFailureLocked(attempt, evidence) || completionGapWorkspaceAdvanced(pending, result)) {
+			if len(attempt.CompletionGapKinds) > 0 && (!g.hasEquivalentVerificationFailureLocked(attempt, evidence) || completionGapWorkspaceAdvanced(pending, result)) {
 				attempt.LastProgressIteration = attempt.Iterations
 				attempt.CompletionGapIteration = attempt.Iterations
 			}
 			g.addEvidenceLocked(attempt, evidence)
-		} else if attempt.CompletionGap != "" && completionGapWorkspaceAdvanced(pending, result) {
+		} else if len(attempt.CompletionGapKinds) > 0 && completionGapWorkspaceAdvanced(pending, result) {
 			attempt.LastProgressIteration = attempt.Iterations
 			attempt.CompletionGapIteration = attempt.Iterations
 		}
@@ -2173,9 +2313,9 @@ func (g *Graph) FinishTool(ctx context.Context, attemptID string, result ToolRes
 			kind = EvidenceVerification
 		}
 		evidence := Evidence{Kind: kind, Tool: result.Tool, Command: result.Command, Status: "passed", Summary: strings.TrimSpace(result.Summary), WorkspaceToken: result.WorkspaceToken, MutationGeneration: attempt.MutationGeneration, Started: result.Started, Finished: result.Finished}
-		if resolvedFailure || completionGapAdvanced(attempt, pending, result) || (attempt.CompletionGap == "" && !g.hasEquivalentEvidenceLocked(attempt, evidence)) {
+		if resolvedFailure || completionGapAdvanced(attempt, pending, result) || (len(attempt.CompletionGapKinds) == 0 && !g.hasEquivalentEvidenceLocked(attempt, evidence)) {
 			attempt.LastProgressIteration = attempt.Iterations
-			if attempt.CompletionGap != "" {
+			if len(attempt.CompletionGapKinds) > 0 {
 				attempt.CompletionGapIteration = attempt.Iterations
 			}
 		}
@@ -2277,25 +2417,27 @@ func (g *Graph) ProposeCompletion(ctx context.Context, summary, workspaceToken s
 		return Decision{Kind: DecisionBlocked, NodeID: node.ID, Reason: reason, Outcome: OutcomeBlocked}, nil
 	}
 
-	var issues []string
+	var gaps []GapKind
 	if attempt.ToolSuccesses == 0 {
-		issues = append(issues, "the attempt has no successful bounded tool result")
+		gaps = append(gaps, GapNoToolEvidence)
 	}
 	if attempt.MayHaveMutated {
 		if workspaceToken == "" {
-			issues = append(issues, "the combined workspace has no state token")
+			gaps = append(gaps, GapNoStateToken)
 		} else if attempt.HasWorkspaceWrite && attempt.BaseWorkspaceToken == workspaceToken {
-			issues = append(issues, "the successful write action produced no combined-workspace change")
+			gaps = append(gaps, GapNoOpWrite)
 		} else if !g.hasFreshVerificationLocked(attempt, workspaceToken) {
-			issues = append(issues, "potentially mutating work has no successful recognized verification bound to the current combined workspace")
+			gaps = append(gaps, GapNoFreshVerification)
 		}
 	}
-	if len(issues) > 0 {
+	if len(gaps) > 0 {
+		issues := gapDescriptions(gaps)
 		gap := strings.Join(issues, "; ")
-		if attempt.CompletionGap != gap {
-			attempt.CompletionGap = gap
+		if !equalGapKinds(attempt.CompletionGapKinds, gaps) {
+			attempt.CompletionGapKinds = append([]GapKind(nil), gaps...)
 			attempt.CompletionGapIteration = attempt.Iterations
 		}
+		attempt.CompletionGap = gap
 		attempt.CompletionInterventions++
 		if attempt.CompletionInterventions > maxCompletionInterventions {
 			reason := "node completion remained unproven after two controller interventions: " + strings.Join(issues, "; ")
@@ -2313,7 +2455,7 @@ func (g *Graph) ProposeCompletion(ctx context.Context, summary, workspaceToken s
 	}
 
 	now := g.now().UTC()
-	attempt.CompletionGap, attempt.CompletionGapIteration = "", 0
+	attempt.CompletionGap, attempt.CompletionGapKinds, attempt.CompletionGapIteration = "", nil, 0
 	attempt.State, attempt.Finished, attempt.Summary = AttemptAccepted, now, boundedSummary(summary)
 	resultEvidence := Evidence{Kind: EvidenceNodeResult, Status: "accepted", Summary: attempt.Summary, WorkspaceToken: workspaceToken, MutationGeneration: attempt.MutationGeneration, Finished: now}
 	g.addEvidenceLocked(attempt, resultEvidence)
@@ -2606,12 +2748,18 @@ func (g *Graph) PauseState() (requested, reached bool, reason string) {
 func (g *Graph) RetryNode(ctx context.Context, nodeID int, reason string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.state.Outcome == OutcomeAwaitingReview {
+		return errors.New("goal graph is awaiting review of its retained candidates, not blocked; inspect them with /agents and integrate explicitly rather than retrying")
+	}
 	if g.state.Outcome != OutcomeBlocked {
 		return errors.New("goal graph is not blocked")
 	}
 	node := g.nodeLocked(nodeID)
 	if node == nil {
 		return fmt.Errorf("goal graph has no node %d", nodeID)
+	}
+	if node.State == NodeAwaitingReview {
+		return fmt.Errorf("goal graph node %d holds a verified candidate awaiting review; retrying would discard it", nodeID)
 	}
 	if node.State != NodeBlocked {
 		return fmt.Errorf("goal graph node %d is %s, not blocked", nodeID, node.State)
@@ -2852,7 +3000,10 @@ func (g *Graph) exhaustAggregateLocked(now time.Time, reason string) {
 	}
 	for i := range g.state.Nodes {
 		node := &g.state.Nodes[i]
-		if node.State == NodeDone {
+		// A finished node's recorded outcome is a fact. Exhausting the budget
+		// afterwards must not overwrite an accepted result or a retained
+		// candidate the operator still has to review.
+		if node.State == NodeDone || node.State == NodeAwaitingReview {
 			continue
 		}
 		attemptID := node.ActiveAttemptID
@@ -2893,7 +3044,7 @@ func (g *Graph) Render() string {
 		}
 		fmt.Fprintf(&b, "Scheduling pause: %s — %s\n", state, g.state.PauseReason)
 	}
-	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
+	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeAwaitingReview: "[?]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
 	for _, node := range g.state.Nodes {
 		fmt.Fprintf(&b, "%s %d. %s · %s · %s", marks[node.State], node.ID, node.Title, node.State, node.Execution)
 		if len(node.DependsOn) > 0 {
@@ -2972,7 +3123,7 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 	b.WriteString("Write scope: isolated writers require explicit narrow scopes and a common clean Git base; no candidate is selected, integrated, or allowed to unlock dependents automatically.\n")
 	b.WriteString("Authority: every action still uses ordinary permissions; approval grants no publication or additional tool access.\n")
 	b.WriteString("Completion: changed workspace state requires fresh machine-observed verification.\n\n")
-	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
+	marks := map[NodeState]string{NodeProposed: "[ ]", NodeReady: "[>]", NodeRunning: "[~]", NodeRetryable: "[r]", NodeStale: "[s]", NodeBlocked: "[!]", NodeAwaitingReview: "[?]", NodeCancelled: "[-]", NodeBudgetExhausted: "[$]", NodeDone: "[x]"}
 	for _, node := range g.state.Nodes {
 		fmt.Fprintf(&b, "%s %d. %s · %s · %s", marks[node.State], node.ID, node.Title, node.State, node.Execution)
 		if len(node.DependsOn) > 0 {
@@ -3017,6 +3168,9 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 		}
 		if attempt.LastProgressIteration > 0 {
 			fmt.Fprintf(&b, " · novel evidence at iteration %d", attempt.LastProgressIteration)
+		}
+		if attempt.EvidencePruned > 0 {
+			fmt.Fprintf(&b, " · %d older tool results pruned (full transcript retained in the session log)", attempt.EvidencePruned)
 		}
 		if attempt.CostAvailable {
 			fmt.Fprintf(&b, " · $%.6f", attempt.CostUSD)
@@ -3118,7 +3272,7 @@ func (g *Graph) reduceOutcomeLocked() {
 		return
 	}
 	allDone, running := true, false
-	var blockers, exhausted []string
+	var blockers, exhausted, review []string
 	for _, node := range g.state.Nodes {
 		if node.State != NodeDone {
 			allDone = false
@@ -3128,6 +3282,9 @@ func (g *Graph) reduceOutcomeLocked() {
 		}
 		if node.State == NodeBlocked {
 			blockers = append(blockers, fmt.Sprintf("node %d (%s): %s", node.ID, node.Title, node.Reason))
+		}
+		if node.State == NodeAwaitingReview {
+			review = append(review, fmt.Sprintf("node %d (%s): %s", node.ID, node.Title, node.Reason))
 		}
 		if node.State == NodeBudgetExhausted {
 			exhausted = append(exhausted, fmt.Sprintf("node %d (%s): %s", node.ID, node.Title, node.Reason))
@@ -3156,6 +3313,18 @@ func (g *Graph) reduceOutcomeLocked() {
 		g.stopActiveLocked(g.now().UTC())
 		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
+		return
+	}
+	// Nothing failed here: every required node either passed its gates or left
+	// a verified candidate. Reporting that as blocked would make the writer
+	// wave's success indistinguishable from its failure. Like a material
+	// blocker, a retained candidate ends the required graph: it cannot unlock a
+	// dependent node before a human integrates it.
+	if len(review) > 0 && !running {
+		g.state.Outcome, g.state.Reason = OutcomeAwaitingReview, strings.Join(review, "; ")
+		g.stopActiveLocked(g.now().UTC())
+		g.clearPauseLocked()
+		g.queueUpdateLocked(0, "", string(OutcomeAwaitingReview), g.state.Reason)
 	}
 }
 
@@ -3208,6 +3377,49 @@ func (g *Graph) addEvidenceLocked(attempt *Attempt, evidence Evidence) {
 	evidence.Summary = boundedSummary(evidence.Summary)
 	g.state.Evidence = append(g.state.Evidence, evidence)
 	attempt.EvidenceIDs = append(attempt.EvidenceIDs, evidence.ID)
+	g.pruneAttemptEvidenceLocked(attempt)
+}
+
+// pruneAttemptEvidenceLocked drops the oldest ordinary tool results once an
+// attempt holds more than the bound. Acceptance depends on verification and
+// node-result evidence, and on the newest results a completion gap is assessed
+// against, so neither is eligible; the middle of a long tool loop is.
+func (g *Graph) pruneAttemptEvidenceLocked(attempt *Attempt) {
+	prunable := 0
+	for _, id := range attempt.EvidenceIDs {
+		if item := g.evidenceLocked(id); item != nil && item.Kind == EvidenceToolResult {
+			prunable++
+		}
+	}
+	if prunable <= maxAttemptToolEvidence {
+		return
+	}
+	drop := make(map[string]bool, prunable-maxAttemptToolEvidence)
+	remaining := prunable - maxAttemptToolEvidence
+	for _, id := range attempt.EvidenceIDs {
+		if remaining == 0 {
+			break
+		}
+		if item := g.evidenceLocked(id); item != nil && item.Kind == EvidenceToolResult {
+			drop[id] = true
+			remaining--
+		}
+	}
+	kept := attempt.EvidenceIDs[:0]
+	for _, id := range attempt.EvidenceIDs {
+		if !drop[id] {
+			kept = append(kept, id)
+		}
+	}
+	attempt.EvidenceIDs = kept
+	retained := g.state.Evidence[:0]
+	for _, item := range g.state.Evidence {
+		if !drop[item.ID] {
+			retained = append(retained, item)
+		}
+	}
+	g.state.Evidence = retained
+	attempt.EvidencePruned += len(drop)
 }
 
 func (g *Graph) resolveFailuresLocked(attempt *Attempt, tool, risk string) bool {
@@ -3492,9 +3704,22 @@ func cloneNode(node Node) Node {
 	return node
 }
 
+func equalGapKinds(a, b []GapKind) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func cloneAttempt(attempt Attempt) Attempt {
 	attempt.Failures = append([]Failure(nil), attempt.Failures...)
 	attempt.EvidenceIDs = append([]string(nil), attempt.EvidenceIDs...)
+	attempt.CompletionGapKinds = append([]GapKind(nil), attempt.CompletionGapKinds...)
 	if attempt.PendingAction != nil {
 		pending := *attempt.PendingAction
 		attempt.PendingAction = &pending

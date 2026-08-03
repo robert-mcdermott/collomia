@@ -108,6 +108,53 @@ func TestAgentRunsToolLoop(t *testing.T) {
 	}
 }
 
+// The node-boundary handoff replaces the entire active context. Guidance the
+// user gave mid-graph — and was told applies to the remaining task — must not
+// be what that optimization throws away.
+func TestNodeBoundaryHandoffKeepsUserSteering(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect in order", Nodes: []goalgraph.NodeSpec{
+		{ID: 1, Title: "inspect source"},
+		{ID: 2, Title: "inspect tests", DependsOn: []int{1}},
+	}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect"}, Run: func(context.Context, json.RawMessage) (string, error) { return "observed", nil }},
+	)
+	steering := NewSteeringQueue()
+	if err := steering.Add("prefer the integration suite over unit tests"); err != nil {
+		t.Fatal(err)
+	}
+	sawSteeringAfterBoundary := false
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "inspect-1", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
+		case 2:
+			return provider.Response{Content: "source inspected"}, nil
+		case 3:
+			if requestContains(request, "[Runtime-owned Orchestrated Goal node handoff]") && requestContains(request, "prefer the integration suite over unit tests") {
+				sawSteeringAfterBoundary = true
+			}
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "inspect-2", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
+		default:
+			return provider.Response{Content: "all inspections complete"}, nil
+		}
+	}}
+	agentRuntime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil),
+		MaxIterations: 8, GoalGraph: graph, TakeSteering: steering.Take,
+	})
+	if _, err := agentRuntime.Run(t.Context(), "inspect the project", func(event.Event) {}); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	if !sawSteeringAfterBoundary {
+		t.Fatal("user steering was discarded by the accepted-node handoff")
+	}
+}
+
 func TestGoalGraphControllerSelectsDependencyReadyNodesOnPrimaryOnly(t *testing.T) {
 	graph, err := goalgraph.New(goalgraph.Spec{Goal: "inspect in order", Nodes: []goalgraph.NodeSpec{
 		{ID: 1, Title: "inspect source"},
@@ -1068,12 +1115,15 @@ func TestCompletionControllerPreservesPlanningAndIterationLimits(t *testing.T) {
 
 func TestVerificationCommandRecognitionRejectsShellSuccessMasking(t *testing.T) {
 	workspace := t.TempDir()
-	for _, command := range []string{"go test ./...", "go test ./internal/agent -run TestAgent", "uv run pytest -q", "UV_CACHE_DIR=.uv-cache uv run pytest -v", ".venv/bin/pytest -v", ".venv/bin/python -m pytest -v", "python3 -m mypy app", "uv run python -m pytest -q", "ruff check .", "uv run ruff format --check .", "npm run lint", "git diff --check", fmt.Sprintf("cd %q && UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1", workspace), "cd . && .venv/bin/pytest -q 2>&1"} {
+	for _, command := range []string{"go test ./...", "go test ./internal/agent -run TestAgent", "uv run pytest -q", "UV_CACHE_DIR=.uv-cache uv run pytest -v", ".venv/bin/pytest -v", ".venv/bin/python -m pytest -v", "python3 -m mypy app", "uv run python -m pytest -q", "ruff check .", "uv run ruff format --check .", "npm run lint", fmt.Sprintf("cd %q && UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1", workspace), "cd . && .venv/bin/pytest -q 2>&1"} {
 		if !isVerificationCommand(command, workspace) {
 			t.Errorf("verification command was not recognized: %q", command)
 		}
 	}
-	for _, command := range []string{"echo tests passed", "go test ./... || true", "go test ./...; echo ok", "ruff format .", "uv run ruff format .", "cat test.log", fmt.Sprintf("cd %q && uv run pytest -q 2>&1 | tail -20", workspace), "cd /tmp && uv run pytest -q 2>&1"} {
+	// `git diff --check` is a whitespace linter that passes on nearly any tree.
+	// Accepting it would let a mutating node close its verification gate
+	// without any check of the change it just made.
+	for _, command := range []string{"echo tests passed", "go test ./... || true", "go test ./...; echo ok", "ruff format .", "uv run ruff format .", "cat test.log", "git diff --check", "git status", fmt.Sprintf("cd %q && uv run pytest -q 2>&1 | tail -20", workspace), "cd /tmp && uv run pytest -q 2>&1"} {
 		if isVerificationCommand(command, workspace) {
 			t.Errorf("non-verification command was recognized: %q", command)
 		}
@@ -1081,6 +1131,63 @@ func TestVerificationCommandRecognitionRejectsShellSuccessMasking(t *testing.T) 
 	assessment := assessVerificationCommand(`UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1; echo "EXIT_CODE=$?"`, workspace)
 	if assessment.Recognized || !assessment.VerificationLike || assessment.Suggestion != "UV_CACHE_DIR=.uv-cache uv run pytest -v" || !strings.Contains(assessment.Reason, "mask") {
 		t.Fatalf("masked verification assessment=%+v", assessment)
+	}
+}
+
+// A mutating Orchestrated Goal node cannot complete without recognized
+// verification, so an ecosystem missing from the recognizer is an ecosystem in
+// which the mode blocks every honest change. This is the list that decides
+// whether the feature is usable outside Go, Node, Rust, and bare pytest.
+func TestVerificationRecognitionCoversCommonEcosystems(t *testing.T) {
+	workspace := t.TempDir()
+	recognized := []string{
+		"tox", "nox", "python -m tox",
+		"poetry run pytest", "pipenv run pytest -q", "pdm run pytest", "hatch test",
+		"conda run -n analysis pytest -q", "micromamba run -n bio python -m pytest",
+		`Rscript -e "testthat::test_local()"`, `Rscript -e 'devtools::test()'`, "R CMD check .",
+		"bundle exec rspec", "rake test", "mix test", "composer test", "vendor/bin/phpunit",
+		"swift test", "ctest --test-dir build", "deno test", "bazel test //...",
+		"stack test", "cabal build", "just test", "task check", "npx vitest run",
+		"./gradlew test", "mvn verify", "dotnet test",
+	}
+	for _, command := range recognized {
+		if !isVerificationCommand(command, workspace) {
+			t.Errorf("conventional verifier was not recognized: %q", command)
+		}
+	}
+	// Breadth must not become permissiveness: a wrapper only qualifies when
+	// what it wraps is itself a recognized check.
+	for _, command := range []string{"conda run -n analysis python app.py", "poetry run python scripts/seed.py", "just deploy", "task release", "bundle exec rails server", "npx serve", "bazel run //app"} {
+		if isVerificationCommand(command, workspace) {
+			t.Errorf("non-verification wrapper command was recognized: %q", command)
+		}
+	}
+}
+
+// A Python repository driven by a runner reports the command that actually
+// works there. Suggesting bare `pytest` in a Poetry or tox project produces a
+// "no module named pytest" failure and sends the model hunting for wrappers.
+func TestPythonVerificationFollowsTheProjectRunner(t *testing.T) {
+	for _, testCase := range []struct{ marker, command string }{
+		{"uv.lock", "uv run pytest"},
+		{"poetry.lock", "poetry run pytest"},
+		{"Pipfile", "pipenv run pytest"},
+		{"tox.ini", "tox"},
+		{"noxfile.py", "nox"},
+	} {
+		workspace := t.TempDir()
+		for _, name := range []string{"pyproject.toml", testCase.marker} {
+			if err := os.WriteFile(filepath.Join(workspace, name), []byte(""), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !isVerificationCommand(testCase.command, workspace) {
+			t.Errorf("%s project: %q was not recognized", testCase.marker, testCase.command)
+		}
+		_, detected := tools.DetectVerificationCommands(workspace)
+		if len(detected) == 0 || detected[0].Command != testCase.command {
+			t.Errorf("%s project: detected %+v, want %q first", testCase.marker, detected, testCase.command)
+		}
 	}
 }
 
@@ -1742,9 +1849,18 @@ func TestGoalGraphCreatesVerifiedIsolatedWriterCandidateWithoutTouchingParent(t 
 		return []DelegateVerification{result}, nil
 	})
 
-	_, err = runtime.Run(t.Context(), "create the candidate", func(event.Event) {})
-	if !errors.Is(err, ErrGoalBlocked) || !strings.Contains(err.Error(), "reviewed integration is required") {
-		t.Fatalf("run error=%v", err)
+	// The wave succeeded: a verified candidate is retained and integration is
+	// the user's call. The turn therefore ends with an answer naming the review
+	// step, not with a blocker the operator would try to recover from.
+	answer, err := runtime.Run(t.Context(), "create the candidate", func(event.Event) {})
+	if err != nil {
+		t.Fatalf("verified candidate wave reported an error: %v", err)
+	}
+	if !strings.Contains(answer, "retained for review") || !strings.Contains(answer, "reviewed integration is required") {
+		t.Fatalf("run answer=%q", answer)
+	}
+	if outcome, _ := graph.Outcome(); outcome != goalgraph.OutcomeAwaitingReview {
+		t.Fatalf("graph outcome=%q", outcome)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "new.txt")); !os.IsNotExist(err) {
 		t.Fatalf("parent workspace was changed: %v", err)
@@ -2628,6 +2744,45 @@ func TestCostClampsInconsistentCacheCounters(t *testing.T) {
 // The read-only Git tools belong there; the mutating ones do not, and a new
 // git_* tool is exactly the kind of addition that gets waved into the list
 // beside its siblings because the names look alike.
+// An automatic Orchestrated Goal writer works inside its own worktree, but a
+// commit there is still an automatic publication step the mode has no
+// authority for, and it moves the ref the retained candidate is measured
+// against. The registry removal and this check are two layers of the same
+// boundary, because a model can always fabricate a call by name.
+func TestGraphWorkerCannotReachMutatingGitTools(t *testing.T) {
+	workspace := t.TempDir()
+	registry, _, procs, err := tools.Builtins(workspace, appconfig.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer procs.StopAll()
+	worker := New(Options{Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), Subagent: true, GraphWorker: true})
+	ordinary := New(Options{Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), Subagent: true})
+	for _, name := range []string{"git_commit", "git_branch"} {
+		tool, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("%s is missing from the builtin registry", name)
+		}
+		if worker.toolAvailable(tool, false) {
+			t.Errorf("%s was available to an automatic graph writer", name)
+		}
+		if !ordinary.toolAvailable(tool, false) {
+			t.Errorf("%s was withheld from an ordinary write delegate", name)
+		}
+	}
+	// The withholding is narrow: a writer still needs to inspect and change
+	// files inside its worktree.
+	for _, name := range []string{"write_file", "edit_file", "run_command", "git_diff"} {
+		tool, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("%s is missing from the builtin registry", name)
+		}
+		if !worker.toolAvailable(tool, false) {
+			t.Errorf("%s was withheld from an automatic graph writer", name)
+		}
+	}
+}
+
 func TestPlanModeAdmitsNoMutatingGitTool(t *testing.T) {
 	for _, name := range []string{"git_status", "git_diff", "git_log", "git_blame"} {
 		if !planTool(name) {

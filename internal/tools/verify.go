@@ -26,7 +26,7 @@ type VerificationCommand struct {
 }
 
 func (t DetectVerificationTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "detect_verification", Description: "Inspect the workspace root for known project files (go.mod, package.json, Cargo.toml, pyproject.toml/requirements.txt, Makefile) and return the build, lint, and test commands conventionally used for this kind of project. Use this before proposing verification commands instead of guessing.", InputSchema: schema(`{"type":"object","properties":{},"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "detect_verification", Description: "Inspect the workspace root for known project markers (Go, Node, Rust, Python including tox/poetry/uv/pipenv, Makefile, R, Ruby, Elixir, PHP, Swift, Gradle, Maven, Deno, Haskell, Bazel) and return the build, lint, and test commands conventionally used for this kind of project. Use this before proposing verification commands instead of guessing.", InputSchema: schema(`{"type":"object","properties":{},"additionalProperties":false}`)}
 }
 
 func (t DetectVerificationTool) Assess(json.RawMessage) (Action, error) {
@@ -36,7 +36,7 @@ func (t DetectVerificationTool) Assess(json.RawMessage) (Action, error) {
 func (t DetectVerificationTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
 	found, suggestions := DetectVerificationCommands(t.Workspace)
 	if len(found) == 0 {
-		return "No known project files were found at the workspace root (checked go.mod, package.json, Cargo.toml, pyproject.toml/requirements.txt, Makefile). Ask the user how this project is built and tested, or inspect the repository further before proposing commands.", nil
+		return "No known project markers were found at the workspace root (checked Go, Node, Rust, Python, Makefile, R, Ruby, Elixir, PHP, Swift, Gradle, Maven, Deno, Haskell, and Bazel markers). Ask the user how this project is built and tested, or inspect the repository further before proposing commands.", nil
 	}
 
 	var b strings.Builder
@@ -108,10 +108,10 @@ func DetectVerificationCommands(workspace string) ([]string, []VerificationComma
 			VerificationCommand{"test", "cargo test"},
 		)
 	}
-	if exists("pyproject.toml") || exists("requirements.txt") || exists("setup.py") {
+	if exists("pyproject.toml") || exists("requirements.txt") || exists("setup.py") || exists("tox.ini") || exists("Pipfile") {
 		found = append(found, "Python project")
-		suggestions = append(suggestions, VerificationCommand{"test", "pytest"})
 		text := read("pyproject.toml")
+		suggestions = append(suggestions, pythonVerificationCommand(exists, text))
 		if strings.Contains(text, "ruff") {
 			suggestions = append(suggestions, VerificationCommand{"lint", "ruff check ."})
 		}
@@ -125,7 +125,82 @@ func DetectVerificationCommands(workspace string) ([]string, []VerificationComma
 			}
 		}
 	}
+	// Every ecosystem below contributes its test entry point only. A detected
+	// command is one a delegated candidate must pass before it is eligible, so
+	// breadth here must not turn into a longer suite per repository.
+	if exists("DESCRIPTION") && (exists("tests") || exists("R")) {
+		found = append(found, "DESCRIPTION (R package)")
+		suggestions = append(suggestions, VerificationCommand{"test", `Rscript -e "testthat::test_local()"`})
+	}
+	if exists("Gemfile") || exists("Rakefile") || exists(".rspec") {
+		found = append(found, "Ruby project")
+		if exists("Gemfile") && (exists("spec") || exists(".rspec")) {
+			suggestions = append(suggestions, VerificationCommand{"test", "bundle exec rspec"})
+		} else if exists("Rakefile") {
+			suggestions = append(suggestions, VerificationCommand{"test", "rake test"})
+		}
+	}
+	if exists("mix.exs") {
+		found = append(found, "mix.exs (Elixir)")
+		suggestions = append(suggestions, VerificationCommand{"test", "mix test"})
+	}
+	if exists("composer.json") {
+		found = append(found, "composer.json (PHP)")
+		suggestions = append(suggestions, VerificationCommand{"test", "composer test"})
+	}
+	if exists("Package.swift") {
+		found = append(found, "Package.swift (Swift)")
+		suggestions = append(suggestions, VerificationCommand{"test", "swift test"})
+	}
+	if exists("build.gradle") || exists("build.gradle.kts") || exists("gradlew") {
+		found = append(found, "Gradle project")
+		command := "gradle test"
+		if exists("gradlew") {
+			command = "./gradlew test"
+		}
+		suggestions = append(suggestions, VerificationCommand{"test", command})
+	}
+	if exists("pom.xml") {
+		found = append(found, "pom.xml (Maven)")
+		suggestions = append(suggestions, VerificationCommand{"test", "mvn test"})
+	}
+	if exists("deno.json") || exists("deno.jsonc") {
+		found = append(found, "Deno project")
+		suggestions = append(suggestions, VerificationCommand{"test", "deno test"})
+	}
+	if exists("stack.yaml") {
+		found = append(found, "stack.yaml (Haskell)")
+		suggestions = append(suggestions, VerificationCommand{"test", "stack test"})
+	}
+	if exists("MODULE.bazel") || exists("WORKSPACE") || exists("WORKSPACE.bazel") {
+		found = append(found, "Bazel workspace")
+		suggestions = append(suggestions, VerificationCommand{"test", "bazel test //..."})
+	}
+	return dedupeVerificationCommands(found, suggestions)
+}
 
+// pythonVerificationCommand resolves the runner a Python repository actually
+// uses. A bare `pytest` in a Poetry, Pipenv, uv, or tox project is the command
+// that fails with "no module named pytest" and sends the model looking for
+// wrappers, which is what the completion gate then rejects.
+func pythonVerificationCommand(exists func(string) bool, pyproject string) VerificationCommand {
+	switch {
+	case exists("uv.lock"):
+		return VerificationCommand{"test", "uv run pytest"}
+	case exists("poetry.lock") || strings.Contains(pyproject, "[tool.poetry]"):
+		return VerificationCommand{"test", "poetry run pytest"}
+	case exists("Pipfile"):
+		return VerificationCommand{"test", "pipenv run pytest"}
+	case exists("tox.ini"):
+		return VerificationCommand{"test", "tox"}
+	case exists("noxfile.py"):
+		return VerificationCommand{"test", "nox"}
+	default:
+		return VerificationCommand{"test", "pytest"}
+	}
+}
+
+func dedupeVerificationCommands(found []string, suggestions []VerificationCommand) ([]string, []VerificationCommand) {
 	// A repository can expose the same command through more than one marker.
 	// Preserve discovery order but never ask the operator to run it twice.
 	seen := make(map[string]bool, len(suggestions))

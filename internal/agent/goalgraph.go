@@ -42,6 +42,8 @@ func (a *Agent) SetGoalGraph(graph *goalgraph.Graph) error {
 	a.goalGraph = graph
 	if graph != nil {
 		a.planMode = false
+	} else {
+		a.goalSteering = nil
 	}
 	return nil
 }
@@ -239,6 +241,11 @@ func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 			reason = "goal graph budget exhausted"
 		}
 		return fmt.Errorf("%w: %s", ErrAggregateBudgetExceeded, reason)
+	case goalgraph.OutcomeAwaitingReview:
+		if strings.TrimSpace(reason) == "" {
+			reason = "verified candidates are retained for review"
+		}
+		return fmt.Errorf("%w: %s", ErrGoalAwaitingReview, reason)
 	case goalgraph.OutcomeBlocked:
 		if strings.TrimSpace(reason) == "" {
 			reason = "goal graph blocked"
@@ -402,4 +409,16 @@ func (a *Agent) aggregateBudgetError(send Emit) error {
 		return terminalErr
 	}
 	return err
+}
+
+// goalAwaitingReviewAnswer renders the successful candidate-wave stop as an
+// answer rather than an error. The retained worktrees are the deliverable; the
+// operator's next action is review, not recovery.
+func goalAwaitingReviewAnswer(err error) string {
+	reason := strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrGoalAwaitingReview.Error()+": "))
+	answer := "Orchestrated Goal finished with verified candidates retained for review. Nothing was integrated into this workspace and no candidate was selected — that decision is yours."
+	if reason != "" {
+		answer += "\n\n" + reason
+	}
+	return answer + "\n\nInspect them with /agents and /orchestrate status <node-id>, then integrate explicitly. /orchestrate cancel releases the graph when you are done."
 }

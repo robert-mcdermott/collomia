@@ -492,6 +492,18 @@ OG-3A.7 changes no persisted shape. Proposal plan status/evidence fields keep
 their existing meanings in ordinary plans, while Orchestrated Goal approval
 continues to write a fresh pending plan and schema-1 graph rather than treating
 those model-authored fields as execution history.
+OG-3A.8 is additive within schema 1. Attempts gained `completion_gap_kinds` and
+`evidence_pruned`; a snapshot written before them recovers its gap kinds from
+the stored sentence once at restore, and clears a gap this build cannot
+recognize rather than retaining one it could not enforce. The `awaiting_review`
+node state and graph outcome are new values in existing fields: an older
+snapshot that recorded a retained candidate as a blocked node is restored as
+awaiting review, and `goal.graph.update` — internal-only by the OG-1
+decision — adds `awaiting_review` to its outcome enumeration. The public
+`run.result` outcome enumeration is deliberately unchanged, so automation
+consumers see no new value. Evidence pruning removes only ordinary tool results
+from the snapshot; the complete transcript remains in the append-only session
+log, and the attempt records how many records were dropped.
 
 ## Release and developer checklist
 

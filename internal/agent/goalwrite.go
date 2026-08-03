@@ -158,6 +158,13 @@ func (a *Agent) runGoalWriteFanout(ctx context.Context, claims []goalgraph.Write
 		}
 	}
 	if budgetExhausted {
+		// The wave is over budget, but its worktrees are on disk. Record where
+		// each one is before returning the terminal outcome; no further child
+		// verification is run, because that would be new work after the ceiling.
+		parentToken, _ := a.goalToken(ctx)
+		for index, result := range results {
+			_ = graph.FinishWriter(context.WithoutCancel(ctx), writerResultFromDelegate(claims[index], result, parentToken, DelegateStatus{}))
+		}
 		a.finishGoalWriterWave(ctx, action, goalgraph.ErrAggregateBudget)
 		a.emitGoalUpdates(send)
 		outcome, reason := graph.Outcome()

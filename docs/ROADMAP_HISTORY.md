@@ -45,6 +45,95 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-3A.8 review-readiness corrections from an implementation audit
+
+- **A full review of the shipped Orchestrated Goal implementation, rather than
+  another trial, drove this slice.** The audit read the strategy against the
+  code and found that the evidence gate was narrower than the design language
+  implied, that two acceptance decisions were made by matching English strings,
+  and that a successful candidate wave was reported to the operator as a
+  failure. Nothing here widens authority; every change either lets honest work
+  finish or removes a way the runtime could be wrong about its own state.
+- **The verification recognizer no longer decides which languages the mode
+  works in.** A mutating primary node cannot complete without recognized
+  verification, so an ecosystem missing from the recognizer was an ecosystem in
+  which every honest change blocked, with no waiver available before OG-4. The
+  recognizer now unwraps environment managers recursively (`uv`, `poetry`,
+  `pipenv`, `pdm`, `hatch`, `rye`, `pixi`, `conda`/`mamba`/`micromamba` with an
+  environment selector, `bundle exec`, `npx`) and recognizes R, Ruby, Elixir,
+  PHP, Swift, CMake/`ctest`, Deno, Haskell, Bazel, `just`/`task`, `tox`/`nox`,
+  and Java build tools alongside the original Go, Rust, Node, and Python forms.
+  Detection gained the matching markers and now reports the runner a Python
+  repository actually uses, so a Poetry or tox project is not told to run a
+  bare `pytest` that cannot work there. Breadth is bounded: a wrapper qualifies
+  only when what it wraps is itself a recognized check, and each new ecosystem
+  contributes its test entry point alone so candidate verification suites stay
+  short.
+- **`git diff --check` is no longer accepted as verification.** A whitespace
+  linter passes on nearly any tree, so accepting it let a mutating node close
+  its verification gate without checking the change it had just made. That was
+  the one recognized command that proved nothing about the work.
+- **Completion gaps are typed state instead of prose.** The remediation lease
+  previously renewed by matching sentence fragments against text the runtime
+  had rendered for the model, so rewording one message could silently strand a
+  productive attempt — the failure class OG-3A.2 through OG-3A.5 each had to
+  correct. Gaps are now `no_tool_evidence`, `no_state_token`, `no_op_write`,
+  and `no_fresh_verification`, persisted additively; the sentence is derived
+  from the kind, and pre-typing snapshots recover their kinds once at restore.
+  A legacy sentence this build cannot recognize clears the gap rather than
+  leaving an unenforceable one. Read-node groundedness likewise now uses a
+  machine-counted successful-tool total from the worker instead of counting
+  `": completed —"` occurrences in its rendered evidence lines.
+- **A verified candidate wave is reported as success.** Nodes holding retained
+  candidates enter the new `awaiting_review` state and reduce to an
+  `awaiting_review` graph outcome, so the writer path working is no longer
+  indistinguishable from it failing. The turn ends with an answer naming the
+  review step instead of a `goal blocked` error, retry refuses with a reason
+  that names the candidate, and budget exhaustion no longer overwrites a
+  retained candidate's node. The state is additive to graph schema 1 and to the
+  internal-only `goal.graph.update` event; the public `run.result` outcome
+  enumeration is unchanged.
+- **A wave that crosses the aggregate budget keeps its candidates.** Usage was
+  previously recorded for the whole wave before any result was interpreted, so
+  a crossing terminated the graph before a single `WriterCandidate` was
+  attached — leaving real `collomia/…` worktrees on disk with nothing in the
+  graph pointing at them. Candidate facts are now durable before the aggregate
+  limit is enforced, and an over-budget wave still records where each worktree
+  is. No further child verification runs after the ceiling.
+- **Automatic writers can no longer commit or branch.** Rebuilding the child
+  registry for a worktree restored every builtin, including `git_commit` and
+  `git_branch`, leaving an explicit non-goal enforced only by prompt text — and
+  in `workspace` or `autopilot` mode those are write-risk actions that need no
+  prompt. A commit there would also move the ref the retained candidate's diff
+  is measured against. They are now removed from the registry and refused
+  again at availability, the same two-layer treatment the graph meta-tools get.
+- **Durable graph state is bounded.** Every transition rewrites the complete
+  snapshot into the session log, so an attempt that retained every tool result
+  made persistence cost grow with the square of a node's tool calls — precisely
+  on the long nodes that reach that point. Attempts now retain at most forty
+  ordinary tool results, never pruning verification or node-result evidence,
+  and record how many were dropped; the complete transcript remains in the
+  durable session log.
+- **A node boundary no longer discards the user's steering.** The zero-provider
+  handoff replaced the entire active context, including guidance the user had
+  been told applies to the remaining task. Mid-graph steering is now retained
+  and reattached after each accepted node, bounded to the steering queue's own
+  depth.
+- **`internal/writescope` has direct tests, and its two comparisons now err in
+  opposite directions on purpose.** The package deciding writer disjointness
+  and scope violations previously had no test of its own. `Overlap` still folds
+  case, because over-detecting a collision only costs parallelism, while
+  `Violations` is now case-exact, because on a case-sensitive filesystem
+  folding `src/` into `SRC/` would silently accept an undeclared write.
+- **Verification:** `go build ./...`, `go vet ./...`, `gofmt -l internal`,
+  `go test -count=1 ./...`, and `go test -race -count=1 ./internal/goalgraph
+  ./internal/agent ./internal/writescope` pass. New coverage: ecosystem
+  recognition and wrapper rejection, Python runner detection, typed-gap
+  renewal and legacy recovery, budget-crossing candidate retention, legacy
+  blocked-candidate restore, evidence pruning under a long attempt, graph-writer
+  tool denial, steering retention across a node boundary, and the writescope
+  table tests.
+
 ### 2026-08-03 — OG-3A.7 proposal-state authority and escape paths corrected
 
 - **The third successful Kanban6 wave exposed a proposal-state mismatch, not

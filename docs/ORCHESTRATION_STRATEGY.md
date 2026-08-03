@@ -2,10 +2,10 @@
 
 **Status:** approved product and architecture strategy; evidence-gated durable
 execution is available experimentally through completed OG-2, OG-3A's
-verified isolated-writer candidate wave, and OG-3A.1–.5 trial-driven
-controller corrections; OG-3B is next
+verified isolated-writer candidate wave, and OG-3A.1–.8 trial- and
+audit-driven controller corrections; OG-3B is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
-**Last updated:** 2026-08-02
+**Last updated:** 2026-08-03
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
 
 This document is the durable implementation charter for Collomia's next
@@ -57,7 +57,7 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-3A.7 boundary supports one serial primary lane, at
+The shipped OG-1 through OG-3A.8 boundary supports one serial primary lane, at
 most two governed automatic read-only workers, and—only in a candidate-only
 graph—one bounded wave of at most two pairwise-disjoint terminal isolated
 writers from a clean stable Git commit. It provides durable graph
@@ -67,7 +67,8 @@ nodes, non-replay of ambiguous mutations, durable primary-plus-worker
 accounting, fixed whole-graph aggregate enforcement, and a bounded comparative
 case for substantive independent read fan-out. Writer results remain in their
 own worktrees, require fresh detected-command verification tied to child state,
-and stop the graph for review. It does **not** select or integrate a candidate,
+and stop the graph in a distinct `awaiting_review` outcome rather than reporting
+their success as a blocker. It does **not** select or integrate a candidate,
 cancel an optional branch or node, or reproduce a multi-worker scheduler
 exactly after restart. Those are remaining OG-3 through OG-5 work and must not
 be described as current behavior.
@@ -833,7 +834,8 @@ Implemented contract:
 Exit gate:
 
 - decomposable read-heavy and cross-layer evaluations demonstrate a useful
-  quality or elapsed-time improvement over Standard mode;
+  elapsed-time improvement over Standard mode at equal grounding (a quality
+  improvement remains unmeasured while the harness scripts equal answers);
 - cost and extra model work are visible and bounded;
 - trivial or inherently serial work remains serial;
 - project content cannot enable the mode or widen authority.
@@ -847,7 +849,10 @@ Completion evidence and retained decision:
   primary-only graph, and two-worker graph execution. For decomposable facts
   and cross-layer source/test investigation with equal substantive read
   latency, fan-out completes faster because its expensive reads share one
-  critical-path wave; all three produce the same grounded answer;
+  critical-path wave; all three produce the same grounded answer. The measured
+  claim is elapsed time only: answer quality is held equal by the scripted
+  harness rather than observed, so no quality improvement has been
+  demonstrated and none should be claimed from this evidence;
 - the comparison also proves fan-out spends six visible provider iterations
   and more tokens than Standard. The result is therefore narrow: retain it for
   independently ready, substantive read investigations, not as a general
@@ -857,7 +862,7 @@ Completion evidence and retained decision:
 
 ### OG-3 — Isolated writer candidates
 
-**Status: in progress; OG-3A plus trial corrections through OG-3A.7 complete (2026-08-03), OG-3B next.**
+**Status: in progress; OG-3A plus corrections through OG-3A.8 complete (2026-08-03), OG-3B next.**
 
 - Automatically dispatch only dependency-ready writers with declared disjoint
   scopes and a stable base.
@@ -1105,6 +1110,66 @@ OG-3A.7 proposal-state authority and escape-path correction:
   rather than leaving the user in a read-only dead end. It does not approve the
   plan, expose execution tools within the proposal, or import plan evidence.
 
+OG-3A.8 review-readiness correction (implementation audit, not a trial):
+
+- A full audit of the shipped implementation against this charter found three
+  classes of problem: the evidence gate was narrower than the design language
+  implied, two acceptance decisions were made by matching English strings, and a
+  successful candidate wave was reported to the operator as a failure. None of
+  the corrections widen authority.
+- Recognized verification is no longer what decides which languages the mode
+  can finish work in. The recognizer unwraps environment-manager prefixes
+  recursively (`uv`, `poetry`, `pipenv`, `pdm`, `hatch`, `rye`, `pixi`,
+  `conda`/`mamba`/`micromamba` with an environment selector, `bundle exec`,
+  `npx`) and recognizes R, Ruby, Elixir, PHP, Swift, CMake/`ctest`, Deno,
+  Haskell, Bazel, `just`/`task`, `tox`/`nox`, and Java build tools beside the
+  original Go, Rust, Node, and Python forms. Detection gained matching markers
+  and reports the runner a Python repository actually uses. A wrapper qualifies
+  only when what it wraps is itself a recognized check, and each new ecosystem
+  contributes one test entry point so candidate suites stay short.
+- `git diff --check` is no longer recognized. A whitespace linter passes on
+  nearly any tree, so it let a mutating node close its verification gate
+  without checking the change it had just made.
+- Completion gaps are typed runtime state (`no_tool_evidence`,
+  `no_state_token`, `no_op_write`, `no_fresh_verification`), persisted
+  additively, with the operator-facing sentence derived from the kind. Matching
+  prose to decide whether the model made progress is what made OG-3A.2 through
+  OG-3A.5 a sequence of similar corrections. Pre-typing snapshots recover their
+  kinds once at restore, and an unrecognizable legacy sentence clears the gap
+  rather than leaving one that cannot be enforced. Read-node groundedness uses
+  a machine-counted successful-tool total rather than a phrase found in the
+  worker's rendered evidence lines.
+- A node holding a retained verified candidate is `awaiting_review`, and a
+  graph whose remaining nodes are all done or awaiting review reduces to the
+  `awaiting_review` outcome. The turn ends with an answer naming the review
+  step; retry refuses with a reason that names the candidate; aggregate
+  exhaustion does not overwrite the node. The state is additive to graph schema
+  1 and to the internal-only `goal.graph.update` event, and the public
+  `run.result` outcome enumeration is deliberately unchanged.
+- Retained candidate facts become durable before the aggregate budget is
+  enforced. A wave that crossed the ceiling previously terminated the graph
+  before any candidate was attached, leaving real worktrees on disk that the
+  graph could no longer point at. No further child verification runs after the
+  ceiling; the recorded worktree identity is what makes review possible.
+- Automatic writers no longer hold `git_commit` or `git_branch`. Rebuilding the
+  child registry for a worktree restored every builtin, leaving an explicit
+  non-goal enforced by prompt text alone, and a child commit would move the ref
+  the candidate's diff is measured against. Both the registry removal and the
+  availability check apply, matching the treatment of graph meta-tools.
+- An attempt retains at most forty ordinary tool results, never pruning
+  verification or node-result evidence, and records how many it dropped. Every
+  transition rewrites the complete snapshot, so unbounded evidence made durable
+  cost grow with the square of a node's tool calls. The full transcript remains
+  in the durable session log.
+- Mid-graph user steering is retained across the accepted-node handoff, which
+  otherwise replaced the whole active context including guidance the user was
+  told applies to the remaining task.
+- `Overlap` and `Violations` now err in opposite directions on purpose:
+  `Overlap` folds case because over-serializing only costs parallelism, while
+  `Violations` is case-exact because folding `src/` into `SRC/` would accept an
+  undeclared write on a case-sensitive filesystem. `internal/writescope` has
+  direct tests for the first time.
+
 OG-3B remaining contract:
 
 - complete the cancellation/provider-failure and retained-worktree campaigns;
@@ -1261,20 +1326,21 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-3A.7 — Proposal-state authority and escape-path
-  correction**, following OG-3A's verified isolated-writer candidate wave and
-  its six earlier trial-driven corrections.
+- Last completed slice: **OG-3A.8 — Review-readiness corrections from an
+  implementation audit**, following OG-3A's verified isolated-writer candidate
+  wave and its seven earlier trial-driven corrections.
 - Active milestone: **OG-3 — Isolated writer candidates**.
 - Next unblocked slice: **OG-3B — Adversarial and recovery closure**.
-- Active implementation branch or partial patch: **OG-3A and OG-3A.1–7 are
-  implemented as one uncommitted patch on `wave36`; OG-2B2b2 is committed as
-  `e3b1dd9`**.
+- Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
+  `57c1c26`, OG-3A.6–7 are `364d845`, and OG-3A.8 is the working tree on top of
+  them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
-  candidate wave for pairwise-disjoint isolated writers, plus cooperative
-  pause/resume, safe retry of eligible blocked nodes, durable aggregate
-  accounting, and a fixed whole-graph execution envelope**.
+  candidate wave for pairwise-disjoint isolated writers ending in
+  `awaiting_review`, plus cooperative pause/resume, safe retry of eligible
+  blocked nodes, durable aggregate accounting, bounded retained evidence, and a
+  fixed whole-graph execution envelope**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
 - Preserved implementation constraint: only approved `read_only` and narrowly
@@ -1419,6 +1485,42 @@ Every agent or contributor continuing this program must:
 - Treat an interrupted isolated writer as an ambiguous mutation even though
   the parent is unchanged: block and preserve history rather than starting a
   second writer that could duplicate work or abandon an unknown worktree.
+
+### 2026-08-03
+
+- Treat recognized-verification breadth as a safety property of the mode, not a
+  convenience. Because a mutating node blocks without recognized verification
+  and no waiver exists before OG-4, a missing ecosystem means the mode cannot
+  finish honest work there. Unwrap environment managers recursively rather than
+  enumerating every wrapper-and-verifier pair, and require that what a wrapper
+  wraps is itself recognized.
+- Remove `git diff --check` from recognized verification. Evidence that passes
+  on nearly any tree is not evidence about the change that was just made.
+- Make acceptance-gate state typed rather than rendered prose, in both the
+  completion gap and read-node groundedness. Presentation may be derived from
+  state; state may never be recovered from presentation.
+- Add `awaiting_review` as a node state and graph outcome so a verified
+  candidate wave is distinguishable from a failure. Keep it additive to graph
+  schema 1 and to the internal-only `goal.graph.update` event, and keep the
+  public `run.result` outcome enumeration unchanged until a headless activation
+  surface exists.
+- Record retained candidate facts before enforcing the aggregate budget. A
+  ceiling reached after the work happened must not erase the runtime's only
+  pointer to worktrees that exist on disk.
+- Withhold `git_commit` and `git_branch` from automatically dispatched graph
+  writers structurally, in the registry and again at availability. A non-goal
+  enforced only by prompt text is not enforced.
+- Bound retained per-attempt tool evidence, since every transition rewrites the
+  complete snapshot durably. Never prune verification or node-result evidence,
+  and record the number dropped rather than silently shrinking the record.
+- Retain mid-graph user steering across the accepted-node handoff. A context
+  optimization must not discard an instruction the user was told applies to the
+  remaining task.
+- Let `Overlap` fold case and `Violations` match case exactly. The two
+  comparisons have opposite safe directions, so they should not share one rule.
+- State the read fan-out comparison as an elapsed-time result only. The harness
+  scripts equal answers, so it cannot demonstrate a quality improvement and the
+  exit gate should not imply that it did.
 
 ## Open implementation decisions
 

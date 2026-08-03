@@ -32,6 +32,10 @@ var (
 	// ErrAggregateBudgetExceeded is the whole Orchestrated Goal envelope across
 	// proposal, primary, and automatic-worker work.
 	ErrAggregateBudgetExceeded = errors.New("orchestrated goal aggregate budget exhausted")
+	// ErrGoalAwaitingReview is the successful stop of a candidate wave. It is a
+	// sentinel rather than a failure because nothing went wrong: verified
+	// candidates are retained and selecting one is the user's decision.
+	ErrGoalAwaitingReview = errors.New("orchestrated goal is awaiting review of retained candidates")
 )
 
 type GoalOutcome string
@@ -44,6 +48,9 @@ const (
 	// GoalPaused is a nonterminal turn boundary used only by the interactive
 	// Orchestrated Goal controller. It is not a public run.result outcome.
 	GoalPaused GoalOutcome = "paused"
+	// GoalAwaitingReview likewise belongs to the interactive controller: the
+	// graph produced verified candidates and stopped for reviewed integration.
+	GoalAwaitingReview GoalOutcome = "awaiting_review"
 )
 
 // GoalOutcomeFor reduces every runtime exit to the four goal-level states an
@@ -330,13 +337,31 @@ func directVerificationCommand(command, workspace string) bool {
 	if normalized == "" {
 		return false
 	}
+	// A command the repository itself declares is authoritative for that
+	// repository, whatever ecosystem it belongs to. The table below only has to
+	// cover the conventional forms a model reaches for unprompted.
 	_, detected := tools.DetectVerificationCommands(workspace)
 	for _, candidate := range detected {
 		if normalized == strings.Join(strings.Fields(candidate.Command), " ") {
 			return true
 		}
 	}
-	fields := strings.Fields(normalized)
+	return recognizedVerifier(strings.Fields(normalized), 0)
+}
+
+// recognizedVerifier reports whether these argv fields invoke a conventional
+// build, type, lint, or test check whose exit status is the check's own.
+//
+// Ecosystem breadth is a safety property here, not a convenience: the graph
+// blocks a mutating node that cannot produce recognized verification, so a
+// language missing from this table is a language in which Orchestrated Goal
+// cannot finish honest work. Environment-manager wrappers are unwrapped
+// recursively because they propagate the wrapped program's status unchanged;
+// depth is bounded so a wrapper chain cannot smuggle in something else.
+func recognizedVerifier(fields []string, depth int) bool {
+	if depth > 2 {
+		return false
+	}
 	for len(fields) > 0 && shellEnvironmentAssignment(fields[0]) {
 		fields = fields[1:]
 	}
@@ -349,56 +374,117 @@ func directVerificationCommand(command, workspace string) bool {
 	if slash := strings.LastIndexByte(executable, '/'); slash >= 0 {
 		executable = executable[slash+1:]
 	}
-	executable = strings.TrimSuffix(executable, ".exe")
-	fields[0] = executable
+	fields = append([]string(nil), fields...)
+	fields[0] = strings.TrimSuffix(executable, ".exe")
+	if rest, ok := verificationRunnerRemainder(fields); ok {
+		return recognizedVerifier(rest, depth+1)
+	}
+	// Program names are matched case-insensitively (Rscript, R) while arguments
+	// keep their case, because an R subcommand is spelled CMD and a shell
+	// subcommand is not a program name.
+	program := strings.ToLower(fields[0])
 	verb := func(index int, allowed ...string) bool {
 		if len(fields) <= index {
 			return false
 		}
-		for _, value := range allowed {
-			if fields[index] == value {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(allowed, fields[index])
 	}
-	switch fields[0] {
+	// A task runner executes an arbitrary named recipe, so only conventional
+	// verification target names qualify.
+	targets := []string{"test", "tests", "lint", "vet", "check", "build", "typecheck", "verify", "ci"}
+	switch program {
 	case "go":
 		return verb(1, "test", "vet", "build")
 	case "cargo":
 		return verb(1, "test", "check", "clippy", "build")
 	case "python", "python3":
-		return verb(1, "-m") && verb(2, "pytest", "mypy")
-	case "pytest", "mypy":
+		return verb(1, "-m") && verb(2, "pytest", "mypy", "unittest", "tox", "nox", "pyright", "ruff")
+	case "pytest", "mypy", "pyright", "tox", "nox", "phpunit", "rspec", "ctest", "jest", "vitest", "tsc":
 		return true
 	case "ruff":
 		return verb(1, "check") || (verb(1, "format") && slices.Contains(fields[2:], "--check"))
-	case "uv":
-		if !verb(1, "run") {
-			return false
-		}
-		if verb(2, "pytest", "mypy") {
-			return true
-		}
-		if verb(2, "python", "python3") && verb(3, "-m") && verb(4, "pytest", "mypy") {
-			return true
-		}
-		return verb(2, "ruff") && (verb(3, "check") || (verb(3, "format") && slices.Contains(fields[4:], "--check")))
 	case "npm", "pnpm", "yarn", "bun":
 		if verb(1, "test") {
 			return true
 		}
-		return verb(1, "run") && verb(2, "test", "lint", "build", "check", "typecheck")
-	case "make":
-		return verb(1, "test", "lint", "vet", "build", "check")
-	case "git":
-		return verb(1, "diff") && verb(2, "--check")
-	case "dotnet":
+		return verb(1, "run") && verb(2, targets...)
+	case "deno":
+		return verb(1, "test", "check", "lint")
+	case "make", "just", "task", "rake":
+		return verb(1, targets...)
+	case "mix", "swift", "meson":
+		return verb(1, "test", "build", "compile")
+	case "stack", "cabal", "bazel", "dotnet":
 		return verb(1, "test", "build")
-	case "gradle", "./gradlew", "mvn", "mvnw", "./mvnw":
+	case "composer":
+		return verb(1, targets...)
+	case "gradle", "gradlew", "mvn", "mvnw":
 		return verb(1, "test", "check", "build", "verify")
+	case "rscript":
+		// The expression is what runs, so recognize only conventional R test
+		// entry points; each reports a non-zero status when a test fails.
+		joined := strings.ToLower(strings.Join(fields, " "))
+		return verb(1, "-e") && (strings.Contains(joined, "testthat::test") || strings.Contains(joined, "devtools::test") || strings.Contains(joined, "tinytest::test"))
+	case "r":
+		return verb(1, "CMD") && verb(2, "check")
+	case "julia":
+		return strings.Contains(strings.ToLower(strings.Join(fields, " ")), "pkg.test")
 	default:
 		return false
+	}
+}
+
+// verificationRunnerRemainder strips one environment-manager wrapper and
+// returns the command it will actually execute. `git diff --check` is
+// deliberately absent from every table here: a whitespace linter passes on
+// almost any tree, so accepting it would let a mutating node close its
+// verification gate without checking the change at all.
+func verificationRunnerRemainder(fields []string) ([]string, bool) {
+	switch fields[0] {
+	case "uv", "poetry", "pipenv", "hatch", "rye", "pdm", "pixi":
+		if len(fields) > 2 && fields[1] == "run" {
+			return fields[2:], true
+		}
+		// `hatch test` and `pdm test` are their own conventional entry points.
+		if len(fields) == 2 && fields[1] == "test" {
+			return []string{"pytest"}, true
+		}
+		return nil, false
+	case "conda", "mamba", "micromamba":
+		if len(fields) < 3 || fields[1] != "run" {
+			return nil, false
+		}
+		rest := fields[2:]
+		// Skip the environment selector so the wrapped verifier is assessed.
+		for len(rest) > 2 && (rest[0] == "-n" || rest[0] == "--name" || rest[0] == "-p" || rest[0] == "--prefix") {
+			rest = rest[2:]
+		}
+		for len(rest) > 1 && strings.HasPrefix(rest[0], "-") {
+			rest = rest[1:]
+		}
+		if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
+			return nil, false
+		}
+		return rest, true
+	case "bundle":
+		if len(fields) > 2 && fields[1] == "exec" {
+			return fields[2:], true
+		}
+		return nil, false
+	case "npx", "pnpx", "bunx":
+		rest := fields[1:]
+		if len(rest) > 1 && (rest[0] == "exec" || rest[0] == "dlx") {
+			rest = rest[1:]
+		}
+		for len(rest) > 1 && strings.HasPrefix(rest[0], "-") {
+			rest = rest[1:]
+		}
+		if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
+			return nil, false
+		}
+		return rest, true
+	default:
+		return nil, false
 	}
 }
 

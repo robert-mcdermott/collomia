@@ -169,10 +169,13 @@ func TestGraphClaimsOneVerifiedDisjointWriterWaveAndStopsForReview(t *testing.T)
 		}
 	}
 	snapshot := graph.Snapshot()
-	if outcome, reason := graph.Outcome(); outcome != OutcomeBlocked || !strings.Contains(reason, "reviewed integration is required") {
+	// A verified candidate wave is the feature working. It stops the graph
+	// because integration is user authority, not because anything failed, so it
+	// must be distinguishable from a blocker in both state and outcome.
+	if outcome, reason := graph.Outcome(); outcome != OutcomeAwaitingReview || !strings.Contains(reason, "reviewed integration is required") {
 		t.Fatalf("outcome=%q reason=%q", outcome, reason)
 	}
-	if snapshot.Nodes[0].State != NodeBlocked || snapshot.Nodes[1].State != NodeBlocked || snapshot.Nodes[2].State == NodeDone {
+	if snapshot.Nodes[0].State != NodeAwaitingReview || snapshot.Nodes[1].State != NodeAwaitingReview || snapshot.Nodes[2].State == NodeDone {
 		t.Fatalf("candidate wave advanced logical completion: %+v", snapshot.Nodes)
 	}
 	if snapshot.Attempts[0].State != AttemptCandidate || snapshot.Attempts[0].Candidate == nil || snapshot.Attempts[1].Candidate == nil {
@@ -188,6 +191,88 @@ func TestGraphClaimsOneVerifiedDisjointWriterWaveAndStopsForReview(t *testing.T)
 	corrupted.Attempts[0].Candidate.Verification[0].StateToken = "different-child-state"
 	if err := ValidateSnapshot(corrupted); err == nil || !strings.Contains(err.Error(), "failed or stale verification") {
 		t.Fatalf("corrupted candidate verification was accepted: %v", err)
+	}
+}
+
+// A wave that crosses the aggregate budget on its final result still left real
+// worktrees on disk. If the graph drops the candidate record at that moment,
+// the operator has orphaned worktrees and nothing pointing at them.
+func TestBudgetExhaustionRetainsTheCandidateItAlreadyProduced(t *testing.T) {
+	graph, err := New(Spec{Goal: "produce a candidate", Nodes: []NodeSpec{
+		{ID: 1, Title: "change docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+	}}, 1, Options{MaxAggregateTokens: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("writer claims=%+v err=%v", claims, err)
+	}
+	err = graph.FinishWriter(t.Context(), WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "done",
+		Summary: "implemented and checked candidate", WritePaths: claims[0].WritePaths,
+		ChangedFiles: []string{"docs/guide.md"}, Worktree: "/tmp/candidate", Branch: "collomia/writer-1",
+		BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+		VerificationState: "passed", VerificationToken: "child-state",
+		Verification: []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: "child-state"}},
+		Iterations:   2, InputTokens: 900, OutputTokens: 400,
+	})
+	if !errors.Is(err, ErrAggregateBudget) {
+		t.Fatalf("over-budget writer result error=%v", err)
+	}
+	snapshot := graph.Snapshot()
+	if outcome, _ := graph.Outcome(); outcome != OutcomeBudgetExhausted {
+		t.Fatalf("outcome=%q", outcome)
+	}
+	candidate := snapshot.Attempts[0].Candidate
+	if candidate == nil || candidate.Worktree != "/tmp/candidate" || candidate.Branch != "collomia/writer-1" {
+		t.Fatalf("retained candidate was discarded when the budget ran out: %+v", snapshot.Attempts[0])
+	}
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("snapshot invalid: %v", err)
+	}
+}
+
+// A retained candidate is a fact the graph promised to keep. Older snapshots
+// recorded it as a blocked node, and restoring must not lose the distinction.
+func TestRestoreUpgradesLegacyBlockedCandidateToAwaitingReview(t *testing.T) {
+	graph, err := New(Spec{Goal: "produce a candidate", Nodes: []NodeSpec{
+		{ID: 1, Title: "change docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+	}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("writer claims=%+v err=%v", claims, err)
+	}
+	if err := graph.FinishWriter(t.Context(), WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "done",
+		Summary: "implemented and checked candidate", WritePaths: claims[0].WritePaths,
+		ChangedFiles: []string{"docs/guide.md"}, Worktree: "/tmp/candidate", Branch: "collomia/writer-1",
+		BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+		VerificationState: "passed", VerificationToken: "child-state",
+		Verification: []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: "child-state"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := graph.Snapshot()
+	legacy.Nodes[0].State = NodeBlocked
+	legacy.Outcome, legacy.Reason = OutcomeBlocked, "review required"
+	restored, err := Restore(legacy, Options{})
+	if err != nil {
+		t.Fatalf("restore legacy candidate snapshot: %v", err)
+	}
+	if state := restored.Snapshot().Nodes[0].State; state != NodeAwaitingReview {
+		t.Fatalf("legacy candidate node restored as %q", state)
+	}
+	// Retry is refused with a reason that names the candidate rather than
+	// telling the operator the node has no blocked attempt to retry.
+	err = restored.RetryNode(t.Context(), 1, "")
+	if err == nil || !strings.Contains(err.Error(), "awaiting review") {
+		t.Fatalf("retry of an awaiting-review graph: %v", err)
 	}
 }
 
@@ -808,11 +893,118 @@ func TestCompletionGapSnapshotRoundTripsAndLegacyOmissionIsSafe(t *testing.T) {
 	if _, err := Restore(snapshot, Options{}); err != nil {
 		t.Fatalf("restore completion gap: %v", err)
 	}
-	legacy := snapshot
-	legacy.Attempts[0].CompletionGap = ""
-	legacy.Attempts[0].CompletionGapIteration = 0
-	if _, err := Restore(legacy, Options{}); err != nil {
-		t.Fatalf("restore omitted legacy gap: %v", err)
+	if kinds := snapshot.Attempts[0].CompletionGapKinds; len(kinds) != 1 || kinds[0] != GapNoFreshVerification {
+		t.Fatalf("completion gap kinds=%v", snapshot.Attempts[0].CompletionGapKinds)
+	}
+	omitted := graph.Snapshot()
+	omitted.Attempts[0].CompletionGap = ""
+	omitted.Attempts[0].CompletionGapKinds = nil
+	omitted.Attempts[0].CompletionGapIteration = 0
+	if _, err := Restore(omitted, Options{}); err != nil {
+		t.Fatalf("restore omitted gap: %v", err)
+	}
+	// A snapshot written before the gap was typed carries only the sentence.
+	// Restore recovers the kind so the running controller never parses prose.
+	untyped := graph.Snapshot()
+	untyped.Attempts[0].CompletionGapKinds = nil
+	restored, err := Restore(untyped, Options{})
+	if err != nil {
+		t.Fatalf("restore untyped legacy gap: %v", err)
+	}
+	if kinds := restored.Snapshot().Attempts[0].CompletionGapKinds; len(kinds) != 1 || kinds[0] != GapNoFreshVerification {
+		t.Fatalf("legacy gap kinds=%v", kinds)
+	}
+	// An unrecognizable legacy sentence cannot bound remediation, so it is
+	// cleared rather than restored as an unenforceable gap.
+	unknown := graph.Snapshot()
+	unknown.Attempts[0].CompletionGapKinds = nil
+	unknown.Attempts[0].CompletionGap = "something a previous build worded differently"
+	cleared, err := Restore(unknown, Options{})
+	if err != nil {
+		t.Fatalf("restore unknown legacy gap: %v", err)
+	}
+	if attempt := cleared.Snapshot().Attempts[0]; attempt.CompletionGap != "" || len(attempt.CompletionGapKinds) != 0 || attempt.CompletionGapIteration != 0 {
+		t.Fatalf("unrecognized legacy gap survived: %+v", attempt)
+	}
+}
+
+// Every transition rewrites the whole snapshot into the durable session, so an
+// attempt that keeps every tool result makes persistence cost grow with the
+// square of the node's tool calls. Long nodes are exactly the ones that reach
+// that point.
+func TestLongAttemptBoundsRetainedToolEvidence(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "long node", Nodes: []NodeSpec{{ID: 1, Title: "iterate"}}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "run_command", Command: "go test ./...", Summary: "ok", Verification: true, WorkspaceToken: "token"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxAttemptToolEvidence*3; i++ {
+		if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "read_file", Summary: fmt.Sprintf("read %d", i), WorkspaceToken: "token"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := graph.Snapshot()
+	if len(snapshot.Evidence) > maxAttemptToolEvidence+1 {
+		t.Fatalf("retained %d evidence records, want at most %d", len(snapshot.Evidence), maxAttemptToolEvidence+1)
+	}
+	if snapshot.Attempts[0].EvidencePruned == 0 {
+		t.Fatal("pruning was not recorded on the attempt")
+	}
+	// Verification evidence is what acceptance depends on, so it is never the
+	// thing pruning drops, and the newest results survive.
+	var verifications int
+	for _, item := range snapshot.Evidence {
+		if item.Kind == EvidenceVerification {
+			verifications++
+		}
+	}
+	if verifications != 1 {
+		t.Fatalf("verification evidence count=%d", verifications)
+	}
+	newest := snapshot.Evidence[len(snapshot.Evidence)-1]
+	if newest.Summary != fmt.Sprintf("read %d", maxAttemptToolEvidence*3-1) {
+		t.Fatalf("newest evidence was pruned: %+v", newest)
+	}
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("pruned snapshot invalid: %v", err)
+	}
+	// The completion gate still sees the verification it needs.
+	if decision, err := graph.ProposeCompletion(t.Context(), "done", "token"); err != nil || decision.Kind != DecisionAccepted && decision.Kind != DecisionDone {
+		t.Fatalf("decision=%+v error=%v", decision, err)
+	}
+}
+
+// The remediation lease is what stops a model from burning the graph budget
+// re-running an equivalent command, so it must key off the typed gate rather
+// than the sentence the runtime happened to render for it.
+func TestCompletionGapRenewalUsesTypedKindsNotProse(t *testing.T) {
+	verificationGap := &Attempt{CompletionGapKinds: []GapKind{GapNoFreshVerification}, BaseWorkspaceToken: "before"}
+	if completionGapAdvanced(verificationGap, nil, ToolResult{Tool: "read_file", WorkspaceToken: "before"}) {
+		t.Error("an unrelated read renewed a verification gap")
+	}
+	if !completionGapAdvanced(verificationGap, nil, ToolResult{Tool: "run_command", Verification: true, WorkspaceToken: "before"}) {
+		t.Error("recognized verification did not renew a verification gap")
+	}
+	writeGap := &Attempt{CompletionGapKinds: []GapKind{GapNoOpWrite}, BaseWorkspaceToken: "before"}
+	if completionGapAdvanced(writeGap, nil, ToolResult{Tool: "write_file", WorkspaceToken: "before"}) {
+		t.Error("an unchanged workspace renewed a no-op-write gap")
+	}
+	if !completionGapAdvanced(writeGap, nil, ToolResult{Tool: "write_file", WorkspaceToken: "after"}) {
+		t.Error("a real workspace change did not renew a no-op-write gap")
+	}
+	// Every rendered sentence is derived from a kind, so presentation cannot
+	// drift away from the state the controller enforces.
+	for _, kind := range []GapKind{GapNoToolEvidence, GapNoStateToken, GapNoOpWrite, GapNoFreshVerification} {
+		if description := gapDescription(kind); description == "" || description == string(kind) {
+			t.Errorf("gap kind %q has no operator-facing description", kind)
+		}
 	}
 }
 

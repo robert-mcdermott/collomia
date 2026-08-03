@@ -128,7 +128,7 @@
         "state": { "type": "string", "minLength": 1 },
         "reason": { "type": "string" },
         "ready": { "type": "array", "items": { "type": "integer" } },
-        "outcome": { "enum": ["done", "blocked", "cancelled", "budget_exhausted"] }
+        "outcome": { "enum": ["done", "blocked", "cancelled", "budget_exhausted", "awaiting_review"] }
       }
     },
     "tool": {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
@@ -107,24 +106,18 @@ func (a *Agent) runGoalReadFanout(ctx context.Context, claims []goalgraph.ReadCl
 	return nil
 }
 
+// readResultFromDelegate carries the worker's machine-counted successful tool
+// results. Whether a read node is grounded decides whether it can be accepted,
+// so it is a counter the runtime kept, not a phrase recovered from the
+// human-readable evidence lines the child happened to emit.
 func readResultFromDelegate(attemptID string, result DelegateResult, workspaceToken string) goalgraph.ReadResult {
 	return goalgraph.ReadResult{
 		AttemptID: attemptID, WorkerID: result.ID, Status: result.Status,
 		Summary: result.Summary, Error: result.Error, Evidence: result.Evidence,
-		ToolSuccesses: completedDelegateToolCount(result.Evidence), WorkspaceToken: workspaceToken,
+		ToolSuccesses: result.ToolSuccesses, WorkspaceToken: workspaceToken,
 		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
 		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
 	}
-}
-
-func completedDelegateToolCount(evidence []string) int {
-	count := 0
-	for _, line := range evidence {
-		if strings.Contains(line, ": completed —") {
-			count++
-		}
-	}
-	return count
 }
 
 func automaticReadPrompt(claim goalgraph.ReadClaim) string {

@@ -101,7 +101,14 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   graph; their prose is accepted only with successful tool evidence and a
   fresh workspace token. A mutation requires recognized verification against
   the current Git state, and an ambiguous interrupted mutation is blocked
-  instead of replayed. Cooperative pause/resume is available at the next safe
+  instead of replayed. Recognized verification covers the conventional
+  build/lint/test entry points of the ecosystems Collomia meets — including
+  `uv`, `poetry`, `pipenv`, `conda`, `tox`/`nox`, R, Ruby, Elixir, PHP, Swift,
+  CMake, Deno, Haskell, Bazel, and task runners — because a mutating node
+  blocks honestly when it cannot verify, so a missing ecosystem would mean the
+  mode could not finish work there. A wrapper counts only when what it wraps is
+  itself a recognized check, and a command that passes on almost any tree, such
+  as `git diff --check`, is not verification of a change. Cooperative pause/resume is available at the next safe
   provider/scheduler boundary, and a blocked node can be retried only when its
   attempt budget and non-replay checks allow it; whole-graph cancel remains
   immediate. A terminal graph yields to a fresh `/orchestrate <goal>` in the
@@ -146,9 +153,13 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   base and names dirty paths without consuming the proposal. One bounded wave starts at most two ready,
   pairwise-disjoint writers from the same clean commit, keeps them in isolated
   worktrees, and requires ordinary dispatch permission plus fresh detected
-  child verification. Passing candidates stop the graph for review; Collomia
-  does not select or integrate them, and the parent workspace remains
-  unchanged. An interrupted writer is blocked rather than replayed. There is
+  child verification. Automatic writers cannot commit or create branches even
+  inside their own worktree. Passing candidates stop the graph in a distinct
+  `awaiting_review` state — reported as a finished run naming the review step,
+  not as a blocker — and Collomia does not select or integrate them; the parent
+  workspace remains unchanged. A wave that exhausts the aggregate budget still
+  records where each retained worktree is. An interrupted writer is blocked
+  rather than replayed. There is
   deterministic feedback when a verification-like shell command cannot count
   as evidence; exact redundant workspace `cd ... &&` and final `2>&1` wrappers
   can qualify because they preserve exit status. Graph-hidden plan/delegation tools are blocked again before

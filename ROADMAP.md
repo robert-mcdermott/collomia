@@ -1804,6 +1804,20 @@ roadmap remains the source of priority and completion status.
       already performed during proposal design, retain direct
       `/orchestrate cancel`, and make `/plan off` explicitly cancel an
       unapproved proposal and restore execution mode. *(Completed 2026-08-03.)*
+    - [x] **OG-3A.8 — Review-readiness corrections:** recognize the
+      conventional verifiers of the ecosystems the mode actually meets
+      (environment-manager wrappers, R, Ruby, Elixir, PHP, Swift, CMake, Deno,
+      Haskell, Bazel, task runners, tox/nox, Java) and the runner a Python
+      project really uses; stop accepting `git diff --check` as proof of a
+      change; make completion gaps and read-node groundedness typed runtime
+      state rather than matched prose; report a verified candidate wave as
+      `awaiting_review` instead of a blocker; retain candidate worktree
+      identity when a wave crosses the aggregate budget; withhold
+      `git_commit`/`git_branch` from automatic writers structurally; bound
+      retained per-attempt evidence so durable snapshots stop growing
+      quadratically; keep mid-graph steering across the node handoff; and give
+      `internal/writescope` direct tests with opposite-direction
+      overlap/violation rules. *(Completed 2026-08-03.)*
     - [ ] **OG-3B — Adversarial and recovery closure:** finish cancellation,
       provider-failure, scope/drift, retained-worktree, restore, and operator-
       inspection campaigns; resolve any candidate-state/recovery gaps before
@@ -2002,8 +2016,9 @@ roadmap remains the source of priority and completion status.
 
 The setup journey, first completion controller, OG-1 runtime-owned primary
 graph, the complete OG-2 experimental read-only orchestration program, and
-OG-3A's first verified isolated-writer candidate wave and seven trial-driven
-controller corrections are now complete.
+OG-3A's first verified isolated-writer candidate wave, its seven trial-driven
+controller corrections, and OG-3A.8's audit-driven review-readiness corrections
+are now complete.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
@@ -2013,9 +2028,10 @@ slice is **OG-3B — adversarial and recovery closure**, with every candidate
 remaining in its own worktree and the primary workspace unchanged.
 
 1. Gather real-session evidence from the Standard completion gate: how often
-   each rule intervenes, which verification commands are missed by the
-   conservative recognizer, and whether two interventions is the right bound.
-   Keep this local and inspectable rather than adding telemetry by default.
+   each rule intervenes, which verification commands are still missed by the
+   recognizer after OG-3A.8's ecosystem breadth, and whether two interventions
+   is the right bound. Keep this local and inspectable rather than adding
+   telemetry by default.
 2. Finish **OG-3B — adversarial and recovery closure**: exercise cancellation,
    provider failure, parent drift, scope violations, retained-worktree
    inspection, and restore around OG-3A's one bounded candidate wave. Keep the

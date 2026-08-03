@@ -187,6 +187,10 @@ func (m Model) graphNodeStyle(status string) (string, lipgloss.Style) {
 		return "◐", m.styles.warning
 	case "blocked", "cancelled", "budget_exhausted":
 		return "✗", m.styles.errText
+	case "awaiting_review":
+		// A retained verified candidate succeeded; it waits on the user rather
+		// than on the runtime, so it must not read as a failure.
+		return "◆", m.styles.accent
 	case "stale":
 		return "!", m.styles.warning
 	}

@@ -109,6 +109,12 @@ func Overlap(left, right []string) bool {
 }
 
 // Violations returns changed paths outside the normalized declared scopes.
+//
+// Matching here is case-exact, which is the conservative direction for this
+// question: on a case-sensitive filesystem `src/` and `SRC/` are different
+// directories, so folding them together would silently permit a write the
+// operator never declared. Overlap folds case for the same reason in reverse —
+// over-detecting a collision only costs parallelism.
 func Violations(scopes, changed []string) []string {
 	if len(scopes) == 0 || len(changed) == 0 || len(scopes) == 1 && scopes[0] == Workspace {
 		return nil
@@ -116,11 +122,9 @@ func Violations(scopes, changed []string) []string {
 	var violations []string
 	for _, raw := range changed {
 		changedPath := strings.TrimPrefix(strings.ReplaceAll(raw, "\\", "/"), "./")
-		changedFolded := strings.ToLower(changedPath)
 		allowed := false
 		for _, scope := range scopes {
-			scopeFolded := strings.ToLower(scope)
-			if scopeFolded == changedFolded || strings.HasSuffix(scope, "/") && strings.HasPrefix(changedFolded, scopeFolded) {
+			if scope == changedPath || strings.HasSuffix(scope, "/") && strings.HasPrefix(changedPath, scope) {
 				allowed = true
 				break
 			}

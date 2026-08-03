@@ -767,7 +767,7 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
-## Evidence-gated durable goal-graph boundary (experimental OG-1–OG-3A.7)
+## Evidence-gated durable goal-graph boundary (experimental OG-1–OG-3A.8)
 
 Orchestrated Goal is evidence-gated durable execution: the model proposes
 logical work and interprets results, while the runtime owns operational graph
@@ -852,17 +852,30 @@ violation, or a changed parent cannot create an eligible candidate.
 
 Even a fully verified child does not complete its logical node. The graph
 stores bounded candidate identity, changed-file, scope, verification-command,
-and child-state-token facts, marks the node blocked with a reviewed-integration
-reason, leaves dependents closed, and retains the worktree. It never chooses a
-candidate or applies, commits, merges, pushes, or publishes its bytes. A
+and child-state-token facts, marks the node `awaiting_review` with a
+reviewed-integration reason, leaves dependents closed, and retains the
+worktree. Awaiting review is a successful stop, distinct from a blocker, and it
+still grants nothing: the graph never chooses a candidate or applies, commits,
+merges, pushes, or publishes its bytes. Those candidate facts are made durable
+before the aggregate budget is enforced, so a wave that exhausts the ceiling
+still records where each retained worktree is instead of leaving orphans the
+runtime cannot name. Automatic writers additionally cannot reach `git_commit`
+or `git_branch` — removed from the cloned registry and refused again at call
+availability — because a commit inside a retained worktree is an automatic
+publication step this mode holds no authority for and would move the ref the
+candidate's diff is measured against. A
 process boundary while a writer is running is treated as an ambiguous
 mutation of the retained worktree and is not replayed or admitted through safe
 retry. Broader orphaned-worktree reconciliation remains OG-3B/OG-5 work.
 
 Graph execution truth is separate from the model-authored plan and full
 transcript. The session stores a versioned, structurally validated snapshot
-containing immutable attempts, typed failures, evidence identity, mutation
-generation, and terminal outcome. A model's tool-free response only proposes
+containing immutable attempts, typed failures, typed unmet acceptance gates,
+evidence identity, mutation generation, and terminal outcome. Acceptance state
+is typed rather than parsed back out of the sentences the runtime rendered for
+the model, and each attempt retains a bounded number of ordinary tool results —
+never pruning verification or node-result evidence — while recording how many
+it dropped; the complete transcript remains in the append-only session log. A model's tool-free response only proposes
 completion. The runtime requires a successful bounded result, rejects
 unresolved permission/hook/tool/provider failures, and allows at most two
 completion interventions, two attempts per node, two logical revisions, and
@@ -881,9 +894,9 @@ nodes; prior tool-loop messages remain in the append-only session but
 are no longer repeatedly resent as authority for the next node.
 
 Automatic read completion has its own evidence gate. A non-empty bounded child
-summary is not enough: the worker must have at least one successful tool
-result, and when its durable claim had a Git workspace token the result must
-carry the same token. Worker identity, usage, scheduler reason, and
+summary is not enough: the worker must have at least one machine-counted
+successful tool result, and when its durable claim had a Git workspace token
+the result must carry the same token. Worker identity, usage, scheduler reason, and
 `delegate_read` evidence are retained in the graph. A full read wave finishes
 before the primary lane advances. Cancellation stops the graph as `cancelled`;
 it is not recast as a provider failure or blocker.

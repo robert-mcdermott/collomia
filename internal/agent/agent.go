@@ -87,6 +87,11 @@ type Agent struct {
 	pinnedContext       func() string
 	completionPlan      *plan.Board
 	goalGraph           *goalgraph.Graph
+	graphWorker         bool
+	// goalSteering retains the user's mid-graph guidance so a node-boundary
+	// handoff cannot silently discard an instruction they were told applies to
+	// the remaining task.
+	goalSteering        []provider.Message
 	goalBoundaryCompact bool
 	goalStateToken      func(context.Context) (string, error)
 	delegateConfig      appconfig.Config
@@ -140,6 +145,10 @@ type Options struct {
 	// evaluations provide it at construction; the OG-2A TUI preview may attach
 	// one explicitly between turns after proposal approval.
 	GoalGraph *goalgraph.Graph
+	// GraphWorker marks a delegate the runtime dispatched for an Orchestrated
+	// Goal node. It withholds the tools an automatic worker must never reach,
+	// independently of which registry the child was built from.
+	GraphWorker bool
 	// GoalStateToken returns the current combined-workspace token. A nil
 	// function makes write-bearing graph nodes fail closed while allowing
 	// read-only graph evaluation.
@@ -185,7 +194,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 // attachLedger is the single site that gives a permission manager its audit
@@ -358,6 +367,13 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				if errors.Is(graphErr, goalgraph.ErrGraphPaused) {
 					a.endTurn(ctx, send, iteration, GoalPaused)
 					return "Orchestrated Goal paused at a safe scheduling boundary. Use /orchestrate resume to continue.", nil
+				}
+				// A verified candidate wave is a successful stop. Reporting it as a
+				// turn error would make the feature working look like the feature
+				// failing.
+				if errors.Is(graphErr, ErrGoalAwaitingReview) {
+					a.endTurn(ctx, send, iteration, GoalAwaitingReview)
+					return goalAwaitingReviewAnswer(graphErr), nil
 				}
 				graphErr = reportError(send, graphErr)
 				a.endTurn(ctx, send, iteration, GoalOutcomeFor(graphErr))
@@ -590,6 +606,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 								a.endTurn(ctx, send, iteration, GoalPaused)
 								return "Orchestrated Goal paused at a safe scheduling boundary. Use /orchestrate resume to continue.", nil
 							}
+							if errors.Is(graphErr, ErrGoalAwaitingReview) {
+								a.endTurn(ctx, send, iteration, GoalAwaitingReview)
+								return goalAwaitingReviewAnswer(graphErr), nil
+							}
 							graphErr = reportError(send, graphErr)
 							return response.Content, graphErr
 						}
@@ -705,7 +725,20 @@ func (a *Agent) applySteering() {
 		if guidance == "" {
 			continue
 		}
-		a.appendMessage(provider.Message{Role: "user", Content: source + " steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance})
+		message := provider.Message{Role: "user", Content: source + " steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance}
+		a.appendMessage(message)
+		// Under a graph, the next accepted node replaces the whole active
+		// context. Guidance the user was told applies to the remaining task has
+		// to survive that boundary, so it is retained separately and bounded to
+		// the same depth the steering queue itself allows.
+		a.mu.Lock()
+		if a.goalGraph != nil {
+			a.goalSteering = append(a.goalSteering, message)
+			if len(a.goalSteering) > maxPendingSteering {
+				a.goalSteering = a.goalSteering[len(a.goalSteering)-maxPendingSteering:]
+			}
+		}
+		a.mu.Unlock()
 	}
 }
 
@@ -1041,7 +1074,7 @@ func (a *Agent) toolAvailable(tool tools.Tool, plan bool) bool {
 	if identity, ok := tool.(tools.PermissionIdentity); ok {
 		disabled = disabled || a.disabled[identity.PermissionToolName()]
 	}
-	subagent := a.subagent
+	subagent, graphWorker := a.subagent, a.graphWorker
 	a.mu.RUnlock()
 	if graphEnabled {
 		// An approved graph is runtime-owned. Whole-plan replacement and
@@ -1061,7 +1094,25 @@ func (a *Agent) toolAvailable(tool tools.Tool, plan bool) bool {
 	if disabled || (subagent && parentOnlyTool(name)) {
 		return false
 	}
+	if graphWorker && graphWorkerDeniedTool(name) {
+		return false
+	}
 	return !plan || planTool(name)
+}
+
+// graphWorkerDeniedTool names what an automatically dispatched Orchestrated
+// Goal worker may not reach even inside its own isolated worktree. Committing
+// or branching there is an automatic publication step the mode does not hold
+// authority for, and it would move the ref the retained candidate's diff is
+// measured against. This is the enforcement layer behind the registry removal:
+// a model can always fabricate a call by name.
+func graphWorkerDeniedTool(name string) bool {
+	switch name {
+	case "git_commit", "git_branch":
+		return true
+	default:
+		return false
+	}
 }
 
 func graphOwnedTool(name string) bool {
@@ -1318,6 +1369,7 @@ type DelegateResult struct {
 	Branch          string         `json:"branch,omitempty"`
 	BaseCommit      string         `json:"base_commit,omitempty"`
 	Iterations      int            `json:"iterations,omitempty"`
+	ToolSuccesses   int            `json:"tool_successes,omitempty"`
 	InputTokens     int            `json:"input_tokens,omitempty"`
 	OutputTokens    int            `json:"output_tokens,omitempty"`
 	CostUSD         float64        `json:"cost_usd,omitempty"`
@@ -1611,7 +1663,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	}
 
 	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "write_scopes": writeScopes, "agent": task.Agent, "token_budget": profile.TokenBudget, "cost_budget_usd": profile.CostBudgetUSD, "timeout_seconds": timeoutSeconds}})
-	output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
+	output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, toolSuccesses, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
 	violations := writeScopeViolations(writeScopes, changed)
 	if len(violations) > 0 {
 		scopeViolationErr := fmt.Errorf("delegated agent changed files outside its declared write_paths: %s", strings.Join(violations, ", "))
@@ -1630,6 +1682,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 			result := delegateResult(status)
 			result.ChangedHunks = boundedDelegateHunks(hunks)
 			result.Iterations = iterations
+			result.ToolSuccesses = toolSuccesses
 			result.CostEstimated = usage.CostEstimated
 			return result
 		}
@@ -1638,7 +1691,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, Iterations: iterations, ToolSuccesses: toolSuccesses, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
 }
 
 func delegateLimits(task DelegateTask, profile appconfig.AgentDefinition) (tokenBudget int, costBudget float64, timeoutSeconds, maxIterations int) {
@@ -1701,7 +1754,7 @@ func boundedDelegateHunks(hunks []DelegateHunk) []DelegateHunk {
 	return bounded
 }
 
-func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch, baseCommit string, iterations int, usage provider.Usage, runErr error) {
+func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch, baseCommit string, iterations, toolSuccesses int, usage provider.Usage, runErr error) {
 	a.mu.RLock()
 	client, providerName, model, providerConfig := a.client, a.providerName, a.model, a.providerConfig
 	workspace, parentRegistry := a.workspace, a.registry
@@ -1777,7 +1830,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	if task.Write {
 		childPlan = false
 		if !isGitRepo(ctx, workspace) {
-			return "", nil, nil, nil, "", "", "", 0, provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
+			return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
 		}
 		var err error
 		// Git mutates shared administrative state under .git/worktrees while
@@ -1787,13 +1840,13 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		wt, err = newWorktree(ctx, workspace, task.Name, task.BaseCommitOverride)
 		a.worktreeMu.Unlock()
 		if err != nil {
-			return "", nil, nil, nil, "", "", "", 0, provider.Usage{}, err
+			return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, err
 		}
 		childWorkspace = wt.path
 		reg, _, childProcs, buildErr := tools.Builtins(wt.path, childConfig)
 		if buildErr != nil {
 			wt.remove(ctx)
-			return "", nil, nil, nil, "", "", "", 0, provider.Usage{}, buildErr
+			return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, buildErr
 		}
 		defer childProcs.StopAll()
 		if discovered, discoverErr := skills.Discover(childWorkspace, cfg.ProjectTrusted); discoverErr == nil {
@@ -1801,6 +1854,16 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		}
 		reg.Add(skills.Tool(childCatalog))
 		childRegistry = reg
+		if task.GraphNode {
+			// A rebuilt registry restores every builtin, including the mutating
+			// VCS tools. Automatic commit and branch creation are explicit
+			// Orchestrated Goal non-goals, and a commit would also move the ref
+			// the retained candidate's diff is computed against. Prompt text is
+			// not an authority boundary, so they are removed structurally here
+			// as they are for read workers.
+			childRegistry.Remove("git_commit")
+			childRegistry.Remove("git_branch")
+		}
 		childManager = permission.New(childConfig.Permissions, childApprover)
 		childManager.SetRestrictions(profile.Permissions.Rules)
 		a.attachLedger(childManager, childWorkspace, childActor, id)
@@ -1823,7 +1886,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		ProviderConfig: providerConfig, Registry: childRegistry, Permissions: childManager,
 		Catalog: childCatalog, ProjectInstructions: instructions,
 		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
-		DisabledTools: disabled, PlanMode: childPlan, Subagent: true,
+		DisabledTools: disabled, PlanMode: childPlan, Subagent: true, GraphWorker: task.GraphNode,
 		PersistenceError: persistenceError,
 		// A child that delegates further must keep the same reporting route
 		// and the same session identity, or the grandchild is the unaudited
@@ -1876,6 +1939,12 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			}
 			line += runtimeEvent.Tool.Output
 			evidenceMu.Lock()
+			// Counted here rather than recovered from the rendered line later:
+			// whether a read node produced grounded evidence is a machine fact,
+			// and the bounded evidence list drops results past its limit.
+			if !runtimeEvent.Tool.IsError {
+				toolSuccesses++
+			}
 			if len(evidence) < 8 {
 				evidence = append(evidence, boundedDelegateText(line, 1024))
 			}
@@ -1897,7 +1966,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			branch, worktreePath, baseCommit = wt.branch, wt.path, wt.baseCommit
 		}
 	}
-	return output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, usage, runErr
+	return output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, toolSuccesses, usage, runErr
 }
 
 func restrictAgentPermissions(parent appconfig.Permissions, child appconfig.AgentPermissions) appconfig.Permissions {
@@ -2434,7 +2503,7 @@ func (a *Agent) compactAcceptedGoalNode(ctx context.Context, notice string, send
 		a.mu.Unlock()
 		return nil
 	}
-	a.messages = []provider.Message{summary}
+	a.messages = append([]provider.Message{summary}, a.goalSteering...)
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
 	a.goalBoundaryCompact = false
