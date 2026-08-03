@@ -115,7 +115,7 @@ func readResultFromDelegate(attemptID string, result DelegateResult, workspaceTo
 		AttemptID: attemptID, WorkerID: result.ID, Status: result.Status,
 		Summary: result.Summary, Error: result.Error, Evidence: result.Evidence,
 		ToolSuccesses: result.ToolSuccesses, WorkspaceToken: workspaceToken,
-		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+		Iterations: result.Iterations, InputTokens: result.InputTokens, CachedTokens: result.CachedTokens, OutputTokens: result.OutputTokens,
 		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
 	}
 }

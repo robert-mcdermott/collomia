@@ -1822,6 +1822,50 @@ roadmap remains the source of priority and completion status.
       provider-failure, scope/drift, retained-worktree, restore, and operator-
       inspection campaigns; resolve any candidate-state/recovery gaps before
       declaring OG-3 complete.
+      - [x] **OG-3B1 — Retained-worktree accountability closure:** make every
+        directory the runtime causes Git to create attributable to a plan node
+        and attempt however the wave ends — record what a cancelled wave left
+        on disk, record identity before usage accounting rather than after,
+        and bind an isolated worktree to its attempt durably at creation so
+        recovery after a process boundary names the exact orphaned path and
+        branch instead of describing something to go find; list every retained
+        tree in `/orchestrate status` for live and saved graphs, marking an
+        unexamined one as unreconciled; and add adversarial application-level
+        coverage for cancellation, delegate-permission refusal, child
+        verification failure, out-of-scope writes, and a provider failure that
+        must not discard a verified sibling. *(Completed 2026-08-03.)*
+      - [x] **OG-3B2 — Verification-composition correction:** accept a check
+        whose exit status the shell provably reports — an `&&` chain ending in
+        a recognized verifier, so preparation such as a sandbox-required cache
+        redirect or a virtualenv activation no longer makes verification
+        impossible — while continuing to refuse `||`, `;`, pipelines,
+        backgrounding, redirection, a verifier that is not last, a final
+        command assembled by substitution, and a leading segment that
+        relocates the verifier out of the workspace the evidence is bound to;
+        name the direct command wherever the verifier sits in a refused
+        composition; and make a node that stalls after refused checks report
+        them in its blocker. *(Completed 2026-08-03.)*
+      - [x] **OG-3B3 — Budget-accounting correction:** charge the aggregate
+        token envelope for new work rather than for prompt tokens the provider
+        served from cache, so a long node's re-sent context no longer exhausts
+        the ceiling while cost, iterations, and wall clock all have headroom;
+        stop compaction from spiralling by requiring real context growth since
+        the last one before paying for another; and make exhaustion cost a
+        decision instead of the graph by letting a person grant up to two more
+        bounded envelopes with `/orchestrate extend`, persisted and validated
+        so nothing but an explicit user action can widen the ceiling.
+        *(Completed 2026-08-03.)*
+      - [x] **OG-3B4 — User-owned execution envelope:** make the four
+        whole-graph bounds configuration with the current values as defaults
+        (`options.orchestration_max_iterations`, `_max_tokens`,
+        `_max_cost_usd`, `_max_active_wall_seconds`), refusing only implausible
+        values; stop capping how many times a person may grant another
+        envelope, and size each grant from the graph's own configured envelope;
+        and record in the strategy that a resource bound is a speed bump
+        requiring human interaction rather than a wall that discards completed
+        work — repository text, skills, hooks, and the model still cannot widen
+        it, and the permission, verification, scope, and publication gates are
+        unaffected. *(Completed 2026-08-03.)*
   - [ ] **OG-4 — Reviewed integration:** add recoverable publication,
     conservative candidate synthesis, and fresh combined-parent verification
     before a logical node can finish.
@@ -2017,8 +2061,10 @@ roadmap remains the source of priority and completion status.
 The setup journey, first completion controller, OG-1 runtime-owned primary
 graph, the complete OG-2 experimental read-only orchestration program, and
 OG-3A's first verified isolated-writer candidate wave, its seven trial-driven
-controller corrections, and OG-3A.8's audit-driven review-readiness corrections
-are now complete.
+controller corrections, OG-3A.8's audit-driven review-readiness corrections, and
+OG-3B1–B4's retained-worktree accountability closure, verification-composition
+correction, budget-accounting correction, and user-owned execution envelope are
+now complete.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
@@ -2029,14 +2075,16 @@ remaining in its own worktree and the primary workspace unchanged.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
-   recognizer after OG-3A.8's ecosystem breadth, and whether two interventions
-   is the right bound. Keep this local and inspectable rather than adding
-   telemetry by default.
-2. Finish **OG-3B — adversarial and recovery closure**: exercise cancellation,
-   provider failure, parent drift, scope violations, retained-worktree
-   inspection, and restore around OG-3A's one bounded candidate wave. Keep the
-   existing no-selection/no-integration boundary until those failures are
-   proven fail-closed.
+   recognizer after OG-3A.8's ecosystem breadth and OG-3B2's composition rule,
+   and whether two interventions is the right bound. Keep this local and
+   inspectable rather than adding telemetry by default.
+2. Finish **OG-3B — adversarial and recovery closure**. OG-3B1 closed the
+   retained-worktree half: every tree the runtime creates is now attributable
+   to a node and attempt however the wave ends, and `/orchestrate status` names
+   the ones still on disk. What remains is hook refusal, parent drift after the
+   claim, child verification drift, and reconciling — not merely naming — an
+   orphaned in-flight worktree. Keep the existing no-selection/no-integration
+   boundary until those failures are proven fail-closed.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never
    grants permission. `collo audit --actor` remains the surface that can say

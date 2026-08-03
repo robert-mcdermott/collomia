@@ -125,7 +125,7 @@ func (r *Runtime) OrchestratedGoalTokenBudget() (phase string, used, limit int, 
 		return "", 0, 0, false
 	}
 	usage := providerUsageDelta(r.Agent.Usage(), r.orchestrationProposal.BaseUsage)
-	return "proposal", usage.InputTokens + usage.OutputTokens, goalgraph.DefaultLimits().MaxAggregateTokens, true
+	return "proposal", usage.InputTokens + usage.OutputTokens, orchestrationEnvelope(r.Config).MaxAggregateTokens, true
 }
 
 // auditHealth latches every reason the audit record for this session might be
@@ -418,7 +418,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	goalStateToken := func(tokenCtx context.Context) (string, error) {
 		return goalgraph.WorkspaceStateToken(tokenCtx, workspace)
 	}
-	goal, err := attachGoalGraph(ctx, opts.OrchestratedGoal, board, sess, goalStateToken)
+	goal, err := attachGoalGraph(ctx, opts.OrchestratedGoal, board, sess, goalStateToken, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrated goal: %w", err)
 	}
@@ -550,6 +550,12 @@ func OrchestratedResumePrompt(goal string) string {
 // reopened without allowing prose to rewrite the preserved blocked attempt.
 func OrchestratedRetryPrompt(goal string, nodeID int) string {
 	return fmt.Sprintf("The user explicitly requested one safe bounded retry of Orchestrated Goal node %d. Continue the runtime-owned graph from its preserved attempts and evidence, pursuing this outcome: %s", nodeID, strings.TrimSpace(goal))
+}
+
+// OrchestratedExtendPrompt tells the primary agent that a person granted more
+// allowance. The completed work stands; only the envelope changed.
+func OrchestratedExtendPrompt(goal string) string {
+	return fmt.Sprintf("The user explicitly granted the Orchestrated Goal another bounded execution envelope after the previous one was exhausted. Accepted nodes and their evidence stand; each unfinished node resumes in a new attempt, so reread whatever workspace state that attempt needs rather than assuming the earlier context. Continue the runtime-owned graph toward this outcome: %s", strings.TrimSpace(goal))
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -761,7 +767,7 @@ func attachBoard(board *plan.Board, sess *session.Session) {
 // an explicit approved plan here is the activation boundary: persisted data,
 // project configuration, and model output cannot turn Standard mode into
 // orchestrated execution on their own.
-func attachGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, stateToken func(context.Context) (string, error)) (*goalgraph.Graph, error) {
+func attachGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, stateToken func(context.Context) (string, error), cfg appconfig.Config) (*goalgraph.Graph, error) {
 	if approved == nil {
 		return nil, nil
 	}
@@ -771,7 +777,7 @@ func attachGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board
 	if len(sess.GoalGraphRaw) > 0 {
 		return restoreGoalGraph(ctx, sess, stateToken)
 	}
-	return createGoalGraph(ctx, approved, board, sess, nil)
+	return createGoalGraph(ctx, approved, board, sess, nil, cfg)
 }
 
 func goalGraphPersister(sess *session.Session) goalgraph.PersistFunc {
@@ -806,7 +812,18 @@ func restoreGoalGraph(ctx context.Context, sess *session.Session, stateToken fun
 	return graph, nil
 }
 
-func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, accounting *goalAccountingSeed) (*goalgraph.Graph, error) {
+// orchestrationEnvelope resolves the configured whole-graph execution
+// envelope. Every field is optional; an omitted one keeps its default.
+func orchestrationEnvelope(cfg appconfig.Config) goalgraph.Limits {
+	return goalgraph.LimitsWithEnvelope(
+		cfg.Options.OrchestrationMaxIterations,
+		cfg.Options.OrchestrationMaxTokens,
+		cfg.Options.OrchestrationMaxCostUSD,
+		cfg.Options.OrchestrationMaxActiveWallSeconds,
+	)
+}
+
+func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, accounting *goalAccountingSeed, cfg appconfig.Config) (*goalgraph.Graph, error) {
 	if approved == nil {
 		return nil, errors.New("approved logical plan is unavailable")
 	}
@@ -837,7 +854,14 @@ func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board
 	for _, step := range fresh.Steps {
 		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution), WritePaths: append([]string(nil), step.WritePaths...)})
 	}
-	opts := goalgraph.Options{Persist: goalGraphPersister(sess)}
+	envelope := orchestrationEnvelope(cfg)
+	opts := goalgraph.Options{
+		Persist:                goalGraphPersister(sess),
+		MaxAggregateIterations: envelope.MaxAggregateIterations,
+		MaxAggregateTokens:     envelope.MaxAggregateTokens,
+		MaxAggregateCostUSD:    envelope.MaxAggregateCostUSD,
+		MaxActiveWallSeconds:   envelope.MaxActiveWallSeconds,
+	}
 	if accounting != nil {
 		opts.AccountingStarted = accounting.Started
 		opts.InitialPrimary = accounting.Primary
@@ -955,7 +979,7 @@ func (r *Runtime) ApproveOrchestratedGoal(ctx context.Context) (string, string, 
 			Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
 		},
-	})
+	}, r.Config)
 	if err != nil {
 		return "", "", err
 	}
@@ -1080,6 +1104,49 @@ func (r *Runtime) RetryOrchestratedNode(ctx context.Context, nodeID int) (status
 	return status, OrchestratedRetryPrompt(graph.Snapshot().Goal, nodeID), !requested, nil
 }
 
+// ExtendOrchestratedGoal grants an exhausted graph one more fixed envelope.
+// It is a user decision and nothing else can reach it: the ceiling remains
+// closed to configuration, repository text, hooks, skills, and the model.
+// Unfinished nodes start new attempts, so nothing interrupted is replayed.
+func (r *Runtime) ExtendOrchestratedGoal(ctx context.Context) (status, prompt string, runnable bool, err error) {
+	if r == nil || r.Agent == nil {
+		return "", "", false, errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	graph := r.GoalGraph
+	restored := false
+	if graph == nil {
+		if r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+			return "", "", false, errors.New("there is no attached or saved Orchestrated Goal graph to extend")
+		}
+		graph, err = restoreGoalGraph(ctx, r.Session, r.goalStateToken)
+		if err != nil {
+			return "", "", false, err
+		}
+		restored = true
+	}
+	if err := graph.ExtendBudget(ctx, "budget extended explicitly by the user"); err != nil {
+		return "", "", false, err
+	}
+	if restored {
+		if err := r.Agent.SetGoalGraph(graph); err != nil {
+			return "", "", false, err
+		}
+		r.Registry.Add(goalgraph.RevisionTool{Graph: graph})
+		r.Registry.Add(goalgraph.BlockTool{Graph: graph})
+		r.GoalGraph = graph
+		r.orchestrationProposal = nil
+	}
+	if err := graph.Activate(ctx); err != nil {
+		return "", "", false, err
+	}
+	r.logGoalGraphUpdates()
+	status, _ = graph.Inspect(0)
+	requested, _, _ := graph.PauseState()
+	return status, OrchestratedExtendPrompt(graph.Snapshot().Goal), !requested, nil
+}
+
 // CancelOrchestratedGoal cancels either the unapproved process-local proposal
 // or the durable active graph. It does not undo completed actions.
 func (r *Runtime) CancelOrchestratedGoal(ctx context.Context) (string, error) {
@@ -1177,7 +1244,7 @@ func (r *Runtime) OrchestratedGoalStatus(nodeID int) (string, error) {
 		}
 		current, revision := r.Plan.Snapshot()
 		fresh := revision > r.orchestrationProposal.BaseRevision
-		limits := goalgraph.DefaultLimits()
+		limits := orchestrationEnvelope(r.Config)
 		var b strings.Builder
 		b.WriteString("Experimental Orchestrated Goal proposal\n")
 		fmt.Fprintf(&b, "Requested outcome: %s\n", r.orchestrationProposal.Goal)

@@ -111,7 +111,17 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   as `git diff --check`, is not verification of a change. Cooperative pause/resume is available at the next safe
   provider/scheduler boundary, and a blocked node can be retried only when its
   attempt budget and non-replay checks allow it; whole-graph cancel remains
-  immediate. A terminal graph yields to a fresh `/orchestrate <goal>` in the
+  immediate. The whole-graph envelope charges new work rather than prompt tokens
+  the provider served from cache, so a long node's re-sent context does not
+  exhaust it, and compaction will not repeat on a context it has already
+  reduced. The envelope's four bounds default to the values above and are set
+  in `options.orchestration_*`. Each is a speed bump rather than a wall: if one
+  is reached, the accepted nodes and retained candidates stand and
+  `/orchestrate extend` grants another envelope of the same size, as often as
+  the user decides to; unfinished nodes resume in new attempts, so nothing
+  interrupted is replayed. Repository text, hooks, skills, and the model cannot
+  widen it, and permission, verification, write-scope, and publication remain
+  safety gates that no envelope affects. A terminal graph yields to a fresh `/orchestrate <goal>` in the
   same session through an append-only tombstone, and cancel on an already-
   terminal graph performs the same archive action without deleting evidence.
   Proposal-time `done` or `in_progress` annotations are never imported as
@@ -157,12 +167,22 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   inside their own worktree. Passing candidates stop the graph in a distinct
   `awaiting_review` state — reported as a finished run naming the review step,
   not as a blocker — and Collomia does not select or integrate them; the parent
-  workspace remains unchanged. A wave that exhausts the aggregate budget still
-  records where each retained worktree is. An interrupted writer is blocked
-  rather than replayed. There is
+  workspace remains unchanged. Every worktree the runtime creates stays
+  attributable to its node and attempt however the wave ends: identity is
+  recorded durably the moment Git creates the tree, and a wave that is
+  cancelled or exhausts the aggregate budget still records where each one is.
+  `/orchestrate status` lists them for the whole graph, live or saved, and says
+  when the runtime never examined one. An interrupted writer is blocked rather
+  than replayed, and recovery names the exact orphaned worktree and branch —
+  but reconciling it is still manual work. There is
   deterministic feedback when a verification-like shell command cannot count
-  as evidence; exact redundant workspace `cd ... &&` and final `2>&1` wrappers
-  can qualify because they preserve exit status. Graph-hidden plan/delegation tools are blocked again before
+  as evidence, naming the direct command to run wherever the check sits in
+  what was refused, and a node that stalls after refused checks repeats it in
+  the blocker. A composed command qualifies when the shell provably reports the
+  verifier's own status — an `&&` chain ending in the check, so preparation
+  such as a sandbox-required cache redirect or a virtualenv activation is fine
+  — while `||`, `;`, pipelines, backgrounding, redirection, a check that is not
+  last, and a leading segment that would run it outside the workspace do not. Graph-hidden plan/delegation tools are blocked again before
   their arguments are decoded. There is
   no optional-branch/node cancellation, automatic candidate integration, or
   exact multi-worker recovery. Configuration, a repository, a saved graph,

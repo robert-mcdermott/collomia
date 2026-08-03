@@ -91,6 +91,14 @@ func boundFor(key fieldKey) (map[string]any, bool) {
 		return map[string]any{"minimum": 0, "maximum": 3600}, true
 	case fieldKey{"Options", "delegate_max_concurrency"}:
 		return map[string]any{"minimum": 0, "maximum": 6}, true
+	case fieldKey{"Options", "orchestration_max_iterations"}:
+		return map[string]any{"minimum": 0, "maximum": 10000}, true
+	case fieldKey{"Options", "orchestration_max_tokens"}:
+		return map[string]any{"minimum": 0, "maximum": 100000000}, true
+	case fieldKey{"Options", "orchestration_max_cost_usd"}:
+		return map[string]any{"minimum": 0, "maximum": 1000}, true
+	case fieldKey{"Options", "orchestration_max_active_wall_seconds"}:
+		return map[string]any{"minimum": 0, "maximum": 86400}, true
 	case fieldKey{"Pricing", "input_per_million"},
 		fieldKey{"Pricing", "output_per_million"}:
 		return map[string]any{"exclusiveMinimum": 0}, true
@@ -269,22 +277,26 @@ var fieldDescriptions = map[fieldKey]string{
 	{"Hook", "timeout_seconds"}: "Bound on the hook run. Zero uses ten seconds.",
 
 	// Options
-	{"Options", "max_iterations"}:                "Provider/model response cycles one Standard turn may take, or consecutive cycles an Orchestrated Goal primary attempt may take without novel durable progress; this is not a tool-call count.",
-	{"Options", "max_tool_output_bytes"}:         "Largest tool result passed to the model. Longer output is truncated with a marker.",
-	{"Options", "delegate_max_concurrency"}:      "Session-wide limit on concurrent delegated tasks. Zero uses four.",
-	{"Options", "delegate_provider_concurrency"}: "Tighter concurrency limit for named providers. Providers omitted here inherit the session-wide limit.",
-	{"Options", "agent_integration"}:             "Who may publish retained delegated-worktree changes into the parent workspace: manual exposes only /agents apply, reviewed additionally gives the primary agent bounded inspect and apply tools.",
-	{"Options", "disabled_tools"}:                "Built-in tools removed from the model's catalog entirely.",
-	{"Options", "transcript_directory"}:          "Where /transcript writes. Defaults to the workspace.",
-	{"Options", "theme"}:                         "TUI colour theme. NO_COLOR selects the plain theme whatever this says.",
-	{"Options", "alternate_screen"}:              "Use the terminal's alternate screen buffer. Disabling it leaves the final screen in native scrollback.",
-	{"Options", "mouse"}:                         "Request mouse reporting for wheel scrolling and click-to-select tabs. Turning it on means the terminal routes drags to Collomia instead of its own selection; alt+m releases and reclaims it mid-session.",
-	{"Options", "keybindings"}:                   "Overrides for named global TUI actions. Modal safety decisions keep fixed keys so a remap cannot make an approval ambiguous.",
-	{"Options", "notifications"}:                 "How the TUI gets your attention for approvals, questions, and finished long turns: on is bell plus desktop notification, bell is the bell alone.",
-	{"Options", "reduced_motion"}:                "Replace decorative progress animation with a static marker. Never changes input, cancellation, or controls.",
-	{"Options", "dim_background"}:                "Drop colour from the screen behind a modal so the dialog is plainly focused. The cleared gutter around the dialog stays either way.",
-	{"Options", "editor"}:                        "External editor for the user-initiated action in diff review.",
-	{"Options", "debug"}:                         "Write a verbose local debug log.",
+	{"Options", "max_iterations"}:                        "Provider/model response cycles one Standard turn may take, or consecutive cycles an Orchestrated Goal primary attempt may take without novel durable progress; this is not a tool-call count.",
+	{"Options", "max_tool_output_bytes"}:                 "Largest tool result passed to the model. Longer output is truncated with a marker.",
+	{"Options", "delegate_max_concurrency"}:              "Session-wide limit on concurrent delegated tasks. Zero uses four.",
+	{"Options", "orchestration_max_iterations"}:          "Provider iterations one approved Orchestrated Goal may use before pausing for the user. Zero uses 96.",
+	{"Options", "orchestration_max_tokens"}:              "Charged tokens (new input plus output; cache reads are not charged) one approved Orchestrated Goal may use before pausing for the user. Zero uses 1000000.",
+	{"Options", "orchestration_max_cost_usd"}:            "Estimated cost one approved Orchestrated Goal may reach before pausing for the user, enforced only when provider pricing is complete. Zero uses 5.",
+	{"Options", "orchestration_max_active_wall_seconds"}: "Active execution seconds one approved Orchestrated Goal may use before pausing for the user. Zero uses 1800.",
+	{"Options", "delegate_provider_concurrency"}:         "Tighter concurrency limit for named providers. Providers omitted here inherit the session-wide limit.",
+	{"Options", "agent_integration"}:                     "Who may publish retained delegated-worktree changes into the parent workspace: manual exposes only /agents apply, reviewed additionally gives the primary agent bounded inspect and apply tools.",
+	{"Options", "disabled_tools"}:                        "Built-in tools removed from the model's catalog entirely.",
+	{"Options", "transcript_directory"}:                  "Where /transcript writes. Defaults to the workspace.",
+	{"Options", "theme"}:                                 "TUI colour theme. NO_COLOR selects the plain theme whatever this says.",
+	{"Options", "alternate_screen"}:                      "Use the terminal's alternate screen buffer. Disabling it leaves the final screen in native scrollback.",
+	{"Options", "mouse"}:                                 "Request mouse reporting for wheel scrolling and click-to-select tabs. Turning it on means the terminal routes drags to Collomia instead of its own selection; alt+m releases and reclaims it mid-session.",
+	{"Options", "keybindings"}:                           "Overrides for named global TUI actions. Modal safety decisions keep fixed keys so a remap cannot make an approval ambiguous.",
+	{"Options", "notifications"}:                         "How the TUI gets your attention for approvals, questions, and finished long turns: on is bell plus desktop notification, bell is the bell alone.",
+	{"Options", "reduced_motion"}:                        "Replace decorative progress animation with a static marker. Never changes input, cancellation, or controls.",
+	{"Options", "dim_background"}:                        "Drop colour from the screen behind a modal so the dialog is plainly focused. The cleared gutter around the dialog stays either way.",
+	{"Options", "editor"}:                                "External editor for the user-initiated action in diff review.",
+	{"Options", "debug"}:                                 "Write a verbose local debug log.",
 
 	// EditorOptions
 	{"EditorOptions", "command"}: "Editor executable, run directly without a shell.",

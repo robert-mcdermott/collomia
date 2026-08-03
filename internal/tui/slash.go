@@ -242,6 +242,19 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			}
 			break
 		}
+		if len(args) == 1 && strings.EqualFold(args[0], "extend") {
+			status, prompt, runnable, err := m.runtime.ExtendOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal budget extended · experimental", status)
+			if runnable {
+				return false, m.startTurn(prompt)
+			}
+			break
+		}
 		if len(args) == 2 && strings.EqualFold(args[0], "retry") {
 			nodeID, convErr := strconv.Atoi(args[1])
 			if convErr != nil || nodeID <= 0 {

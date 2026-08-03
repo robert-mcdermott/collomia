@@ -504,6 +504,39 @@ decision — adds `awaiting_review` to its outcome enumeration. The public
 consumers see no new value. Evidence pruning removes only ordinary tool results
 from the snapshot; the complete transcript remains in the append-only session
 log, and the attempt records how many records were dropped.
+OG-3B1 is additive within schema 1. Attempts gained optional `worktree` and
+`branch` fields recording the isolated tree an attempt caused Git to create,
+written durably before the child runs. The two are written and validated
+together, so a snapshot carries either both or neither. Omission means only
+that the snapshot predates the record: an older interrupted writer still
+restores as a blocker, described in the earlier general terms rather than by
+path. A writer that changed nothing has its worktree removed, and the fields
+are cleared with it so a restored graph never points at a directory that is
+gone.
+OG-3B4 is additive within schema 1 and relaxes one validation rule
+deliberately. The aggregate budget gained an optional `grant` object recording
+the size of a single envelope; a snapshot without it derives the grant from its
+stored maximum and extension count, so an older graph keeps exactly the
+envelope it had. Stored limits are no longer rejected for exceeding the build
+default — that check would now refuse a legitimately configured graph — and are
+rejected instead when implausible or inconsistent with the recorded grant.
+`options.orchestration_max_iterations`, `orchestration_max_tokens`,
+`orchestration_max_cost_usd`, and `orchestration_max_active_wall_seconds` are
+new optional configuration fields; omitted or zero keeps the previous fixed
+values, so an existing configuration behaves exactly as before.
+OG-3B3 is additive within schema 1. Accounting groups and attempts gained an
+optional `cached_tokens` field, and the aggregate budget gained an optional
+`extensions` count. A snapshot written before them restores with no cached
+tokens recorded, so its stored history is charged in full exactly as it was
+when written — omission never retroactively refunds allowance. The stored
+aggregate limits are still rejected when wider than this build's ceiling; that
+ceiling is now the fixed envelope times one plus the recorded extension count,
+and the count is itself bounded and validated, so a snapshot cannot claim
+allowance that no user granted.
+OG-3B2 changes no persisted or machine-readable shape. Verification recognition
+is a runtime decision about a command, and the refused-check diagnostic behind
+a stalled node's blocker is in-memory attempt-scoped state that informs a
+message rather than a gate.
 
 ## Release and developer checklist
 

@@ -506,6 +506,17 @@ const configReferenceJSONC = `
     // accepted hunks. A child pass never grants permission or proves the
     // combined parent workspace. Nothing commits, merges, or pushes.
     "agent_integration": "manual",
+    // The Orchestrated Goal execution envelope. Each bound is a speed bump,
+    // not a wall: reaching one stops the graph, keeps every accepted node and
+    // retained candidate, and asks you — /orchestrate extend grants another
+    // envelope of the same size and continues. Zero uses the built-in default.
+    // Tokens count new input plus output; prompt tokens served from the
+    // provider cache are reported but not charged. Cost is enforced only when
+    // the provider has complete pricing.
+    "orchestration_max_iterations": 96,
+    "orchestration_max_tokens": 1000000,
+    "orchestration_max_cost_usd": 5,
+    "orchestration_max_active_wall_seconds": 1800,
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",
     "theme": "collomia",

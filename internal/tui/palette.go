@@ -24,7 +24,7 @@ var slashCommands = []commandInfo{
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
-	{name: "/orchestrate", args: "[goal|approve|status [node]|pause|resume|retry node|cancel]", desc: "explicit experimental goal proposal and execution"},
+	{name: "/orchestrate", args: "[goal|approve|status [node]|pause|resume|retry node|extend|cancel]", desc: "explicit experimental goal proposal and execution"},
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
@@ -107,6 +107,7 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 			{"pause", "pause at the next safe scheduling boundary"},
 			{"resume", "resume a paused graph or reattach a saved graph"},
 			{"retry", "safely retry an eligible blocked node"},
+			{"extend", "grant an exhausted graph another bounded envelope"},
 			{"cancel", "cancel the proposal or active graph"},
 		}
 	case "/model":

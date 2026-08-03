@@ -229,7 +229,7 @@ func TestExplicitOrchestratedGoalPreviewRequiresFreshApprovedProposal(t *testing
 	if runtime.GoalGraph == nil || runtime.Agent.Plan() {
 		t.Fatalf("approval did not attach execution graph and leave planning mode: graph=%v plan=%t", runtime.GoalGraph, runtime.Agent.Plan())
 	}
-	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "Aggregate envelope:", "0/96 provider iterations", "0/1000000 tokens", "acceptance: the repository test suite passes"} {
+	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "Aggregate envelope:", "0/96 provider iterations", "0/1000000 charged tokens", "acceptance: the repository test suite passes"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("approved status missing %q:\n%s", want, status)
 		}
@@ -1101,5 +1101,41 @@ func TestNewRedactorIncludesAzureEnvironmentCredentials(t *testing.T) {
 	got := redactor.Redact("client=azure-client-secret-value certificate=azure-certificate-password")
 	if strings.Contains(got, "azure-client-secret-value") || strings.Contains(got, "azure-certificate-password") {
 		t.Fatalf("Azure environment credential was not redacted: %q", got)
+	}
+}
+
+// The execution envelope is configuration with defaults, not a build constant.
+// A user who wants a longer job should be able to have one without editing
+// Collomia, and each later grant should be that same larger envelope.
+func TestConfiguredOrchestrationEnvelopeReachesTheGraph(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if limits := orchestrationEnvelope(runtime.Config); limits.MaxAggregateTokens != goalgraph.DefaultLimits().MaxAggregateTokens {
+		t.Fatalf("omitted configuration did not use the default envelope: %+v", limits)
+	}
+	runtime.Config.Options.OrchestrationMaxTokens = 8_000_000
+	runtime.Config.Options.OrchestrationMaxIterations = 400
+	runtime.Config.Options.OrchestrationMaxActiveWallSeconds = 7200
+	runtime.Config.Options.OrchestrationMaxCostUSD = 40
+	limits := orchestrationEnvelope(runtime.Config)
+	if limits.MaxAggregateTokens != 8_000_000 || limits.MaxAggregateIterations != 400 || limits.MaxActiveWallSeconds != 7200 || limits.MaxAggregateCostUSD != 40 {
+		t.Fatalf("configured envelope was not honoured: %+v", limits)
+	}
+
+	approved := &plan.Plan{Goal: "long job", Steps: []plan.Step{{ID: 1, Title: "implement", Acceptance: []string{"tests pass"}}}}
+	graph, err := createGoalGraph(t.Context(), approved, runtime.Plan, runtime.Session, nil, runtime.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := graph.Snapshot().AggregateBudget
+	if budget.MaxTokens != 8_000_000 || budget.MaxIterations != 400 {
+		t.Fatalf("graph did not receive the configured envelope: %+v", budget)
+	}
+	if budget.Grant.Tokens != 8_000_000 {
+		t.Fatalf("a later user grant would not add the configured envelope: %+v", budget.Grant)
 	}
 }

@@ -15,6 +15,14 @@ import (
 
 const maxGoalCompletionRemediationIterations = 4
 
+// refusedVerification is in-memory attempt-scoped diagnostic state. It informs
+// a message and never a gate decision, so it is deliberately not persisted:
+// an attempt that outlives the process no longer has a blocker to explain.
+type refusedVerification struct {
+	Count      int
+	Suggestion string
+}
+
 func (a *Agent) graphEnabled() bool {
 	if a == nil {
 		return false
@@ -78,8 +86,9 @@ func (a *Agent) recordGoalProviderUsage(ctx context.Context, usage provider.Usag
 		return nil
 	}
 	err := graph.RecordPrimaryUsage(ctx, goalgraph.WorkUsage{
-		Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
-		CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
+		Iterations: iterations, InputTokens: usage.InputTokens, CachedTokens: usage.CachedTokens,
+		OutputTokens: usage.OutputTokens,
+		CostUSD:      usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
 	})
 	if errors.Is(err, goalgraph.ErrAggregateBudget) {
 		outcome, reason := graph.Outcome()
@@ -141,8 +150,50 @@ func (a *Agent) goalCompletionGapBudget() (goalgraph.Node, goalgraph.Attempt, bo
 	return node, attempt, active && attempt.CompletionGap != "" && withoutGateProgress >= maxGoalCompletionRemediationIterations
 }
 
+// recordRefusedVerification remembers that the active attempt ran something
+// the runtime read as a check but could not accept. A node that dies for want
+// of verification after running verification is the most confusing way this
+// mode can fail, so the blocker it produces should say what was refused rather
+// than repeating that nothing was recorded.
+func (a *Agent) recordRefusedVerification(suggestion string) {
+	if a == nil || strings.TrimSpace(suggestion) == "" {
+		return
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph == nil {
+		return
+	}
+	_, attempt, active := graph.Active()
+	if !active {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.refusedVerification == nil {
+		a.refusedVerification = make(map[string]refusedVerification)
+	}
+	record := a.refusedVerification[attempt.ID]
+	record.Count++
+	record.Suggestion = suggestion
+	a.refusedVerification[attempt.ID] = record
+}
+
+func (a *Agent) refusedVerificationFor(attemptID string) refusedVerification {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.refusedVerification[attemptID]
+}
+
 func (a *Agent) blockStalledGoalCompletion(ctx context.Context, node goalgraph.Node, attempt goalgraph.Attempt, send Emit) error {
 	reason := fmt.Sprintf("node %d completion gap made no repair or gate-changing progress for %d provider iterations: %s; repeated tool output, identical verification failures, or equivalent unrecognized verification variants are not progress", node.ID, maxGoalCompletionRemediationIterations, attempt.CompletionGap)
+	// Name the refused check. Without this the operator reads that no
+	// verification exists directly beneath a passing test suite they watched
+	// run, with nothing to act on.
+	if refused := a.refusedVerificationFor(attempt.ID); refused.Count > 0 {
+		reason += fmt.Sprintf("; %d verification-like command(s) were refused during this attempt — run %q directly, without shell composition", refused.Count, refused.Suggestion)
+	}
 	if err := a.goalGraph.BlockActive(context.WithoutCancel(ctx), attempt.ID, reason); err != nil {
 		return err
 	}

@@ -661,6 +661,105 @@ func TestGoalGraphControllerRequiresFreshVerificationAfterPrimaryWrite(t *testin
 	}
 }
 
+// The kanban9 session's exact shape: a sandboxed run set its cache directory
+// inside the workspace before invoking a suite that passed, and the node died
+// four iterations later reporting that no verification existed.
+func TestGoalGraphAcceptsVerificationPreparedByAnEnvironmentExport(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "change source"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "workspace-before"
+	workspace := t.TempDir()
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change source"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			token = "workspace-after"
+			return "changed", nil
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: `export UV_CACHE_DIR="$(pwd)/.uv-cache" && uv run pytest -q`}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "11 passed, 1 warning in 1.51s", nil
+		}},
+	)
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("write", "mutate", `{}`), nil
+		case 2:
+			return provider.Response{Content: "changed"}, nil
+		case 3:
+			return graphToolResponse("verify", "run_command", `{}`), nil
+		default:
+			if requestContains(request, "verification evidence was not recorded") {
+				t.Fatal("preparation before the verifier was refused as evidence")
+			}
+			return provider.Response{Content: "changed and verified"}, nil
+		}
+	}}
+	agentRuntime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 8, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
+	})
+	if _, err := agentRuntime.Run(t.Context(), "change it", nil); err != nil {
+		t.Fatal(err)
+	}
+	if outcome := graph.Snapshot().Outcome; outcome != goalgraph.OutcomeDone {
+		t.Fatalf("outcome=%q, want done", outcome)
+	}
+	found := false
+	for _, evidence := range graph.Snapshot().Evidence {
+		found = found || (evidence.Kind == goalgraph.EvidenceVerification && evidence.Status == "passed" && evidence.WorkspaceToken == "workspace-after")
+	}
+	if !found {
+		t.Fatalf("passing suite was not recorded as verification: %+v", graph.Snapshot().Evidence)
+	}
+}
+
+// When a check really is refused, the blocker has to name it. The session that
+// motivated this read "no successful recognized verification" directly beneath
+// a passing test suite the user had watched run, with nothing to act on.
+func TestStalledGoalNodeNamesTheRefusedVerification(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "change source"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "workspace-before"
+	workspace := t.TempDir()
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change source"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			token = "workspace-after"
+			return "changed", nil
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: "uv run pytest -q || true"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "11 passed", nil
+		}},
+	)
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("write", "mutate", `{}`), nil
+		case 2:
+			// The completion proposal is what makes the runtime record an exact
+			// gap and start the bounded remediation window.
+			return provider.Response{Content: "implemented"}, nil
+		default:
+			return graphToolResponse(fmt.Sprintf("verify-%d", call), "run_command", `{}`), nil
+		}
+	}}
+	agentRuntime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 20, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
+	})
+	_, err = agentRuntime.Run(t.Context(), "change it", nil)
+	if err == nil || !errors.Is(err, ErrGoalBlocked) {
+		t.Fatalf("stalled node error=%v, want a blocked goal", err)
+	}
+	if !strings.Contains(err.Error(), "were refused during this attempt") || !strings.Contains(err.Error(), "uv run pytest -q") {
+		t.Fatalf("blocker does not name the refused check: %v", err)
+	}
+}
+
 func TestGoalGraphControllerTurnsPermissionDenialIntoBlockedOutcome(t *testing.T) {
 	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "change source"}}}, 1, goalgraph.Options{})
 	if err != nil {
@@ -1134,6 +1233,60 @@ func TestVerificationCommandRecognitionRejectsShellSuccessMasking(t *testing.T) 
 	}
 }
 
+// In `A && B` the shell reports B's status unless A failed, in which case it
+// reports a non-zero status. Preparation before a verifier therefore cannot
+// turn a failing check into a passing one, and refusing it cost a real session
+// its whole node: a sandboxed run set UV_CACHE_DIR inside the workspace, ran a
+// passing suite, and was told only that no verification existed.
+func TestVerificationRecognitionAcceptsPreparationBeforeTheVerifier(t *testing.T) {
+	workspace := t.TempDir()
+	for _, command := range []string{
+		`export UV_CACHE_DIR="$(pwd)/.uv-cache" && uv run pytest -q`,
+		"mkdir -p .cache && go test ./...",
+		"source .venv/bin/activate && pytest -q",
+		". .venv/bin/activate && python -m pytest",
+		"npm ci && npm test",
+		fmt.Sprintf("cd %q && export FOO=bar && uv run pytest", workspace),
+	} {
+		if !isVerificationCommand(command, workspace) {
+			t.Errorf("preparation before a verifier was refused: %q", command)
+		}
+	}
+	// The trailing position is what matters. A verifier that is not last, or a
+	// composition that can substitute a success, stays ineligible.
+	for _, command := range []string{
+		"go test ./... && echo done",
+		"pytest -q && rm -rf build",
+		"export FOO=bar || pytest -q",
+		"export FOO=bar; pytest -q",
+		"export FOO=bar && pytest -q | tail -5",
+		"export FOO=bar && pytest -q &",
+	} {
+		if isVerificationCommand(command, workspace) {
+			t.Errorf("status-decoupling composition was recognized: %q", command)
+		}
+	}
+	// Relocation is refused for a different reason: the result would not
+	// describe the workspace the evidence is bound to.
+	elsewhere := assessVerificationCommand("cd /tmp && uv run pytest -q", workspace)
+	if elsewhere.Recognized || !strings.Contains(elsewhere.Reason, "changes directory") {
+		t.Fatalf("relocated verification assessment=%+v", elsewhere)
+	}
+	// A refused command names the direct form wherever the verifier sits,
+	// because the session that failed was never told which part was the
+	// problem.
+	trailing := assessVerificationCommand("export FOO=bar; uv run pytest -q", workspace)
+	if trailing.Recognized || !trailing.VerificationLike || trailing.Suggestion != "uv run pytest -q" {
+		t.Fatalf("trailing verifier assessment=%+v", trailing)
+	}
+	// A final command assembled by substitution cannot be classified at all,
+	// so it is refused rather than guessed at.
+	assembled := assessVerificationCommand("export FOO=bar && $(cat runner) -q", workspace)
+	if assembled.Recognized {
+		t.Fatalf("substituted verifier was recognized: %+v", assembled)
+	}
+}
+
 // A mutating Orchestrated Goal node cannot complete without recognized
 // verification, so an ecosystem missing from the recognizer is an ecosystem in
 // which the mode blocks every honest change. This is the list that decides
@@ -1424,6 +1577,52 @@ func TestOrchestratedGoalCompactsBeforeCumulativeAllowanceBecomesUnusable(t *tes
 	}
 	if !a.shouldCompact() {
 		t.Fatalf("graph pressure did not trigger compaction: estimate=%d remaining=%d", estimated, graph.BudgetStatus(time.Time{}).RemainingTokens)
+	}
+}
+
+// Under budget pressure the compaction threshold falls as the allowance
+// shrinks, so a context already reduced to a summary keeps re-triggering a
+// summary that reclaims nothing. A real session (kanban10) spent six
+// compactions in its final two minutes doing exactly that.
+func TestCompactionDoesNotSpiralOnAnAlreadyCompactedContext(t *testing.T) {
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		return provider.Response{Content: "summary of earlier work"}, nil
+	}}
+	a := New(Options{Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 1_000, Context: 500_000}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil)})
+	messages := make([]provider.Message, 10)
+	for i := range messages {
+		messages[i] = provider.Message{Role: "user", Content: strings.Repeat("context ", 100)}
+	}
+	a.SetMessages(messages)
+	estimated, _ := a.ContextEstimate()
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "bounded work", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "inspect"}}}, 1, goalgraph.Options{MaxAggregateTokens: estimated * 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetGoalGraph(graph); err != nil {
+		t.Fatal(err)
+	}
+	if !a.shouldCompact() {
+		t.Fatal("budget pressure did not trigger the first compaction")
+	}
+	if _, err := a.compact(t.Context(), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The allowance is now smaller, so the raw threshold is easier to reach —
+	// but the context is already at the floor compaction can achieve.
+	if a.shouldCompact() {
+		t.Fatal("compaction repeated on a context it had just reduced")
+	}
+	// Real growth resumes normal behavior.
+	a.mu.RLock()
+	grown := append([]provider.Message(nil), a.messages...)
+	a.mu.RUnlock()
+	for i := 0; i < 8; i++ {
+		grown = append(grown, provider.Message{Role: "user", Content: strings.Repeat("more context ", 200)})
+	}
+	a.SetMessages(grown)
+	if !a.shouldCompact() {
+		t.Fatal("compaction did not resume after the context genuinely grew")
 	}
 }
 

@@ -234,6 +234,225 @@ func TestBudgetExhaustionRetainsTheCandidateItAlreadyProduced(t *testing.T) {
 	}
 }
 
+// An agentic node resends its whole prompt every iteration. Charging cache
+// reads at full weight made the ceiling a function of context length times
+// iteration count, and a real session (kanban10) exhausted 1,000,000 tokens
+// on 937,617 input tokens of which 681,717 were cache reads — while cost sat
+// at $1.50 of $5 and iterations at 49 of 96.
+func TestAggregateTokenCeilingChargesNewWorkNotCacheReads(t *testing.T) {
+	graph, err := New(Spec{Goal: "long node", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{MaxAggregateTokens: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ten iterations that each re-read a 900-token cached prompt and add 90
+	// new tokens: 9,900 raw input, but only 900 of it new.
+	for i := 0; i < 10; i++ {
+		if err := graph.RecordPrimaryUsage(t.Context(), WorkUsage{
+			Iterations: 1, InputTokens: 990, CachedTokens: 900, OutputTokens: 10,
+		}); err != nil {
+			t.Fatalf("iteration %d was refused: %v", i, err)
+		}
+	}
+	status := graph.BudgetStatus(time.Now())
+	if status.Usage.InputTokens != 9900 {
+		t.Fatalf("raw input accounting changed: %+v", status.Usage)
+	}
+	// 10 × (990 − 900 + 10) = 1000 charged, against a 1000 ceiling.
+	if billable := status.Usage.BillableTokens(); billable != 1000 {
+		t.Fatalf("billable tokens=%d, want 1000", billable)
+	}
+	if outcome, _ := graph.Outcome(); outcome != "" {
+		t.Fatalf("graph terminated on cache reads: %q", outcome)
+	}
+	// The ceiling still binds on new work.
+	err = graph.RecordPrimaryUsage(t.Context(), WorkUsage{Iterations: 1, InputTokens: 200, OutputTokens: 10})
+	if !errors.Is(err, ErrAggregateBudget) {
+		t.Fatalf("new work past the ceiling was accepted: %v", err)
+	}
+	if reason := graph.Snapshot().Reason; !strings.Contains(reason, "served from the provider cache") {
+		t.Fatalf("exhaustion reason hides the cache accounting: %q", reason)
+	}
+}
+
+// Exhaustion used to cost the whole graph: the only way on was to start over,
+// discarding every accepted node. A person can now grant another envelope.
+func TestUserGrantedBudgetExtensionResumesWithoutReplayingWork(t *testing.T) {
+	graph, err := New(Spec{Goal: "two nodes", Nodes: []NodeSpec{
+		{ID: 1, Title: "first"},
+		{ID: 2, Title: "second", DependsOn: []int{1}},
+	}}, 1, Options{MaxAggregateTokens: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.ExhaustBudget(t.Context(), "aggregate token budget exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, reason := graph.Outcome(); outcome != OutcomeBudgetExhausted || !strings.Contains(reason, "/orchestrate extend") {
+		t.Fatalf("exhaustion does not name the way forward: %q %q", outcome, reason)
+	}
+	before := graph.Snapshot().AggregateBudget
+	if err := graph.ExtendBudget(t.Context(), "user granted more allowance"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != "" {
+		t.Fatalf("extended graph is still terminal: %q", snapshot.Outcome)
+	}
+	if snapshot.AggregateBudget.Extensions != 1 || snapshot.AggregateBudget.MaxTokens != before.MaxTokens+before.Grant.Tokens {
+		t.Fatalf("envelope was not granted: %+v", snapshot.AggregateBudget)
+	}
+	if snapshot.Nodes[0].State != NodeReady {
+		t.Fatalf("first node did not become schedulable: %+v", snapshot.Nodes[0])
+	}
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("extended snapshot invalid: %v", err)
+	}
+	// The wider envelope survives a restore, and its bound is validated
+	// against the grants actually recorded.
+	if _, err := Restore(snapshot, Options{}); err != nil {
+		t.Fatalf("restore extended graph: %v", err)
+	}
+	// Each grant adds one envelope of the size this graph was configured with,
+	// not a build constant, and a person may keep deciding to continue.
+	for i := 2; i <= 4; i++ {
+		if err := graph.ExhaustBudget(t.Context(), "exhausted again"); err != nil {
+			t.Fatal(err)
+		}
+		if err := graph.ExtendBudget(t.Context(), "another grant"); err != nil {
+			t.Fatalf("grant %d was refused: %v", i, err)
+		}
+		budget := graph.Snapshot().AggregateBudget
+		if budget.Extensions != i || budget.MaxTokens != budget.Grant.Tokens*(i+1) {
+			t.Fatalf("grant %d did not add one configured envelope: %+v", i, budget)
+		}
+	}
+	if err := ValidateSnapshot(graph.Snapshot()); err != nil {
+		t.Fatalf("repeatedly extended snapshot invalid: %v", err)
+	}
+	// A snapshot whose stored envelope exceeds what its recorded grants could
+	// produce is still refused.
+	forged := graph.Snapshot()
+	forged.AggregateBudget.MaxTokens = maxConfigurableGraphTokens * (forged.AggregateBudget.Extensions + 2)
+	if err := ValidateSnapshot(forged); err == nil {
+		t.Fatal("a snapshot claiming an implausible envelope was accepted")
+	}
+}
+
+// The envelope is configuration, not a build constant: a session set up for
+// more work gets it, and each user grant adds that same larger envelope.
+func TestConfiguredEnvelopeIsHonouredAndSizesEachGrant(t *testing.T) {
+	graph, err := New(Spec{Goal: "long job", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{
+		MaxAggregateIterations: defaultMaxGraphIterations * 4,
+		MaxAggregateTokens:     defaultMaxGraphTokens * 6,
+		MaxAggregateCostUSD:    defaultMaxGraphCostUSD * 3,
+		MaxActiveWallSeconds:   defaultMaxActiveWallSeconds * 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := graph.Snapshot().AggregateBudget
+	if budget.MaxTokens != defaultMaxGraphTokens*6 || budget.MaxIterations != defaultMaxGraphIterations*4 {
+		t.Fatalf("configured envelope was clamped to the default: %+v", budget)
+	}
+	if budget.Grant.Tokens != defaultMaxGraphTokens*6 {
+		t.Fatalf("recorded grant does not match the configured envelope: %+v", budget.Grant)
+	}
+	if err := graph.ExhaustBudget(t.Context(), "exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.ExtendBudget(t.Context(), "user grant"); err != nil {
+		t.Fatal(err)
+	}
+	if extended := graph.Snapshot().AggregateBudget; extended.MaxTokens != defaultMaxGraphTokens*12 {
+		t.Fatalf("grant added a build constant rather than the configured envelope: %+v", extended)
+	}
+	// An implausible value is still refused, and zero still means the default.
+	huge, err := New(Spec{Goal: "absurd", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{MaxAggregateTokens: maxConfigurableGraphTokens * 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens := huge.Snapshot().AggregateBudget.MaxTokens; tokens != maxConfigurableGraphTokens {
+		t.Fatalf("implausible envelope was honoured: %d", tokens)
+	}
+	plain, err := New(Spec{Goal: "default", Nodes: []NodeSpec{{ID: 1, Title: "implement"}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens := plain.Snapshot().AggregateBudget.MaxTokens; tokens != defaultMaxGraphTokens {
+		t.Fatalf("omitted configuration did not use the default: %d", tokens)
+	}
+}
+
+// Cancellation is the other way a wave ends while its worktrees exist. The
+// cancelled outcome stands, but the identity of what is on disk still has to
+// be recorded, and it must not be mistaken for a verified candidate.
+func TestCancellationRetainsWorktreeIdentityWithoutClaimingVerification(t *testing.T) {
+	graph, err := New(Spec{Goal: "produce a candidate", Nodes: []NodeSpec{
+		{ID: 1, Title: "change docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+	}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("writer claims=%+v err=%v", claims, err)
+	}
+	if err := graph.Cancel(t.Context(), "user interrupted the turn"); err != nil {
+		t.Fatal(err)
+	}
+	err = graph.FinishWriter(t.Context(), WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "cancelled",
+		WritePaths: claims[0].WritePaths, ChangedFiles: []string{"docs/guide.md"},
+		Worktree: "/tmp/cancelled-candidate", Branch: "collomia/writer-1",
+		BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+		Iterations: 1, InputTokens: 40, OutputTokens: 10,
+	})
+	if !errors.Is(err, ErrGraphTerminal) {
+		t.Fatalf("cancelled writer result error=%v, want ErrGraphTerminal", err)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != OutcomeCancelled {
+		t.Fatalf("outcome=%q, want cancelled", snapshot.Outcome)
+	}
+	attempt := snapshot.Attempts[0]
+	if attempt.State != AttemptCancelled {
+		t.Fatalf("attempt state=%q, want cancelled", attempt.State)
+	}
+	if attempt.Candidate == nil || attempt.Candidate.Worktree != "/tmp/cancelled-candidate" {
+		t.Fatalf("cancelled wave discarded its retained worktree: %+v", attempt)
+	}
+	if attempt.Candidate.VerificationState != "" {
+		t.Fatalf("cancelled candidate claims verification %q", attempt.Candidate.VerificationState)
+	}
+	if snapshot.Nodes[0].State != NodeCancelled {
+		t.Fatalf("node state=%q, want cancelled", snapshot.Nodes[0].State)
+	}
+	// The accounting the child already spent is still the graph's to report.
+	if snapshot.Accounting.AutomaticWriters.InputTokens != 40 {
+		t.Fatalf("cancelled writer usage was dropped: %+v", snapshot.Accounting.AutomaticWriters)
+	}
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("snapshot invalid: %v", err)
+	}
+	// Inspection is the whole point of retention: a restored graph must still
+	// be able to tell the operator where the directory is.
+	restored, err := Restore(snapshot, Options{})
+	if err != nil {
+		t.Fatalf("restore cancelled candidate snapshot: %v", err)
+	}
+	status, err := restored.Inspect(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "Retained candidates") || !strings.Contains(status, "/tmp/cancelled-candidate") {
+		t.Fatalf("restored graph overview omits the retained worktree:\n%s", status)
+	}
+	if !strings.Contains(status, "unverified") {
+		t.Fatalf("restored overview must not imply verification:\n%s", status)
+	}
+}
+
 // A retained candidate is a fact the graph promised to keep. Older snapshots
 // recorded it as a blocked node, and restoring must not lose the distinction.
 func TestRestoreUpgradesLegacyBlockedCandidateToAwaitingReview(t *testing.T) {
@@ -402,6 +621,79 @@ func TestGraphRecoveryNeverReplaysInterruptedIsolatedWriter(t *testing.T) {
 	}
 	if err := restored.RetryNode(t.Context(), 1, "try again"); !errors.Is(err, ErrUnsafeNodeRetry) {
 		t.Fatalf("interrupted writer retry error=%v", err)
+	}
+}
+
+// The write-ahead worktree record is what turns "something may be on disk"
+// into an exact path an operator can act on after a process boundary.
+func TestGraphRecoveryNamesTheOrphanedWorktreeOfAnInterruptedWriter(t *testing.T) {
+	graph, err := New(Spec{Goal: "write", Nodes: []NodeSpec{{ID: 1, Title: "write docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyWriters(t.Context(), WriterBase{WorkspaceToken: "parent", Commit: "abc", Clean: true}, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	if err := graph.RecordWriterWorktree(t.Context(), claims[0].Attempt.ID, "/tmp/collomia-worktrees/goal-write-1-7", "collomia/goal-write-1-7"); err != nil {
+		t.Fatal(err)
+	}
+	// The record must survive the process boundary it exists for.
+	restored, err := Restore(graph.Snapshot(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Recover(t.Context(), "parent"); err != nil {
+		t.Fatal(err)
+	}
+	_, reason := restored.Outcome()
+	if !strings.Contains(reason, "/tmp/collomia-worktrees/goal-write-1-7") || !strings.Contains(reason, "collomia/goal-write-1-7") {
+		t.Fatalf("recovery reason does not name the orphaned worktree: %q", reason)
+	}
+	status, err := restored.Inspect(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "/tmp/collomia-worktrees/goal-write-1-7") || !strings.Contains(status, "unreconciled") {
+		t.Fatalf("overview does not list the orphaned worktree as unreconciled:\n%s", status)
+	}
+	if err := ValidateSnapshot(restored.Snapshot()); err != nil {
+		t.Fatalf("snapshot invalid: %v", err)
+	}
+}
+
+// A writer that changed nothing has its worktree removed by the delegate path,
+// so the graph must stop pointing at a directory that no longer exists.
+func TestFinishWriterClearsTheRecordWhenNothingChanged(t *testing.T) {
+	graph, err := New(Spec{Goal: "write", Nodes: []NodeSpec{{ID: 1, Title: "write docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}}}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent", Commit: "abc", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	if err := graph.RecordWriterWorktree(t.Context(), claims[0].Attempt.ID, "/tmp/empty-candidate", "collomia/empty"); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishWriter(t.Context(), WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "done",
+		Summary: "found nothing to change", WritePaths: claims[0].WritePaths,
+		BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt := graph.Snapshot().Attempts[0]
+	if attempt.Worktree != "" || attempt.Branch != "" {
+		t.Fatalf("graph still points at a removed worktree: %+v", attempt)
+	}
+	status, err := graph.Inspect(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(status, "Retained candidates") {
+		t.Fatalf("overview lists a candidate that does not exist:\n%s", status)
 	}
 }
 
@@ -659,10 +951,18 @@ func TestGraphAggregateAllowanceNarrowsAutomaticReadClaims(t *testing.T) {
 		}
 	}
 
-	widened := graph.Snapshot()
-	widened.AggregateBudget.MaxTokens = defaultMaxGraphTokens + 1
-	if _, err := Restore(widened, Options{}); err == nil || !strings.Contains(err.Error(), "aggregate budget") {
-		t.Fatalf("widened stored envelope was accepted: %v", err)
+	// A larger stored envelope is a configuration decision and restores as
+	// written; only an implausible one is refused.
+	configured := graph.Snapshot()
+	configured.AggregateBudget.MaxTokens = defaultMaxGraphTokens * 4
+	configured.AggregateBudget.Grant.Tokens = defaultMaxGraphTokens * 4
+	if _, err := Restore(configured, Options{}); err != nil {
+		t.Fatalf("a configured larger envelope was refused: %v", err)
+	}
+	absurd := graph.Snapshot()
+	absurd.AggregateBudget.MaxTokens = maxConfigurableGraphTokens * 4
+	if _, err := Restore(absurd, Options{}); err == nil || !strings.Contains(err.Error(), "aggregate budget") {
+		t.Fatalf("implausible stored envelope was accepted: %v", err)
 	}
 
 	legacy := graph.Snapshot()

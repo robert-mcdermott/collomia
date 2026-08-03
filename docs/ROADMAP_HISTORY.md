@@ -45,6 +45,153 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-3B4 user-owned execution envelope
+
+- **The strategy said configuration could not widen the whole-graph maximum.
+  That was the wrong rule, and it is now changed.** A resource bound is not a
+  safety property: exceeding one means the job is bigger than expected, not
+  that the work is unsafe. Every bound is a speed bump — it stops the graph,
+  keeps every accepted node and retained candidate, and hands the decision to a
+  person. Making one terminal for the *graph* rather than for the *turn* meant
+  a miscalibrated ceiling cost the user everything already completed, which is
+  the opposite of conservative.
+- **The four bounds are now configuration with the current values as
+  defaults:** `options.orchestration_max_iterations` (96),
+  `orchestration_max_tokens` (1,000,000), `orchestration_max_cost_usd` (5), and
+  `orchestration_max_active_wall_seconds` (1800). Zero or omitted keeps the
+  default. Validation refuses only implausible values — 10,000 iterations,
+  100,000,000 tokens, $1,000, 24 hours — because those are integrity bounds
+  rather than policy.
+- **`/orchestrate extend` is no longer capped at two grants.** A person
+  deciding to continue is the entire control; a fixed number of decisions they
+  are allowed to make has no principle behind it. Each grant adds one envelope
+  of the size the graph was configured with, recorded in the snapshot, so a
+  session set up for a larger envelope extends by that larger amount rather
+  than by a build constant.
+- **Snapshot validation changed with it.** It previously rejected any stored
+  limit wider than the build default, which would now reject a legitimately
+  configured graph. It rejects implausible values instead and separately checks
+  that the recorded single-envelope grant is consistent with the stored
+  maximum, so a hand-edited snapshot still cannot manufacture allowance.
+- **What did not change:** repository text, skills, hooks, and the model still
+  cannot widen the envelope, because none of them is the user. Permission,
+  verification, scope, and publication are safety gates rather than resource
+  bounds and remain closed to this kind of tuning.
+
+### 2026-08-03 — OG-3B3 budget-accounting correction
+
+- **A session died on the token ceiling while every other bound had room.**
+  `kanban10` finished node 1, was midway through node 2, and stopped at 998,806
+  of 1,000,000 tokens — with estimated cost at $1.50 of $5, iterations at 49 of
+  96, and active wall at 11 minutes of 30. One bound fired, and it was counting
+  the wrong thing.
+- **The ceiling charged cache reads at full weight.** Of 937,617 input tokens,
+  681,717 were served from the provider cache. An agentic node resends its
+  whole active prompt every iteration, so charging re-read context makes the
+  envelope a function of context length times iteration count: it grows with
+  the square of a node's tool calls while new content grows linearly. The
+  envelope now charges `input − cached + output`. The same session bills
+  317,089 — 32% of the envelope. A provider that reports no cache counters
+  charges everything, exactly as before.
+- **Compaction was spiralling.** The same session compacted six times in its
+  final two minutes. Compaction under budget pressure triggers at a fraction of
+  the *remaining* allowance, so the threshold falls as the allowance falls,
+  and each summary is itself an accounted provider request — re-summarizing a
+  context already reduced to a summary, and spending the remainder doing it.
+  Compaction now records the size it achieved and requires real growth beyond
+  that floor before paying for another, in Standard mode as well.
+- **Exhaustion cost the whole graph.** Accepted nodes and retained candidates
+  survived in the snapshot but could not be continued, so the only way forward
+  was a new goal that redid the finished work. `/orchestrate extend` grants one
+  more fixed envelope, at most twice, and the exhaustion message now names it.
+- **The grant is a user decision and only a user decision.** The model,
+  repository text, hooks, skills, and the model cannot widen the ceiling by any
+  route. The extension count is persisted and validated on restore, so a
+  hand-edited snapshot cannot claim allowance nobody gave it. It is deliberately not a resume: every
+  attempt the exhaustion ended stays immutable, each unfinished node starts a
+  new attempt, and a node that already spent its attempt bound stays blocked
+  rather than being made ready by adding tokens.
+
+### 2026-08-03 — OG-3B2 verification-composition correction
+
+- **A real session lost a completed node to the shape of its shell command.**
+  `kanban9` built a FastAPI/SQLite backend, wrote eleven tests, ran them, and
+  watched them pass — then blocked four iterations later reporting that
+  "potentially mutating work has no successful recognized verification". The
+  suite had run against an unchanged workspace token and was recorded only as
+  an ordinary tool result.
+- **The cause was the prefix, not the check.** The command was
+  `export UV_CACHE_DIR="$(pwd)/.uv-cache" && uv run pytest -q`, and the
+  repository's own `AGENT.md` told the model to redirect package caches into
+  the project folder because the sandbox denies writes elsewhere. Following the
+  project's instructions is what made every verification command ineligible.
+- **The rule now matches the property it protects.** The gate exists so that an
+  observed zero status proves the verifier ran and exited zero. `A && B` has
+  that property whatever `A` is: the shell reports `B`'s status when `A`
+  succeeded and `A`'s non-zero status otherwise. The old rule rejected
+  `A && verifier` for the same reason it rejects `verifier && echo ok`.
+  Recognition now splits on `&&`, requires the final segment to be a
+  recognized verifier, and refuses everything that can decouple status from it:
+  `||`, `;`, pipelines, backgrounding, redirection, and a verifier that is not
+  last. The special-case workspace `cd` wrapper is subsumed. Preparation such
+  as `mkdir -p .cache && go test ./...`, `source .venv/bin/activate && pytest`,
+  or `npm ci && npm test` now qualifies.
+- **Two refusals that were one message are now distinct.** A leading segment
+  that relocates the verifier is still refused — the result would describe a
+  tree other than the one whose state token the evidence is bound to — and says
+  so rather than reporting a masking risk. A final segment assembled by command
+  substitution is refused because the recognizer classifies commands by their
+  literal words.
+- **A refused command names the direct form wherever the verifier sits.** The
+  correction previously inspected only the leading segment, so the failing
+  session received no notice at all and had no way to learn which part of a
+  command it had watched pass was unacceptable.
+- **A node that stalls after refused checks names them in its blocker**, with
+  the exact command to run directly. The operator previously read that no
+  verification existed immediately beneath a passing test suite. This
+  diagnostic is in-memory and attempt-scoped: it informs a message, never a
+  gate decision, and nothing persisted changed.
+
+### 2026-08-03 — OG-3B1 retained-worktree accountability closure
+
+- **OG-3B's exit gate asks that every candidate remain attributable to its plan
+  node and attempt. The successful path satisfied that; three ways of ending a
+  wave did not.** A cancelled wave, a wave whose usage accounting failed, and a
+  process boundary mid-flight each left real `collomia/…` worktrees on disk
+  that the graph could no longer name. OG-3A.8 had already fixed the fourth —
+  aggregate budget exhaustion — which is what made the shape of the remaining
+  three recognizable.
+- **A cancelled wave now records what it left behind.** Cancellation is written
+  first, so the graph states the real reason rather than reducing to a blocked
+  outcome, and the retained facts follow. `FinishWriter` treats a cancelled
+  graph the way it already treated an exhausted budget: identity is recorded,
+  scheduling state stays terminal, and only the attempt states a terminal
+  transition itself produced are accepted, so a late result can add identity
+  but never revive a finished wave.
+- **Identity is recorded before accounting.** A graph that cannot say where a
+  retained tree is cannot honour its promise to retain it, and that should not
+  depend on whether a child's usage counters were well formed.
+- **An isolated worktree is bound to its attempt durably at creation, before
+  the child runs.** Recording identity after a child returns can only describe
+  trees whose children returned — which excludes exactly the interrupted-writer
+  case where an operator most needs the path. Recovery after a process boundary
+  now names the exact orphaned worktree and branch instead of describing
+  something to go find. Deciding what may be reused or discarded is still OG-5
+  reconciliation work; this is the association half of it.
+- **`/orchestrate status` names every retained tree**, on live and saved graphs
+  alike, and marks one whose contents the runtime never examined as
+  unreconciled rather than omitting it or implying verification. Review
+  previously required guessing node identifiers. The model-facing render is
+  deliberately unchanged: the runtime holds no selection or integration
+  authority in OG-3, so naming candidates to the model would advertise work it
+  is not permitted to do.
+- **The writer wave has adversarial application-level coverage for the first
+  time**, driving the real controller, permission, worktree, and verification
+  paths: cancellation mid-wave, delegate-permission refusal before any worktree
+  exists, child verification failure, an out-of-scope write, and a provider
+  failure in one of two concurrent writers that must not discard the verified
+  sibling. Attempt `worktree`/`branch` are additive within graph schema 1.
+
 ### 2026-08-03 — OG-3A.8 review-readiness corrections from an implementation audit
 
 - **A full review of the shipped Orchestrated Goal implementation, rather than

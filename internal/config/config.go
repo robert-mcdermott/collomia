@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -366,7 +367,17 @@ type Options struct {
 	// changes into the parent workspace. "manual" (the default) exposes only
 	// /agents apply; "reviewed" additionally gives the primary agent bounded
 	// inspect/apply tools backed by the same guarded integration path.
-	AgentIntegration    string   `json:"agent_integration,omitempty"`
+	AgentIntegration string `json:"agent_integration,omitempty"`
+	// The four orchestration bounds below size the whole-graph execution
+	// envelope of an approved Orchestrated Goal. Each is a speed bump rather
+	// than a wall: reaching one stops the graph and asks the user, who can
+	// grant another envelope of the same size with /orchestrate extend. Zero
+	// uses the built-in default.
+	OrchestrationMaxIterations        int     `json:"orchestration_max_iterations,omitempty"`
+	OrchestrationMaxTokens            int     `json:"orchestration_max_tokens,omitempty"`
+	OrchestrationMaxCostUSD           float64 `json:"orchestration_max_cost_usd,omitempty"`
+	OrchestrationMaxActiveWallSeconds int     `json:"orchestration_max_active_wall_seconds,omitempty"`
+
 	DisabledTools       []string `json:"disabled_tools,omitempty"`
 	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
 	Theme               string   `json:"theme,omitempty"`
@@ -1279,6 +1290,21 @@ func (c Config) ValidateFields() []FieldError {
 	}
 	if c.Options.DelegateMaxConcurrency < 0 || c.Options.DelegateMaxConcurrency > 6 {
 		errs = append(errs, FieldError{"options.delegate_max_concurrency", "must be zero (default) or between 1 and 6"})
+	}
+	// The orchestration envelope is the user's decision, so validation only
+	// refuses values no honest configuration would hold. Reaching a bound
+	// pauses the graph for a person; it does not discard the work already done.
+	if c.Options.OrchestrationMaxIterations < 0 || c.Options.OrchestrationMaxIterations > 10_000 {
+		errs = append(errs, FieldError{"options.orchestration_max_iterations", "must be zero (default) or between 1 and 10000"})
+	}
+	if c.Options.OrchestrationMaxTokens < 0 || c.Options.OrchestrationMaxTokens > 100_000_000 {
+		errs = append(errs, FieldError{"options.orchestration_max_tokens", "must be zero (default) or between 1 and 100000000"})
+	}
+	if c.Options.OrchestrationMaxCostUSD < 0 || c.Options.OrchestrationMaxCostUSD > 1000 || math.IsNaN(c.Options.OrchestrationMaxCostUSD) || math.IsInf(c.Options.OrchestrationMaxCostUSD, 0) {
+		errs = append(errs, FieldError{"options.orchestration_max_cost_usd", "must be zero (default) or between 0 and 1000"})
+	}
+	if c.Options.OrchestrationMaxActiveWallSeconds < 0 || c.Options.OrchestrationMaxActiveWallSeconds > 86_400 {
+		errs = append(errs, FieldError{"options.orchestration_max_active_wall_seconds", "must be zero (default) or between 1 and 86400"})
 	}
 	for name, limit := range c.Options.DelegateProviderConcurrency {
 		if strings.TrimSpace(name) == "" {

@@ -1283,6 +1283,10 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
 | `agent_integration` | `manual` (default) keeps publication behind `/agents apply`; `reviewed` additionally gives the primary freshness-bound inspect, child-worktree verification, candidate comparison, and selective publication tools. Verification still uses ordinary command policy and never authorizes publication. |
+| `orchestration_max_iterations` | Provider iterations one approved Orchestrated Goal may use before it stops and asks you; defaults to `96`, and `0` keeps that default. Reaching it is a speed bump, not a failure: accepted nodes and retained candidates are kept and `/orchestrate extend` grants another envelope of the same size. |
+| `orchestration_max_tokens` | Charged tokens one approved Orchestrated Goal may use before it stops and asks you; defaults to `1000000`, and `0` keeps that default. Charged means new input plus output — prompt tokens the provider served from its cache are reported in `/orchestrate status` but not charged. |
+| `orchestration_max_cost_usd` | Estimated spend one approved Orchestrated Goal may reach before it stops and asks you; defaults to `5`, and `0` keeps that default. It is enforced only when the selected provider has complete pricing, and is an estimate rather than a billing guarantee. |
+| `orchestration_max_active_wall_seconds` | Active execution seconds one approved Orchestrated Goal may use before it stops and asks you; defaults to `1800`, and `0` keeps that default. Only attached, runnable execution counts — a reached pause, a terminal state, and time between sessions do not. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -2894,7 +2898,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, or cancel the experimental Orchestrated Goal preview. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, or cancel the experimental Orchestrated Goal preview. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -3192,6 +3196,41 @@ may already have happened; it never converts model prose into proof or repeats
 an ambiguous side effect. There is no node-cancel command because every
 current node is required—cancelling one would be equivalent to cancelling the
 graph.
+
+Every bound on an approved graph is a speed bump, not a wall. If one is
+reached, the graph stops with `budget_exhausted`, keeps every accepted node and
+retained candidate, and waits for you: `/orchestrate extend` grants another
+envelope of the same size and continues. There is no limit on how often you may
+decide to continue, and the count of grants is recorded in the graph. An
+extension is not a resume — each unfinished node starts a new attempt, so it
+rereads whatever state it needs rather than assuming the earlier context, and a
+node that had already spent its attempt bound stays blocked rather than
+becoming ready again.
+
+Size the envelope up front in configuration when you know a job is large:
+
+```json
+{
+  "options": {
+    "orchestration_max_iterations": 300,
+    "orchestration_max_tokens": 5000000,
+    "orchestration_max_cost_usd": 25,
+    "orchestration_max_active_wall_seconds": 7200
+  }
+}
+```
+
+Omit a field, or set it to zero, to keep its default (96 iterations, 1,000,000
+tokens, $5, 1800 seconds). Only implausible values are refused. These are your
+settings: a repository file, skill, hook, or model response cannot widen the
+envelope, and none of this affects the permission, verification, write-scope,
+or publication decisions, which are safety gates rather than resource bounds.
+
+The envelope charges prompt tokens the provider had to read anew plus
+everything generated. Tokens served from the provider's cache are reported in
+`/orchestrate status` but not charged, because a long node resends its whole
+prompt each iteration and charging that would measure conversation length
+rather than work done.
 
 A saved graph is visible but deliberately inert after reopening a session;
 `/orchestrate resume` reattaches a nonterminal graph and clears a saved pause

@@ -139,6 +139,9 @@ func (a *Agent) runGoalWriteFanout(ctx context.Context, claims []goalgraph.Write
 				TokenBudgetOverride: claim.TokenBudget, CostBudgetOverride: claim.CostBudgetUSD,
 				TimeoutOverride: claim.TimeoutSeconds, MaxIterationsOverride: claim.MaxIterations,
 				BaseCommitOverride: claim.Attempt.BaseCommit,
+				OnWorktree: func(worktree, branch string) error {
+					return graph.RecordWriterWorktree(context.WithoutCancel(ctx), claim.Attempt.ID, worktree, branch)
+				},
 			}
 			results[index] = a.runScheduledDelegate(ctx, index, task, cfg, approver, team, scheduler, nil)
 		}(index, claim)
@@ -153,7 +156,9 @@ func (a *Agent) runGoalWriteFanout(ctx context.Context, claims []goalgraph.Write
 			continue
 		}
 		if recordErr != nil {
+			a.retainGoalWriterWorktrees(ctx, graph, claims, results)
 			a.finishGoalWriterWave(ctx, action, recordErr)
+			a.emitGoalUpdates(send)
 			return recordErr
 		}
 	}
@@ -161,17 +166,19 @@ func (a *Agent) runGoalWriteFanout(ctx context.Context, claims []goalgraph.Write
 		// The wave is over budget, but its worktrees are on disk. Record where
 		// each one is before returning the terminal outcome; no further child
 		// verification is run, because that would be new work after the ceiling.
-		parentToken, _ := a.goalToken(ctx)
-		for index, result := range results {
-			_ = graph.FinishWriter(context.WithoutCancel(ctx), writerResultFromDelegate(claims[index], result, parentToken, DelegateStatus{}))
-		}
+		a.retainGoalWriterWorktrees(ctx, graph, claims, results)
 		a.finishGoalWriterWave(ctx, action, goalgraph.ErrAggregateBudget)
 		a.emitGoalUpdates(send)
 		outcome, reason := graph.Outcome()
 		return goalGraphTerminalError(outcome, reason)
 	}
 	if err := ctx.Err(); err != nil {
+		// Cancel first so the outcome names the real reason, then record the
+		// worktrees the wave already left on disk. A cancelled writer that changed
+		// files keeps its worktree, and a graph that cannot name it cannot honour
+		// the promise to retain it for inspection.
 		_ = graph.Cancel(context.WithoutCancel(ctx), err.Error())
+		a.retainGoalWriterWorktrees(ctx, graph, claims, results)
 		a.finishGoalWriterWave(ctx, action, err)
 		a.emitGoalUpdates(send)
 		return err
@@ -207,6 +214,17 @@ func (a *Agent) runGoalWriteFanout(ctx context.Context, claims []goalgraph.Write
 		return goalGraphTerminalError(outcome, reason)
 	}
 	return nil
+}
+
+// retainGoalWriterWorktrees records where each writer's retained worktree is
+// when the wave ends before ordinary child verification could run. It performs
+// no verification and unlocks nothing: the graph is already terminal, and this
+// only preserves the identity an operator needs to inspect or remove the tree.
+func (a *Agent) retainGoalWriterWorktrees(ctx context.Context, graph *goalgraph.Graph, claims []goalgraph.WriterClaim, results []DelegateResult) {
+	parentToken, _ := a.goalToken(context.WithoutCancel(ctx))
+	for index, result := range results {
+		_ = graph.FinishWriter(context.WithoutCancel(ctx), writerResultFromDelegate(claims[index], result, parentToken, DelegateStatus{}))
+	}
 }
 
 func (a *Agent) finishGoalWriterWave(ctx context.Context, action tools.Action, runErr error) {
@@ -260,7 +278,7 @@ func writerResultFromDelegate(claim goalgraph.WriterClaim, result DelegateResult
 		Worktree: result.Worktree, Branch: result.Branch, BaseCommit: result.BaseCommit,
 		ParentWorkspaceToken: parentToken, VerificationState: status.VerificationStatus,
 		VerificationToken: status.VerificationToken, Verification: verification,
-		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+		Iterations: result.Iterations, InputTokens: result.InputTokens, CachedTokens: result.CachedTokens, OutputTokens: result.OutputTokens,
 		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
 	}
 }

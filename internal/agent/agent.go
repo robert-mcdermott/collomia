@@ -70,24 +70,27 @@ type Agent struct {
 	providerIterations  int
 	cacheGaps           *cacheGapStats
 	lastInputTokens     int
-	usageWatermark      int
-	maxIterations       int
-	maxToolOutput       int
-	tokenBudget         int
-	costBudgetUSD       float64
-	disabled            map[string]bool
-	allowedTools        map[string]bool
-	allowedSkills       map[string]bool
-	profileName         string
-	profileInstructions string
-	planMode            bool
-	subagent            bool
-	onMessage           func(provider.Message)
-	onCompaction        func(summary provider.Message, replaced int)
-	pinnedContext       func() string
-	completionPlan      *plan.Board
-	goalGraph           *goalgraph.Graph
-	graphWorker         bool
+	// lastCompactionEstimate is the context size compaction last achieved. It
+	// bounds how often paying for another summary can be worthwhile.
+	lastCompactionEstimate int
+	usageWatermark         int
+	maxIterations          int
+	maxToolOutput          int
+	tokenBudget            int
+	costBudgetUSD          float64
+	disabled               map[string]bool
+	allowedTools           map[string]bool
+	allowedSkills          map[string]bool
+	profileName            string
+	profileInstructions    string
+	planMode               bool
+	subagent               bool
+	onMessage              func(provider.Message)
+	onCompaction           func(summary provider.Message, replaced int)
+	pinnedContext          func() string
+	completionPlan         *plan.Board
+	goalGraph              *goalgraph.Graph
+	graphWorker            bool
 	// goalSteering retains the user's mid-graph guidance so a node-boundary
 	// handoff cannot silently discard an instruction they were told applies to
 	// the remaining task.
@@ -100,6 +103,9 @@ type Agent struct {
 	delegateBoard       *plan.Board
 	delegateScheduler   *Scheduler
 	goalWriterVerifier  func(context.Context, string) ([]DelegateVerification, error)
+	// refusedVerification counts, per attempt, the checks the runtime read as
+	// verification but could not accept, so a stalled node can name them.
+	refusedVerification map[string]refusedVerification
 	artifacts           *session.ArtifactManager
 	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
@@ -981,6 +987,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			if assessment.Suggestion != "" {
 				notice += " Run the verification directly so its own exit status is preserved: " + assessment.Suggestion
 			}
+			a.recordRefusedVerification(assessment.Suggestion)
 			if result.Content != "" {
 				result.Content += "\n\n"
 			}
@@ -1248,6 +1255,11 @@ type DelegateTask struct {
 	TimeoutOverride       int     `json:"-"`
 	MaxIterationsOverride int     `json:"-"`
 	BaseCommitOverride    string  `json:"-"`
+	// OnWorktree reports a newly created isolated worktree before the child
+	// runs in it, so a runtime owner can record the directory durably. A
+	// non-nil error aborts the task rather than proceeding with a tree the
+	// runtime could not commit to remembering.
+	OnWorktree func(worktree, branch string) error `json:"-"`
 }
 
 // AddDelegationTool registers the delegate tool: a concurrency-limited
@@ -1371,6 +1383,7 @@ type DelegateResult struct {
 	Iterations      int            `json:"iterations,omitempty"`
 	ToolSuccesses   int            `json:"tool_successes,omitempty"`
 	InputTokens     int            `json:"input_tokens,omitempty"`
+	CachedTokens    int            `json:"cached_tokens,omitempty"`
 	OutputTokens    int            `json:"output_tokens,omitempty"`
 	CostUSD         float64        `json:"cost_usd,omitempty"`
 	CostAvailable   bool           `json:"cost_available,omitempty"`
@@ -1691,7 +1704,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, Iterations: iterations, ToolSuccesses: toolSuccesses, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, Iterations: iterations, ToolSuccesses: toolSuccesses, InputTokens: usage.InputTokens, CachedTokens: usage.CachedTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
 }
 
 func delegateLimits(task DelegateTask, profile appconfig.AgentDefinition) (tokenBudget int, costBudget float64, timeoutSeconds, maxIterations int) {
@@ -1841,6 +1854,15 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		a.worktreeMu.Unlock()
 		if err != nil {
 			return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, err
+		}
+		// The tree exists on disk from here on. Record it before the child can
+		// touch it: a session that stops mid-task otherwise leaves a directory
+		// no attempt can be traced to.
+		if task.OnWorktree != nil {
+			if recordErr := task.OnWorktree(wt.path, wt.branch); recordErr != nil {
+				wt.remove(context.WithoutCancel(ctx))
+				return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, recordErr
+			}
 		}
 		childWorkspace = wt.path
 		reg, _, childProcs, buildErr := tools.Builtins(wt.path, childConfig)
@@ -2457,6 +2479,19 @@ func (a *Agent) shouldCompact() bool {
 	if boundary {
 		return true
 	}
+	// Compaction costs a provider request, so it must be able to reclaim more
+	// than it spends. Once the context has been reduced to a summary plus the
+	// recent turns, compacting again removes almost nothing while still paying
+	// full price — and under budget pressure the threshold below keeps falling
+	// as the allowance shrinks, which turns that into a spiral that consumes
+	// the remaining allowance in summaries. Require real growth since the last
+	// compaction before paying for another.
+	a.mu.RLock()
+	floor := a.lastCompactionEstimate
+	a.mu.RUnlock()
+	if floor > 0 && estimated < floor+floor/2 {
+		return false
+	}
 	if window > 0 && estimated > window*80/100 {
 		return true
 	}
@@ -2512,6 +2547,12 @@ func (a *Agent) compactAcceptedGoalNode(ctx context.Context, notice string, send
 	if notify != nil {
 		notify(summary, replaced)
 	}
+	// The handoff replaces the whole context, so it resets the floor the
+	// ordinary compaction trigger measures growth against.
+	handoff, _ := a.ContextEstimate()
+	a.mu.Lock()
+	a.lastCompactionEstimate = handoff
+	a.mu.Unlock()
 	if err := a.checkPersistence(); err != nil {
 		return err
 	}
@@ -2634,6 +2675,13 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
 	notify := a.onCompaction
+	a.mu.Unlock()
+	// Remember where compaction left the context. The next one has to justify
+	// its own provider request against this floor rather than firing again on
+	// a context it has already reduced as far as it can.
+	compacted, _ := a.ContextEstimate()
+	a.mu.Lock()
+	a.lastCompactionEstimate = compacted
 	a.mu.Unlock()
 	if notify != nil {
 		notify(summary, cut)

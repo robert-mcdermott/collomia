@@ -53,6 +53,13 @@ const (
 	defaultMaxGraphTokens       = 1_000_000
 	defaultMaxGraphCostUSD      = 5.00
 	defaultMaxActiveWallSeconds = 30 * 60
+	// The absolute maxima below are sanity bounds, not policy. Policy is the
+	// configured envelope; these only reject a value no honest configuration
+	// would hold, so a corrupted or hand-edited number cannot be scheduled.
+	maxConfigurableGraphIterations   = 10_000
+	maxConfigurableGraphTokens       = 100_000_000
+	maxConfigurableGraphCostUSD      = 1_000.00
+	maxConfigurableActiveWallSeconds = 24 * 60 * 60
 )
 
 type Execution string
@@ -302,6 +309,7 @@ type Attempt struct {
 	Iterations              int              `json:"iterations,omitempty"`
 	LastProgressIteration   int              `json:"last_progress_iteration,omitempty"`
 	InputTokens             int              `json:"input_tokens,omitempty"`
+	CachedTokens            int              `json:"cached_tokens,omitempty"`
 	OutputTokens            int              `json:"output_tokens,omitempty"`
 	CostUSD                 float64          `json:"cost_usd,omitempty"`
 	CostAvailable           bool             `json:"cost_available,omitempty"`
@@ -311,8 +319,14 @@ type Attempt struct {
 	IterationBudget         int              `json:"iteration_budget,omitempty"`
 	TimeoutSeconds          int              `json:"timeout_seconds,omitempty"`
 	Candidate               *WriterCandidate `json:"candidate,omitempty"`
-	Started                 time.Time        `json:"started"`
-	Finished                time.Time        `json:"finished,omitempty"`
+	// Worktree and Branch are the write-ahead identity of an isolated writer's
+	// working tree, recorded durably the moment Git creates it and before the
+	// child can change anything in it. A process boundary mid-wave otherwise
+	// leaves a real directory on disk that no attempt can be traced to.
+	Worktree string    `json:"worktree,omitempty"`
+	Branch   string    `json:"branch,omitempty"`
+	Started  time.Time `json:"started"`
+	Finished time.Time `json:"finished,omitempty"`
 }
 
 type Evidence struct {
@@ -395,12 +409,31 @@ type WriterFanout struct {
 // this lane had user-configured pricing; an unavailable cost is never rendered
 // as a reassuring zero.
 type WorkUsage struct {
-	Iterations    int     `json:"iterations"`
-	InputTokens   int     `json:"input_tokens"`
+	Iterations  int `json:"iterations"`
+	InputTokens int `json:"input_tokens"`
+	// CachedTokens is the subset of InputTokens the provider served from its
+	// prompt cache. It is recorded so the aggregate ceiling can charge new
+	// work rather than the same context re-presented on every iteration.
+	CachedTokens  int     `json:"cached_tokens,omitempty"`
 	OutputTokens  int     `json:"output_tokens"`
 	CostUSD       float64 `json:"cost_usd,omitempty"`
 	CostAvailable bool    `json:"cost_available,omitempty"`
 	CostEstimated bool    `json:"cost_estimated,omitempty"`
+}
+
+// BillableTokens is what the aggregate token envelope measures: prompt tokens
+// the provider had to read anew, plus everything generated.
+//
+// An agentic node resends its whole active prompt on every iteration, so
+// counting cache reads at full weight makes the ceiling a function of context
+// length times iteration count — it grows with the square of a node's tool
+// calls while the actual new content grows linearly. A cache read is the same
+// context the graph already paid for, and providers price it at a fraction.
+// A provider that reports no cache counters charges everything, exactly as
+// before.
+func (u WorkUsage) BillableTokens() int {
+	cached := min(max(u.CachedTokens, 0), max(u.InputTokens, 0))
+	return max(u.InputTokens, 0) - cached + max(u.OutputTokens, 0)
 }
 
 // Accounting is the durable primary-plus-worker measurement record. Started
@@ -424,6 +457,21 @@ type AggregateBudget struct {
 	MaxTokens            int     `json:"max_tokens"`
 	MaxCostUSD           float64 `json:"max_cost_usd"`
 	MaxActiveWallSeconds int     `json:"max_active_wall_seconds"`
+	// Extensions counts the envelopes a person explicitly granted after
+	// exhaustion. It is a record of decisions taken, not a remaining quota.
+	Extensions int `json:"extensions,omitempty"`
+	// Grant is one envelope: the limits this graph was created with. Each user
+	// grant adds exactly this much, so a session configured for a larger
+	// envelope extends by that larger amount rather than by a build constant.
+	Grant AggregateGrant `json:"grant,omitzero"`
+}
+
+// AggregateGrant is the size of a single execution envelope.
+type AggregateGrant struct {
+	Iterations        int     `json:"iterations,omitempty"`
+	Tokens            int     `json:"tokens,omitempty"`
+	CostUSD           float64 `json:"cost_usd,omitempty"`
+	ActiveWallSeconds int     `json:"active_wall_seconds,omitempty"`
 }
 
 // UsageSummary is the operator-facing aggregate derived from Accounting. The
@@ -511,6 +559,26 @@ type Limits struct {
 	MaxActiveWallSeconds       int
 }
 
+// LimitsWithEnvelope returns the default limits with the whole-graph execution
+// envelope replaced by the values a session was configured with. A zero field
+// keeps that default.
+func LimitsWithEnvelope(iterations, tokens int, costUSD float64, activeWallSeconds int) Limits {
+	limits := DefaultLimits()
+	if iterations > 0 {
+		limits.MaxAggregateIterations = min(iterations, maxConfigurableGraphIterations)
+	}
+	if tokens > 0 {
+		limits.MaxAggregateTokens = min(tokens, maxConfigurableGraphTokens)
+	}
+	if costUSD > 0 && !math.IsNaN(costUSD) && !math.IsInf(costUSD, 0) {
+		limits.MaxAggregateCostUSD = min(costUSD, maxConfigurableGraphCostUSD)
+	}
+	if activeWallSeconds > 0 {
+		limits.MaxActiveWallSeconds = min(activeWallSeconds, maxConfigurableActiveWallSeconds)
+	}
+	return limits
+}
+
 func DefaultLimits() Limits {
 	return Limits{
 		MaxNodes:                   maxGraphNodes,
@@ -570,11 +638,20 @@ func New(spec Spec, logicalRevision uint64, opts Options) (*Graph, error) {
 		Schema: SchemaVersion, ID: opts.NewID("graph"), LogicalRevision: logicalRevision,
 		Generation: 1, Goal: strings.TrimSpace(spec.Goal), MaxAttemptsPerNode: opts.MaxAttemptsPerNode,
 		MaxRevisions: opts.MaxRevisions, Created: now, Updated: now,
-		ReadFanout:      ReadFanout{MaxConcurrent: opts.MaxReadConcurrency, MaxStarts: opts.MaxReadStarts, MaxTokens: opts.MaxReadTokens, MaxWallSeconds: opts.MaxReadWallSeconds},
-		WriterFanout:    WriterFanout{MaxConcurrent: opts.MaxWriterConcurrency, MaxStarts: opts.MaxWriterStarts},
-		Accounting:      Accounting{Started: accountingStarted, Primary: opts.InitialPrimary, ActiveSince: now},
-		AggregateBudget: AggregateBudget{MaxIterations: opts.MaxAggregateIterations, MaxTokens: opts.MaxAggregateTokens, MaxCostUSD: opts.MaxAggregateCostUSD, MaxActiveWallSeconds: opts.MaxActiveWallSeconds},
-		Revisions:       []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
+		ReadFanout:   ReadFanout{MaxConcurrent: opts.MaxReadConcurrency, MaxStarts: opts.MaxReadStarts, MaxTokens: opts.MaxReadTokens, MaxWallSeconds: opts.MaxReadWallSeconds},
+		WriterFanout: WriterFanout{MaxConcurrent: opts.MaxWriterConcurrency, MaxStarts: opts.MaxWriterStarts},
+		Accounting:   Accounting{Started: accountingStarted, Primary: opts.InitialPrimary, ActiveSince: now},
+		AggregateBudget: AggregateBudget{
+			MaxIterations: opts.MaxAggregateIterations, MaxTokens: opts.MaxAggregateTokens,
+			MaxCostUSD: opts.MaxAggregateCostUSD, MaxActiveWallSeconds: opts.MaxActiveWallSeconds,
+			// One envelope is what this session was configured for, recorded so a
+			// later user grant adds that amount rather than a build constant.
+			Grant: AggregateGrant{
+				Iterations: opts.MaxAggregateIterations, Tokens: opts.MaxAggregateTokens,
+				CostUSD: opts.MaxAggregateCostUSD, ActiveWallSeconds: opts.MaxActiveWallSeconds,
+			},
+		},
+		Revisions: []Revision{{Generation: 1, Reason: "initial approved logical graph", Spec: cloneSpec(spec), Time: now}},
 	}
 	for position, node := range spec.Nodes {
 		writePaths, _ := writescope.Normalize(node.WritePaths, node.Execution == ExecutionIsolatedWrite)
@@ -634,6 +711,18 @@ func normalizeSnapshot(snapshot *Snapshot) {
 	if snapshot.AggregateBudget.MaxActiveWallSeconds == 0 {
 		snapshot.AggregateBudget.MaxActiveWallSeconds = defaultMaxActiveWallSeconds
 	}
+	if snapshot.AggregateBudget.Grant == (AggregateGrant{}) {
+		// A snapshot written before the envelope was recorded separately still
+		// has its limits, and no such snapshot can carry a grant history: one
+		// envelope is exactly what it has.
+		envelopes := snapshot.AggregateBudget.Extensions + 1
+		snapshot.AggregateBudget.Grant = AggregateGrant{
+			Iterations:        snapshot.AggregateBudget.MaxIterations / envelopes,
+			Tokens:            snapshot.AggregateBudget.MaxTokens / envelopes,
+			CostUSD:           snapshot.AggregateBudget.MaxCostUSD / float64(envelopes),
+			ActiveWallSeconds: snapshot.AggregateBudget.MaxActiveWallSeconds / envelopes,
+		}
+	}
 	if snapshot.Accounting.Started.IsZero() {
 		// Pre-accounting schema-1 snapshots reconstruct what their immutable
 		// attempts can prove. Primary proposal/iteration counts were not stored,
@@ -645,7 +734,7 @@ func normalizeSnapshot(snapshot *Snapshot) {
 		}
 		for index := range snapshot.Attempts {
 			attempt := &snapshot.Attempts[index]
-			usage := WorkUsage{Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated}
+			usage := WorkUsage{Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, CachedTokens: attempt.CachedTokens, OutputTokens: attempt.OutputTokens, CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated}
 			switch nodes[attempt.NodeID] {
 			case ExecutionReadOnly:
 				addWorkUsage(&snapshot.Accounting.AutomaticReads, usage)
@@ -742,18 +831,24 @@ func normalizedOptions(opts Options) Options {
 	if opts.MaxWriterStarts <= 0 || opts.MaxWriterStarts > defaultMaxWriterStarts {
 		opts.MaxWriterStarts = defaultMaxWriterStarts
 	}
-	if opts.MaxAggregateIterations <= 0 || opts.MaxAggregateIterations > defaultMaxGraphIterations {
+	// A configured envelope is the user's decision; only an implausible value
+	// is refused. Zero means "use the default", not "unbounded".
+	if opts.MaxAggregateIterations <= 0 {
 		opts.MaxAggregateIterations = defaultMaxGraphIterations
 	}
-	if opts.MaxAggregateTokens <= 0 || opts.MaxAggregateTokens > defaultMaxGraphTokens {
+	opts.MaxAggregateIterations = min(opts.MaxAggregateIterations, maxConfigurableGraphIterations)
+	if opts.MaxAggregateTokens <= 0 {
 		opts.MaxAggregateTokens = defaultMaxGraphTokens
 	}
-	if opts.MaxAggregateCostUSD <= 0 || opts.MaxAggregateCostUSD > defaultMaxGraphCostUSD || math.IsNaN(opts.MaxAggregateCostUSD) || math.IsInf(opts.MaxAggregateCostUSD, 0) {
+	opts.MaxAggregateTokens = min(opts.MaxAggregateTokens, maxConfigurableGraphTokens)
+	if opts.MaxAggregateCostUSD <= 0 || math.IsNaN(opts.MaxAggregateCostUSD) || math.IsInf(opts.MaxAggregateCostUSD, 0) {
 		opts.MaxAggregateCostUSD = defaultMaxGraphCostUSD
 	}
-	if opts.MaxActiveWallSeconds <= 0 || opts.MaxActiveWallSeconds > defaultMaxActiveWallSeconds {
+	opts.MaxAggregateCostUSD = min(opts.MaxAggregateCostUSD, maxConfigurableGraphCostUSD)
+	if opts.MaxActiveWallSeconds <= 0 {
 		opts.MaxActiveWallSeconds = defaultMaxActiveWallSeconds
 	}
+	opts.MaxActiveWallSeconds = min(opts.MaxActiveWallSeconds, maxConfigurableActiveWallSeconds)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -919,8 +1014,20 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		return errors.New("goal graph snapshot has invalid aggregate accounting")
 	}
 	budget := snapshot.AggregateBudget
-	if budget.MaxIterations <= 0 || budget.MaxIterations > defaultMaxGraphIterations || budget.MaxTokens <= 0 || budget.MaxTokens > defaultMaxGraphTokens || budget.MaxCostUSD <= 0 || budget.MaxCostUSD > defaultMaxGraphCostUSD || math.IsNaN(budget.MaxCostUSD) || math.IsInf(budget.MaxCostUSD, 0) || budget.MaxActiveWallSeconds <= 0 || budget.MaxActiveWallSeconds > defaultMaxActiveWallSeconds || snapshot.Accounting.ActiveElapsed < 0 {
+	// The stored envelope is the user's to choose, so validation is an
+	// integrity check rather than a policy one: reject values no honest
+	// configuration or grant could have produced, and honour the rest.
+	if budget.Extensions < 0 || budget.Extensions > maxConfigurableGraphIterations {
+		return errors.New("goal graph snapshot has an implausible budget extension count")
+	}
+	envelopes := budget.Extensions + 1
+	if budget.MaxIterations <= 0 || budget.MaxIterations > maxConfigurableGraphIterations*envelopes || budget.MaxTokens <= 0 || budget.MaxTokens > maxConfigurableGraphTokens*envelopes || budget.MaxCostUSD <= 0 || budget.MaxCostUSD > maxConfigurableGraphCostUSD*float64(envelopes) || math.IsNaN(budget.MaxCostUSD) || math.IsInf(budget.MaxCostUSD, 0) || budget.MaxActiveWallSeconds <= 0 || budget.MaxActiveWallSeconds > maxConfigurableActiveWallSeconds*envelopes || snapshot.Accounting.ActiveElapsed < 0 {
 		return errors.New("goal graph snapshot has invalid aggregate budget or active time")
+	}
+	grant := budget.Grant
+	if grant.Iterations < 0 || grant.Tokens < 0 || grant.ActiveWallSeconds < 0 || grant.CostUSD < 0 || math.IsNaN(grant.CostUSD) || math.IsInf(grant.CostUSD, 0) ||
+		grant.Iterations > budget.MaxIterations || grant.Tokens > budget.MaxTokens || grant.ActiveWallSeconds > budget.MaxActiveWallSeconds || grant.CostUSD > budget.MaxCostUSD {
+		return errors.New("goal graph snapshot has an invalid single-envelope grant")
 	}
 	if snapshot.Outcome != "" && !snapshot.Accounting.ActiveSince.IsZero() {
 		return errors.New("terminal goal graph snapshot retains an active wall clock")
@@ -972,7 +1079,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		if _, duplicate := attempts[attempt.ID]; duplicate {
 			return fmt.Errorf("goal graph snapshot repeats attempt %q", attempt.ID)
 		}
-		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.LastProgressIteration < 0 || attempt.LastProgressIteration > attempt.Iterations || attempt.CompletionGapIteration < 0 || attempt.CompletionGapIteration > attempt.Iterations || len(attempt.CompletionGap) > 4<<10 || (attempt.CompletionGap == "" && attempt.CompletionGapIteration != 0) || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.CostBudgetUSD < 0 || math.IsNaN(attempt.CostBudgetUSD) || math.IsInf(attempt.CostBudgetUSD, 0) || attempt.IterationBudget < 0 || attempt.TimeoutSeconds < 0 || attempt.EvidencePruned < 0 {
+		if !validAttemptState(attempt.State) || attempt.Number <= 0 || attempt.Number > snapshot.MaxAttemptsPerNode || attempt.GraphGeneration == 0 || attempt.GraphGeneration > snapshot.Generation || attempt.Iterations < 0 || attempt.LastProgressIteration < 0 || attempt.LastProgressIteration > attempt.Iterations || attempt.CompletionGapIteration < 0 || attempt.CompletionGapIteration > attempt.Iterations || len(attempt.CompletionGap) > 4<<10 || (attempt.CompletionGap == "" && attempt.CompletionGapIteration != 0) || attempt.InputTokens < 0 || attempt.CachedTokens < 0 || attempt.CachedTokens > attempt.InputTokens || attempt.OutputTokens < 0 || attempt.CostUSD < 0 || attempt.TokenBudget < 0 || attempt.CostBudgetUSD < 0 || math.IsNaN(attempt.CostBudgetUSD) || math.IsInf(attempt.CostBudgetUSD, 0) || attempt.IterationBudget < 0 || attempt.TimeoutSeconds < 0 || attempt.EvidencePruned < 0 || len(attempt.Worktree) > 4096 || len(attempt.Branch) > 512 || (attempt.Worktree == "") != (attempt.Branch == "") {
 			return fmt.Errorf("goal graph snapshot has invalid attempt %q state, number, or generation", attempt.ID)
 		}
 		if (len(attempt.CompletionGapKinds) == 0) != (attempt.CompletionGap == "") {
@@ -1301,6 +1408,7 @@ type ReadResult struct {
 	WorkspaceToken string
 	Iterations     int
 	InputTokens    int
+	CachedTokens   int
 	OutputTokens   int
 	CostUSD        float64
 	CostAvailable  bool
@@ -1385,6 +1493,7 @@ type WriterResult struct {
 	Verification         []CandidateVerification
 	Iterations           int
 	InputTokens          int
+	CachedTokens         int
 	OutputTokens         int
 	CostUSD              float64
 	CostAvailable        bool
@@ -1742,7 +1851,7 @@ func (g *Graph) RecordReadUsage(ctx context.Context, result ReadResult) error {
 
 func (g *Graph) recordReadUsageLocked(attempt *Attempt, result ReadResult) error {
 	usage := WorkUsage{
-		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+		Iterations: result.Iterations, InputTokens: result.InputTokens, CachedTokens: result.CachedTokens, OutputTokens: result.OutputTokens,
 		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
 	}
 	if !validWorkUsage(usage) {
@@ -1751,7 +1860,7 @@ func (g *Graph) recordReadUsageLocked(attempt *Attempt, result ReadResult) error
 	workerID := bounded(result.WorkerID, 256)
 	if attempt.UsageRecorded {
 		recorded := WorkUsage{
-			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
+			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, CachedTokens: attempt.CachedTokens, OutputTokens: attempt.OutputTokens,
 			CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated,
 		}
 		if recorded != usage || attempt.WorkerID != workerID {
@@ -1765,7 +1874,7 @@ func (g *Graph) recordReadUsageLocked(attempt *Attempt, result ReadResult) error
 	attempt.InputTokens, attempt.OutputTokens = usage.InputTokens, usage.OutputTokens
 	attempt.CostUSD, attempt.CostAvailable = usage.CostUSD, usage.CostAvailable
 	attempt.CostEstimated = usage.CostEstimated
-	g.state.ReadFanout.UsedTokens += usage.InputTokens + usage.OutputTokens
+	g.state.ReadFanout.UsedTokens += usage.BillableTokens()
 	addWorkUsage(&g.state.Accounting.AutomaticReads, usage)
 	return nil
 }
@@ -1808,7 +1917,7 @@ func (g *Graph) RecordWriterUsage(ctx context.Context, result WriterResult) erro
 
 func (g *Graph) recordWriterUsageLocked(attempt *Attempt, result WriterResult) error {
 	usage := WorkUsage{
-		Iterations: result.Iterations, InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+		Iterations: result.Iterations, InputTokens: result.InputTokens, CachedTokens: result.CachedTokens, OutputTokens: result.OutputTokens,
 		CostUSD: result.CostUSD, CostAvailable: result.CostAvailable, CostEstimated: result.CostEstimated,
 	}
 	if !validWorkUsage(usage) {
@@ -1817,7 +1926,7 @@ func (g *Graph) recordWriterUsageLocked(attempt *Attempt, result WriterResult) e
 	workerID := bounded(result.WorkerID, 256)
 	if attempt.UsageRecorded {
 		recorded := WorkUsage{
-			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
+			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, CachedTokens: attempt.CachedTokens, OutputTokens: attempt.OutputTokens,
 			CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated,
 		}
 		if recorded != usage || attempt.WorkerID != workerID {
@@ -1826,10 +1935,50 @@ func (g *Graph) recordWriterUsageLocked(attempt *Attempt, result WriterResult) e
 		return nil
 	}
 	attempt.WorkerID, attempt.UsageRecorded = workerID, true
-	attempt.Iterations, attempt.InputTokens, attempt.OutputTokens = usage.Iterations, usage.InputTokens, usage.OutputTokens
+	attempt.Iterations, attempt.InputTokens, attempt.CachedTokens, attempt.OutputTokens = usage.Iterations, usage.InputTokens, usage.CachedTokens, usage.OutputTokens
 	attempt.CostUSD, attempt.CostAvailable, attempt.CostEstimated = usage.CostUSD, usage.CostAvailable, usage.CostEstimated
 	addWorkUsage(&g.state.Accounting.AutomaticWriters, usage)
 	return nil
+}
+
+// RecordWriterWorktree durably binds a newly created isolated worktree to the
+// attempt that caused it, before the child has run. It grants nothing and
+// changes no scheduling state; it exists so that a session that stops mid-wave
+// still leaves every directory attributable to a plan node and attempt.
+func (g *Graph) RecordWriterWorktree(ctx context.Context, attemptID, worktree, branch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	attempt := g.attemptLocked(attemptID)
+	if attempt == nil || attempt.State != AttemptRunning {
+		return fmt.Errorf("goal graph writer attempt %q is not running", attemptID)
+	}
+	node := g.nodeLocked(attempt.NodeID)
+	if node == nil || node.Execution != ExecutionIsolatedWrite {
+		return fmt.Errorf("goal graph attempt %q is not an isolated_write node", attemptID)
+	}
+	if strings.TrimSpace(worktree) == "" || strings.TrimSpace(branch) == "" {
+		return errors.New("goal graph writer worktree needs a path and a branch")
+	}
+	attempt.Worktree, attempt.Branch = bounded(worktree, 4096), bounded(branch, 512)
+	return g.persistLocked(ctx, true)
+}
+
+// writerFinishable reports whether this attempt may still record the facts of
+// the worktree it left behind. A terminal graph accepts only the attempt states
+// its own terminal transition produced, so a late or duplicate result can add
+// identity but never revive a finished wave.
+func writerFinishable(state AttemptState, retainOnly bool) bool {
+	if state == AttemptRunning {
+		return true
+	}
+	return retainOnly && (state == AttemptBudgetExhausted || state == AttemptCancelled)
+}
+
+func retainedWriterSummary(outcome Outcome) string {
+	if outcome == OutcomeCancelled {
+		return "isolated writer stopped when the wave was cancelled; its retained worktree is recorded for inspection"
+	}
+	return "isolated writer finished after the aggregate budget was exhausted; its retained worktree is recorded for inspection"
 }
 
 // FinishWriter validates a retained child candidate against the immutable
@@ -1838,24 +1987,21 @@ func (g *Graph) recordWriterUsageLocked(attempt *Attempt, result WriterResult) e
 func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// A sibling's usage may already have exhausted the aggregate budget while
-	// this writer was in flight. Its worktree exists either way, so the facts
-	// needed to find and review it are still recorded; only scheduling state
-	// stays terminal.
-	terminalBudget := g.state.Outcome == OutcomeBudgetExhausted
-	if g.state.Outcome != "" && !terminalBudget {
+	// A sibling's usage may already have exhausted the aggregate budget, or the
+	// user may have cancelled the turn, while this writer was in flight. Its
+	// worktree exists either way, so the facts needed to find and review it are
+	// still recorded; only scheduling state stays terminal.
+	retainOnly := g.state.Outcome == OutcomeBudgetExhausted || g.state.Outcome == OutcomeCancelled
+	if g.state.Outcome != "" && !retainOnly {
 		return ErrGraphTerminal
 	}
 	attempt := g.attemptLocked(result.AttemptID)
-	if attempt == nil || (attempt.State != AttemptRunning && !(terminalBudget && attempt.State == AttemptBudgetExhausted)) {
+	if attempt == nil || !writerFinishable(attempt.State, retainOnly) {
 		return fmt.Errorf("goal graph writer attempt %q is not running", result.AttemptID)
 	}
 	node := g.nodeLocked(attempt.NodeID)
 	if node == nil || node.Execution != ExecutionIsolatedWrite {
 		return fmt.Errorf("goal graph attempt %q is not an isolated_write node", result.AttemptID)
-	}
-	if err := g.recordWriterUsageLocked(attempt, result); err != nil {
-		return err
 	}
 	now := g.now().UTC()
 	normalizedScope, scopeErr := writescope.Normalize(result.WritePaths, true)
@@ -1879,14 +2025,33 @@ func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 	if candidate.WorkerID != "" && candidate.Worktree != "" && candidate.Branch != "" && candidate.BaseCommit != "" && len(candidate.ChangedFiles) > 0 && validateWriterCandidate(*candidate) == nil {
 		attempt.Candidate = candidate
 	}
-	if terminalBudget {
+	// A child that changed nothing has its worktree removed, so the write-ahead
+	// record is cleared rather than left pointing at a directory that is gone.
+	if candidate.Worktree != "" && candidate.Branch != "" {
+		attempt.Worktree, attempt.Branch = candidate.Worktree, candidate.Branch
+	} else if len(result.ChangedFiles) == 0 {
+		attempt.Worktree, attempt.Branch = "", ""
+	}
+	// Identity is recorded before accounting. A graph that cannot say where a
+	// retained worktree is cannot honour its promise to retain it, and that must
+	// not depend on whether the child's usage counters were well formed.
+	if err := g.recordWriterUsageLocked(attempt, result); err != nil {
+		if persistErr := g.persistLocked(ctx, true); persistErr != nil {
+			return persistErr
+		}
+		return err
+	}
+	if retainOnly {
 		if attempt.Summary == "" {
-			attempt.Summary = boundedSummary("isolated writer finished after the aggregate budget was exhausted; its retained worktree is recorded for inspection")
+			attempt.Summary = boundedSummary(retainedWriterSummary(g.state.Outcome))
 		}
 		if err := g.persistLocked(ctx, true); err != nil {
 			return err
 		}
-		return ErrAggregateBudget
+		if g.state.Outcome == OutcomeBudgetExhausted {
+			return ErrAggregateBudget
+		}
+		return ErrGraphTerminal
 	}
 	// The aggregate budget is checked only once this attempt's retained facts
 	// are durable. A wave that crossed the limit still leaves real worktrees on
@@ -2004,11 +2169,11 @@ func (g *Graph) RecordPrimaryUsage(ctx context.Context, usage WorkUsage) error {
 			attempt.LastProgressIteration = attempt.Iterations
 		}
 		attemptUsage := WorkUsage{
-			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
+			Iterations: attempt.Iterations, InputTokens: attempt.InputTokens, CachedTokens: attempt.CachedTokens, OutputTokens: attempt.OutputTokens,
 			CostUSD: attempt.CostUSD, CostAvailable: attempt.CostAvailable, CostEstimated: attempt.CostEstimated,
 		}
 		addWorkUsage(&attemptUsage, usage)
-		attempt.Iterations, attempt.InputTokens, attempt.OutputTokens = attemptUsage.Iterations, attemptUsage.InputTokens, attemptUsage.OutputTokens
+		attempt.Iterations, attempt.InputTokens, attempt.CachedTokens, attempt.OutputTokens = attemptUsage.Iterations, attemptUsage.InputTokens, attemptUsage.CachedTokens, attemptUsage.OutputTokens
 		attempt.CostUSD, attempt.CostAvailable, attempt.CostEstimated = attemptUsage.CostUSD, attemptUsage.CostAvailable, attemptUsage.CostEstimated
 	}
 	if err := g.enforceAggregateBudgetLocked(g.now().UTC(), false); err != nil {
@@ -2037,7 +2202,7 @@ func (g *Graph) exhaustReadyWriterLocked(node *Node, reason string) {
 }
 
 func validWorkUsage(usage WorkUsage) bool {
-	return usage.Iterations >= 0 && usage.InputTokens >= 0 && usage.OutputTokens >= 0 && usage.CostUSD >= 0 && !math.IsNaN(usage.CostUSD) && !math.IsInf(usage.CostUSD, 0)
+	return usage.Iterations >= 0 && usage.InputTokens >= 0 && usage.OutputTokens >= 0 && usage.CachedTokens >= 0 && usage.CachedTokens <= usage.InputTokens && usage.CostUSD >= 0 && !math.IsNaN(usage.CostUSD) && !math.IsInf(usage.CostUSD, 0)
 }
 
 func addWorkUsage(total *WorkUsage, addition WorkUsage) {
@@ -2048,6 +2213,7 @@ func addWorkUsage(total *WorkUsage, addition WorkUsage) {
 	additionHasPricedWork := addition.InputTokens+addition.OutputTokens > 0 || addition.CostUSD > 0
 	total.Iterations += addition.Iterations
 	total.InputTokens += addition.InputTokens
+	total.CachedTokens += addition.CachedTokens
 	total.OutputTokens += addition.OutputTokens
 	total.CostUSD += addition.CostUSD
 	if additionHasPricedWork {
@@ -2617,6 +2783,11 @@ func (g *Graph) Recover(ctx context.Context, workspaceToken string) error {
 		attempt.State, attempt.Finished = AttemptInterrupted, now
 		if node != nil && node.Execution == ExecutionIsolatedWrite {
 			reason := "an isolated writer may have changed its retained worktree before the session stopped; inspect delegated candidates and reconcile explicitly before continuing"
+			if attempt.Worktree != "" {
+				// The write-ahead record is what makes this actionable: the tree is
+				// named exactly, rather than described as something to go find.
+				reason = fmt.Sprintf("an isolated writer may have changed retained worktree %s (branch %s) before the session stopped; inspect and reconcile it explicitly before continuing", attempt.Worktree, attempt.Branch)
+			}
 			attempt.Failures = append(attempt.Failures, Failure{Kind: FailureInterruptedAction, Tool: "automatic_write_delegate", Risk: "write", Detail: reason, Time: now})
 			node.State, node.ActiveAttemptID, node.Reason = NodeBlocked, "", reason
 			g.queueUpdateLocked(node.ID, attempt.ID, string(NodeBlocked), reason)
@@ -2823,6 +2994,54 @@ func (g *Graph) Cancel(ctx context.Context, reason string) error {
 	return g.persistLocked(ctx, true)
 }
 
+// ExtendBudget grants an exhausted graph one more fixed envelope and returns
+// it to work. Only a person can call this path: exhaustion is otherwise
+// terminal, and the model, configuration, repository text, hooks, and skills
+// still cannot widen the ceiling by any route.
+//
+// The grant is deliberately not a resume. Every attempt the exhaustion ended
+// stays immutable and terminal, and each unfinished node starts a new attempt,
+// so nothing that was in flight when the ceiling hit is replayed. Finished
+// nodes and retained candidates are untouched.
+func (g *Graph) ExtendBudget(ctx context.Context, reason string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state.Outcome != OutcomeBudgetExhausted {
+		return fmt.Errorf("goal graph is %q, not budget exhausted", g.state.Outcome)
+	}
+
+	restored := 0
+	for i := range g.state.Nodes {
+		node := &g.state.Nodes[i]
+		if node.State != NodeBudgetExhausted {
+			continue
+		}
+		// A node that already spent its attempt bound cannot honestly be made
+		// ready again by adding tokens, so it stays blocked with that reason.
+		if len(node.AttemptIDs) >= g.state.MaxAttemptsPerNode {
+			node.State, node.Reason = NodeBlocked, "node exhausted its attempt bound before the aggregate budget was extended"
+			g.queueUpdateLocked(node.ID, "", string(NodeBlocked), node.Reason)
+			continue
+		}
+		node.State, node.ActiveAttemptID, node.Reason = NodeProposed, "", "aggregate budget extended by explicit user grant"
+		restored++
+		g.queueUpdateLocked(node.ID, "", string(NodeProposed), node.Reason)
+	}
+	if restored == 0 {
+		return errors.New("no node can resume: every unfinished node has exhausted its attempt bound")
+	}
+	grant := g.state.AggregateBudget.Grant
+	g.state.AggregateBudget.Extensions++
+	g.state.AggregateBudget.MaxIterations += grant.Iterations
+	g.state.AggregateBudget.MaxTokens += grant.Tokens
+	g.state.AggregateBudget.MaxCostUSD += grant.CostUSD
+	g.state.AggregateBudget.MaxActiveWallSeconds += grant.ActiveWallSeconds
+	g.state.Outcome, g.state.Reason = "", ""
+	g.refreshReadyLocked("aggregate budget extended by explicit user grant")
+	g.queueUpdateLocked(0, "", "budget_extended", boundedReason(strings.TrimSpace(reason)))
+	return g.persistLocked(ctx, true)
+}
+
 func (g *Graph) ExhaustBudget(ctx context.Context, reason string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -2926,7 +3145,7 @@ func (g *Graph) budgetStatusLocked(now time.Time) BudgetStatus {
 	return BudgetStatus{
 		Limits: limits, Usage: usage.Total, ActiveElapsed: usage.ActiveElapsed,
 		RemainingIterations: max(0, limits.MaxIterations-usage.Total.Iterations),
-		RemainingTokens:     max(0, limits.MaxTokens-usage.Total.InputTokens-usage.Total.OutputTokens),
+		RemainingTokens:     max(0, limits.MaxTokens-usage.Total.BillableTokens()),
 		RemainingCostUSD:    math.Max(0, limits.MaxCostUSD-usage.Total.CostUSD),
 		RemainingActiveWall: remainingWall, CostEnforceable: costEnforceable,
 	}
@@ -2976,8 +3195,8 @@ func (g *Graph) enforceAggregateBudgetLocked(now time.Time, atBoundary bool) err
 	switch {
 	case exhausted(float64(status.Usage.Iterations), float64(status.Limits.MaxIterations)):
 		reason = fmt.Sprintf("aggregate provider-iteration budget exhausted: %d/%d", status.Usage.Iterations, status.Limits.MaxIterations)
-	case exhausted(float64(status.Usage.InputTokens+status.Usage.OutputTokens), float64(status.Limits.MaxTokens)):
-		reason = fmt.Sprintf("aggregate token budget exhausted: %d/%d", status.Usage.InputTokens+status.Usage.OutputTokens, status.Limits.MaxTokens)
+	case exhausted(float64(status.Usage.BillableTokens()), float64(status.Limits.MaxTokens)):
+		reason = fmt.Sprintf("aggregate token budget exhausted: %d/%d (%d prompt tokens were served from the provider cache and are not charged)", status.Usage.BillableTokens(), status.Limits.MaxTokens, status.Usage.CachedTokens)
 	case status.CostEnforceable && exhausted(status.Usage.CostUSD, status.Limits.MaxCostUSD):
 		reason = fmt.Sprintf("aggregate estimated-cost budget exhausted: $%.6f/$%.6f", status.Usage.CostUSD, status.Limits.MaxCostUSD)
 	case exhausted(status.ActiveElapsed.Seconds(), float64(status.Limits.MaxActiveWallSeconds)):
@@ -3011,9 +3230,13 @@ func (g *Graph) exhaustAggregateLocked(now time.Time, reason string) {
 		g.queueUpdateLocked(node.ID, attemptID, string(NodeBudgetExhausted), reason)
 	}
 	g.stopActiveLocked(now)
-	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, reason
+	// Exhaustion costs a decision, not the graph. Accepted nodes and retained
+	// candidates survive, so the way forward should be stated where the
+	// operator reads the failure rather than left to be discovered.
+	outcomeReason := reason + "; completed nodes are kept — run /orchestrate extend to grant another bounded envelope and continue, or /orchestrate cancel to stop here"
+	g.state.Outcome, g.state.Reason = OutcomeBudgetExhausted, boundedReason(outcomeReason)
 	g.clearPauseLocked()
-	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), reason)
+	g.queueUpdateLocked(0, "", string(OutcomeBudgetExhausted), g.state.Reason)
 }
 
 func formatWorkUsage(usage WorkUsage) string {
@@ -3025,7 +3248,11 @@ func formatWorkUsage(usage WorkUsage) string {
 		}
 		cost = fmt.Sprintf("$%.6f %s", usage.CostUSD, qualifier)
 	}
-	return fmt.Sprintf("%d input + %d output tokens · %d provider iterations · %s", usage.InputTokens, usage.OutputTokens, usage.Iterations, cost)
+	cached := ""
+	if usage.CachedTokens > 0 {
+		cached = fmt.Sprintf(" (%d cached, not charged)", usage.CachedTokens)
+	}
+	return fmt.Sprintf("%d input%s + %d output tokens · %d provider iterations · %s", usage.InputTokens, cached, usage.OutputTokens, usage.Iterations, cost)
 }
 
 func formatGraphElapsed(elapsed time.Duration) string {
@@ -3118,7 +3345,7 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 	if budget.CostEnforceable {
 		costBound = fmt.Sprintf("$%.6f/$%.2f", budget.Usage.CostUSD, budget.Limits.MaxCostUSD)
 	}
-	fmt.Fprintf(&b, "Aggregate envelope: %d/%d provider iterations · %d/%d tokens · %s · %s/%s active wall\n", budget.Usage.Iterations, budget.Limits.MaxIterations, budget.Usage.InputTokens+budget.Usage.OutputTokens, budget.Limits.MaxTokens, costBound, formatGraphElapsed(budget.ActiveElapsed), formatGraphElapsed(time.Duration(budget.Limits.MaxActiveWallSeconds)*time.Second))
+	fmt.Fprintf(&b, "Aggregate envelope: %d/%d provider iterations · %d/%d charged tokens · %s · %s/%s active wall\n", budget.Usage.Iterations, budget.Limits.MaxIterations, budget.Usage.BillableTokens(), budget.Limits.MaxTokens, costBound, formatGraphElapsed(budget.ActiveElapsed), formatGraphElapsed(time.Duration(budget.Limits.MaxActiveWallSeconds)*time.Second))
 	b.WriteString("Execution: end-to-end graphs use one serial primary lane for every parent-workspace write, with bounded automatic read_only workers; an explicitly candidate-only graph may instead use one bounded pairwise-disjoint terminal isolated_write wave.\n")
 	b.WriteString("Write scope: isolated writers require explicit narrow scopes and a common clean Git base; no candidate is selected, integrated, or allowed to unlock dependents automatically.\n")
 	b.WriteString("Authority: every action still uses ordinary permissions; approval grants no publication or additional tool access.\n")
@@ -3146,6 +3373,16 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 			fmt.Fprintf(&b, " — %s", bounded(strings.TrimSpace(g.state.Reason), 600))
 		}
 		b.WriteByte('\n')
+	}
+	// Retained worktrees are listed for the whole graph, not just the node being
+	// inspected. A wave that ended in review, cancellation, or budget exhaustion
+	// leaves real directories on disk, and an operator should not have to guess
+	// node identifiers to find out what is still there.
+	if retained := g.retainedCandidatesLocked(); len(retained) > 0 {
+		b.WriteString("\nRetained candidates (nothing is selected, integrated, or removed automatically)\n")
+		for _, line := range retained {
+			b.WriteString("- " + line + "\n")
+		}
 	}
 	if nodeID == 0 {
 		b.WriteString("\n/orchestrate status <node-id> shows that node's attempts and evidence.")
@@ -3204,6 +3441,42 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 		}
 	}
 	return b.String(), nil
+}
+
+// retainedCandidatesLocked renders one bounded line per worktree the graph
+// still points at, in stable attempt order. A candidate whose child never
+// reached verification is reported as unverified rather than omitted: the
+// directory exists either way, and hiding it is what loses it.
+func (g *Graph) retainedCandidatesLocked() []string {
+	var lines []string
+	for _, attempt := range g.state.Attempts {
+		worktree, branch := attempt.Worktree, attempt.Branch
+		if attempt.Candidate != nil {
+			worktree, branch = attempt.Candidate.Worktree, attempt.Candidate.Branch
+		}
+		if worktree == "" {
+			continue
+		}
+		state := "unknown"
+		if node := g.nodeLocked(attempt.NodeID); node != nil {
+			state = string(node.State)
+		}
+		// An attempt that stopped before its result was recorded has a directory
+		// but no examined contents. Saying so is the point: that is precisely the
+		// tree an operator has to reconcile by hand.
+		detail := "unreconciled · contents never inspected by the runtime"
+		if attempt.Candidate != nil {
+			verification := attempt.Candidate.VerificationState
+			if verification == "" {
+				verification = "unverified"
+			}
+			detail = fmt.Sprintf("verification %s · %d changed file(s) · base %s",
+				verification, len(attempt.Candidate.ChangedFiles), bounded(attempt.Candidate.BaseCommit, 12))
+		}
+		lines = append(lines, fmt.Sprintf("node %d (%s) · attempt %s · %s · %s · branch %s",
+			attempt.NodeID, state, attempt.ID, detail, worktree, branch))
+	}
+	return lines
 }
 
 func (g *Graph) Generation() uint64 {

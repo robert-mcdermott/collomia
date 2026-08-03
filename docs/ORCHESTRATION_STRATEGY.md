@@ -2,8 +2,10 @@
 
 **Status:** approved product and architecture strategy; evidence-gated durable
 execution is available experimentally through completed OG-2, OG-3A's
-verified isolated-writer candidate wave, and OG-3A.1–.8 trial- and
-audit-driven controller corrections; OG-3B is next
+verified isolated-writer candidate wave, OG-3A.1–.8 trial- and audit-driven
+controller corrections, and OG-3B1–B4's retained-worktree accountability
+closure, verification-composition correction, budget-accounting correction,
+and user-owned execution envelope; the rest of OG-3B is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-03
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -177,7 +179,7 @@ The authority boundary is the central design constraint:
 | --- | --- | --- |
 | Model | Proposes decomposition, dependencies, acceptance criteria, execution class, result interpretation, suitable profiles, and bounded replans. | Node readiness, a successful machine result, evidence freshness, permission, or terminal completion. |
 | Runtime | Decides readiness, claims, attempts, locks, scheduling, staleness, evidence identity, budgets, cancellation, recovery treatment, and whether structural completion is possible. | User intent, protected-operation approval, broader authority, or a verification waiver. |
-| User | Decides whether to start orchestration, grants ordinary authority, resolves material ambiguity or conflicts, approves protected operations, and may eventually grant an explicit verification waiver. | A graph approval does not manufacture machine evidence or make stale evidence fresh. |
+| User | Decides whether to start orchestration, grants ordinary authority, resolves material ambiguity or conflicts, approves protected operations, sizes the execution envelope and grants more of it when one is reached, and may eventually grant an explicit verification waiver. | A graph approval does not manufacture machine evidence or make stale evidence fresh, and no envelope makes an unverified change acceptable. |
 
 The model is never authoritative about machine state. It may explain that a
 test passed, but only a recorded successful command bound to the current state
@@ -198,6 +200,19 @@ Graph execution changes scheduling, not authority:
   publication permission;
 - no graph mode automatically authorizes commit, push, deployment, release,
   issue changes, external messages, or another externally visible side effect.
+
+The execution envelope belongs to the user, and this is deliberate. A resource
+bound is not a safety property: exceeding one means the job is bigger than
+expected, not that the work is unsafe. Every bound is therefore a speed bump —
+it stops the graph, keeps every accepted node and retained candidate, and hands
+the decision to a person, who may size the envelope in configuration up front
+or grant another one at the moment it is reached. Making a bound terminal for
+the *graph* rather than for the *turn* was the mistake it replaced: a
+conservative ceiling then cost the user all completed work, which is the
+opposite of conservative. Repository text, skills, hooks, and the model still
+cannot widen it, because none of those is the user. The gates that *are* safety
+properties — permission, verification, scope, publication — are unaffected by
+any envelope and are not user-tunable in this way.
 
 ## Two-layer state model
 
@@ -897,8 +912,8 @@ OG-3A implemented contract:
   reason; dependents do not unlock and the parent workspace is untouched.
 - A process boundary while a writer is running becomes an interrupted-action
   blocker and cannot be retried automatically or through the safe-retry path.
-  Exact association/reconciliation of an orphaned in-flight worktree remains
-  OG-3B/OG-5 work.
+  OG-3B1 adds exact association of the orphaned in-flight worktree; deciding
+  what may be reused or discarded remains OG-5 reconciliation work.
 
 OG-3A.1 aggregate-budget usability correction:
 
@@ -914,9 +929,12 @@ OG-3A.1 aggregate-budget usability correction:
   request from cumulative proposal-plus-execution consumption. Proposal status
   shows the exact usage that approval will seed and the remaining allowance
   before the approval-boundary summary request.
-- This is calibration, not added authority: configuration, repository text,
-  skills, hooks, or the model still cannot widen the hard maximum, and
-  compaction never deletes the durable transcript or escapes accounting.
+- This is calibration, not added authority: at the time, configuration,
+  repository text, skills, hooks, and the model could none of them widen the
+  maximum, and compaction never deletes the durable transcript or escapes
+  accounting. OG-3B4 later opened the envelope to *user* configuration and to
+  an explicit user grant, on the reasoning recorded there; repository text,
+  skills, hooks, and the model still cannot widen it.
 
 OG-3A.2 primary-loop budget and evidence-diagnostic correction:
 
@@ -1170,12 +1188,145 @@ OG-3A.8 review-readiness correction (implementation audit, not a trial):
   undeclared write on a case-sensitive filesystem. `internal/writescope` has
   direct tests for the first time.
 
+OG-3B1 retained-worktree accountability closure:
+
+- Every directory the runtime causes Git to create is now attributable to a
+  plan node and attempt, which is one half of OG-3B's exit gate. Three ways of
+  ending a wave previously failed that: a cancelled wave, a wave whose usage
+  accounting errored, and a process boundary mid-flight.
+- A cancelled wave records what its writers left on disk. The cancellation
+  outcome is written first so the graph states the real reason, and the
+  retained facts follow. `FinishWriter` therefore treats a `cancelled` graph
+  the same way OG-3A.8 made it treat an exhausted budget: identity is still
+  recorded, and no scheduling state changes. It accepts only the attempt
+  states a terminal transition itself produced, so a late result can add
+  identity but never revive a finished wave.
+- Worktree identity is recorded before usage accounting rather than after. A
+  graph that cannot say where a retained tree is cannot honour its promise to
+  retain it, and that must not depend on whether a child's counters were well
+  formed.
+- An isolated worktree is bound to its attempt durably at creation, before the
+  child can change anything in it, through additive optional attempt
+  `worktree`/`branch` fields. Recovery after a process boundary now names the
+  exact orphaned path and branch instead of describing something to go find,
+  which is what makes the interrupted-writer blocker actionable. A writer that
+  changed nothing has its tree removed and the record cleared with it. This is
+  the association half of the orphan problem; deciding what to do with an
+  orphaned tree is still OG-5 reconciliation work.
+- `/orchestrate status` lists every retained tree for the whole graph, on live
+  and saved graphs alike, marking one whose contents the runtime never examined
+  as unreconciled rather than omitting it. Review previously required guessing
+  node identifiers. The model-facing render is deliberately unchanged: the
+  model has no selection or integration authority, so naming candidates to it
+  would only invite work it is not permitted to do.
+- The isolated-writer wave has adversarial application-level coverage for the
+  first time: cancellation, delegate-permission refusal before any dispatch,
+  child verification failure, an out-of-scope write, and a provider failure in
+  one of two concurrent writers that must not discard the verified sibling.
+
+OG-3B2 verification-composition correction:
+
+- A real session (`kanban9`) built a FastAPI/SQLite backend, wrote eleven
+  passing tests, ran them, and blocked four iterations later reporting that
+  "potentially mutating work has no successful recognized verification". The
+  suite had passed, against an unchanged workspace token, and was recorded only
+  as an ordinary tool result.
+- The command was
+  `export UV_CACHE_DIR="$(pwd)/.uv-cache" && uv run pytest -q`. The repository's
+  own `AGENT.md` told the model to redirect package caches into the project
+  folder because the sandbox denies writes elsewhere, so following the project's
+  instructions is what made every verification command ineligible.
+- The gate protects one property: an observed zero status must prove the
+  verifier ran and exited zero. `A && B` satisfies it — the shell reports B's
+  status when A succeeded and A's non-zero status otherwise — whatever A is.
+  The rule that rejected this rejected `A && verifier` for the same reason it
+  rejects `verifier && echo ok`, which was a real conflation. Recognition now
+  splits on `&&`, requires the final segment to be a recognized verifier, and
+  refuses everything that can decouple status from it: `||`, `;`, pipelines,
+  backgrounding, redirection, and a verifier that is not last. The special-case
+  workspace `cd` wrapper is subsumed.
+- A leading segment that relocates the verifier is still refused, for a
+  different reason that is now stated separately: the result would describe a
+  tree other than the one whose state token the evidence is bound to. A final
+  segment assembled by command substitution is refused too, because the
+  recognizer classifies commands by their literal words.
+- The refusal notice now searches the whole command rather than its leading
+  segment, so a trailing verifier is named. In the failing session the model
+  received no notice at all — the leading segment was `export …` — and had no
+  way to learn which part of a command it had watched pass was unacceptable.
+- A node that exhausts its remediation window after refused checks now names
+  them in the blocker and gives the direct command to run. The operator
+  previously read that no verification existed directly beneath a passing test
+  suite they had just watched run, with nothing to act on.
+
+OG-3B3 budget-accounting correction:
+
+- A real session (`kanban10`) finished node 1, was midway through node 2, and
+  died on the aggregate token ceiling: 998,806 of 1,000,000. Nothing else was
+  close — estimated cost was $1.50 of $5, iterations 49 of 96, active wall 11
+  minutes of 30. Only the token bound fired, and it fired on the wrong number.
+- Of 937,617 input tokens, 681,717 were served from the provider cache. An
+  agentic node resends its whole active prompt on every iteration, so charging
+  cache reads at full weight makes the ceiling a function of context length
+  times iteration count: it grows with the square of a node's tool calls while
+  the new content grows linearly. The envelope now charges
+  `input − cached + output`. The same session bills 317,089 — 32% of the
+  envelope — and would have continued. A provider that reports no cache
+  counters charges everything, exactly as before.
+- The same session compacted six times in its final two minutes. Compaction
+  under budget pressure triggers at a fraction of the *remaining* allowance, so
+  as the allowance shrinks the threshold falls, and each summary is itself an
+  accounted provider request: a spiral that spends the remaining allowance on
+  summaries of a context already reduced to a summary. Compaction now records
+  the context size it achieved and requires real growth beyond it before paying
+  for another, in both modes.
+- Exhaustion previously cost the whole graph. Accepted nodes and retained
+  candidates survived in the snapshot, but there was no way to continue, so the
+  only path was a new goal that redid the completed work — which is what made
+  a ceiling that fired early expensive rather than merely conservative.
+  `/orchestrate extend` grants one more fixed envelope, at most twice, and the
+  exhaustion message names it.
+- The grant is a user decision. The model, repository text, hooks, and skills
+  cannot widen the ceiling by any route. It is deliberately not a resume: every
+  attempt the exhaustion ended stays immutable and terminal, each unfinished
+  node starts a new attempt, and a node that already spent its attempt bound
+  stays blocked rather than being made ready by adding tokens.
+
+OG-3B4 user-owned execution envelope:
+
+- The four whole-graph bounds are now configuration with the previous fixed
+  values as defaults: `options.orchestration_max_iterations` (96),
+  `orchestration_max_tokens` (1,000,000), `orchestration_max_cost_usd` (5), and
+  `orchestration_max_active_wall_seconds` (1800). A zero or omitted field keeps
+  its default. Validation refuses only implausible values — 10,000 iterations,
+  100,000,000 tokens, $1,000, 24 hours — because those are integrity bounds,
+  not policy.
+- `/orchestrate extend` is no longer capped at two grants. A person deciding
+  to continue is the whole mechanism; a fixed number of decisions they are
+  allowed to make is arbitrary. Each grant adds one envelope of the size the
+  graph was configured with, recorded in the snapshot so a session configured
+  for more work extends by that larger amount rather than by a build constant.
+- Snapshot validation changed accordingly. It previously rejected any stored
+  limit wider than the build default, which would now reject a legitimately
+  configured graph. It rejects implausible values instead, and separately
+  checks that the recorded single-envelope grant is consistent with the stored
+  maximum, so a hand-edited snapshot still cannot manufacture allowance.
+- This supersedes OG-3A.1's "configuration cannot widen the hard maximum" for
+  the user's own configuration only. The reasoning is in the authority model
+  above: a resource bound is not a safety property, and making one terminal for
+  the graph rather than for the turn cost the user completed work every time a
+  ceiling turned out to be miscalibrated. Repository text, skills, hooks, and
+  the model still cannot widen the envelope, and permission, verification,
+  scope, and publication gates are untouched by it.
+
 OG-3B remaining contract:
 
-- complete the cancellation/provider-failure and retained-worktree campaigns;
-- exercise permission/hook refusal, overlapping and case-folded scopes,
-  post-claim parent drift, child verification drift/failure, and corrupted
-  candidate snapshots through application-level paths; and
+- complete the provider-failure campaign beyond the single-wave case, and
+  exercise hook refusal, overlapping and case-folded scopes, post-claim parent
+  drift, and child verification drift through application-level paths;
+- reconcile an orphaned in-flight worktree, not merely name it — the OG-5
+  recovery decision about what may be reused, discarded, or required to be
+  removed by hand; and
 - confirm the inspection/recovery handoff is sufficient before marking OG-3
   complete or beginning automatic reviewed integration.
 
@@ -1326,20 +1477,25 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-3A.8 — Review-readiness corrections from an
-  implementation audit**, following OG-3A's verified isolated-writer candidate
-  wave and its seven earlier trial-driven corrections.
+- Last completed slice: **OG-3B4 — User-owned execution envelope**, following
+  OG-3B1–B3's retained-worktree accountability closure,
+  verification-composition correction, and budget-accounting correction, OG-3A's
+  verified isolated-writer candidate wave, and its eight trial- and audit-driven
+  corrections.
 - Active milestone: **OG-3 — Isolated writer candidates**.
-- Next unblocked slice: **OG-3B — Adversarial and recovery closure**.
+- Next unblocked slice: **the remainder of OG-3B — adversarial and recovery
+  closure**, whose open items are the campaigns listed in the OG-3B remaining
+  contract above.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
-  `57c1c26`, OG-3A.6–7 are `364d845`, and OG-3A.8 is the working tree on top of
-  them.**
+  `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, and OG-3B1–B4 are
+  the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
   candidate wave for pairwise-disjoint isolated writers ending in
   `awaiting_review`, plus cooperative pause/resume, safe retry of eligible
-  blocked nodes, durable aggregate accounting, bounded retained evidence, and a
+  blocked nodes, durable aggregate accounting, bounded retained evidence,
+  attributable retained worktrees across every way a wave can end, and a
   fixed whole-graph execution envelope**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
@@ -1452,6 +1608,9 @@ Every agent or contributor continuing this program must:
   completed, recalibrate newly approved graphs to 1,000,000 tokens while
   preserving older graphs' stored 192,000-token ceiling. Project/config/model
   content cannot widen the current maximum; tighter existing limits win.
+  Superseded by OG-3B4 for the user's own configuration: `options.orchestration_*`
+  sets the envelope, repository text/skills/hooks/model still cannot, and a
+  restored graph keeps the envelope it was created with.
 - Compact once after approval and later when the current prompt reaches one-
   eighth of the remaining aggregate allowance. Count every summary request in
   the primary lane; compaction changes future context, not past usage.
@@ -1521,6 +1680,59 @@ Every agent or contributor continuing this program must:
 - State the read fan-out comparison as an elapsed-time result only. The harness
   scripts equal answers, so it cannot demonstrate a quality improvement and the
   exit gate should not imply that it did.
+- Treat "every candidate remains attributable to its plan node and attempt" as
+  a property of every way a wave can end, not only of the successful path. The
+  budget correction above fixed one ending; cancellation, a failure while
+  recording usage, and a process boundary were three more that dropped the
+  runtime's only pointer to a real directory.
+- Bind an isolated worktree to its attempt durably at creation, before the
+  child runs. Recording identity after the child returns can only describe
+  trees whose children returned, which excludes exactly the case — an
+  interrupted writer — where the operator most needs the path.
+- Keep retained candidates on the operator surface and off the model surface.
+  The runtime holds no selection or integration authority in OG-3, so naming
+  candidates to the model would advertise work it is not permitted to do, while
+  an operator cannot review what the status output will not name.
+- Report a worktree the runtime never examined as unreconciled rather than
+  omitting it or implying verification. An unexamined tree is precisely the one
+  a person has to deal with by hand.
+- Judge a composed verification command by whether the shell's status is
+  provably the verifier's, not by whether the command is a single word. An
+  `&&` chain ending in the verifier has that property; preparation before a
+  check is not evidence tampering, and refusing it made repositories that need
+  setup — a sandbox redirecting a package cache, a virtualenv activation —
+  unable to verify anything.
+- Keep the relocation refusal separate from the masking refusal and say which
+  one applies. They protect different things: one that the status is the
+  verifier's, the other that the verified tree is the one the evidence is bound
+  to.
+- When the runtime refuses evidence, name the direct command wherever the
+  verifier sits in what was refused, and repeat it in the blocker if the node
+  dies. A gate that silently declines something the user watched pass is
+  indistinguishable from a bug.
+- Charge the aggregate token envelope for new work, not for context the graph
+  already paid for. Counting cache reads at par measured conversation length
+  times iteration count rather than work done, and made the token bound fire
+  while cost, iterations, and wall clock all had ample headroom.
+- Require compaction to reclaim more than it costs. A threshold expressed as a
+  fraction of a shrinking allowance falls as the allowance falls, so under
+  pressure it re-summarizes a context already reduced to a summary and spends
+  the remainder on doing so.
+- Let a person grant an exhausted graph another bounded envelope, and say so
+  where the exhaustion is reported. Making exhaustion terminal for the graph
+  rather than for the turn meant a conservative ceiling cost every accepted
+  node, which is the opposite of conservative.
+- Treat every resource bound as a speed bump that requires human interaction,
+  not as a wall that ends the job. Exceeding one means the work is bigger than
+  expected, not that it is unsafe, so the correct response is to stop and ask —
+  never to discard progress. This is what distinguishes a resource bound from
+  the permission, verification, scope, and publication gates, which are safety
+  properties and stay closed to the same user tuning.
+- Make the envelope user configuration with the current values as defaults, and
+  stop capping the number of grants. A fixed allowance of decisions a person is
+  permitted to make has no principle behind it once the decision itself is the
+  control. Repository text, skills, hooks, and the model still cannot widen it,
+  because none of them is the user.
 
 ## Open implementation decisions
 
