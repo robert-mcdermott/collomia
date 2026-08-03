@@ -45,6 +45,43 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-3B5 retained-worktree reconciliation
+
+- **OG-3B1 made every retained worktree attributable, and then nothing ever
+  looked at one again.** Naming a path is not knowing whether it is still
+  there. These trees live under the system temp directory, so between sessions
+  the operating system may have swept one, a person may have removed one, or it
+  may be sitting there full of unreviewed work — and `/orchestrate status`
+  printed the remembered path identically in all three cases. Every decision a
+  person can make about a candidate depends on which case it is.
+- **`/orchestrate reconcile` observes each tree and records a typed
+  disposition** durably on the attempt: `present`, `empty`, `missing`,
+  `orphaned`, `base_unreachable`, or `discarded`. No disposition means never
+  observed, which is the honest state for every graph written before this
+  slice. Observation is read-only: it removes nothing, reuses nothing, and
+  reopens no attempt.
+- **`/orchestrate discard <node-id>` removes a tree the user no longer wants,
+  and is deliberately hard to reach.** It is not a tool, so the model cannot
+  call it, and no autonomy mode covers it — what it deletes is unreviewed work
+  only a person can judge worthless. It refuses a tree nobody has reconciled,
+  requires the command repeated with `confirm` when the tree still holds
+  changes, and refuses outright a directory Git no longer registers, because
+  removing that would be a recursive delete of a path read out of a durable
+  record rather than a Git operation. Removal is recorded in the audit ledger,
+  and the node and attempt keep the identity of what was removed.
+- **Archiving a terminal graph now waits for the observation.** Archiving ends
+  the session's pointer to a real directory, and the graph is the only thing
+  that knows it exists, so releasing it first would recreate exactly the orphan
+  OG-3B1 removed. The gate asks for the observation, not for the tree to be
+  gone: a reconciled tree full of changes archives fine.
+- **Symlink resolution turned out to be load-bearing.** The system temp
+  directory is itself a symlink on macOS, so Git's spelling of a worktree path
+  and the graph's never match literally; without resolving them every retained
+  tree reports `orphaned`. A test pins it.
+- **What did not change:** nothing reuses, selects, or integrates a candidate.
+  That is OG-4, and the exact scheduler-state recovery this feeds is OG-5. This
+  slice decides only what is *there*.
+
 ### 2026-08-03 — OG-3B4 user-owned execution envelope
 
 - **The strategy said configuration could not widen the whole-graph maximum.

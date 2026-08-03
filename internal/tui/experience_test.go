@@ -214,7 +214,10 @@ func TestBusyOrchestrationCommandsAllowPauseButNotRetryOrResume(t *testing.T) {
 			t.Fatalf("busy command %q was not allowed", command)
 		}
 	}
-	for _, command := range []string{"/orchestrate resume", "/orchestrate retry 2"} {
+	// Reconcile and discard both wait for the boundary: a running wave is
+	// creating and removing worktrees, so what either one observed or removed
+	// mid-turn could be wrong or gone by the time it reported.
+	for _, command := range []string{"/orchestrate resume", "/orchestrate retry 2", "/orchestrate reconcile", "/orchestrate discard 2", "/orchestrate discard 2 confirm"} {
 		if busySlashAllowed(command) {
 			t.Fatalf("busy command %q should wait for the current turn boundary", command)
 		}

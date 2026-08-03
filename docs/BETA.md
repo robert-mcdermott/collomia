@@ -132,10 +132,11 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   after the exact conversation is reopened; restored bytes remain inert until
   that user action. Status durably separates proposal-plus-primary and automatic-read
   iterations, tokens, honest price availability, estimated cost, elapsed
-  time, and active time. A fixed whole-graph envelope limits the preview to 96
+  time, and active time. A whole-graph envelope limits the preview to 96
   provider iterations, 1,000,000 tokens, $5 estimated cost when pricing is
-  complete, and 30 minutes of active post-approval execution. Older saved
-  graphs retain their stored ceiling. The ordinary `max_iterations` value is a
+  complete, and 30 minutes of active post-approval execution; each is settable
+  through `options.orchestration_*`, and only implausible values are refused.
+  Older saved graphs retain their stored ceiling. The ordinary `max_iterations` value is a
   provider-response-cycle limit, not a tool-call count. In this mode it bounds
   consecutive cycles without novel durable successful tool evidence inside a
   primary attempt; productive evidence renews that lease, equivalent repeated
@@ -173,8 +174,19 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   cancelled or exhausts the aggregate budget still records where each one is.
   `/orchestrate status` lists them for the whole graph, live or saved, and says
   when the runtime never examined one. An interrupted writer is blocked rather
-  than replayed, and recovery names the exact orphaned worktree and branch —
-  but reconciling it is still manual work. There is
+  than replayed, and recovery names the exact orphaned worktree and branch.
+  `/orchestrate reconcile` then answers what is actually left in each one —
+  present, empty, missing, no longer registered with Git, or unmoored from the
+  base commit its claim recorded — and stores that answer durably, so a
+  remembered path is never reported as though someone had just checked it.
+  `/orchestrate discard <node-id>` removes a tree you no longer want: it
+  refuses one nobody has reconciled, asks you to repeat the command with
+  `confirm` when the tree still holds changes, and declines outright to delete
+  a directory Git no longer registers, since that would be a recursive delete
+  of a path rather than a Git operation. Archiving a terminal graph waits until
+  its worktrees have been observed, because the graph is the only thing that
+  knows they exist. Nothing reuses a candidate: that is still review work you
+  do yourself. There is
   deterministic feedback when a verification-like shell command cannot count
   as evidence, naming the direct command to run wherever the check sits in
   what was refused, and a node that stalls after refused checks repeats it in

@@ -453,6 +453,73 @@ func TestCancellationRetainsWorktreeIdentityWithoutClaimingVerification(t *testi
 	}
 }
 
+// A disposition is a claim about a real directory, so a snapshot cannot carry
+// one that describes nothing, one nobody recorded a time for, or one from
+// outside the vocabulary. Older snapshots have no disposition at all, and that
+// must keep restoring cleanly: never observed is the honest starting state.
+func TestSnapshotRejectsARetainedWorktreeDispositionThatDescribesNothing(t *testing.T) {
+	graph, err := New(Spec{Goal: "produce a candidate", Nodes: []NodeSpec{
+		{ID: 1, Title: "change docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+	}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("writer claims=%+v err=%v", claims, err)
+	}
+	if err := graph.Cancel(t.Context(), "user interrupted the turn"); err != nil {
+		t.Fatal(err)
+	}
+	_ = graph.FinishWriter(t.Context(), WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "cancelled",
+		WritePaths: claims[0].WritePaths, ChangedFiles: []string{"docs/guide.md"},
+		Worktree: "/tmp/cancelled-candidate", Branch: "collomia/writer-1",
+		BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+	})
+	// A graph that has never reconciled is valid; that is every graph written
+	// before this field existed.
+	if err := ValidateSnapshot(graph.Snapshot()); err != nil {
+		t.Fatalf("an unreconciled snapshot was rejected: %v", err)
+	}
+	if pending := graph.UnreconciledWorktrees(); len(pending) != 1 || pending[0].Worktree != "/tmp/cancelled-candidate" {
+		t.Fatalf("unreconciled worktrees=%+v, want the retained candidate", pending)
+	}
+
+	if err := graph.RecordWorktreeDispositions(t.Context(), []WorktreeObservation{{AttemptID: claims[0].Attempt.ID, Disposition: "vanished"}}); err == nil {
+		t.Fatal("the graph accepted a disposition outside its vocabulary")
+	}
+	if err := graph.RecordWorktreeDispositions(t.Context(), []WorktreeObservation{{
+		AttemptID: claims[0].Attempt.ID, Disposition: DispositionPresent, Detail: "1 changed file(s) still in the tree",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	reconciled := graph.Snapshot()
+	if err := ValidateSnapshot(reconciled); err != nil {
+		t.Fatalf("a reconciled snapshot was rejected: %v", err)
+	}
+	if reconciled.Attempts[0].Reconciled.IsZero() {
+		t.Fatal("a recorded disposition carries no time of observation")
+	}
+
+	forged := graph.Snapshot()
+	forged.Attempts[0].Worktree, forged.Attempts[0].Candidate = "", nil
+	if err := ValidateSnapshot(forged); err == nil {
+		t.Fatal("a disposition describing no worktree was accepted")
+	}
+	undated := graph.Snapshot()
+	undated.Attempts[0].Reconciled = time.Time{}
+	if err := ValidateSnapshot(undated); err == nil {
+		t.Fatal("a disposition with no time of observation was accepted")
+	}
+	unclaimed := graph.Snapshot()
+	unclaimed.Attempts[0].Disposition = ""
+	if err := ValidateSnapshot(unclaimed); err == nil {
+		t.Fatal("a reconciliation time without a disposition was accepted")
+	}
+}
+
 // A retained candidate is a fact the graph promised to keep. Older snapshots
 // recorded it as a blocked node, and restoring must not lose the distinction.
 func TestRestoreUpgradesLegacyBlockedCandidateToAwaitingReview(t *testing.T) {

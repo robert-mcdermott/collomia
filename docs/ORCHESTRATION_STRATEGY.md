@@ -3,9 +3,10 @@
 **Status:** approved product and architecture strategy; evidence-gated durable
 execution is available experimentally through completed OG-2, OG-3A's
 verified isolated-writer candidate wave, OG-3A.1–.8 trial- and audit-driven
-controller corrections, and OG-3B1–B4's retained-worktree accountability
+controller corrections, and OG-3B1–B5's retained-worktree accountability
 closure, verification-composition correction, budget-accounting correction,
-and user-owned execution envelope; the rest of OG-3B is next
+user-owned execution envelope, and retained-worktree reconciliation; OG-3B's
+adversarial campaign is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-03
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -59,15 +60,17 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-3A.8 boundary supports one serial primary lane, at
+The shipped OG-1 through OG-3B5 boundary supports one serial primary lane, at
 most two governed automatic read-only workers, and—only in a candidate-only
 graph—one bounded wave of at most two pairwise-disjoint terminal isolated
 writers from a clean stable Git commit. It provides durable graph
 truth, fresh machine-observed evidence, conservative invalidation, bounded
 retry/revision, cooperative pause and resume, safe retry of eligible blocked
 nodes, non-replay of ambiguous mutations, durable primary-plus-worker
-accounting, fixed whole-graph aggregate enforcement, and a bounded comparative
-case for substantive independent read fan-out. Writer results remain in their
+accounting, user-owned whole-graph aggregate enforcement that stops the graph
+for a person's decision rather than ending it, observed and reconcilable
+retained worktrees, and a bounded comparative case for substantive independent
+read fan-out. Writer results remain in their
 own worktrees, require fresh detected-command verification tied to child state,
 and stop the graph in a distinct `awaiting_review` outcome rather than reporting
 their success as a blocker. It does **not** select or integrate a candidate,
@@ -877,7 +880,7 @@ Completion evidence and retained decision:
 
 ### OG-3 — Isolated writer candidates
 
-**Status: in progress; OG-3A plus corrections through OG-3A.8 complete (2026-08-03), OG-3B next.**
+**Status: in progress; OG-3A plus corrections through OG-3A.8 and OG-3B1–B5 complete (2026-08-03); OG-3B's adversarial campaign remains.**
 
 - Automatically dispatch only dependency-ready writers with declared disjoint
   scopes and a stable base.
@@ -912,8 +915,10 @@ OG-3A implemented contract:
   reason; dependents do not unlock and the parent workspace is untouched.
 - A process boundary while a writer is running becomes an interrupted-action
   blocker and cannot be retried automatically or through the safe-retry path.
-  OG-3B1 adds exact association of the orphaned in-flight worktree; deciding
-  what may be reused or discarded remains OG-5 reconciliation work.
+  OG-3B1 adds exact association of the orphaned in-flight worktree, and OG-3B5
+  adds observing what is actually left in it and discarding it on the user's
+  explicit instruction. Deciding what may be *reused* remains OG-4 selection
+  and OG-5 recovery work.
 
 OG-3A.1 aggregate-budget usability correction:
 
@@ -1055,7 +1060,7 @@ OG-3A.5 repair-progress and verifier-bootstrap correction:
   spelling is deliberately excluded from equivalence, so running the same
   failure through another wrapper or executable does not renew the lease.
   Repeated identical output, unrelated reads, and rejected command forms still
-  stop after four provider iterations; the fixed aggregate envelope remains
+  stop after four provider iterations; the aggregate envelope remains
   unchanged.
 - Failed verification evidence now retains its bounded tool output as well as
   the typed failure, allowing the runtime to distinguish “no tests collected”
@@ -1319,14 +1324,54 @@ OG-3B4 user-owned execution envelope:
   the model still cannot widen the envelope, and permission, verification,
   scope, and publication gates are untouched by it.
 
+OG-3B5 retained-worktree reconciliation:
+
+- OG-3B1 made every retained directory attributable to a node and attempt, and
+  then never looked at one again. Naming a path is not knowing whether it is
+  still there. Isolated writer worktrees live under the system temp directory,
+  so between one session and the next the operating system may have swept one,
+  a person may have removed one by hand, or it may be sitting there full of
+  unreviewed changes — and `/orchestrate status` printed the remembered path
+  identically in all three cases. Every decision a person can make about a
+  candidate depends on which case it is in.
+- `/orchestrate reconcile` observes each retained tree and records a typed
+  disposition durably on the attempt: `present` (registered with Git and still
+  holding changes), `empty` (registered and intact but holding none),
+  `missing` (the directory is gone), `orphaned` (the directory exists but Git
+  no longer registers it), `base_unreachable` (intact, but the commit its
+  claim recorded is no longer in the parent, so it cannot be diffed against
+  it), and `discarded`. An absent disposition means never observed, which is
+  the honest state for every graph written before this slice.
+- Observation is read-only and lives in the application layer: it removes
+  nothing, reuses nothing, and reopens no attempt, and the graph owns only the
+  durable record of the answer. Path comparison resolves symlinks, without
+  which every tree on macOS reports orphaned — the system temp directory is
+  itself a symlink, so Git's spelling of the path and the graph's never match.
+- `/orchestrate discard <node-id>` removes a tree a person no longer wants. It
+  is not a tool, so the model cannot call it; it is not covered by an autonomy
+  mode, because what it deletes is unreviewed work only a person can judge
+  worthless. It refuses a tree nobody has reconciled, so the decision is made
+  against contents rather than a path; a tree still holding changes needs the
+  request repeated with `confirm` after the changed-file count has been shown;
+  and it refuses an `orphaned` directory outright, because removing a path Git
+  does not own means recursively deleting a location read out of a durable
+  record. Removal is recorded in the audit ledger, and the node and attempt
+  keep the identity of what was removed.
+- Archiving a terminal graph is refused while it still points at a tree nobody
+  has observed. Archiving stops the session advertising the graph, and the
+  graph is the only thing that knows the directory exists, so releasing it
+  first would recreate precisely the orphan OG-3B1 removed. The gate asks for
+  the observation, not for the tree to be gone: a reconciled tree full of
+  changes archives fine.
+- Reuse remains out of scope. Selecting, integrating, or resuming work from a
+  retained candidate is OG-4, and the exact scheduler-state recovery this
+  reconciliation feeds is OG-5. This slice decides only what is *there*.
+
 OG-3B remaining contract:
 
 - complete the provider-failure campaign beyond the single-wave case, and
   exercise hook refusal, overlapping and case-folded scopes, post-claim parent
-  drift, and child verification drift through application-level paths;
-- reconcile an orphaned in-flight worktree, not merely name it — the OG-5
-  recovery decision about what may be reused, discarded, or required to be
-  removed by hand; and
+  drift, and child verification drift through application-level paths; and
 - confirm the inspection/recovery handoff is sufficient before marking OG-3
   complete or beginning automatic reviewed integration.
 
@@ -1477,26 +1522,30 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-3B4 — User-owned execution envelope**, following
-  OG-3B1–B3's retained-worktree accountability closure,
-  verification-composition correction, and budget-accounting correction, OG-3A's
-  verified isolated-writer candidate wave, and its eight trial- and audit-driven
-  corrections.
+- Last completed slice: **OG-3B5 — Retained-worktree reconciliation**,
+  following OG-3B1–B4's retained-worktree accountability closure,
+  verification-composition correction, budget-accounting correction, and
+  user-owned execution envelope, OG-3A's verified isolated-writer candidate
+  wave, and its eight trial- and audit-driven corrections.
 - Active milestone: **OG-3 — Isolated writer candidates**.
-- Next unblocked slice: **the remainder of OG-3B — adversarial and recovery
-  closure**, whose open items are the campaigns listed in the OG-3B remaining
-  contract above.
+- Next unblocked slice: **the remainder of OG-3B — the adversarial campaign**,
+  whose open items are the two remaining bullets of the OG-3B remaining
+  contract above: hook refusal, overlapping and case-folded scopes, post-claim
+  parent drift, child verification drift, and provider failure beyond a single
+  wave, all through application-level paths; then the sufficiency judgement on
+  the inspection/recovery handoff.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
-  `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, and OG-3B1–B4 are
-  the working tree on top of them.**
+  `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
+  `fd1c2bc`, and OG-3B5 is the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
   candidate wave for pairwise-disjoint isolated writers ending in
   `awaiting_review`, plus cooperative pause/resume, safe retry of eligible
   blocked nodes, durable aggregate accounting, bounded retained evidence,
-  attributable retained worktrees across every way a wave can end, and a
-  fixed whole-graph execution envelope**.
+  attributable retained worktrees across every way a wave can end, explicit
+  observation and user-decided disposal of those worktrees, and a
+  user-configurable whole-graph execution envelope a person can extend**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
 - Preserved implementation constraint: only approved `read_only` and narrowly
@@ -1733,6 +1782,28 @@ Every agent or contributor continuing this program must:
   permitted to make has no principle behind it once the decision itself is the
   control. Repository text, skills, hooks, and the model still cannot widen it,
   because none of them is the user.
+- Separate "where is the retained tree" from "is it still there". The first is
+  identity and the runtime can record it; the second is an observation that
+  goes stale the moment the session ends, and printing a remembered path as
+  though it were current is a claim the runtime has no basis for. Give the
+  observation its own typed vocabulary rather than folding it into prose.
+- Keep worktree observation read-only and worktree removal explicit and
+  user-only. Removal deletes work that was never reviewed, so it is not a tool,
+  is not covered by an autonomy mode, and requires that a person has been shown
+  what is in the tree first. Automatic cleanup of unreviewed candidates would
+  be the same defect as automatic selection, arrived at from the other side.
+- Refuse to remove a directory Git no longer registers. Through Git, removal is
+  bounded by what Git owns; without Git it is a recursive delete of a path read
+  out of a durable record, which is the one case where being wrong is
+  unrecoverable and a person should act themselves.
+- Refuse to archive a graph that is still the only record of a directory nobody
+  has looked at. Archiving is not destructive to the transcript, but it does
+  end the session's pointer to a real tree. Require the observation, not the
+  removal: a reconciled tree full of changes may be archived.
+- Resolve symlinks before comparing worktree paths. The system temp directory
+  is itself a symlink on macOS, so Git's spelling and the graph's never match
+  literally, and a naive comparison reports every retained tree orphaned —
+  the failure mode that would have made the whole surface untrustworthy.
 
 ## Open implementation decisions
 

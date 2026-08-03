@@ -323,10 +323,68 @@ type Attempt struct {
 	// working tree, recorded durably the moment Git creates it and before the
 	// child can change anything in it. A process boundary mid-wave otherwise
 	// leaves a real directory on disk that no attempt can be traced to.
-	Worktree string    `json:"worktree,omitempty"`
-	Branch   string    `json:"branch,omitempty"`
-	Started  time.Time `json:"started"`
-	Finished time.Time `json:"finished,omitempty"`
+	Worktree string `json:"worktree,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	// Disposition is what the runtime last observed about that directory, and
+	// Reconciled is when it looked. Identity alone answers "where is it"; only
+	// an observation answers "is it still there, and does it still hold work".
+	Disposition       WorktreeDisposition `json:"worktree_disposition,omitempty"`
+	DispositionDetail string              `json:"worktree_disposition_detail,omitempty"`
+	Reconciled        time.Time           `json:"worktree_reconciled,omitempty"`
+	Started           time.Time           `json:"started"`
+	Finished          time.Time           `json:"finished,omitempty"`
+}
+
+// WorktreeDisposition is the runtime's observed answer about one retained
+// worktree. It is deliberately a small closed vocabulary rather than prose:
+// the operator's next action differs for each, and a graph that cannot name
+// which case it is in cannot claim to have reconciled anything.
+//
+// An empty disposition means the tree has never been observed. That is the
+// honest state for a directory the runtime created and then stopped watching,
+// and it is what a reconcile pass exists to replace.
+type WorktreeDisposition string
+
+const (
+	// DispositionPresent — the tree is registered with Git and still holds
+	// changes. Nothing may reuse it before reviewed integration.
+	DispositionPresent WorktreeDisposition = "present"
+	// DispositionEmpty — the tree is registered but holds no changes, so
+	// discarding it loses nothing.
+	DispositionEmpty WorktreeDisposition = "empty"
+	// DispositionMissing — the directory is gone. Temporary directories are
+	// swept by the operating system, so this is the ordinary fate of a tree
+	// left by an interrupted session, not an error.
+	DispositionMissing WorktreeDisposition = "missing"
+	// DispositionOrphaned — the directory exists but Git no longer registers
+	// it as a worktree of this repository, so only a person can decide what
+	// its contents are worth.
+	DispositionOrphaned WorktreeDisposition = "orphaned"
+	// DispositionBaseUnreachable — the tree exists but the commit it was
+	// branched from is no longer in the parent repository, so its changes
+	// cannot be diffed against the base the claim recorded.
+	DispositionBaseUnreachable WorktreeDisposition = "base_unreachable"
+	// DispositionDiscarded — a person explicitly asked the runtime to remove
+	// this tree and it did. The identity is kept: the record of what was
+	// removed, from which node and attempt, is the point.
+	DispositionDiscarded WorktreeDisposition = "discarded"
+)
+
+func validDisposition(disposition WorktreeDisposition) bool {
+	switch disposition {
+	case "", DispositionPresent, DispositionEmpty, DispositionMissing,
+		DispositionOrphaned, DispositionBaseUnreachable, DispositionDiscarded:
+		return true
+	}
+	return false
+}
+
+// OnDisk reports whether this disposition describes a directory that still
+// exists. It is the test for whether an operator still has something to
+// decide about, and deliberately treats the never-observed empty disposition
+// as "assume it is there" — the conservative direction.
+func (d WorktreeDisposition) OnDisk() bool {
+	return d != DispositionMissing && d != DispositionDiscarded
 }
 
 type Evidence struct {
@@ -1084,6 +1142,17 @@ func ValidateSnapshot(snapshot Snapshot) error {
 		}
 		if (len(attempt.CompletionGapKinds) == 0) != (attempt.CompletionGap == "") {
 			return fmt.Errorf("goal graph snapshot attempt %q has a completion gap without typed kinds", attempt.ID)
+		}
+		if !validDisposition(attempt.Disposition) || len(attempt.DispositionDetail) > 512 {
+			return fmt.Errorf("goal graph snapshot attempt %q has an unknown retained-worktree disposition", attempt.ID)
+		}
+		// A disposition without a tree to describe, or without the time it was
+		// observed, is a claim about nothing. Reject it rather than render it.
+		if attempt.Disposition != "" && (attempt.Worktree == "" && attempt.Candidate == nil || attempt.Reconciled.IsZero()) {
+			return fmt.Errorf("goal graph snapshot attempt %q records a disposition without an observed worktree", attempt.ID)
+		}
+		if attempt.Disposition == "" && (attempt.DispositionDetail != "" || !attempt.Reconciled.IsZero()) {
+			return fmt.Errorf("goal graph snapshot attempt %q records a reconciliation without a disposition", attempt.ID)
 		}
 		for _, kind := range attempt.CompletionGapKinds {
 			if !validGapKind(kind) {
@@ -1963,6 +2032,124 @@ func (g *Graph) RecordWriterWorktree(ctx context.Context, attemptID, worktree, b
 	return g.persistLocked(ctx, true)
 }
 
+// RetainedWorktree is one directory the graph still points at, with whatever
+// the runtime last observed about it. It is a read-only projection: reviewed
+// integration, selection, and reuse remain out of scope here.
+type RetainedWorktree struct {
+	AttemptID    string
+	NodeID       int
+	NodeTitle    string
+	NodeState    NodeState
+	Worktree     string
+	Branch       string
+	BaseCommit   string
+	ChangedFiles int
+	Verification string
+	Disposition  WorktreeDisposition
+	Detail       string
+	Reconciled   time.Time
+}
+
+// WorktreeObservation is what the runtime saw when it looked at one retained
+// directory. The graph never performs the observation itself: filesystem and
+// Git access belong to the application layer, and the graph owns only the
+// durable record of the answer.
+type WorktreeObservation struct {
+	AttemptID   string
+	Disposition WorktreeDisposition
+	Detail      string
+}
+
+// RetainedWorktrees lists every tree the graph still points at, in stable
+// attempt order. It is available on a terminal graph by design: awaiting
+// review, cancelled, and budget-exhausted are exactly the states in which
+// directories are left on disk and a person has to decide about them.
+func (g *Graph) RetainedWorktrees() []RetainedWorktree {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.retainedWorktreesLocked()
+}
+
+func (g *Graph) retainedWorktreesLocked() []RetainedWorktree {
+	var trees []RetainedWorktree
+	for _, attempt := range g.state.Attempts {
+		worktree, branch := attempt.Worktree, attempt.Branch
+		if worktree == "" && attempt.Candidate != nil {
+			worktree, branch = attempt.Candidate.Worktree, attempt.Candidate.Branch
+		}
+		if worktree == "" {
+			continue
+		}
+		tree := RetainedWorktree{
+			AttemptID: attempt.ID, NodeID: attempt.NodeID, Worktree: worktree, Branch: branch,
+			BaseCommit: attempt.BaseCommit, Disposition: attempt.Disposition,
+			Detail: attempt.DispositionDetail, Reconciled: attempt.Reconciled,
+		}
+		if node := g.nodeLocked(attempt.NodeID); node != nil {
+			tree.NodeState, tree.NodeTitle = node.State, node.Title
+		}
+		if attempt.Candidate != nil {
+			tree.BaseCommit = attempt.Candidate.BaseCommit
+			tree.ChangedFiles = len(attempt.Candidate.ChangedFiles)
+			tree.Verification = attempt.Candidate.VerificationState
+			if tree.Verification == "" {
+				tree.Verification = "unverified"
+			}
+		}
+		trees = append(trees, tree)
+	}
+	return trees
+}
+
+// RecordWorktreeDispositions durably stores what the runtime observed about
+// the retained trees. It grants nothing, unblocks nothing, and reopens no
+// attempt: a graph that has stopped stays stopped, and this only replaces
+// "there is a directory somewhere" with a specific answer about each one.
+func (g *Graph) RecordWorktreeDispositions(ctx context.Context, observations []WorktreeObservation) error {
+	if len(observations) == 0 {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now().UTC()
+	changed := false
+	for _, observation := range observations {
+		if !validDisposition(observation.Disposition) || observation.Disposition == "" {
+			return fmt.Errorf("unknown retained-worktree disposition %q", observation.Disposition)
+		}
+		attempt := g.attemptLocked(observation.AttemptID)
+		if attempt == nil {
+			return fmt.Errorf("goal graph attempt %q is unknown", observation.AttemptID)
+		}
+		if attempt.Worktree == "" && attempt.Candidate == nil {
+			return fmt.Errorf("goal graph attempt %q has no retained worktree to reconcile", observation.AttemptID)
+		}
+		attempt.Disposition = observation.Disposition
+		attempt.DispositionDetail = bounded(strings.TrimSpace(observation.Detail), 512)
+		attempt.Reconciled = now
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return g.persistLocked(ctx, true)
+}
+
+// UnreconciledWorktrees names the retained trees that have never been
+// observed. Releasing the graph while any of these exist would discard the
+// only record of a real directory, so archiving asks this first.
+func (g *Graph) UnreconciledWorktrees() []RetainedWorktree {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var pending []RetainedWorktree
+	for _, tree := range g.retainedWorktreesLocked() {
+		if tree.Disposition == "" {
+			pending = append(pending, tree)
+		}
+	}
+	return pending
+}
+
 // writerFinishable reports whether this attempt may still record the facts of
 // the worktree it left behind. A terminal graph accepts only the attempt states
 // its own terminal transition produced, so a late or duplicate result can add
@@ -2163,8 +2350,8 @@ func (g *Graph) RecordPrimaryUsage(ctx context.Context, usage WorkUsage) error {
 	if attempt != nil {
 		// Snapshots written before progress-aware leases did not carry an exact
 		// progress iteration. A recorded successful tool result is enough to
-		// grant one fresh lease on resume; the fixed whole-graph envelope remains
-		// the outer bound.
+		// grant one fresh lease on resume; the whole-graph envelope remains the
+		// outer bound.
 		if attempt.LastProgressIteration == 0 && attempt.ToolSuccesses > 0 && attempt.Iterations > 0 {
 			attempt.LastProgressIteration = attempt.Iterations
 		}
@@ -3449,32 +3636,31 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 // directory exists either way, and hiding it is what loses it.
 func (g *Graph) retainedCandidatesLocked() []string {
 	var lines []string
-	for _, attempt := range g.state.Attempts {
-		worktree, branch := attempt.Worktree, attempt.Branch
-		if attempt.Candidate != nil {
-			worktree, branch = attempt.Candidate.Worktree, attempt.Candidate.Branch
-		}
-		if worktree == "" {
-			continue
-		}
+	for _, tree := range g.retainedWorktreesLocked() {
 		state := "unknown"
-		if node := g.nodeLocked(attempt.NodeID); node != nil {
-			state = string(node.State)
+		if tree.NodeState != "" {
+			state = string(tree.NodeState)
 		}
 		// An attempt that stopped before its result was recorded has a directory
 		// but no examined contents. Saying so is the point: that is precisely the
 		// tree an operator has to reconcile by hand.
-		detail := "unreconciled · contents never inspected by the runtime"
-		if attempt.Candidate != nil {
-			verification := attempt.Candidate.VerificationState
-			if verification == "" {
-				verification = "unverified"
-			}
+		detail := "candidate never recorded · contents never inspected by the runtime"
+		if tree.Verification != "" {
 			detail = fmt.Sprintf("verification %s · %d changed file(s) · base %s",
-				verification, len(attempt.Candidate.ChangedFiles), bounded(attempt.Candidate.BaseCommit, 12))
+				tree.Verification, tree.ChangedFiles, bounded(tree.BaseCommit, 12))
 		}
-		lines = append(lines, fmt.Sprintf("node %d (%s) · attempt %s · %s · %s · branch %s",
-			attempt.NodeID, state, attempt.ID, detail, worktree, branch))
+		// The disposition is what the runtime actually observed on disk, so it
+		// leads: a path printed without it reads as a promise that the directory
+		// is still there, which is the claim this slice exists to stop making.
+		disposition := "unreconciled — run /orchestrate reconcile"
+		if tree.Disposition != "" {
+			disposition = string(tree.Disposition)
+			if tree.Detail != "" {
+				disposition += " (" + bounded(tree.Detail, 200) + ")"
+			}
+		}
+		lines = append(lines, fmt.Sprintf("node %d (%s) · attempt %s · %s · %s · %s · branch %s",
+			tree.NodeID, state, tree.AttemptID, disposition, detail, tree.Worktree, tree.Branch))
 	}
 	return lines
 }

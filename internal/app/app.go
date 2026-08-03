@@ -1104,9 +1104,10 @@ func (r *Runtime) RetryOrchestratedNode(ctx context.Context, nodeID int) (status
 	return status, OrchestratedRetryPrompt(graph.Snapshot().Goal, nodeID), !requested, nil
 }
 
-// ExtendOrchestratedGoal grants an exhausted graph one more fixed envelope.
-// It is a user decision and nothing else can reach it: the ceiling remains
-// closed to configuration, repository text, hooks, skills, and the model.
+// ExtendOrchestratedGoal grants an exhausted graph one more envelope, sized
+// from the one it was configured with. It is a user decision and nothing else
+// can reach it: repository text, hooks, skills, and the model cannot grant or
+// widen an envelope, and only the user's own configuration sets its size.
 // Unfinished nodes start new attempts, so nothing interrupted is replayed.
 func (r *Runtime) ExtendOrchestratedGoal(ctx context.Context) (status, prompt string, runnable bool, err error) {
 	if r == nil || r.Agent == nil {
@@ -1145,6 +1146,112 @@ func (r *Runtime) ExtendOrchestratedGoal(ctx context.Context) (status, prompt st
 	status, _ = graph.Inspect(0)
 	requested, _, _ := graph.PauseState()
 	return status, OrchestratedExtendPrompt(graph.Snapshot().Goal), !requested, nil
+}
+
+// ReconcileOrchestratedWorktrees observes every retained isolated-writer
+// worktree and records what is actually on disk. It is read-only: it removes
+// nothing, reuses nothing, and reopens no attempt. Its whole purpose is to
+// replace a remembered path with a current answer, because every decision a
+// person can make about a retained candidate depends on which case it is in.
+//
+// It works on a terminal graph on purpose. Awaiting review, cancelled, and
+// budget exhausted are exactly the outcomes that leave directories behind.
+func (r *Runtime) ReconcileOrchestratedWorktrees(ctx context.Context) (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	graph, err := r.reconcilableGoalGraphLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	trees := graph.RetainedWorktrees()
+	if len(trees) == 0 {
+		return "No isolated-writer worktrees are retained by this Orchestrated Goal graph.", nil
+	}
+	observations := r.Agent.ObserveRetainedWorktrees(ctx, trees)
+	if err := graph.RecordWorktreeDispositions(ctx, observations); err != nil {
+		return "", err
+	}
+	r.logGoalGraphUpdates()
+	return graph.Inspect(0)
+}
+
+// DiscardOrchestratedWorktree removes the retained trees of one node because a
+// person asked for it. Nothing else can reach it: it is not a tool, so the
+// model cannot call it, and it is not covered by an autonomy mode, because
+// what it deletes is unreviewed work that only a person can judge worthless.
+//
+// A tree that still holds changes needs `confirmed`, which the command surface
+// obtains by making the user repeat the request after being shown the count.
+func (r *Runtime) DiscardOrchestratedWorktree(ctx context.Context, nodeID int, confirmed bool) (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	if nodeID <= 0 {
+		return "", errors.New("orchestrated goal node id must be a positive integer")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	graph, err := r.reconcilableGoalGraphLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	var targets []goalgraph.RetainedWorktree
+	for _, tree := range graph.RetainedWorktrees() {
+		if tree.NodeID == nodeID {
+			targets = append(targets, tree)
+		}
+	}
+	if len(targets) == 0 {
+		return "", fmt.Errorf("node %d has no retained isolated-writer worktree", nodeID)
+	}
+	for _, tree := range targets {
+		if tree.Disposition == "" {
+			return "", fmt.Errorf("node %d has a worktree that has never been observed; run /orchestrate reconcile first so this decision is made against its contents", nodeID)
+		}
+		if tree.Disposition == goalgraph.DispositionPresent && !confirmed {
+			return "", fmt.Errorf("node %d still holds unreviewed changes at %s (%s); repeat as /orchestrate discard %d confirm to remove it permanently", nodeID, tree.Worktree, tree.Detail, nodeID)
+		}
+	}
+	var removed []goalgraph.WorktreeObservation
+	var failures []string
+	for _, tree := range targets {
+		if err := r.Agent.DiscardRetainedWorktree(ctx, tree); err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		removed = append(removed, goalgraph.WorktreeObservation{
+			AttemptID:   tree.AttemptID,
+			Disposition: goalgraph.DispositionDiscarded,
+			Detail:      "removed on explicit user request; the node and attempt keep the record of what was there",
+		})
+	}
+	// Record what actually went before reporting what did not. A discard that
+	// half succeeded must not leave the graph claiming either outcome for both.
+	if err := graph.RecordWorktreeDispositions(ctx, removed); err != nil {
+		return "", err
+	}
+	r.logGoalGraphUpdates()
+	if len(failures) > 0 {
+		return "", fmt.Errorf("discard node %d: %s", nodeID, strings.Join(failures, "; "))
+	}
+	return graph.Inspect(0)
+}
+
+// reconcilableGoalGraphLocked returns the graph whose retained trees are in
+// question, attached or merely saved. It deliberately does not attach a
+// restored graph to the session: observing directories is not resuming work.
+// The caller must hold orchestrationMu.
+func (r *Runtime) reconcilableGoalGraphLocked(ctx context.Context) (*goalgraph.Graph, error) {
+	if r.GoalGraph != nil {
+		return r.GoalGraph, nil
+	}
+	if r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+		return nil, errors.New("there is no attached or saved Orchestrated Goal graph whose worktrees could be reconciled")
+	}
+	return restoreGoalGraph(ctx, r.Session, r.goalStateToken)
 }
 
 // CancelOrchestratedGoal cancels either the unapproved process-local proposal
@@ -1193,7 +1300,32 @@ func (r *Runtime) archiveSavedTerminalGoalGraphLocked() error {
 	if outcome, _ := graph.Outcome(); outcome == "" {
 		return errors.New("this session has a saved active Orchestrated Goal graph; use /orchestrate resume or /new")
 	}
+	if err := unreconciledArchiveError(graph); err != nil {
+		return err
+	}
 	return r.archiveTerminalGoalGraphLocked()
+}
+
+// unreconciledArchiveError refuses to release a graph that is still the only
+// record of a directory nobody has looked at. Archiving is not destructive to
+// the transcript, but it does stop the session advertising the graph, and a
+// retained worktree whose pointer is no longer reachable is precisely the
+// orphan this milestone exists to prevent. Observing is cheap and does not
+// commit the user to anything, so this asks for the observation, not for the
+// tree to be gone: a reconciled tree full of changes archives fine.
+func unreconciledArchiveError(graph *goalgraph.Graph) error {
+	if graph == nil {
+		return nil
+	}
+	pending := graph.UnreconciledWorktrees()
+	if len(pending) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(pending))
+	for _, tree := range pending {
+		paths = append(paths, fmt.Sprintf("node %d at %s", tree.NodeID, tree.Worktree))
+	}
+	return fmt.Errorf("this graph still points at %d retained worktree(s) nobody has looked at (%s); run /orchestrate reconcile first, then archive", len(pending), strings.Join(paths, "; "))
 }
 
 // archiveTerminalGoalGraphLocked releases a terminal graph as the session's
@@ -1206,6 +1338,9 @@ func (r *Runtime) archiveTerminalGoalGraphLocked() error {
 	if r.GoalGraph != nil {
 		if outcome, _ := r.GoalGraph.Outcome(); outcome == "" {
 			return errors.New("cannot archive an active Orchestrated Goal graph")
+		}
+		if err := unreconciledArchiveError(r.GoalGraph); err != nil {
+			return err
 		}
 	}
 	if err := r.Session.ClearGoalGraph(true); err != nil {

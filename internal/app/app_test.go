@@ -110,6 +110,102 @@ func TestSavedTerminalOrchestratedGoalAllowsAnotherWaveWithoutResume(t *testing.
 	}
 }
 
+// retainedWorktreeGraph is a terminal graph that still points at a directory,
+// which is the state every reconciliation decision is made from.
+func retainedWorktreeGraph(t *testing.T, worktree string) *goalgraph.Graph {
+	t.Helper()
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "produce a candidate", Nodes: []goalgraph.NodeSpec{
+		{ID: 1, Title: "change docs", Execution: goalgraph.ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+	}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := goalgraph.WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("writer claims=%+v err=%v", claims, err)
+	}
+	if err := graph.Cancel(t.Context(), "cancelled for fixture"); err != nil {
+		t.Fatal(err)
+	}
+	_ = graph.FinishWriter(t.Context(), goalgraph.WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "cancelled",
+		WritePaths: claims[0].WritePaths, ChangedFiles: []string{"docs/guide.md"},
+		Worktree: worktree, Branch: "collomia/writer-1",
+		BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+	})
+	return graph
+}
+
+// Archiving stops the session advertising the graph, and the graph is the only
+// thing that knows a real directory exists. Releasing it before anyone has
+// looked would recreate exactly the orphan this milestone removes — so the
+// gate asks for the observation, not for the tree to be gone.
+func TestArchiveRefusesToReleaseTheOnlyRecordOfAnUnexaminedWorktree(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	graph := retainedWorktreeGraph(t, "/tmp/retained-candidate")
+	runtime.GoalGraph = graph
+
+	_, err = runtime.CancelOrchestratedGoal(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "/orchestrate reconcile") {
+		t.Fatalf("archive error=%v, want a refusal naming reconcile", err)
+	}
+	if runtime.GoalGraph == nil {
+		t.Fatal("a refused archive released the graph anyway")
+	}
+
+	// Observing is the whole requirement. A tree that is still full of changes
+	// archives fine once a person has been shown that it is.
+	if err := graph.RecordWorktreeDispositions(t.Context(), []goalgraph.WorktreeObservation{{
+		AttemptID: graph.Snapshot().Attempts[0].ID, Disposition: goalgraph.DispositionPresent, Detail: "1 changed file(s) still in the tree",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.CancelOrchestratedGoal(t.Context()); err != nil {
+		t.Fatalf("archive after reconciliation failed: %v", err)
+	}
+	if runtime.GoalGraph != nil {
+		t.Fatal("archive left the graph attached")
+	}
+}
+
+// Removing unreviewed work is irreversible, so the destructive case is not
+// reachable by typing the ordinary command once.
+func TestDiscardRequiresConfirmationForAWorktreeThatStillHoldsChanges(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	graph := retainedWorktreeGraph(t, "/tmp/retained-candidate")
+	runtime.GoalGraph = graph
+
+	if _, err := runtime.DiscardOrchestratedWorktree(t.Context(), 1, false); err == nil || !strings.Contains(err.Error(), "reconcile") {
+		t.Fatalf("discard before reconciliation error=%v, want a refusal naming reconcile", err)
+	}
+	if err := graph.RecordWorktreeDispositions(t.Context(), []goalgraph.WorktreeObservation{{
+		AttemptID: graph.Snapshot().Attempts[0].ID, Disposition: goalgraph.DispositionPresent, Detail: "1 changed file(s) still in the tree",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.DiscardOrchestratedWorktree(t.Context(), 1, false)
+	if err == nil || !strings.Contains(err.Error(), "confirm") {
+		t.Fatalf("discard of a tree holding changes error=%v, want a demand for confirmation", err)
+	}
+	if !strings.Contains(err.Error(), "1 changed file(s)") {
+		t.Fatalf("the refusal does not say what would be lost: %v", err)
+	}
+	if _, err := runtime.DiscardOrchestratedWorktree(t.Context(), 2, true); err == nil || !strings.Contains(err.Error(), "no retained") {
+		t.Fatalf("discard of a node without a worktree error=%v", err)
+	}
+}
+
 // isolateGlobalFiles points per-user state at a scratch home so tests never
 // read or write the real ~/.collomia. It returns that home.
 func isolateGlobalFiles(t *testing.T) string {

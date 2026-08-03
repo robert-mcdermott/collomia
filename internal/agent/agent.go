@@ -591,7 +591,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				case goalgraph.DecisionContinue, goalgraph.DecisionAccepted, goalgraph.DecisionRetry:
 					// Accepted and retryable decisions close the current attempt. An
 					// instruction to continue the same attempt remains bounded by its
-					// progress lease and the fixed whole-graph envelope.
+					// progress lease and the whole-graph envelope.
 					if decision.Kind == goalgraph.DecisionContinue {
 						if node, attempt, exhausted := a.goalCompletionGapBudget(); exhausted {
 							blockedErr := reportError(send, a.blockStalledGoalCompletion(ctx, node, attempt, send))

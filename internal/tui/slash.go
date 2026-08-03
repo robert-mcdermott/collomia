@@ -255,6 +255,32 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			}
 			break
 		}
+		if len(args) == 1 && strings.EqualFold(args[0], "reconcile") {
+			status, err := m.runtime.ReconcileOrchestratedWorktrees(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal worktrees reconciled · experimental", status)
+			break
+		}
+		if len(args) >= 2 && len(args) <= 3 && strings.EqualFold(args[0], "discard") {
+			nodeID, convErr := strconv.Atoi(args[1])
+			confirmed := len(args) == 3 && strings.EqualFold(args[2], "confirm")
+			if convErr != nil || nodeID <= 0 || len(args) == 3 && !confirmed {
+				m.addError(fmt.Errorf("usage: /orchestrate discard <node-id> [confirm]"))
+				break
+			}
+			status, err := m.runtime.DiscardOrchestratedWorktree(context.Background(), nodeID, confirmed)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal worktree discarded · experimental", status)
+			break
+		}
 		if len(args) == 2 && strings.EqualFold(args[0], "retry") {
 			nodeID, convErr := strconv.Atoi(args[1])
 			if convErr != nil || nodeID <= 0 {

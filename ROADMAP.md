@@ -170,8 +170,9 @@ authority boundary: approval always initializes runtime nodes pending, and
 both `/orchestrate cancel` and `/plan off` provide visible recovery from an
 unapproved read-only proposal.
 Standard evidence-gated execution remains the default.
-**OG-3 — Isolated writer candidates** is now in progress: OG-3B adversarial and
-recovery closure is next. See the
+**OG-3 — Isolated writer candidates** is now in progress: OG-3B5 made every
+retained worktree observable and disposable by the user, and OG-3B's
+adversarial campaign is next. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -2062,29 +2063,32 @@ The setup journey, first completion controller, OG-1 runtime-owned primary
 graph, the complete OG-2 experimental read-only orchestration program, and
 OG-3A's first verified isolated-writer candidate wave, its seven trial-driven
 controller corrections, OG-3A.8's audit-driven review-readiness corrections, and
-OG-3B1–B4's retained-worktree accountability closure, verification-composition
-correction, budget-accounting correction, and user-owned execution envelope are
-now complete.
+OG-3B1–B5's retained-worktree accountability closure, verification-composition
+correction, budget-accounting correction, user-owned execution envelope, and
+retained-worktree reconciliation are now complete.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future integration and exact scheduler-recovery claims. The next orchestration
-slice is **OG-3B — adversarial and recovery closure**, with every candidate
-remaining in its own worktree and the primary workspace unchanged.
+slice is **the OG-3B adversarial campaign**, with every candidate remaining in
+its own worktree and the primary workspace unchanged.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
    recognizer after OG-3A.8's ecosystem breadth and OG-3B2's composition rule,
    and whether two interventions is the right bound. Keep this local and
    inspectable rather than adding telemetry by default.
-2. Finish **OG-3B — adversarial and recovery closure**. OG-3B1 closed the
-   retained-worktree half: every tree the runtime creates is now attributable
-   to a node and attempt however the wave ends, and `/orchestrate status` names
-   the ones still on disk. What remains is hook refusal, parent drift after the
-   claim, child verification drift, and reconciling — not merely naming — an
-   orphaned in-flight worktree. Keep the existing no-selection/no-integration
-   boundary until those failures are proven fail-closed.
+2. Finish **OG-3B — adversarial and recovery closure**. The retained-worktree
+   half is now closed: OG-3B1 made every tree attributable to a node and
+   attempt however the wave ends, and OG-3B5 made it observable — a person can
+   ask what is actually left in each one, and remove one they no longer want
+   after being shown its contents. What remains is the adversarial campaign:
+   hook refusal, overlapping and case-folded scopes, parent drift after the
+   claim, child verification drift, and provider failure beyond a single wave,
+   through application-level paths. Keep the existing
+   no-selection/no-integration boundary until those failures are proven
+   fail-closed.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never
    grants permission. `collo audit --actor` remains the surface that can say

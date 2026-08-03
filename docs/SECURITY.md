@@ -796,8 +796,10 @@ the unchanged permission and sandbox controls.
 The primary `max_iterations` setting is a consecutive no-progress lease in
 this mode, not an authority grant or a renewable whole-graph budget. Novel
 successful tool evidence or resolution of a recoverable failure renews it;
-equivalent repetition does not, and the fixed aggregate ceilings below remain
-hard. Once completion assessment records an exact gap, a narrower four-cycle
+equivalent repetition does not, and the aggregate ceilings below still bound
+it. Those ceilings are the user's own configuration and a person may grant an
+exhausted graph another envelope; nothing else can, and no ceiling is an
+authority grant. Once completion assessment records an exact gap, a narrower four-cycle
 lease renews for an actual workspace repair, a novel machine-observed
 verification failure, or evidence that closes the gate. Identical failures,
 superficially novel commands, and unrelated results cannot turn a fixed blocker

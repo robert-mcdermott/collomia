@@ -2898,7 +2898,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, or cancel the experimental Orchestrated Goal preview. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, observe what is left in each retained worktree, discard one you no longer want, or cancel the experimental Orchestrated Goal preview. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -3083,6 +3083,48 @@ Use the displayed worktree and the Session agent view to inspect the result.
 Automatic candidate selection and integration are OG-4 work; this preview does
 not apply, commit, merge, push, or publish the candidate.
 
+### Reconciling retained worktrees
+
+Every worktree Collomia creates is recorded against the node and attempt that
+caused it, the moment Git creates it — so a cancelled wave, an exhausted
+budget, or a session that simply stopped still leaves you a list rather than a
+mystery directory. But a recorded path is a memory, not an observation. These
+trees live under your system temp directory, so by the time you come back one
+may have been swept by the operating system, removed by hand, or be sitting
+there full of unreviewed work.
+
+`/orchestrate reconcile` looks at each one and records what it found:
+
+| Disposition | What it means | What to do |
+| --- | --- | --- |
+| `present` | Registered with Git and still holding changes. | Review it, or discard it with `confirm`. |
+| `empty` | Registered and intact, but nothing changed in it. | Safe to discard; nothing is lost. |
+| `missing` | The directory is gone. | Nothing to do. Discard clears the leftover branch. |
+| `orphaned` | The directory exists, but Git no longer registers it. | Inspect and remove it yourself. |
+| `base_unreachable` | Intact, but the commit it branched from is gone from the parent. | Its changes cannot be diffed against the claim; inspect by hand. |
+| `discarded` | You asked Collomia to remove it, and it did. | Nothing. The record of what was removed stays. |
+
+Until you run it, `/orchestrate status` says `unreconciled` rather than
+implying the path is current.
+
+`/orchestrate discard <node-id>` removes a tree you no longer want. It is
+deliberately awkward in three ways, because it deletes work nothing has
+reviewed:
+
+- it refuses a tree you have not reconciled, so you decide against contents
+  rather than a path;
+- a tree still holding changes needs `/orchestrate discard <node-id> confirm`,
+  after the changed-file count has been shown to you; and
+- an `orphaned` directory is refused outright. Removing it would be a
+  recursive delete of a path rather than a Git operation, and that is yours to
+  perform.
+
+The model cannot run either command, and no autonomy mode reaches them.
+Archiving a terminal graph also waits until its trees have been observed —
+archiving ends the session's pointer to them, and the graph is the only thing
+that knows they exist. Observing is all that is required; a reconciled tree
+full of changes archives fine.
+
 The fixed aggregate automatic-read envelope is visible in `/orchestrate
 status`: at most two concurrent workers, eight starts, 64,000 read tokens, and
 fifteen minutes total read wall time. Each child is also capped at five minutes
@@ -3091,14 +3133,17 @@ profile, scheduler, permission, and cancellation limits can be tighter. The
 graph records why it delegated and the worker identity, usage, evidence,
 retry, and terminal state.
 
-The whole graph also has a fixed experimental envelope: 96 provider
-iterations, 1,000,000 aggregate input/output tokens, $5 estimated cost when
+The whole graph also has an experimental envelope: 96 provider
+iterations, 1,000,000 charged tokens, $5 estimated cost when
 every token-bearing contribution has configured pricing, and 30 minutes of
-active execution after approval. These limits are stored with the graph and
-cannot be widened by configuration, repository content, instructions, skills,
-hooks, or the model. Reaching an exact limit prevents another provider or
+active execution after approval. Each is yours to set through
+`options.orchestration_*`, and only an implausible value is refused. The
+resolved limits are stored with the graph and cannot be widened by repository
+content, instructions, skills, hooks, or the model — none of those is you.
+Reaching an exact limit prevents another provider or
 scheduler admission; a response that crosses one records its usage and ends
-the graph `budget_exhausted`. Automatic workers inherit a share of the
+the graph `budget_exhausted`, keeping every accepted node and retained
+candidate for `/orchestrate extend`. Automatic workers inherit a share of the
 remaining allowance, while tighter primary/profile/read limits continue to
 win. Older saved graphs retain the ceiling stored when they were created; an
 upgrade never silently grants an in-progress graph more budget. If pricing is
@@ -3113,8 +3158,8 @@ lease inside one immutable primary node attempt. A novel successful tool
 result, newly observed workspace state, fresh verification, or resolution of a
 recoverable failure renews the lease; repeating equivalent evidence does not.
 This leaves room for the model to submit a completion proposal after a final
-productive action instead of stopping at the same boundary. The fixed
-96-iteration aggregate remains the outer limit across the proposal, all
+productive action instead of stopping at the same boundary. The configured
+whole-graph iteration ceiling remains the outer limit across the proposal, all
 primary attempts, compaction, and automatic workers. This prevents a
 multi-node graph from exhausting an ordinary 24-iteration setting merely
 because earlier work was productive, without making the graph unbounded.
@@ -3245,9 +3290,11 @@ bounded attempt. An interrupted isolated writer blocks for inspection and
 cannot use safe retry, because its retained worktree may already have changed.
 A potentially mutating or external parent action is durably marked
 before it starts; if its outcome is ambiguous after interruption, the graph
-blocks for reconciliation and never automatically repeats it. Exact scheduler
-recovery, exact in-flight worktree reconciliation, and reviewed integration
-are later milestones.
+blocks for reconciliation and never automatically repeats it. `/orchestrate
+reconcile` tells you what is actually left in that writer's worktree, and
+`/orchestrate discard` removes it if you decide it is worth nothing. Exact
+scheduler recovery, reusing a retained candidate, and reviewed integration are
+later milestones.
 
 An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another wave in
