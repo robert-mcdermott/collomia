@@ -56,9 +56,11 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
   neither status was ever added, and restoring validates. So integrating,
   closing the session, and reopening it left the graph rejected as structurally
   false — resume failed, archive failed, and it could not be read back at all.
-- **It was never purely a writer-wave defect.** Every graph that reached
-  integration was affected, read fan-out included wherever it had integrated a
-  candidate.
+- **It reached only the experimental shape.** Integration requires a candidate,
+  candidates require `isolated_write` nodes, and those cannot be mixed with
+  `primary` — so an end-to-end graph never integrates, and the graduated
+  read-fan-out shape was never exposed to this. A candidate-only graph that also
+  used read fan-out shares its graph's fate, but the failure is the wave's.
 - **No in-session test could have caught it.** The failure appears only once the
   process ends and the snapshot is read again, which is exactly the shape of bug
   an audit exists to find. A JSON round-trip test now covers the integrated,

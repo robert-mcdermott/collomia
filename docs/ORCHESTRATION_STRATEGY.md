@@ -2483,9 +2483,12 @@ and combined verification records `waived`. Neither status was ever added to
 the validator, and `Restore` validates. So a session that integrated a
 candidate, closed, and reopened found its graph rejected as structurally false:
 resume failed, archive failed, and the graph could not be read back at all.
-Every graph that reached integration was affected — the read-fan-out shape too,
-wherever it had integrated a candidate, so this was never purely a writer-wave
-defect. It was invisible to every in-session test because the failure only
+Every graph that reached integration was affected. That is the candidate-only
+shape only: `isolated_write` cannot be mixed with `primary`, so an end-to-end
+graph never holds a candidate and never integrates one, and the graduated
+read-fan-out shape could not have been reached by this defect. Read fan-out
+inside a candidate-only graph shares the fate of that graph, but the failure is
+the wave's. It was invisible to every in-session test because the failure only
 appears once the process ends and the snapshot is read again, which is exactly
 the shape of bug an audit exists to find. Both statuses are now valid, and a
 JSON round-trip test covers the integrated, waived, and verified end states.
