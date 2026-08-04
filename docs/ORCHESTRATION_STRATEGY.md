@@ -2177,6 +2177,43 @@ cancellation, and drift. The remaining graduation deliverable is the
 when-to-use-it guidance the never-default decision requires, and the evidence
 for it now exists.
 
+#### OG-5L — The when-to-use-it guidance
+
+**Status: complete (2026-08-04). This closes the never-default decision's added
+deliverable.**
+
+Deciding the mode will never be the default replaced "is it better on average"
+with "when is it better, and can a person tell". The second question needs an
+answer written down where a user will meet it, and the decision attached a
+condition: every case the guidance names must be one the evaluation matrix
+actually measured.
+
+The guidance now sits in the user guide's Orchestrated Goal section, before the
+worked example rather than after it, because choosing the mode comes before
+using it. Each case cites the evaluation that produced it. Its summary is that
+the mode buys containment and a review boundary and pays for them in repeated
+verification and in steps the user has to take — a good trade when a change
+might be wrong, and a bad one when it probably is not.
+
+**The condition is enforced by a test rather than by intention.** Guidance
+outlives the measurements behind it: an evaluation gets renamed, or deleted for
+looking redundant, and the user-facing claim it justified stays on the page with
+nothing underneath. A test parses the section, extracts every cited evaluation,
+and fails if any no longer exists — naming them and saying to restore the
+evaluation or remove the claim. Introducing a dangling citation was confirmed to
+fail it.
+
+Two further checks guard the shape rather than the content. The section must
+exist under its known heading, so renaming it away fails loudly instead of
+passing on an empty string. And the "when not to" half must itself cite
+evidence, because guidance that only says when to use a mode is marketing, and
+the case against is the half a person choosing an optional mode most needs.
+
+The test deliberately does not verify that numbers in the prose match what the
+evaluations print. That would be brittle across fixtures and machines, and the
+evaluations are the durable record either way. What it catches is the failure
+that is otherwise silent: a citation pointing at nothing.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -2252,7 +2289,9 @@ The mode remains experimental until all of these hold:
   the candidates and so nearer twice the elapsed penalty than three times),
   which scales with the repository's own suite rather than with the fixture;
 - the documentation says which work the mode is for and which it is not, and
-  every case it names is one the evaluation matrix measured;
+  every case it names is one the evaluation matrix measured. **Met by OG-5L**,
+  and enforced by a test that fails when the guidance cites an evaluation that
+  no longer exists;
 - replan, serialization, invalidation, and blocking explanations are useful to
   an operator;
 - the Phase 8 security and cancellation campaigns pass.
@@ -2311,7 +2350,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5K — parent drift compared** — the wave detects an
+- Last completed slice: **OG-5L — the when-to-use-it guidance**, which closes
+  the deliverable the never-default decision added: the user guide now says
+  which work the mode is for and which it is not, every case cites the
+  evaluation that measured it, and a test fails if a citation stops resolving.
+  It follows OG-5K — parent drift compared — the wave detects an
   edit made under a running writer where Standard mode structurally cannot, but
   described the survivor as a loss: the reason offered an undistinguished
   either/or and never said the verified candidate was retained on disk. This
@@ -2396,8 +2439,8 @@ Every agent or contributor continuing this program must:
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
   the OG-4 closure are `af71dba`, OG-5A through OG-5G plus the never-default
   decision are committed through `344c5ae`, OG-5H is `6b6a995`, OG-5I is
-  `f37f044`, OG-5J is `d368ff7`, and OG-5K is the working tree on top of
-  them.**
+  `f37f044`, OG-5J is `d368ff7`, OG-5K is `cf35d1f`, and OG-5L is the working
+  tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-

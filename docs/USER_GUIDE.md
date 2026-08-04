@@ -2947,6 +2947,66 @@ shape, the preview can produce one bounded wave of verified retained terminal
 candidates for narrowly scoped `isolated_write` nodes. Standard mode
 remains the default.
 
+#### When to use it, and when not to
+
+Orchestrated Goal **will never become the default**. It is an optional mode you
+select for specific work, and Standard mode is what runs otherwise. So the
+useful question is not whether it is better in general — it is when it is
+better, and the answer below is measured rather than asserted. Every case names
+the evaluation that produced it, and a test fails if any of those evaluations
+stops existing.
+
+**Reach for it when:**
+
+- **The work splits into parts that touch different files.** Two writers only
+  run at once when their declared scopes are disjoint, so this is the condition
+  every other benefit depends on.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+- **The change is risky, or a broken workspace would be expensive.** The same
+  non-compiling change leaves Standard mode's workspace changed and no longer
+  building; in a candidate wave your repository is untouched and the failure is
+  reported against the candidate. This is the mode's strongest case.
+  (`TestOrchestratedGoalComparativeFailureContainmentEvaluation`)
+- **You want nothing to reach your files until you have looked.** A wave stops
+  at `awaiting_review` with the parent byte-for-byte unchanged; publication is
+  a separate explicit act.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+- **Several substantive independent investigations can overlap.** Two read
+  nodes that each take real time run as one wave instead of two, halving the
+  critical path for roughly twice the tokens. Work too short to overlap gains
+  nothing, because overlap is the entire benefit.
+  (`TestOrchestratedGoalComparativeReadFanoutEvaluation`)
+- **Interruption is likely.** Cancelling mid-run leaves Standard mode's
+  half-finished change in your repository; a cancelled wave leaves your
+  repository untouched with its in-flight candidates retained and attributable.
+  An edit you make while a writer runs is detected rather than silently built
+  upon. (`TestOrchestratedGoalComparativeCancellationEvaluation`,
+  `TestOrchestratedGoalComparativeParentDriftEvaluation`)
+
+**Do not reach for it when:**
+
+- **The steps touch the same files.** Nodes sharing a write scope can never run
+  together, so the wave pays every cost for none of its benefit and needs a
+  full review cycle per node — work Standard mode does in one pass. This is the
+  clearest case against it.
+  (`TestOrchestratedGoalComparativeSameScopeSerialEvaluation`)
+- **Your test suite is slow and the work will probably succeed.** A wave runs
+  the repository's detected verification set once per candidate worktree and
+  again over the combined result: three rounds against one. The candidate
+  rounds run concurrently, so the elapsed penalty is nearer twice than three
+  times, but the compute is three times either way and it scales with your
+  suite, not with the size of the change.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+- **You need the work in your repository when the run ends.** A wave finishes
+  at `awaiting_review` having changed nothing. Reaching the state Standard mode
+  ends in takes an integration per candidate and a combined verification you
+  ask for.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+
+The short version: it buys containment and a review boundary, and it pays for
+them in repeated verification and in steps you have to take yourself. That is a
+good trade when a change might be wrong and a bad one when it probably is not.
+
 A complete trial looks like this:
 
 ```text

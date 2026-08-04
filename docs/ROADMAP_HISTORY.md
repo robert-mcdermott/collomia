@@ -45,6 +45,33 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — OG-5L writes the when-to-use-it guidance
+
+- **Deciding the mode will never be the default changed the question.** Not "is
+  it better on average" — nobody is ever handed it — but "when is it better,
+  and can you tell". The second question needs an answer written where you will
+  actually meet it.
+- **The guidance is in the user guide's Orchestrated Goal section**, before the
+  worked example rather than after it, because choosing the mode comes before
+  using it. Each case cites the evaluation that produced it.
+- **Its summary:** the mode buys containment and a review boundary, and pays
+  for them in repeated verification and in steps you take yourself. A good
+  trade when a change might be wrong; a bad one when it probably is not.
+- **The condition is enforced by a test, not by intention.** Guidance outlives
+  the measurements behind it — an evaluation gets renamed, or deleted for
+  looking redundant, and the claim it justified stays on the page with nothing
+  underneath. A test extracts every citation and fails if one no longer
+  resolves, naming it and saying to restore the evaluation or drop the claim.
+- **Two more checks guard the shape.** The section must exist under its known
+  heading, so renaming it away fails loudly instead of passing on an empty
+  string. And the "when not to" half must cite evidence itself, because
+  guidance that only says when to use something is marketing, and the case
+  against is the half you most need when the mode is optional.
+- **It does not check that numbers in the prose match what the evaluations
+  print.** That would be brittle across fixtures and machines, and the
+  evaluations are the durable record. What it catches is the silent failure: a
+  citation pointing at nothing.
+
 ### 2026-08-04 — OG-5K compares parent drift and completes the comparison list
 
 - **Drift is where the two modes differ structurally, not by degree.** Standard

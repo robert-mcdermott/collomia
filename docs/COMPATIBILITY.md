@@ -544,6 +544,9 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5L changes nothing shipped: user-guide guidance and a test that enforces its
+citations. No product code.
+
 OG-5K changes one user-visible string and no persisted shape: a node blocked
 because its candidate's base moved now names which of the parent workspace or
 the Git base changed, and reports the retained candidate. Node reasons are prose

@@ -2069,6 +2069,17 @@ roadmap remains the source of priority and completion status.
       disk. It now names what moved, where the candidate is retained, and that
       nothing is lost. **This completes the comparison list.**
       *(Completed 2026-08-04.)*
+    - [x] **OG-5L — the when-to-use-it guidance:** close the deliverable the
+      never-default decision added. Deciding the mode will never be the default
+      replaced "is it better on average" with "when is it better, and can a
+      person tell" — and the second question needs an answer where a user will
+      meet it. The user guide now says which work the mode is for and which it
+      is not, each case citing the evaluation that produced it. The condition
+      is enforced rather than intended: a test extracts every citation and
+      fails if one no longer resolves, requires the section to exist under its
+      known heading, and requires the "when not to" half to cite evidence too,
+      because guidance that only says when to use a mode is marketing.
+      *(Completed 2026-08-04.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2300,7 +2311,9 @@ and found the mechanism already sound: zero post-cancellation actions in both
 modes, with the wave leaving the repository untouched and its in-flight work
 retained. OG-5K then completed the list with parent drift, where the wave
 detects what Standard mode structurally cannot — and where a verified candidate
-sitting safely on disk was being described as though it had been thrown away.
+sitting safely on disk was being described as though it had been thrown away. OG-5L then wrote the guidance those comparisons existed to
+support, and made its citations enforceable so a documented case cannot outlive
+the measurement behind it.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
