@@ -178,7 +178,7 @@ func TestOrchestratedGoalAutomaticReadFanoutEvaluation(t *testing.T) {
 	}
 	mustWriteEvaluationFile(t, filepath.Join(configDir, "config.json"), `{"default_provider":"fixture","providers":{"fixture":{"type":"openai-compatible","base_url":"http://127.0.0.1:1/v1","model":"scripted","context_window":16000,"max_tokens":256}}}`)
 	workspace := orchestratedGitFixture(t)
-	t.Setenv("GOCACHE", filepath.Join(workspace, ".collomia-eval-cache"))
+	sharedBuildCache(t)
 	approved := &plan.Plan{Goal: "synthesize two repository facts", Steps: []plan.Step{
 		{ID: 1, Title: "inspect API behavior", Status: "pending", Execution: "read_only", Acceptance: []string{"implementation evidence is grounded"}},
 		{ID: 2, Title: "inspect test expectation", Status: "pending", Execution: "read_only", Acceptance: []string{"test evidence is grounded"}},
@@ -512,12 +512,13 @@ func orchestratedGitFixture(t *testing.T) string {
 
 func newOrchestratedEvaluationAgent(t *testing.T, workspace string, client provider.Client, mode string, spec goalgraph.Spec) (*agent.Agent, *goalgraph.Graph, interface{ Changed() []string }) {
 	t.Helper()
-	t.Setenv("GOCACHE", filepath.Join(workspace, ".collomia-eval-cache"))
+	buildCache := sharedBuildCache(t)
 	cfg := appconfig.Defaults()
 	cfg.Permissions.Mode = mode
 	cfg.Permissions.Sandbox = evaluationSandboxMode()
 	cfg.Permissions.CommandEnv = "minimal"
 	cfg.Permissions.SandboxReadableRoots = append(cfg.Permissions.SandboxReadableRoots, evaluationSandboxReadableRoots()...)
+	cfg.Permissions.SandboxWritableRoots = append(cfg.Permissions.SandboxWritableRoots, buildCache)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		t.Fatal(err)

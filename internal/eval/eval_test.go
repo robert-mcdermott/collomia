@@ -341,9 +341,10 @@ func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, 
 func newRuledEvaluationAgent(t *testing.T, workspace string, client provider.Client, mode string, rules []appconfig.Rule) (*agent.Agent, interface{ Changed() []string }) {
 	t.Helper()
 	// Evaluation commands run with the production minimal environment and
-	// default-on sandbox. Keep Go's build cache inside the writable fixture
-	// workspace so nested `go test` commands remain isolated and deterministic.
-	t.Setenv("GOCACHE", filepath.Join(workspace, ".collomia-eval-cache"))
+	// default-on sandbox. The Go build cache is shared across this package and
+	// granted as a sandbox writable root, so nested toolchain commands reuse
+	// compiled artifacts instead of starting cold in every evaluation.
+	buildCache := sharedBuildCache(t)
 	cfg := appconfig.Defaults()
 	cfg.Permissions.Mode = mode
 	cfg.Permissions.Sandbox = evaluationSandboxMode()
@@ -352,6 +353,7 @@ func newRuledEvaluationAgent(t *testing.T, workspace string, client provider.Cli
 	// minimal command environment in every evaluation mode.
 	cfg.Permissions.CommandEnv = "minimal"
 	cfg.Permissions.SandboxReadableRoots = append(cfg.Permissions.SandboxReadableRoots, evaluationSandboxReadableRoots()...)
+	cfg.Permissions.SandboxWritableRoots = append(cfg.Permissions.SandboxWritableRoots, buildCache)
 	cfg.Permissions.Rules = append(cfg.Permissions.Rules, rules...)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {

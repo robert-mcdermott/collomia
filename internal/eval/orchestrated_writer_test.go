@@ -84,6 +84,11 @@ func newRuledWriterEvaluationRuntime(t *testing.T, workspace string, client prov
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// One build cache for the whole package rather than a cold one per
+	// evaluation. A candidate wave runs the toolchain once per worktree and
+	// again over the combined workspace, so starting cold each time was the
+	// dominant cost of this package.
+	buildCache := sharedBuildCache(t)
 	// The child runs the repository's real test command, so the evaluation
 	// needs the same sandbox and environment settings the primary-graph
 	// evaluation uses for its verification step.
@@ -96,6 +101,9 @@ func newRuledWriterEvaluationRuntime(t *testing.T, workspace string, client prov
 			"sandbox":                evaluationSandboxMode(),
 			"command_env":            "minimal",
 			"sandbox_readable_roots": evaluationSandboxReadableRoots(),
+			// The shared Go build cache lives outside every workspace, so the
+			// sandboxed toolchain needs an explicit root to populate it.
+			"sandbox_writable_roots": []string{buildCache},
 			"denied_tools":           deniedTools,
 			"rules":                  rules,
 		},
@@ -105,10 +113,6 @@ func newRuledWriterEvaluationRuntime(t *testing.T, workspace string, client prov
 		t.Fatal(err)
 	}
 	mustWriteEvaluationFile(t, filepath.Join(configDir, "config.json"), string(encoded))
-	// A shared build cache outside every worktree: each candidate tree is a
-	// separate directory, and pointing the cache inside one of them would make
-	// the first verification's cost the second's problem.
-	t.Setenv("GOCACHE", filepath.Join(home, "go-build-cache"))
 
 	approved := &plan.Plan{Goal: "produce reviewable candidates", Steps: steps}
 	runtime, err := app.New(t.Context(), app.Options{Workspace: workspace, Autonomy: "autopilot", OrchestratedGoal: approved})

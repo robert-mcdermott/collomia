@@ -431,7 +431,7 @@ func TestOrchestratedGoalComparativeReadFanoutEvaluation(t *testing.T) {
 			}
 
 			fanoutWorkspace := comparisonWorkspace(t, scenario)
-			t.Setenv("GOCACHE", filepath.Join(fanoutWorkspace, ".collomia-eval-cache"))
+			sharedBuildCache(t)
 			fanoutPlan := comparisonPlan(scenario)
 			fanout, err := app.New(t.Context(), app.Options{Workspace: fanoutWorkspace, Autonomy: "autopilot", OrchestratedGoal: fanoutPlan})
 			if err != nil {
