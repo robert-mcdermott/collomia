@@ -45,6 +45,32 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-5D stops a revision from deleting its way to success
+
+- **The model could delete a node it could not finish and be told the plan
+  passed.** A graph revision rebuilds the node set from the proposed plan, so a
+  node the proposal omits simply disappears. With one node done and one node
+  ready, a revision containing only the first left a graph that settled on
+  done, reporting that all required nodes passed their acceptance gates —
+  which about a deleted node is false. Revision is one of the model's two graph
+  tools, so this was reachable without any user action.
+- **Dropping nodes stays legal.** Requirements genuinely turn out unnecessary
+  and replanning is what revisions are for; refusing would make legitimate
+  scope changes impossible. What must not happen is the terminal state claiming
+  the removed node passed.
+- **The removal is now recorded and the completion says so.** A retired node
+  keeps its identity, the state it was in when it went, the revision's reason,
+  and when — and done reports that the approved plan was reduced first and
+  names what left with it. Removing work that already finished is not a
+  retirement: its evidence stands.
+- **Who says it mattered.** The closing message on a completed graph is the
+  model's own text, and a model that just proposed dropping a node is the last
+  narrator to rely on for mentioning it, so the runtime appends its own
+  account. Dropping the last unfinished node settles the graph immediately, and
+  that path ended on a terminal guard that was discarding the reason entirely;
+  both paths now carry it. `/orchestrate status` lists retirements in the one
+  place they can be seen at all, since the graph no longer holds those nodes.
+
 ### 2026-08-03 — OG-5C writes down the adversarial publication corpus
 
 - **Publication is where "no silent overwrite" actually bites**, because it is

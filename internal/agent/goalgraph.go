@@ -281,6 +281,13 @@ func (a *Agent) ensureGoalAttempt(ctx context.Context, send Emit) error {
 func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 	switch outcome {
 	case goalgraph.OutcomeDone:
+		// Carry the reason. A graph can reach done the moment a revision
+		// removes the last unfinished node, in which case this is the only
+		// thing the user is told about the turn — and the reason is where the
+		// runtime records that the approved plan was reduced to get here.
+		if reason = strings.TrimSpace(reason); reason != "" {
+			return fmt.Errorf("%w: %s; start /new for unrelated work", ErrGoalGraphComplete, reason)
+		}
 		return fmt.Errorf("%w; start /new for unrelated work", ErrGoalGraphComplete)
 	case goalgraph.OutcomeCancelled:
 		if strings.TrimSpace(reason) == "" {
@@ -460,6 +467,32 @@ func (a *Agent) aggregateBudgetError(send Emit) error {
 		return terminalErr
 	}
 	return err
+}
+
+// goalDoneAnswer appends the account of every node a revision removed before it
+// completed.
+//
+// The closing message on a completed graph is the model's own text, and a model
+// that proposed dropping a node it could not finish is the last narrator to
+// rely on for mentioning that it did. The runtime owns terminal state, so the
+// runtime says what the plan lost — in the answer the user actually reads,
+// rather than only in a status command they may never run.
+func goalDoneAnswer(content string, graph *goalgraph.Graph) string {
+	if graph == nil {
+		return content
+	}
+	retired := graph.RetiredNodes()
+	if len(retired) == 0 {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(content, "\n"))
+	fmt.Fprintf(&b, "\n\nThe approved plan was reduced before this finished: %d node(s) were removed by revision without completing, so nothing verified them.\n", len(retired))
+	for _, node := range retired {
+		fmt.Fprintf(&b, "  - node %d (%s), removed while %s: %s\n", node.ID, node.Title, node.State, node.Reason)
+	}
+	b.WriteString("\nReview whether that still meets your goal. /orchestrate status shows the same account.")
+	return b.String()
 }
 
 // goalAwaitingReviewAnswer renders the successful candidate-wave stop as an

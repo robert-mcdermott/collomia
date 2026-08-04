@@ -2152,3 +2152,141 @@ func TestRestartReproducesTheMultiWorkerScheduleAndItsSpentBudget(t *testing.T) 
 		t.Fatalf("starts after re-claiming=%d, want the restart charged for both (4)", spent)
 	}
 }
+
+// The graduation gate forbids reporting done with an open required node.
+// Deleting the node is the way around that rule, and it is a move the model
+// can make: revision is its tool, and a graph it cannot finish becomes one it
+// can by proposing a smaller one. Retiring work is legitimate — requirements
+// genuinely turn out unnecessary — so the answer is not to forbid it but to
+// stop the terminal state from claiming the removed node passed anything.
+func TestDoneNeverClaimsARetiredNodePassedItsGates(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "implement and document", Nodes: []NodeSpec{
+		{ID: 1, Title: "implement", Acceptance: []string{"tests pass"}},
+		{ID: 2, Title: "document", Acceptance: []string{"docs updated"}},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision := successfulRead(t, graph, attempt, "state"); decision.Kind != DecisionAccepted {
+		t.Fatalf("first node decision=%+v", decision)
+	}
+
+	// The model proposes a graph that simply does not contain node 2.
+	if err := graph.Revise(t.Context(), graph.Snapshot().Generation, "node 2 turned out to be unnecessary", Spec{
+		Goal:  "implement and document",
+		Nodes: []NodeSpec{{ID: 1, Title: "implement", Acceptance: []string{"tests pass"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := graph.StartNext(t.Context(), "state"); !errors.Is(err, ErrGraphTerminal) {
+		t.Fatalf("graph did not settle after the revision: %v", err)
+	}
+
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != OutcomeDone {
+		t.Fatalf("outcome=%q, want done: legitimate replanning must still be able to finish", snapshot.Outcome)
+	}
+	// The reason is the whole point. "All required nodes passed" is false about
+	// a node that was deleted, and a reader deciding whether the goal was met
+	// has to be told the plan shrank and what left with it.
+	if strings.HasPrefix(snapshot.Reason, "all required nodes passed") {
+		t.Fatalf("done claims every required node passed after one was removed: %q", snapshot.Reason)
+	}
+	for _, phrase := range []string{"the approved plan was reduced", "node 2 (document)", "node 2 turned out to be unnecessary"} {
+		if !strings.Contains(snapshot.Reason, phrase) {
+			t.Fatalf("the done reason does not say %q:\n%s", phrase, snapshot.Reason)
+		}
+	}
+
+	retired := graph.RetiredNodes()
+	if len(retired) != 1 || retired[0].ID != 2 || retired[0].State != NodeReady {
+		t.Fatalf("retired record=%+v, want node 2 as it stood when it was removed", retired)
+	}
+	// An operator sees it in status, where the node list cannot show it: the
+	// graph no longer contains that node at all.
+	status, err := graph.Inspect(0)
+	if err != nil || !strings.Contains(status, "Retired by revision") || !strings.Contains(status, "node 2 (document)") {
+		t.Fatalf("status does not account for the retired node err=%v\n%s", err, status)
+	}
+	// The account is durable. A restart that lost it would restore a graph
+	// whose done reason no longer matched its own record.
+	restored, err := Restore(snapshot, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.RetiredNodes(); len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("restored retirements=%+v", got)
+	}
+}
+
+// Removing work that already finished is not a retirement. Its evidence
+// stands, and recording it as abandoned would overstate the loss in exactly
+// the direction the record exists to prevent overstating.
+func TestRemovingACompletedNodeIsNotRecordedAsRetired(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "implement then verify", Nodes: []NodeSpec{
+		{ID: 1, Title: "implement", Acceptance: []string{"tests pass"}},
+		{ID: 2, Title: "verify", Acceptance: []string{"suite is green"}},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := graph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision := successfulRead(t, graph, attempt, "state"); decision.Kind != DecisionAccepted {
+		t.Fatalf("first node decision=%+v", decision)
+	}
+	if err := graph.Revise(t.Context(), graph.Snapshot().Generation, "the implemented node is no longer part of the plan", Spec{
+		Goal:  "implement then verify",
+		Nodes: []NodeSpec{{ID: 2, Title: "verify", Acceptance: []string{"suite is green"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if retired := graph.RetiredNodes(); len(retired) != 0 {
+		t.Fatalf("a completed node was recorded as retired: %+v", retired)
+	}
+}
+
+// A snapshot may not claim a retirement that did not happen. The record is
+// what keeps a terminal state from overstating what passed, so a forged or
+// incoherent one has to be rejected before it can be scheduled against.
+func TestSnapshotRejectsAnIncoherentRetirementRecord(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "implement", Nodes: []NodeSpec{
+		{ID: 1, Title: "implement", Acceptance: []string{"tests pass"}},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := graph.Snapshot()
+	valid := RetiredNode{ID: 2, Title: "document", State: NodeReady, Reason: "dropped", Generation: 1, Time: base.Created}
+
+	for name, mutate := range map[string]func(RetiredNode) RetiredNode{
+		"a node the graph still contains": func(r RetiredNode) RetiredNode { r.ID = 1; return r },
+		"completed work":                  func(r RetiredNode) RetiredNode { r.State = NodeDone; return r },
+		"no reason":                       func(r RetiredNode) RetiredNode { r.Reason = ""; return r },
+		"no identity":                     func(r RetiredNode) RetiredNode { r.Title = ""; return r },
+		"no time":                         func(r RetiredNode) RetiredNode { r.Time = time.Time{}; return r },
+	} {
+		snapshot := cloneSnapshot(base)
+		snapshot.RetiredNodes = []RetiredNode{mutate(valid)}
+		if err := ValidateSnapshot(snapshot); err == nil {
+			t.Fatalf("a retirement record claiming %s was accepted", name)
+		}
+	}
+
+	// The coherent record is accepted, so the cases above fail for their own
+	// reason rather than because retirements are rejected wholesale.
+	snapshot := cloneSnapshot(base)
+	snapshot.RetiredNodes = []RetiredNode{valid}
+	if err := ValidateSnapshot(snapshot); err != nil {
+		t.Fatalf("a coherent retirement record was rejected: %v", err)
+	}
+}

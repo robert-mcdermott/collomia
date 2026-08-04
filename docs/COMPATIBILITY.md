@@ -544,6 +544,16 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5D adds an optional `retired_nodes` array to graph schema 1, each entry
+naming a node a revision removed before it completed. It is additive: a
+snapshot written before this slice has no such array and validates unchanged,
+and a reader that ignores the field sees the graph exactly as it did. Snapshots
+carrying one are rejected if it names a node the graph still contains, one that
+had completed, or one without identity, reason, or time. The `done` outcome's
+`reason` text changes when retirements exist, and the terminal-completion error
+now carries that reason where it previously discarded it; both are prose fields
+that were never a stable interface.
+
 OG-5C changes no persisted or machine-readable shape, and no behaviour: it
 records the publication half of the adversarial corpus against refusals that
 already held.

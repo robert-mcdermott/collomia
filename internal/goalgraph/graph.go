@@ -422,6 +422,29 @@ type Revision struct {
 	Time       time.Time `json:"time"`
 }
 
+// RetiredNode records a node a revision removed before it completed.
+//
+// Dropping a node is legitimate replanning — work genuinely turns out to be
+// unnecessary — but it is also the one move that can turn a graph the model
+// cannot finish into one it can. Without this record the two are
+// indistinguishable afterwards: the node is simply gone, and a graph that
+// reports done says every required node passed its gates, which about a
+// deleted node is false. So the removal is kept, and the terminal state has to
+// account for it.
+//
+// A node removed while already `done` is not retired. Its work happened and
+// its evidence stands; only unfinished removals are recorded here.
+type RetiredNode struct {
+	ID    int    `json:"id"`
+	Title string `json:"title"`
+	// State is what the node was when the revision removed it, which is the
+	// difference between abandoning ready work and abandoning a blocker.
+	State      NodeState `json:"state"`
+	Reason     string    `json:"reason"`
+	Generation uint64    `json:"generation"`
+	Time       time.Time `json:"time"`
+}
+
 // Snapshot is the complete bounded durable graph record. The session appends
 // a new snapshot on every meaningful transition; loading uses only the latest
 // one and never reconstructs runtime truth from model messages.
@@ -435,6 +458,7 @@ type Snapshot struct {
 	Attempts           []Attempt       `json:"attempts,omitempty"`
 	Evidence           []Evidence      `json:"evidence,omitempty"`
 	Revisions          []Revision      `json:"revisions,omitempty"`
+	RetiredNodes       []RetiredNode   `json:"retired_nodes,omitempty"`
 	MutationGeneration uint64          `json:"mutation_generation"`
 	WorkspaceToken     string          `json:"workspace_token,omitempty"`
 	RevisionCount      int             `json:"revision_count,omitempty"`
@@ -1074,6 +1098,29 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	}
 	if snapshot.MaxAttemptsPerNode <= 0 || snapshot.MaxRevisions <= 0 {
 		return errors.New("goal graph snapshot has invalid attempt or revision bounds")
+	}
+	// A retirement is the record of work the approved plan lost. A snapshot
+	// claiming one for a node the graph still contains, or one that names a
+	// node with no identity or no reason, is describing something that did not
+	// happen — and this record exists precisely so a terminal state cannot
+	// overstate what passed.
+	present := make(map[int]bool, len(snapshot.Nodes))
+	for _, node := range snapshot.Nodes {
+		present[node.ID] = true
+	}
+	for _, retired := range snapshot.RetiredNodes {
+		if retired.ID <= 0 || strings.TrimSpace(retired.Title) == "" || strings.TrimSpace(retired.Reason) == "" {
+			return errors.New("goal graph snapshot has an unattributable retired node")
+		}
+		if present[retired.ID] {
+			return fmt.Errorf("goal graph snapshot retires node %d while still containing it", retired.ID)
+		}
+		if retired.State == NodeDone {
+			return fmt.Errorf("goal graph snapshot retires completed node %d; finished work is not a retirement", retired.ID)
+		}
+		if retired.Generation == 0 || retired.Time.IsZero() {
+			return fmt.Errorf("goal graph snapshot retires node %d without saying when", retired.ID)
+		}
 	}
 	if snapshot.ReadFanout.MaxConcurrent <= 0 || snapshot.ReadFanout.MaxConcurrent > defaultMaxReadConcurrency || snapshot.ReadFanout.MaxStarts <= 0 || snapshot.ReadFanout.Starts < 0 || snapshot.ReadFanout.Starts > snapshot.ReadFanout.MaxStarts || snapshot.ReadFanout.MaxTokens <= 0 || snapshot.ReadFanout.UsedTokens < 0 || snapshot.ReadFanout.MaxWallSeconds <= 0 {
 		return errors.New("goal graph snapshot has invalid read-fan-out bounds or usage")
@@ -3197,10 +3244,58 @@ func (g *Graph) Revise(ctx context.Context, baseGeneration uint64, reason string
 			break
 		}
 	}
+	// Account for what the revision removed. A node the proposal simply omits
+	// disappears from the graph, and the completion reducer below counts only
+	// the nodes that remain — so without this record a graph could report that
+	// every required node passed its gates while one of them had been deleted
+	// precisely because it could not pass them.
+	retained := make(map[int]bool, len(spec.Nodes))
+	for _, proposed := range spec.Nodes {
+		retained[proposed.ID] = true
+	}
+	dropped := make([]int, 0, len(old))
+	for id := range old {
+		if !retained[id] {
+			dropped = append(dropped, id)
+		}
+	}
+	sort.Ints(dropped)
+	for _, id := range dropped {
+		prior := old[id]
+		// Removing finished work is not a retirement. The node ran, its
+		// evidence stands, and the plan simply no longer lists it.
+		if prior.State == NodeDone {
+			continue
+		}
+		g.state.RetiredNodes = append(g.state.RetiredNodes, RetiredNode{
+			ID: prior.ID, Title: prior.Title, State: prior.State,
+			Reason: reason, Generation: g.state.Generation, Time: now,
+		})
+		g.queueUpdateLocked(prior.ID, "", "retired", fmt.Sprintf("removed by graph revision while %s: %s", prior.State, reason))
+	}
 	g.state.Revisions = append(g.state.Revisions, Revision{Generation: g.state.Generation, Reason: reason, Spec: cloneSpec(spec), Time: now})
 	g.refreshReadyLocked("revised dependencies accepted")
 	g.queueUpdateLocked(0, "", "revised", reason)
 	return g.persistLocked(ctx, true)
+}
+
+// RetiredNodes returns the nodes revisions removed before they completed.
+func (g *Graph) RetiredNodes() []RetiredNode {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]RetiredNode(nil), g.state.RetiredNodes...)
+}
+
+// retiredSummaryLocked renders the retirement account for a terminal reason.
+func (g *Graph) retiredSummaryLocked() string {
+	if len(g.state.RetiredNodes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(g.state.RetiredNodes))
+	for _, retired := range g.state.RetiredNodes {
+		parts = append(parts, fmt.Sprintf("node %d (%s) was removed by revision while %s: %s", retired.ID, retired.Title, retired.State, retired.Reason))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // Recover converts a stored running attempt into a safe restart or an
@@ -3816,6 +3911,16 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 		}
 		b.WriteByte('\n')
 	}
+	// A node the plan no longer contains cannot appear in the node list above,
+	// so this is the only place an operator can see that the approved plan was
+	// reduced and what left it.
+	if len(g.state.RetiredNodes) > 0 {
+		b.WriteString("\nRetired by revision (removed before completing; no evidence was produced)\n")
+		for _, retired := range g.state.RetiredNodes {
+			fmt.Fprintf(&b, "  node %d (%s) · was %s · generation %d · %s\n",
+				retired.ID, retired.Title, retired.State, retired.Generation, bounded(strings.TrimSpace(retired.Reason), 200))
+		}
+	}
 	// Retained worktrees are listed for the whole graph, not just the node being
 	// inspected. A wave that ended in review, cancellation, or budget exhaustion
 	// leaves real directories on disk, and an operator should not have to guess
@@ -4010,6 +4115,12 @@ func (g *Graph) reduceOutcomeLocked() {
 	if allDone {
 		g.state.Outcome = OutcomeDone
 		g.state.Reason = "all required nodes passed runtime acceptance gates"
+		// Say what was dropped. "Every required node passed" is true only of
+		// the nodes still in the graph, and a reader deciding whether the goal
+		// was met needs to know the set shrank and which work left with it.
+		if retired := g.retiredSummaryLocked(); retired != "" {
+			g.state.Reason = "every remaining required node passed runtime acceptance gates, but the approved plan was reduced first — " + retired
+		}
 		g.stopActiveLocked(g.now().UTC())
 		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeDone), g.state.Reason)
@@ -4415,6 +4526,7 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 		clone.Attempts[i] = cloneAttempt(attempt)
 	}
 	clone.Evidence = append([]Evidence(nil), snapshot.Evidence...)
+	clone.RetiredNodes = append([]RetiredNode(nil), snapshot.RetiredNodes...)
 	clone.Revisions = make([]Revision, len(snapshot.Revisions))
 	for i, revision := range snapshot.Revisions {
 		clone.Revisions[i] = revision

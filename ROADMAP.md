@@ -1978,6 +1978,14 @@ roadmap remains the source of priority and completion status.
       candidate twice. Each now asserts its refusal reason, and the escape
       cases assert a canary outside the workspace is untouched.
       *(Completed 2026-08-03.)*
+    - [x] **OG-5D — a retired node is never reported as one that passed:**
+      close the false-completion path a graph revision opened. A revision
+      rebuilds the node set from the proposed spec, so a node the model omits
+      disappears — and a graph it could not finish reached `done` claiming
+      every required node passed its gates. Dropping nodes stays legal, but
+      the removal is now a typed durable record, `done` says the approved plan
+      was reduced and names what left, and both the completion answer and the
+      terminal guard carry it. *(Completed 2026-08-03.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2188,7 +2196,9 @@ permission clause and found a real bypass rather than confirming a property,
 which is the argument for working through the remaining clauses the same way.
 OG-5C then took the adversarial-corpus clause and found the opposite — the
 mechanism sound, the evidence missing — which is reported as such rather than
-dressed up as a fix.
+dressed up as a fix. OG-5D then took the false-completion clause and found the
+sharpest defect of the three: the model could delete a node it could not finish
+and be told the plan had passed.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the

@@ -583,7 +583,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				switch decision.Kind {
 				case goalgraph.DecisionDone:
 					a.endTurn(ctx, send, iteration, GoalDone)
-					return response.Content, nil
+					return goalDoneAnswer(response.Content, a.goalGraph), nil
 				case goalgraph.DecisionBlocked:
 					blocked := reportError(send, fmt.Errorf("%w: %s", ErrGoalBlocked, decision.Reason))
 					a.endTurn(ctx, send, iteration, GoalBlocked)

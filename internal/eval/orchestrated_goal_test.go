@@ -580,3 +580,65 @@ func requireGraphToolContains(values ...string) func(provider.Request) error {
 		return errors.New("request has no tool result")
 	}
 }
+
+// A model that cannot finish a node can propose a graph that no longer
+// contains it. Retiring work is legitimate replanning, but the completion
+// message is the model's own text, and a model that just dropped a node is the
+// last narrator to rely on for mentioning it. The runtime owns terminal state,
+// so the runtime says what the plan lost — in the answer the user reads.
+func TestOrchestratedGoalRetiredNodeIsDisclosedToTheUserEvaluation(t *testing.T) {
+	workspace := orchestratedGitFixture(t)
+	client := &scriptedProvider{t: t, steps: []scriptedStep{
+		{check: requireGraphNode(1, "inspect current behavior"), response: toolResponse("read", "read_file", `{"path":"calc.go"}`)},
+		{check: requireGraphToolContains("return a - b"), response: provider.Response{Content: "inspection complete"}},
+		// Rather than repair anything, the model proposes a plan without node 2.
+		{response: toolResponse("revise", "propose_goal_graph_revision",
+			`{"base_generation":1,"reason":"the repair node is unnecessary after inspection","goal":"repair Add","nodes":[{"id":1,"title":"inspect current behavior"}]}`)},
+		{response: provider.Response{Content: "everything that mattered is done"}},
+	}}
+	runtime, graph, tracker := newOrchestratedEvaluationAgent(t, workspace, client, "autopilot", goalgraph.Spec{
+		Goal: "repair Add",
+		Nodes: []goalgraph.NodeSpec{
+			{ID: 1, Title: "inspect current behavior"},
+			{ID: 2, Title: "repair and verify", DependsOn: []int{1}},
+		},
+	})
+	// Dropping the last unfinished node settles the graph immediately, so the
+	// turn ends on the terminal guard rather than on a model summary. That is
+	// the path where the runtime's account is the only thing the user is told,
+	// which is exactly why it must carry it.
+	_, err := runtime.Run(t.Context(), "Repair Add and prove it works.", func(event.Event) {})
+	if err == nil {
+		t.Fatal("a graph that completed by dropping its remaining work reported nothing")
+	}
+	// Replanning still finishes: forcing a blocker here would make legitimate
+	// scope changes impossible.
+	if outcome, _ := graph.Outcome(); outcome != goalgraph.OutcomeDone {
+		t.Fatalf("graph outcome=%q, want done", outcome)
+	}
+	told := err.Error()
+	for _, phrase := range []string{
+		"the approved plan was reduced",
+		"node 2 (repair and verify)",
+		"the repair node is unnecessary after inspection",
+	} {
+		if !strings.Contains(told, phrase) {
+			t.Fatalf("what the user is told does not disclose %q:\n%s", phrase, told)
+		}
+	}
+	if strings.Contains(told, "all required nodes passed") {
+		t.Fatalf("completion claims every required node passed after one was dropped:\n%s", told)
+	}
+	// The retirement is recorded rather than only narrated, and the repair the
+	// dropped node existed to make never happened.
+	if retired := graph.RetiredNodes(); len(retired) != 1 || retired[0].ID != 2 {
+		t.Fatalf("retired record=%+v", retired)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "calc.go"))
+	if err != nil || !strings.Contains(string(data), "return a - b") {
+		t.Fatalf("the workspace changed although the repair node was dropped: %q err=%v", data, err)
+	}
+	if len(tracker.Changed()) != 0 {
+		t.Fatalf("changed=%v, want no mutation", tracker.Changed())
+	}
+}

@@ -1801,6 +1801,45 @@ economical, and OG-5B is why it is written down rather than trusted: those two
 paths had already drifted apart once, silently, and the only reason anybody
 noticed was that a claim about them was finally tested.
 
+#### OG-5D — A retired node is never reported as one that passed
+
+**Status: complete (2026-08-03).**
+
+Graduation clause 2 forbids reporting `done` with an open, stale, or unverified
+required node. Auditing it found the way around that rule, and it is a move the
+model can make on its own: revision is one of its two graph tools, and a
+revision rebuilds the node set from the proposed spec, so a node the proposal
+simply omits disappears. A graph the model cannot finish becomes one it can by
+proposing a smaller one. The probe drove it end to end — one node done, one
+node ready, a revision containing only the first — and the graph settled on
+`done` with the reason *"all required nodes passed runtime acceptance gates"*,
+which about a deleted node is false.
+
+The fix is not to forbid dropping nodes. Requirements genuinely turn out
+unnecessary, replanning is what revisions are for, and refusing would make
+legitimate scope changes impossible. What must not happen is the terminal state
+claiming the removed node passed. So the removal is now recorded as a typed
+`RetiredNode` — identity, the state it was in when it went, the revision reason,
+generation, and time — and `done` reports that the approved plan was reduced
+first and names what left with it. A node removed while already `done` is not a
+retirement: its work happened and its evidence stands.
+
+Where the account has to appear was the second finding. The closing message on
+a completed graph is the model's own text, and a model that just proposed
+dropping a node it could not finish is the last narrator to rely on for
+mentioning that it did — so the runtime appends its own account. But dropping
+the last unfinished node settles the graph immediately, and on that path the
+turn ends on the terminal guard instead, which was discarding the reason
+entirely. Both paths now carry it, and `/orchestrate status` lists retirements
+in the one place they can be seen at all, since the graph no longer contains
+those nodes.
+
+Snapshot validation rejects a retirement record that claims a node the graph
+still contains, one for completed work, or one without identity, reason, or
+time — each of which would be a claim about something that did not happen, in a
+record whose entire purpose is stopping a terminal state from overstating what
+passed.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -1860,7 +1899,8 @@ The mode remains experimental until all of these hold:
 
 - no silent overwrite or duplicated mutation in the adversarial corpus, whose
   publication half OG-5C records;
-- no `done` with an open, stale, or unverified required node;
+- no `done` with an open, stale, or unverified required node, and none that
+  reports a node a revision retired as one that passed (OG-5D);
 - permission decisions are equivalent to the same actions in Standard mode,
   asserted at the parent-workspace boundary as OG-5B defines it;
 - resume is mutation-safe;
@@ -1917,7 +1957,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5C — the adversarial publication corpus** — five
+- Last completed slice: **OG-5D — a retired node is never reported as one that
+  passed** — a revision that omits a node deletes it, which let a graph the
+  model could not finish reach `done` claiming every required node passed its
+  gates. Retiring work stays legal; the terminal state now records it and says
+  so. It follows OG-5C — the adversarial publication corpus — five
   previously untested ways the parent workspace can disagree with a candidate,
   each refused with its reason and each proven not to move a byte outside the
   workspace or over the user's own work. It follows OG-5B — permission-decision
@@ -1949,10 +1993,11 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
   decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
   the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the fourth OG-5 increment.** OG-5A shipped the
+- Next unblocked slice: **the fifth OG-5 increment.** OG-5A shipped the
   recovery work the decomposition put first, OG-5B closed the graduation
   gate's permission-equivalence clause and the bypass that testing it found,
-  and OG-5C recorded the publication half of its adversarial-corpus clause.
+  OG-5C recorded the publication half of its adversarial-corpus clause, and
+  OG-5D closed the false-completion path a graph revision opened.
   What remains of OG-5 is the rest of the
   security/reliability/compatibility/performance campaigns, the
   Standard-versus-Orchestrated comparison — including whether competing
@@ -1964,7 +2009,7 @@ Every agent or contributor continuing this program must:
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, and OG-5A through OG-5C are the working tree
+  the OG-4 closure are `af71dba`, and OG-5A through OG-5D are the working tree
   on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
