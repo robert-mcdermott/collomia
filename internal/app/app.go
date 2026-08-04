@@ -500,6 +500,12 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		return runtime.VerifyDelegateSuite(verifyCtx, id, nil)
 	})
 	runtime.alignChangeTurns()
+	// An integration that never recorded an outcome is the one workspace state
+	// nothing else can explain, so it is surfaced at startup rather than
+	// waiting for the user to wonder why a file looks half-changed.
+	if pending := runtime.InterruptedIntegrations(); len(pending) > 0 {
+		runtime.Warnings = append(runtime.Warnings, fmt.Errorf("%d integration(s) were interrupted before recording an outcome; run /restore integration to inspect or undo them", len(pending)))
+	}
 	runtime.addReviewedIntegrationTools()
 	runtime.logGoalGraphUpdates()
 	return runtime, nil

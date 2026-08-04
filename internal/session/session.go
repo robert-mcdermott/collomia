@@ -60,6 +60,10 @@ type Record struct {
 	// GoalGraph is the latest complete versioned runtime graph snapshot. It is
 	// opaque to the session package; goalgraph validates its own schema.
 	GoalGraph json.RawMessage `json:"goal_graph,omitempty"`
+	// IntegrationCheckpoint is the write-ahead record of one publication into
+	// the parent workspace, appended before the first byte changes and again
+	// with its outcome.
+	IntegrationCheckpoint json.RawMessage `json:"integration_checkpoint,omitempty"`
 }
 
 type Store struct {
@@ -604,6 +608,10 @@ type Session struct {
 	// task. Stored updates are inert data and are never scheduled during load.
 	delegates     map[string]event.DelegateStatus
 	delegateOrder []string
+	// checkpoints retains the write-ahead record of every integration this
+	// session started, keyed by id and ordered by first appearance.
+	checkpoints     map[string]IntegrationCheckpoint
+	checkpointOrder []string
 	// recentEvents is a bounded in-memory projection source for operator UIs.
 	// The append-only JSONL remains the complete durable event history.
 	recentEvents []event.Event
@@ -655,6 +663,11 @@ func (sess *Session) replay(record Record) {
 		sess.PlanRaw = record.Plan
 	case "goal_graph":
 		sess.GoalGraphRaw = record.GoalGraph
+	case "integration_checkpoint":
+		var checkpoint IntegrationCheckpoint
+		if json.Unmarshal(record.IntegrationCheckpoint, &checkpoint) == nil {
+			sess.applyIntegrationCheckpointLocked(checkpoint)
+		}
 	case "event":
 		if record.Event != nil {
 			sess.retainEvent(*record.Event)

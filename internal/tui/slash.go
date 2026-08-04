@@ -551,8 +551,26 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			m.openRestorePicker()
 			break
 		}
+		if len(args) == 1 && strings.EqualFold(args[0], "integration") {
+			summary := m.runtime.DescribeInterruptedIntegrations()
+			if summary == "" {
+				m.addSystem("No integration was interrupted in this workspace.")
+				break
+			}
+			m.addPanel("Interrupted integrations", summary)
+			break
+		}
+		if len(args) == 2 && strings.EqualFold(args[0], "integration") {
+			restored, err := m.runtime.RestoreIntegrationCheckpoint(context.Background(), args[1])
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.addSystem(fmt.Sprintf("Restored %d file(s) to the state recorded before the interrupted publication: %s", len(restored), strings.Join(restored, ", ")))
+			break
+		}
 		if len(args) != 1 {
-			m.addError(fmt.Errorf("usage: /restore [completed-turn-number]"))
+			m.addError(fmt.Errorf("usage: /restore [completed-turn-number | integration [checkpoint-id]]"))
 			break
 		}
 		turn, err := strconv.Atoi(args[0])

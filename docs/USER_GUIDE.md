@@ -2927,6 +2927,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/sessions` (alias `/resume`) | Fuzzy-pick and switch to another durable session in place. |
 | `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
 | `/restore [turn]` | Branch the conversation and reverse the agent's tracked file changes back to an earlier completed turn. Refuses the whole operation, naming every file, if any changed outside Collomia. |
+| `/restore integration [id]` | List integrations that were interrupted before recording an outcome, or put one back to the exact state recorded before it started. It restores rather than completes: a half-applied publication is never re-run. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
@@ -3082,6 +3083,18 @@ required,” dependents remain closed, and the parent workspace is unchanged.
 Use the displayed worktree and the Session agent view to inspect the result.
 Automatic candidate selection and integration are OG-4 work; this preview does
 not apply, commit, merge, push, or publish the candidate.
+
+Every publication into your workspace — graph candidate or ordinary delegate —
+now records what it replaced before it changes the first byte. That record
+holds each target file's prior content, mode, and whether it existed at all,
+and it is marked applied or reverted when the publication finishes. If the
+process stops partway, the missing outcome is the evidence: Collomia says so at
+startup and in `/restore integration`, names the files, and restores the
+recorded prior state only if you ask. It will not finish a half-applied
+integration, because repeating a mutation whose effect nobody observed is
+exactly the replay it refuses everywhere else. Very large files are named as
+unrestorable rather than silently dropped, so you always know what you have to
+reconcile by hand.
 
 `/agents apply` will not publish one either. A graph candidate is an ordinary
 delegate's retained worktree as far as that surface is concerned, so it can be

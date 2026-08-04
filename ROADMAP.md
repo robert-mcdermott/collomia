@@ -174,10 +174,12 @@ Standard evidence-gated execution remains the default.
 made every retained worktree observable and disposable by the user, OG-3B6
 completed the adversarial campaign, and OG-3C added the product evaluations
 that proved the exit gate. **OG-4 — Reviewed integration** is now the active
-milestone, and its first increment shipped: a graph candidate could be
+milestone, and its first two increments shipped: a graph candidate could be
 published into the parent workspace through `/agents apply` while the graph
 still reported that reviewed integration was required, and that path is now
-closed. See the
+closed; and every publication into the parent now records durably what it
+replaced before the first byte moves, so an interrupted one can be inspected
+and undone. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1903,6 +1905,16 @@ roadmap remains the source of priority and completion status.
       while keeping review available. Closes a path that changed the parent
       workspace while the node still reported that reviewed integration was
       required. *(Completed 2026-08-03.)*
+    - [x] **OG-4B — Recoverable pre-integration checkpoint:** append and flush
+      a durable record of every target path's prior content, mode, and
+      existence before publication changes the first byte, mark the outcome
+      applied or reverted afterwards, report an unresolved checkpoint at
+      startup and through `/restore integration`, and restore the recorded
+      prior state only on explicit request — never re-publishing, because
+      completing a half-finished integration would repeat a mutation whose
+      effect is unknown. Retained content is bounded, and a path past the
+      bound is named as unrestorable rather than dropped.
+      *(Completed 2026-08-03.)*
   - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
     state without replaying mutations, finish adversarial/performance
     evaluations, and make an evidence-based graduation decision.
@@ -2105,10 +2117,10 @@ evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future integration and exact scheduler-recovery claims. The next orchestration
-slice is **OG-4B — the recoverable pre-integration checkpoint**, which belongs
-before anything that writes to the parent. Until the rest of OG-4 ships, every
-candidate remains in its own worktree, the primary workspace is unchanged, and
-there is now no path at all that publishes one.
+slice is **OG-4C — combined-parent verification on the graph acceptance
+path**, which is what a graph-owned publication has to be gated on before it
+can exist. Until the rest of OG-4 ships, every candidate remains in its own
+worktree, the primary workspace is unchanged, and no path publishes one.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
@@ -2117,9 +2129,10 @@ there is now no path at all that publishes one.
    inspectable rather than adding telemetry by default.
 2. Continue **OG-4 — reviewed integration and combined verification**. OG-4A
    closed the one path that could publish a graph candidate without the graph
-   knowing. Next is the recoverable pre-integration checkpoint, which belongs
-   before anything that writes to the parent; then combined-parent
-   verification, deterministic candidate eligibility with a visible rationale,
+   knowing, and OG-4B made every publication into the parent recoverable by
+   recording what it replaced before the first byte moves. Next is
+   combined-parent verification on the graph acceptance path, then
+   deterministic candidate eligibility with a visible rationale,
    freshness-bound hunk application under ordinary integration permission, and
    the user-authored waiver representation, as separable increments. A score,
    child test, or plan approval still never grants permission.

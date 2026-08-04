@@ -45,6 +45,40 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-4B recoverable pre-integration checkpoint
+
+- **Publication writes into your workspace, and the only record of what it
+  replaced lived in memory.** The in-process rollback is sound while the
+  process exists, but a process that stopped between the first file and the
+  last left a workspace that was neither the parent it had been nor the
+  candidate it was becoming — and nothing on disk could say which files had
+  already moved or what they had held. `/restore`'s change tracking is
+  in-memory and does not survive a resume, so it could not answer either.
+- **A durable checkpoint is now written and flushed before the first byte
+  moves**, recording each target path's prior content, mode, and whether it
+  existed at all; an absent file and an empty one restore differently. The
+  outcome is recorded afterwards as applied, or as reverted when the
+  in-process rollback ran. The evidence of an interruption is the absence of a
+  recorded outcome rather than an inference from file contents — a file
+  matching its prior bytes may never have been written, or may have been
+  written and edited back, and only the record can tell those apart.
+- **Recovery reports and never guesses.** An unresolved checkpoint surfaces at
+  startup and through `/restore integration`, and restores the recorded prior
+  state only when a person asks. It deliberately cannot re-publish: finishing a
+  half-applied integration would repeat a mutation whose effect is unknown,
+  which is the replay this program refuses everywhere else.
+- **Oversized prior content is named, not dropped or refused.** Past the
+  retention bound the path is still recorded and marked unrestorable. Refusing
+  the integration would trade a working capability for a guarantee, and
+  omitting the file silently would leave a change nobody knows about.
+- **It lands where writes already happen.** The checkpoint protects the
+  delegate publication path that mutates the parent today, so it is proven
+  against a real mutation rather than built ahead of one; graph-owned
+  publication will reuse it. The test that pins the write-ahead ordering makes
+  the atomic replacement fail while reads still succeed, and asserts a record
+  exists at all — a checkpoint written after the mutations would leave a failed
+  integration with no durable trace.
+
 ### 2026-08-03 — OG-4A no unaccounted publication of a graph candidate
 
 - **A graph candidate could be published into the parent workspace, and the

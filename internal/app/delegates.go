@@ -22,6 +22,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/safefile"
+	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -330,6 +331,17 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 		}
 	}
 
+	// Write the checkpoint before the first byte moves. The rollback closure
+	// below only exists while this process does, so an interruption between the
+	// first file and the last would otherwise leave a workspace that is neither
+	// the parent it was nor the candidate it was becoming, with nothing on disk
+	// able to say which files had already changed or what they had held.
+	checkpoint, checkpointErr := r.beginIntegrationCheckpoint(id, mutations)
+	if checkpointErr != nil {
+		r.markDelegateIntegration(id, "blocked", checkpointErr)
+		return nil, checkpointErr
+	}
+
 	applied := make([]delegateIntegrationMutation, 0, len(mutations))
 	rollback := func() {
 		for i := len(applied) - 1; i >= 0; i-- {
@@ -339,12 +351,17 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 	for _, mutation := range mutations {
 		if err := replaceRooted(r.Workspace, mutation.path, mutation.after, mutation.afterMode); err != nil {
 			rollback()
+			// The rollback restored what it had already changed, so the durable
+			// record says so rather than leaving a pending checkpoint that would
+			// send a later recovery looking for a half-published workspace.
+			r.finishIntegrationCheckpoint(checkpoint, session.IntegrationReverted, "rolled back after "+mutation.path+" failed to publish")
 			err = fmt.Errorf("integrate %s: %w", mutation.path, err)
 			r.markDelegateIntegration(id, "blocked", err)
 			return nil, err
 		}
 		applied = append(applied, mutation)
 	}
+	r.finishIntegrationCheckpoint(checkpoint, session.IntegrationApplied, "")
 	for _, mutation := range mutations {
 		absolute := filepath.Join(r.Workspace, filepath.FromSlash(mutation.path))
 		if r.Changes != nil {

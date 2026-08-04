@@ -1459,7 +1459,8 @@ reproduced exactly after restart. Those are OG-4 and OG-5.
 ### OG-4 — Reviewed integration and combined verification
 
 **Status: in progress. OG-3 met its exit gate on 2026-08-03; OG-4A closed the
-unaccounted publication path.**
+unaccounted publication path and OG-4B added the recoverable pre-integration
+checkpoint.**
 
 OG-4A no unaccounted publication of a graph candidate:
 
@@ -1488,6 +1489,37 @@ OG-4A no unaccounted publication of a graph candidate:
 - This restores the documented boundary rather than removing a capability;
   publishing a candidate with combined-workspace verification is the rest of
   OG-4.
+
+OG-4B recoverable pre-integration checkpoint:
+
+- Publication writes candidate bytes into the user's own workspace, and the
+  only record of what those bytes replaced lived in memory. The in-process
+  rollback is sound while the process exists; a process that stopped between
+  the first file and the last left a workspace that was neither the parent it
+  had been nor the candidate it was becoming, with nothing on disk able to say
+  which files had already moved or what they had held. `/restore`'s change
+  tracking is in-memory and does not survive a resume, so it could not answer
+  either.
+- A durable checkpoint is now appended and flushed *before* the first byte
+  moves, recording each target path's prior content, mode, and whether it
+  existed at all — an absent file and an empty one restore differently. The
+  outcome is appended afterwards as `applied`, or as `reverted` when the
+  in-process rollback ran. The evidence of an interruption is therefore the
+  absence of a recorded outcome rather than an inference from file contents,
+  which is the same write-ahead shape the graph already uses for ambiguous
+  mutations.
+- Recovery reports an unresolved checkpoint at startup and through
+  `/restore integration`, and never resolves it automatically. It restores the
+  recorded prior state on explicit request and deliberately cannot re-publish:
+  completing a half-finished integration would repeat a mutation whose effect
+  is unknown, which is the replay this program refuses everywhere else.
+- Retained content is bounded per file and per checkpoint. Past the bound the
+  path is still named and marked unrestorable rather than being dropped or the
+  integration refused: telling a person exactly which file changed and that it
+  cannot be put back automatically is more useful than either alternative.
+- This lands on the delegate publication path that already writes to the parent
+  today, so it is proven against a real mutation rather than built ahead of one.
+  Graph-owned publication, which OG-4A closed, will reuse it.
 
 - Add explicit combined-parent verification to the graph acceptance path.
 - Add a recoverable pre-integration checkpoint and safe post-failure
@@ -1637,27 +1669,28 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-4A — No unaccounted publication of a graph
-  candidate**, following OG-3C's writer-wave product evaluation and OG-3
-  sign-off, OG-3B6's adversarial campaign, OG-3B5's
+- Last completed slice: **OG-4B — Recoverable pre-integration checkpoint**,
+  following OG-4A's closure of the unaccounted publication path, OG-3C's
+  writer-wave product evaluation and OG-3 sign-off, OG-3B6's adversarial
+  campaign, OG-3B5's
   retained-worktree reconciliation, OG-3B1–B4's retained-worktree
   accountability closure, verification-composition correction,
   budget-accounting correction, and user-owned execution envelope, OG-3A's
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
 - Active milestone: **OG-4 — Reviewed integration and combined verification.**
-  OG-3 met its exit gate on 2026-08-03 and is complete; OG-4A has shipped.
-- Next unblocked slice: **OG-4B — the recoverable pre-integration checkpoint.**
-  It belongs before anything that writes to the parent, and OG-4A deliberately
-  left the graph with no publication path at all, so the order is now forced
-  rather than merely preferred. Combined-parent verification, deterministic
-  eligibility with a visible rationale, freshness-bound hunk application under
-  ordinary integration permission, and the waiver representation follow it as
-  separable increments.
+  OG-3 met its exit gate on 2026-08-03 and is complete; OG-4A and OG-4B have
+  shipped.
+- Next unblocked slice: **OG-4C — combined-parent verification on the graph
+  acceptance path**, which is what a graph-owned publication has to be gated
+  on before it can exist. Deterministic candidate eligibility with a visible
+  rationale, freshness-bound hunk application under ordinary integration
+  permission, and the user-authored waiver representation follow as separable
+  increments.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
-  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C plus OG-4A are
-  the working tree on top of them.**
+  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C, OG-4A, plus
+  OG-4B are the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
@@ -1956,6 +1989,22 @@ Every agent or contributor continuing this program must:
   inspected, and OG-3B5's argument was that a person decides against contents
   rather than against a path; a refusal that also hid the diff would have made
   the candidate less reviewable in the name of safety.
+- Write the integration checkpoint before the first byte and its outcome
+  after, so an interruption is evidenced by a missing outcome rather than
+  inferred from file contents. A file that matches its recorded prior bytes may
+  never have been written, or may have been written and edited back; the
+  contents cannot distinguish those and the record can.
+- Restore an interrupted integration, never complete it. Finishing a
+  half-applied publication would repeat a mutation whose effect is unknown,
+  which is the replay refused everywhere else in this program.
+- Bound retained prior content and name what was dropped. Refusing the
+  integration to protect the record would trade a working capability for a
+  guarantee, and silently omitting the file would leave a change nobody knows
+  about; saying "this changed and I cannot put it back" is the honest third
+  option.
+- Land the checkpoint on the publication path that already writes to the
+  parent rather than building it ahead of graph integration. Infrastructure
+  validated only by the feature that has not shipped yet is a guess.
 - Treat a capability the documentation denies as a defect in the code, not in
   the documentation. The matrix said no candidate is integrated, which was true
   of the runtime's automatic behaviour and false of what a user could reach in

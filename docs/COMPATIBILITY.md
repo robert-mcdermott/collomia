@@ -544,6 +544,15 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-4B adds an `integration_checkpoint` session record, additive within
+`schema_version: 1`. It carries the delegate, workspace, state, and each target
+path's prior content, mode, and existence, and is appended before a publication
+changes the first byte and again with its outcome. A reader that does not know
+the type ignores it, exactly as it ignores any unknown optional record; a
+session written before this release simply has none, which restores as no
+interrupted integrations rather than as an unknown state. Retained content is
+bounded per file and per checkpoint, and a path whose content exceeded the
+bound is recorded as unrestorable rather than omitted.
 OG-4A is additive within schema 1. Durable delegate status records gained an
 optional `graph_node` flag marking a candidate owned by an Orchestrated Goal
 node. Omission means an ordinary delegate, which is what every record written
