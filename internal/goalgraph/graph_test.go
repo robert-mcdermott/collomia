@@ -2448,3 +2448,57 @@ func TestCandidateVerificationFailureNamesWhatWentWrong(t *testing.T) {
 		})
 	}
 }
+
+// A node that has never run and a node that ran and failed recoverably are
+// different situations for an operator. The first is waiting on the review
+// above it; the second already has its own reason explaining what went wrong.
+// Reporting them together would attach a "not started" label to work that did.
+func TestUnstartedNodesExcludeWorkThatAlreadyRan(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "implement independent changes", Nodes: []NodeSpec{
+		{ID: 1, Title: "change alpha", Execution: ExecutionIsolatedWrite, WritePaths: []string{"alpha/"}, Acceptance: []string{"alpha checks pass"}},
+		{ID: 2, Title: "change alpha again", Execution: ExecutionIsolatedWrite, WritePaths: []string{"alpha/"}, Acceptance: []string{"alpha checks still pass"}},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 2)
+	// Overlapping scopes are exactly why one node is left behind: two writers
+	// with the same scope could collide, so the wave takes one.
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%d err=%v, want exactly one for same-scope nodes", len(claims), err)
+	}
+	if err := graph.FinishWriter(t.Context(), WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "done",
+		Summary: "implemented and checked candidate", Evidence: []string{"edit_file: completed — candidate changed"},
+		WritePaths: claims[0].WritePaths, ChangedFiles: []string{"alpha/one.go"},
+		Worktree: "/tmp/candidate", Branch: "collomia/writer-1", BaseCommit: base.Commit,
+		ParentWorkspaceToken: base.WorkspaceToken, VerificationState: "passed", VerificationToken: "child-state",
+		Verification: []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: "child-state"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	waiting := graph.UnstartedNodes()
+	if len(waiting) != 1 || waiting[0].NodeID != 2 {
+		t.Fatalf("unstarted=%+v, want only node 2", waiting)
+	}
+	// The terminal state has to carry it. A person reading only that a
+	// candidate is retained could release the graph and lose node 2.
+	outcome, reason := graph.Outcome()
+	if outcome != OutcomeAwaitingReview {
+		t.Fatalf("outcome=%q", outcome)
+	}
+	for _, phrase := range []string{"not started yet", "node 2 (change alpha again)"} {
+		if !strings.Contains(reason, phrase) {
+			t.Fatalf("the awaiting_review reason does not say %q: %q", phrase, reason)
+		}
+	}
+	// The node that produced the candidate is not itself "unstarted".
+	for _, node := range waiting {
+		if node.NodeID == 1 {
+			t.Fatalf("a node that ran was reported as never started: %+v", waiting)
+		}
+	}
+}

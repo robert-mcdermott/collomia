@@ -544,6 +544,11 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5I changes no persisted shape. The `awaiting_review` outcome reason and the
+completion answer gain an account of nodes the graph never started; both are
+prose and were never a stable interface. The unstarted account is derived from
+existing node state, so every saved snapshot reports it correctly.
+
 OG-5H changes one user-visible string and no persisted shape: the reason on a
 node blocked by failed candidate verification now names the diagnosis and the
 failing command instead of the child's raw exit-code error. Node reasons are

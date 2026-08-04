@@ -512,11 +512,35 @@ func goalDoneAnswer(content string, graph *goalgraph.Graph) string {
 // goalAwaitingReviewAnswer renders the successful candidate-wave stop as an
 // answer rather than an error. The retained worktrees are the deliverable; the
 // operator's next action is review, not recovery.
-func goalAwaitingReviewAnswer(err error) string {
+func goalAwaitingReviewAnswer(err error, graph *goalgraph.Graph) string {
 	reason := strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrGoalAwaitingReview.Error()+": "))
-	answer := "Orchestrated Goal finished with verified candidates retained for review. Nothing was integrated into this workspace and no candidate was selected — that decision is yours."
+	var waiting []goalgraph.UnstartedNode
+	if graph != nil {
+		waiting = graph.UnstartedNodes()
+	}
+	// "Finished" is only true when the wave took the whole plan. One wave
+	// cannot take nodes whose write scopes overlap, so a plan can stop here
+	// with approved work that never ran — and the closing line below invites
+	// releasing the graph, which would discard it.
+	headline := "Orchestrated Goal finished with verified candidates retained for review."
+	if len(waiting) > 0 {
+		headline = fmt.Sprintf("Orchestrated Goal produced verified candidates for review, but %d approved node(s) have not run yet.", len(waiting))
+	}
+	answer := headline + " Nothing was integrated into this workspace and no candidate was selected — that decision is yours."
 	if reason != "" {
 		answer += "\n\n" + reason
 	}
-	return answer + "\n\nInspect them with /agents and /orchestrate status <node-id>, then integrate explicitly. /orchestrate cancel releases the graph when you are done."
+	answer += "\n\nInspect them with /agents and /orchestrate status <node-id>, then integrate explicitly."
+	if len(waiting) > 0 {
+		answer += "\n\nStill waiting to run:"
+		for _, node := range waiting {
+			answer += fmt.Sprintf("\n  - node %d (%s)", node.NodeID, node.Title)
+		}
+		// The ordering matters and is not obvious: these nodes are not blocked
+		// by a failure, they are blocked on the review above. Integrating and
+		// verifying is what lets them start.
+		answer += "\n\nThese are not blocked — they are waiting on the review above. Integrating and verifying the candidates lets them run. /orchestrate cancel would release the graph and abandon them."
+		return answer
+	}
+	return answer + " /orchestrate cancel releases the graph when you are done."
 }

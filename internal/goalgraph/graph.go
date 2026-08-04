@@ -3365,6 +3365,60 @@ func supersededSummary(superseded []SupersededVerification) string {
 	return strings.Join(parts, "; ")
 }
 
+// UnstartedNode is a required node the graph never began.
+type UnstartedNode struct {
+	NodeID int    `json:"node_id"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+}
+
+// unstartedNodesLocked reports required nodes that have not run and have not
+// failed — they are simply still waiting.
+//
+// A candidate wave ends the graph at awaiting_review because a retained
+// candidate cannot unlock anything before a person integrates it. When the
+// approved plan holds more nodes than one wave could take — most commonly
+// because their declared write scopes overlap, so they could never run
+// together — those nodes are left untouched, and the terminal state described
+// only the candidates it did produce. A person reading that it "finished" and
+// then releasing the graph would discard approved work that never ran, without
+// ever having been told it existed.
+func (g *Graph) unstartedNodesLocked() []UnstartedNode {
+	var waiting []UnstartedNode
+	for i := range g.state.Nodes {
+		node := &g.state.Nodes[i]
+		switch node.State {
+		case NodeProposed, NodeReady, NodeRetryable:
+			if len(node.AttemptIDs) > 0 && node.State == NodeRetryable {
+				// A retryable node has run and failed recoverably. That is a
+				// different thing from never having started and is already
+				// reported through its own reason.
+				continue
+			}
+			waiting = append(waiting, UnstartedNode{NodeID: node.ID, Title: node.Title, State: string(node.State)})
+		}
+	}
+	return waiting
+}
+
+// UnstartedNodes reports required nodes the graph never began.
+func (g *Graph) UnstartedNodes() []UnstartedNode {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.unstartedNodesLocked()
+}
+
+func unstartedSummary(waiting []UnstartedNode) string {
+	if len(waiting) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(waiting))
+	for _, node := range waiting {
+		parts = append(parts, fmt.Sprintf("node %d (%s)", node.NodeID, node.Title))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // RetiredNodes returns the nodes revisions removed before they completed.
 func (g *Graph) RetiredNodes() []RetiredNode {
 	g.mu.Lock()
@@ -4263,6 +4317,12 @@ func (g *Graph) reduceOutcomeLocked() {
 	}
 	if len(review) > 0 && !running {
 		g.state.Outcome, g.state.Reason = OutcomeAwaitingReview, strings.Join(review, "; ")
+		// Nodes one wave could not take are still approved work. Saying only
+		// what was produced would let a person release the graph believing the
+		// plan was finished.
+		if waiting := unstartedSummary(g.unstartedNodesLocked()); waiting != "" {
+			g.state.Reason += "; not started yet, and waiting on that integration: " + waiting
+		}
 		g.stopActiveLocked(g.now().UTC())
 		g.clearPauseLocked()
 		g.queueUpdateLocked(0, "", string(OutcomeAwaitingReview), g.state.Reason)

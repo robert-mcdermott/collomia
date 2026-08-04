@@ -379,7 +379,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				// failing.
 				if errors.Is(graphErr, ErrGoalAwaitingReview) {
 					a.endTurn(ctx, send, iteration, GoalAwaitingReview)
-					return goalAwaitingReviewAnswer(graphErr), nil
+					return goalAwaitingReviewAnswer(graphErr, a.goalGraph), nil
 				}
 				graphErr = reportError(send, graphErr)
 				a.endTurn(ctx, send, iteration, GoalOutcomeFor(graphErr))
@@ -614,7 +614,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 							}
 							if errors.Is(graphErr, ErrGoalAwaitingReview) {
 								a.endTurn(ctx, send, iteration, GoalAwaitingReview)
-								return goalAwaitingReviewAnswer(graphErr), nil
+								return goalAwaitingReviewAnswer(graphErr, a.goalGraph), nil
 							}
 							graphErr = reportError(send, graphErr)
 							return response.Content, graphErr

@@ -2056,6 +2056,51 @@ fail on the old message.
 parent/child drift as comparisons rather than as one-sided tests, and same-file
 work that should stay serial.
 
+#### OG-5I — The negative case, and a partial plan that called itself finished
+
+**Status: complete (2026-08-04).**
+
+OG-5H measured where the isolated-writer wave wins. This measures where it
+loses, because guidance that only says "use it" is not guidance, and the
+never-default decision made evidence-backed guidance a graduation condition.
+
+Two nodes declaring the same write scope can never run together — the wave
+selects pairwise-disjoint scopes precisely so two writers cannot collide in the
+parent. So its one benefit, overlap, is unavailable by construction while every
+cost is still paid. Measured: the wave started **one writer of two**, produced
+one candidate, and stopped. Standard mode completed the whole request in the
+run it was given.
+
+**Do not use the wave for nodes that touch the same files.** Finishing that plan
+requires integrating the first candidate, running combined verification, and
+then a second wave for the second node — a full human review cycle per node,
+for work Standard mode does in one pass. This is the clearest "when not to"
+the evidence has produced.
+
+**The evaluation found a worse problem than the cost.** At that stop the graph
+reported `awaiting_review` naming only the candidate it had produced, and the
+answer read "Orchestrated Goal **finished** with verified candidates retained
+for review", closing with "`/orchestrate cancel` releases the graph when you
+are done." Node 2 was approved, never ran, and was never mentioned. A person
+following that instruction would discard approved work they were never told
+existed.
+
+The graph now reports what it never started, in the `awaiting_review` reason
+and in the answer, and the answer no longer says "finished" when it is not. It
+also states the thing that is not obvious: those nodes are *not blocked* — they
+are waiting on the review above, integration is what lets them run, and cancel
+would abandon them. A node that ran and failed recoverably is deliberately
+excluded, since it already carries its own reason and labelling it "not
+started" would be false.
+
+**A reporting correction came out of the same run.** The first version of the
+comparison printed the wave at "−50% critical path, −46% tokens" — numbers that
+read as a win and were nothing of the kind, since the wave had done half the
+plan. The measurement record now carries the scope of work each mode actually
+completed, and the reporter suppresses percentage deltas between modes whose
+scope differs rather than printing a comparison that inverts the finding. The
+evaluation asserts the scopes differ, so the suppression cannot regress.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -2190,8 +2235,12 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5H — failure containment measured, and a blocked
-  node made legible** — the same non-compiling change breaks the user's
+- Last completed slice: **OG-5I — the negative case, and a partial plan that
+  called itself finished** — same-scope nodes cannot overlap, so the wave pays
+  every cost for none of its benefit and needs a review cycle per node; and the
+  `awaiting_review` stop called itself finished while inviting a cancel that
+  would have discarded approved work never mentioned. It follows OG-5H —
+  failure containment measured, and a blocked node made legible — the same non-compiling change breaks the user's
   repository in Standard mode and never touches it in the wave, which is the
   gate's first quality evidence; the wave's cost profile also inverts in
   failure (2s against the success case's 17s), so its expected value rises with
@@ -2262,8 +2311,8 @@ Every agent or contributor continuing this program must:
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
   the OG-4 closure are `af71dba`, OG-5A through OG-5G plus the never-default
-  decision are committed through `344c5ae`, and OG-5H is the working tree on
-  top of them.**
+  decision are committed through `344c5ae`, OG-5H is `6b6a995`, and OG-5I is
+  the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-

@@ -307,6 +307,11 @@ type comparisonMeasurement struct {
 	// Two modes that differ on this have not done the same job, and comparing
 	// their cost without saying so would be the most misleading number here.
 	landed bool
+	// scope names how much of the request this mode actually completed. When
+	// two modes did different amounts of work their numbers are not comparable
+	// and the percentage deltas below are suppressed: a mode that did half the
+	// plan will report half the cost, which reads as a win and is not one.
+	scope string
 }
 
 func (m comparisonMeasurement) tokens() int { return m.inputTokens + m.outputTokens }
@@ -325,6 +330,9 @@ func (m comparisonMeasurement) String() string {
 	if m.wall > 0 {
 		out += fmt.Sprintf(" · %s wall", m.wall.Round(100*time.Millisecond))
 	}
+	if m.scope != "" {
+		out += " · covers " + m.scope
+	}
 	return out
 }
 
@@ -341,6 +349,14 @@ func reportComparison(t *testing.T, scenario string, measurements ...comparisonM
 	if len(measurements) > 1 {
 		base := measurements[0]
 		for _, measurement := range measurements[1:] {
+			// Only compare modes that did the same job. A mode that completed
+			// less of the plan reports proportionally less cost, and printing
+			// that as a percentage improvement would invert the finding.
+			if measurement.scope != base.scope {
+				fmt.Fprintf(&b, "  %s vs %s: not comparable — %s covers %s, %s covers %s\n",
+					measurement.mode, base.mode, measurement.mode, measurement.scope, base.mode, base.scope)
+				continue
+			}
 			fmt.Fprintf(&b, "  %s vs %s: critical path %+.0f%%, tokens %+.0f%%\n",
 				measurement.mode, base.mode,
 				percentDelta(float64(measurement.criticalPath), float64(base.criticalPath)),

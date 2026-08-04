@@ -45,6 +45,35 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — OG-5I measures the negative case and fixes a partial plan that called itself finished
+
+- **Guidance that only says "use it" is not guidance.** The previous slice
+  measured where the isolated-writer wave wins; this measures where it loses,
+  which the never-default decision made a graduation requirement.
+- **Two nodes touching the same files are the clear "do not use it here".** The
+  wave selects pairwise-disjoint scopes precisely so two writers cannot collide
+  in your workspace, so overlap — its one benefit — is unavailable by
+  construction while every cost is still paid. It started one writer of two.
+  Finishing needs integration, combined verification, and a second wave: a full
+  review cycle per node, for work Standard mode does in one pass.
+- **The evaluation found something worse than the cost.** At that stop the
+  answer read "Orchestrated Goal finished with verified candidates retained for
+  review" and closed by offering `/orchestrate cancel`. The second node was
+  approved, never ran, and was never mentioned. Following that instruction
+  would have discarded work you were never told about.
+- **The graph now reports what it never started**, in the outcome reason and in
+  the answer, and no longer says "finished" when it is not. It also states the
+  non-obvious part: those nodes are not blocked, they are waiting on the review
+  above; integrating is what lets them run; cancel would abandon them. A node
+  that ran and failed recoverably is excluded, since it already carries its own
+  reason.
+- **A reporting correction came out of the same run.** The comparison first
+  printed the wave at "-50% critical path, -46% tokens" — which reads as a win
+  and was nothing of the kind, since it had done half the plan. Measurements now
+  record the scope of work each mode completed, and percentage deltas are
+  suppressed between modes whose scope differs rather than printing a
+  comparison that inverts the finding.
+
 ### 2026-08-04 — OG-5H measures failure containment
 
 - **Every comparison before this measured a success against a success**, which

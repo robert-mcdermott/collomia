@@ -2033,6 +2033,20 @@ roadmap remains the source of priority and completion status.
       read `command failed: exit status 1`, an exit code rather than an
       explanation, because the raw child error overwrote the diagnosis the
       graph already held. *(Completed 2026-08-04.)*
+    - [x] **OG-5I — the negative case, and a partial plan that called itself
+      finished:** measure where the wave loses, since guidance that only says
+      "use it" is not guidance. Two nodes declaring the same write scope can
+      never run together, so the wave's one benefit is unavailable by
+      construction while every cost is paid: it started one writer of two and
+      needs a full review cycle per node for work Standard mode does in one
+      pass. The evaluation also found a worse problem than the cost — the stop
+      reported "Orchestrated Goal finished", named only the candidate it
+      produced, and offered `/orchestrate cancel`, which would have discarded
+      an approved node that never ran and was never mentioned. The graph now
+      reports what it never started and says those nodes are waiting on the
+      review rather than blocked. A reporting correction came with it:
+      percentage deltas are suppressed between modes that completed different
+      amounts of work. *(Completed 2026-08-04.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2256,7 +2270,10 @@ turns out not to be the story: it halves the implementation critical path for
 finishes with nothing in the repository until the user integrates. OG-5H then
 measured the failure case and found the argument the success cases could not
 make: the same broken change wrecks the workspace in Standard mode and never
-reaches it in the wave, and the wave's cost profile inverts when work fails.
+reaches it in the wave, and the wave's cost profile inverts when work fails. OG-5I then measured the
+other side — same-scope nodes, where the wave pays everything and overlaps
+nothing — and found a partial plan describing itself as finished while
+offering to discard the half that never ran.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
