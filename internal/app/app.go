@@ -999,7 +999,26 @@ func (r *Runtime) ApproveOrchestratedGoal(ctx context.Context) (string, string, 
 	r.orchestrationProposal = nil
 	r.logGoalGraphUpdates()
 	status, _ := graph.Inspect(0)
-	return status, OrchestratedExecutionPrompt(graph.Snapshot().Goal), nil
+	return candidateWaveNotice(spec) + status, OrchestratedExecutionPrompt(graph.Snapshot().Goal), nil
+}
+
+// candidateWaveNotice warns, at the moment a person approves, that this graph
+// will finish without changing their workspace.
+//
+// It exists because the candidate wave's end state is the single thing users
+// read wrongly: a wave stops at `awaiting_review` having produced verified work
+// and touched nothing, which looks like failure unless you know publication is
+// a separate act you perform. That is worth saying whatever the sub-feature's
+// graduation status — the notice would earn its place even if the wave were
+// fully supported — and it happens also to mark the one path that is still
+// experimental. Approval is the right moment: it is the last point before
+// worktrees are created, and it is where the node shapes are already on screen.
+func candidateWaveNotice(spec goalgraph.Spec) string {
+	if !goalgraph.HasIsolatedWriters(spec) {
+		return ""
+	}
+	return "This graph produces reviewed candidates. It will run its writers in separate Git worktrees and stop at awaiting_review with your workspace byte-for-byte unchanged — that is the design, not a failure. Nothing reaches your files until you publish a candidate yourself with /orchestrate integrate <node-id>, and the combined result is verified after that.\n\n" +
+		"The candidate wave is the one part of Orchestrated Goal still marked experimental. It suits a change you would rather not have land in your repository if it turns out wrong, and suits work whose steps touch the same files badly.\n\n"
 }
 
 // ResumeOrchestratedGoal requires a fresh user action even when the session

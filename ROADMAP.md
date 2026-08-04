@@ -196,9 +196,12 @@ its guidance increment wrote down which work the mode is for.
 an independent security assessment was conducted and passed; its contents are
 confidential and are not reproduced here. Nothing is outstanding on evidence.
 The ratified order governs from here: read fan-out graduates first, with the
-isolated-writer wave trailing it. Two product judgements remain before the
-status change ships — how the split is expressed given the two share one
-command surface, and what "trailing" concretely means. See the
+isolated-writer wave trailing it. Both product judgements that remained are now
+settled: the capability matrix carries two rows, approving a graph with
+isolated_write nodes announces that it will change nothing until you publish,
+and "trailing" means an audit pass over the writer path that stops finding
+things which change what a user gets. The first such pass found one wording
+defect, now fixed; whether that clears the bar is the open call. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) for the contract,
 the clause-by-clause verdict, and the reasoning behind that ordering.
 

@@ -2412,17 +2412,65 @@ commands a user chooses between.
 That leaves two decisions the graduation verdict does not itself settle, and
 they belong to the owner rather than to this document:
 
-1. **How the split is expressed.** Options range from documentation alone,
-   through a status distinction in the capability matrix keyed to node shape,
-   to a runtime notice when an approved graph contains `isolated_write` nodes.
-   The cheapest honest option is documentation plus the capability matrix; the
-   most protective is the notice.
-2. **What "trailing" concretely means for the wave.** The ratified order says
-   it follows fan-out, but not by what measure — elapsed time, a volume of real
-   use, another audit pass, or simply a later decision. Until that has an
-   answer, "trailing" is a direction rather than a plan.
+1. **How the split is expressed. Settled 2026-08-04.** The capability matrix
+   now carries two rows — end-to-end graphs with governed read fan-out as
+   implemented, isolated-writer candidate waves as experimental — because one
+   row saying "supported except the part that is not" is a hedge nobody parses
+   correctly. Approving a graph that contains `isolated_write` nodes also
+   prints a notice. That notice was chosen on grounds independent of
+   graduation: the wave's end state is the single thing users read wrongly,
+   since it stops having produced verified work and changed nothing, which
+   looks like failure unless you know publication is a separate act. It would
+   earn its place even if the wave were fully supported, and marking the
+   experimental path is a side benefit rather than the justification.
+2. **What "trailing" concretely means for the wave. Answered 2026-08-04.** An
+   audit pass over the writer and publication path that finds nothing changing
+   what a user gets, bounded so that wording-only findings do not become a
+   permanent veto. Elapsed time is arbitrary, and usage volume would need
+   telemetry this project has deliberately refused to add by default. The first
+   such pass is recorded above; whether its single finding clears the bar is
+   the open question, not the criterion.
 
-Neither is blocked on evidence. Both are product judgements.
+Neither was blocked on evidence. Both were product judgements, and both are now
+settled except for the call on that pass.
+
+### The writer-wave audit pass
+
+**Conducted 2026-08-04.** The trailing condition follows from the reason the
+order was ratified: if the ground was that this path kept yielding defects, the
+release condition is an audit of it that stops finding things which change what
+a user gets. Two adversarial areas were probed.
+
+**Scope enforcement held.** A writer that wrote outside its declared scope was
+refused, the offending path named exactly, the candidate rejected before it was
+ever verified, the parent left untouched, and the stray file quarantined in the
+worktree. This is the property the whole disjointness argument rests on — if
+declared scopes are not enforced, running two writers at once is unsafe — and
+it had three layers of unit coverage but no evaluation driving a real child
+breaking scope in a real worktree. It now has one.
+
+**A vanished worktree was refused correctly and explained wrongly.** Retained
+worktrees live under the OS temp directory, so a reboot or a cleaner removing
+one between the wave and the integration is ordinary. Integration refused,
+nothing moved, the graph stayed coherent, and reconciliation reported `missing`
+accurately. But the refusal read *"retained delegated path is not the recorded
+Git worktree for this repository"* — one message covering both a genuine
+mismatch, which is worth investigating, and a swept directory, which is not. It
+sent a person looking for a fault in their repository when the answer was that
+the work was gone. That is the same either/or failure as OG-5K, and it is now
+distinguished, with the absent case naming the path, the cause, and the way
+forward.
+
+**Whether that counts as a clean pass is a judgement, and the record should not
+pretend otherwise.** By the stated bound it is wording rather than behaviour:
+every safety property held. Against that, it changed what a person would do
+next, and this project has twice treated a misleading operator explanation as a
+real defect rather than a cosmetic one. The rate is the more informative
+signal — one wording issue across two adversarial areas, where earlier audit
+slices averaged a behavioural defect each — but two areas is a thin sample, and
+the areas not probed are named here rather than implied: waiver behaviour under
+a failed candidate, budget exhaustion mid-wave, and a candidate whose changes
+are already present in the parent.
 
 ### What this review does not claim
 

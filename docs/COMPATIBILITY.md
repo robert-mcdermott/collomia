@@ -544,7 +544,19 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
-The graduation review changes nothing shipped. It is a recorded decision:
+The fan-out/wave split changes two user-visible things and no persisted shape.
+The capability matrix gains a second Orchestrated Goal row, so a consumer
+keying on the single previous row title will not find it — the end-to-end row is
+now titled for that path and reports `implemented`, and candidate waves have
+their own `experimental` row. Approving a graph containing `isolated_write`
+nodes also prints a notice above the status. Node reasons, statuses, and the
+approval status text are prose and were never a stable interface.
+
+An integration refused because its retained worktree no longer exists now says
+so, instead of reporting the same "not the recorded Git worktree" wording used
+for a genuine path mismatch.
+
+The graduation review itself changes nothing shipped. It is a recorded decision:
 the mode stays experimental, so every compatibility note below continues to
 apply unchanged.
 

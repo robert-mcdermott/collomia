@@ -45,6 +45,40 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — The fan-out/wave split ships, and the writer path is audited
+
+- **The capability matrix now carries two rows.** End-to-end graphs with
+  governed read fan-out are implemented; isolated-writer candidate waves remain
+  experimental. One row saying "supported except the part that is not" is a
+  hedge nobody parses correctly.
+- **Approving a graph with `isolated_write` nodes now says what will happen.**
+  The wave stops at `awaiting_review` with your workspace byte-for-byte
+  unchanged, which is the design rather than a failure, and nothing reaches
+  your files until you publish a candidate yourself. That notice was chosen on
+  grounds independent of graduation: the end state is the single thing users
+  read wrongly, so it would earn its place even if the wave were fully
+  supported. Marking the experimental path is a side benefit.
+- **The trailing condition got an answer.** An audit pass over the writer and
+  publication path that finds nothing changing what a user gets — bounded so
+  wording-only findings cannot become a permanent veto. Elapsed time is
+  arbitrary; usage volume would need telemetry this project has refused to add.
+- **Scope enforcement held under a real adversarial writer.** A child that wrote
+  outside its declared scope was refused with the offending path named, rejected
+  before verification, the parent untouched, the stray file quarantined in the
+  worktree. This is what makes running two writers at once safe, and it had unit
+  coverage but no end-to-end evaluation until now.
+- **A vanished worktree was refused correctly and explained wrongly.** Retained
+  trees live under the OS temp directory, so one disappearing is ordinary.
+  Integration refused and nothing moved — but the message covered both a genuine
+  path mismatch, worth investigating, and a swept directory, which is not,
+  sending someone hunting for a repository fault when the work was simply gone.
+  Now distinguished, naming the path, the cause, and what to do.
+- **Whether that counts as a clean pass is left open rather than declared.** By
+  the stated bound it is wording, not behaviour. Against that, it changed what a
+  person would do next. The rate is the better signal — one wording issue across
+  two adversarial areas, where earlier slices averaged a behavioural defect each
+  — but two areas is a thin sample, and the unprobed ones are named.
+
 ### 2026-08-04 — The graduation review, and OG-5 closes
 
 - **All nine clauses are met.** The review as first conducted found eight met

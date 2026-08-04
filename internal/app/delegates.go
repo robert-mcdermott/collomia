@@ -572,7 +572,17 @@ func validateDelegateWorktree(ctx context.Context, workspace, worktree, branch, 
 	}
 	flush()
 	if !registered {
-		return errors.New("retained delegated path is not the recorded Git worktree for this repository")
+		// A tree Git no longer registers and a tree that is simply gone need
+		// opposite responses: the first is a mismatch worth investigating, the
+		// second is an ordinary consequence of retained worktrees living under
+		// the OS temp directory, where a reboot or a cleaner removes them.
+		// Reporting both as "not the recorded worktree" sends someone looking
+		// for a problem with their repository when the answer is that the
+		// directory was swept and the work is gone with it.
+		if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
+			return fmt.Errorf("the retained worktree %s no longer exists; temporary directories are swept by the operating system, so this candidate's work is gone — run /orchestrate reconcile to record that, then discard the node or retry it", worktree)
+		}
+		return fmt.Errorf("retained delegated path %s is not the recorded Git worktree for this repository", worktree)
 	}
 	resolved, err := exec.CommandContext(timeout, "git", "-C", worktree, "rev-parse", "HEAD").Output()
 	if err != nil {
