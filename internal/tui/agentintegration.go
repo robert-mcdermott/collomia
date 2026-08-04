@@ -70,6 +70,12 @@ func (m *Model) openAgentIntegration(id string) error {
 	if err != nil {
 		return err
 	}
+	// Say this before the review rather than after it. Opening a selection UI
+	// whose apply key is going to be refused wastes the user's attention on
+	// choosing hunks that cannot be published from here.
+	if preview.GraphOwned {
+		return fmt.Errorf("%s is an Orchestrated Goal candidate; its node, attempt, and evidence belong to the graph, so it cannot be applied from here. Inspect it with /orchestrate status or in %s, and use /orchestrate reconcile and /orchestrate discard to manage the worktree", id, preview.Worktree)
+	}
 	state := &agentIntegrationState{preview: preview, hunks: make([][]diffmodel.Hunk, len(preview.Files)), keep: make([][]bool, len(preview.Files))}
 	for i, file := range preview.Files {
 		if file.Conflict != "" || file.AlreadyApplied || file.Unified == "" {

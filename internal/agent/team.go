@@ -73,6 +73,13 @@ type DelegateStatus struct {
 	Branch          string
 	BaseCommit      string
 	Integrated      []string
+	// GraphNode marks a candidate the Orchestrated Goal graph owns. Its
+	// retained worktree belongs to a plan node and attempt, so publishing it
+	// through the ordinary delegate path would change the parent workspace
+	// behind the graph's back, leaving the node still reporting that reviewed
+	// integration is required and the graph's evidence describing a parent
+	// that no longer exists.
+	GraphNode bool
 	// IntegrationStatus records the parent-side disposition of retained write
 	// work without changing the child's terminal execution status.
 	IntegrationStatus string
@@ -104,6 +111,7 @@ type DelegateStatus struct {
 type DelegateStart struct {
 	ID, Name, Task, Profile, Provider, Model string
 	Write                                    bool
+	GraphNode                                bool
 	WriteScopes                              []string
 	PlanStep                                 int
 	TokenBudget, TimeoutSeconds              int
@@ -133,7 +141,7 @@ func (t *Team) SetObserver(observer func(DelegateStatus)) {
 func (t *Team) Enqueue(start DelegateStart) {
 	status := DelegateStatus{
 		ID: start.ID, Name: start.Name, Task: start.Task, Profile: start.Profile,
-		Provider: start.Provider, Model: start.Model, Write: start.Write, PlanStep: start.PlanStep,
+		Provider: start.Provider, Model: start.Model, Write: start.Write, GraphNode: start.GraphNode, PlanStep: start.PlanStep,
 		WriteScopes: append([]string(nil), start.WriteScopes...),
 		Status:      DelegateQueued, CurrentAction: delegateQueueAction(start.Write, start.WriteScopes),
 		TokenBudget: start.TokenBudget, CostBudgetUSD: start.CostBudgetUSD, TimeoutSeconds: start.TimeoutSeconds,
@@ -708,7 +716,7 @@ func terminalDelegateStatus(status string) bool {
 func (status DelegateStatus) Event() event.DelegateStatus {
 	return event.DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
-		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
+		Provider: status.Provider, Model: status.Model, Write: status.Write, GraphNode: status.GraphNode, PlanStep: status.PlanStep,
 		WriteScopes: append([]string(nil), status.WriteScopes...), ScopeViolations: append([]string(nil), status.ScopeViolations...),
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,
@@ -731,7 +739,7 @@ func (status DelegateStatus) Event() event.DelegateStatus {
 func DelegateStatusFromEvent(status event.DelegateStatus) DelegateStatus {
 	return DelegateStatus{
 		ID: status.ID, Name: status.Name, Task: status.Task, Profile: status.Profile,
-		Provider: status.Provider, Model: status.Model, Write: status.Write, PlanStep: status.PlanStep,
+		Provider: status.Provider, Model: status.Model, Write: status.Write, GraphNode: status.GraphNode, PlanStep: status.PlanStep,
 		WriteScopes: append([]string(nil), status.WriteScopes...), ScopeViolations: append([]string(nil), status.ScopeViolations...),
 		Status: status.Status, CurrentAction: status.CurrentAction,
 		RecentOutput: status.RecentOutput, Guidance: append([]string(nil), status.Guidance...), PendingGuidance: status.PendingGuidance,

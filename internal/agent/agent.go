@@ -1637,7 +1637,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if team != nil {
 		team.Enqueue(DelegateStart{
 			ID: id, Name: name, Task: task.Task, Profile: task.Agent,
-			Provider: providerName, Model: model, Write: task.Write, PlanStep: task.PlanStep,
+			Provider: providerName, Model: model, Write: task.Write, GraphNode: task.GraphNode, PlanStep: task.PlanStep,
 			WriteScopes: writeScopes,
 			TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
 		})

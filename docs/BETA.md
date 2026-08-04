@@ -186,7 +186,9 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   of a path rather than a Git operation. Archiving a terminal graph waits until
   its worktrees have been observed, because the graph is the only thing that
   knows they exist. Nothing reuses a candidate: that is still review work you
-  do yourself. There is
+  do yourself, and `/agents apply` refuses a graph candidate rather than
+  publishing it behind the graph's back — you can review it there, but not
+  apply it. There is
   deterministic feedback when a verification-like shell command cannot count
   as evidence, naming the direct command to run wherever the check sits in
   what was refused, and a node that stalls after refused checks repeats it in

@@ -41,6 +41,11 @@ type DelegateIntegration struct {
 	// still runs the normal permission engine and all post-approval checks.
 	ReviewToken string
 	Files       []DelegateIntegrationFile
+	// GraphOwned marks a candidate belonging to an Orchestrated Goal node.
+	// Reviewing one is encouraged — that is what the retained worktree is for —
+	// but publishing it through this path is refused, because the graph would
+	// not know its parent workspace had changed.
+	GraphOwned bool
 }
 
 type DelegateIntegrationFile struct {
@@ -150,6 +155,7 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 		preview.Files = append(preview.Files, file)
 	}
 	preview.ReviewToken = delegateIntegrationReviewToken(preview)
+	preview.GraphOwned = status.GraphNode
 	return preview, nil
 }
 
@@ -209,9 +215,28 @@ func (r *Runtime) ApplyReviewedDelegateIntegration(ctx context.Context, id, revi
 	return r.publishDelegateIntegration(ctx, id, mutations, false)
 }
 
+// graphOwnedIntegrationRefusal keeps a graph-owned candidate out of the
+// ordinary delegate publication path. Publishing one here would change the
+// parent workspace while its plan node still reported that reviewed
+// integration was required, leaving the graph's recorded evidence describing a
+// parent that no longer exists and no combined-workspace verification run at
+// all. Reviewing the candidate remains available; only publication is refused.
+func graphOwnedIntegrationRefusal(preview *DelegateIntegration) error {
+	if preview == nil || !preview.GraphOwned {
+		return nil
+	}
+	return fmt.Errorf("%q is an Orchestrated Goal candidate, so it cannot be published through delegate integration: the graph owns its node, attempt, and evidence, and this path would change the parent workspace without the graph knowing. Review it here or in its worktree %s, and use /orchestrate status to see the node it belongs to; graph-owned integration with combined-workspace verification is OG-4 work that has not shipped", preview.ID, preview.Worktree)
+}
+
 func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id string, selections []DelegateIntegrationSelection) (*DelegateIntegration, []delegateIntegrationMutation, tools.Action, error) {
 	preview, err := r.PrepareDelegateIntegration(ctx, id)
 	if err != nil {
+		return nil, nil, tools.Action{}, err
+	}
+	// Every apply path — operator, primary-agent reviewed, and model tool —
+	// funnels through here, which is why the refusal lives at this point rather
+	// than at each caller.
+	if err := graphOwnedIntegrationRefusal(preview); err != nil {
 		return nil, nil, tools.Action{}, err
 	}
 	files := make(map[string]DelegateIntegrationFile, len(preview.Files))

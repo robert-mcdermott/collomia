@@ -544,6 +544,14 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-4A is additive within schema 1. Durable delegate status records gained an
+optional `graph_node` flag marking a candidate owned by an Orchestrated Goal
+node. Omission means an ordinary delegate, which is what every record written
+before the field existed was, so a resumed older session treats its delegates
+exactly as it did — a graph candidate restored from such a session is not
+recognised as one, and the graph's own snapshot remains the durable record of
+which node owns it. The event schema accepts the field additively and older
+readers ignore it.
 OG-3C changes no persisted or machine-readable shape. It adds the
 isolated-writer wave's product evaluations and records OG-3's exit-gate
 evidence.

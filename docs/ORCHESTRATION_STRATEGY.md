@@ -1458,7 +1458,36 @@ reproduced exactly after restart. Those are OG-4 and OG-5.
 
 ### OG-4 — Reviewed integration and combined verification
 
-**Status: unblocked; next milestone. OG-3 met its exit gate on 2026-08-03.**
+**Status: in progress. OG-3 met its exit gate on 2026-08-03; OG-4A closed the
+unaccounted publication path.**
+
+OG-4A no unaccounted publication of a graph candidate:
+
+- A graph writer is an ordinary delegate to the Team, and the delegate
+  integration path had no idea the graph existed. `/agents apply` on a
+  retained candidate published its hunks into the parent workspace and
+  succeeded. The node stayed `awaiting_review` still reporting that reviewed
+  integration was required, the graph's recorded evidence and workspace token
+  described a parent that no longer existed, and no combined-workspace
+  verification ran at all. This was reproduced against a real graph before it
+  was fixed, not reasoned about.
+- It also contradicted what the product claimed. The capability matrix and
+  every user-facing document said no candidate is selected or integrated,
+  which was true of what the runtime does automatically and false of what a
+  user could reach in two commands.
+- A candidate is now marked graph-owned from dispatch, through the durable
+  delegate record, and across a resumed session. Publication is refused at
+  `prepareDelegateIntegrationMutations`, the single funnel every apply path
+  runs through — operator, primary-agent reviewed, and model tool — so no
+  surface is left open. The primary agent's route matters as much as the
+  human's: it holds no authority to publish a node's candidate either.
+- Reviewing is deliberately still allowed. The retained worktree exists to be
+  looked at, and OG-3B5's whole argument was that an operator decides against
+  contents rather than against a path. The TUI refuses before opening the
+  selection UI rather than after the user has chosen hunks.
+- This restores the documented boundary rather than removing a capability;
+  publishing a candidate with combined-workspace verification is the rest of
+  OG-4.
 
 - Add explicit combined-parent verification to the graph acceptance path.
 - Add a recoverable pre-integration checkpoint and safe post-failure
@@ -1608,26 +1637,27 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-3C — Writer-wave product evaluation and OG-3
-  sign-off**, following OG-3B6's adversarial campaign, OG-3B5's
+- Last completed slice: **OG-4A — No unaccounted publication of a graph
+  candidate**, following OG-3C's writer-wave product evaluation and OG-3
+  sign-off, OG-3B6's adversarial campaign, OG-3B5's
   retained-worktree reconciliation, OG-3B1–B4's retained-worktree
   accountability closure, verification-composition correction,
   budget-accounting correction, and user-owned execution envelope, OG-3A's
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
 - Active milestone: **OG-4 — Reviewed integration and combined verification.**
-  OG-3 met its exit gate on 2026-08-03 and is complete.
-- Next unblocked slice: **the first OG-4 increment.** OG-4 is where the runtime
-  mutates the parent workspace for the first time, so it should be decomposed
-  before it is started: combined-parent verification, a recoverable
-  pre-integration checkpoint, deterministic eligibility with a visible
-  rationale, freshness-bound hunk application under ordinary integration
-  permission, and the waiver representation are separable, and the checkpoint
-  belongs before anything that writes.
+  OG-3 met its exit gate on 2026-08-03 and is complete; OG-4A has shipped.
+- Next unblocked slice: **OG-4B — the recoverable pre-integration checkpoint.**
+  It belongs before anything that writes to the parent, and OG-4A deliberately
+  left the graph with no publication path at all, so the order is now forced
+  rather than merely preferred. Combined-parent verification, deterministic
+  eligibility with a visible rationale, freshness-bound hunk application under
+  ordinary integration permission, and the waiver representation follow it as
+  separable increments.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
-  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C is the working
-  tree on top of them.**
+  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C plus OG-4A are
+  the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
@@ -1918,6 +1948,18 @@ Every agent or contributor continuing this program must:
   state, not by looking for the files a writer happened to create. The gate is
   that *nothing* changed, and a check written around the expected change cannot
   see an unexpected one.
+- Refuse publication of a graph-owned candidate at the shared funnel rather
+  than at each caller. Operator, primary-agent reviewed, and model-tool apply
+  all reach the same preparation step, and a refusal placed at one surface
+  would have read as a fix while leaving the others open.
+- Refuse publication but keep review. The retained worktree exists to be
+  inspected, and OG-3B5's argument was that a person decides against contents
+  rather than against a path; a refusal that also hid the diff would have made
+  the candidate less reviewable in the name of safety.
+- Treat a capability the documentation denies as a defect in the code, not in
+  the documentation. The matrix said no candidate is integrated, which was true
+  of the runtime's automatic behaviour and false of what a user could reach in
+  two commands; closing the path restored the claim rather than weakening it.
 
 ## Open implementation decisions
 

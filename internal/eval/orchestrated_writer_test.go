@@ -14,6 +14,7 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/plan"
@@ -428,5 +429,94 @@ func TestOrchestratedGoalRetainedWorktreeReconciliationEvaluation(t *testing.T) 
 	// With every tree observed, releasing the graph is allowed.
 	if _, err := runtime.CancelOrchestratedGoal(ctx); err != nil {
 		t.Fatalf("archive after reconciliation failed: %v", err)
+	}
+}
+
+// A retained candidate is reviewable through the ordinary delegate surface and
+// publishable through none of it. The graph owns the node, attempt, and
+// evidence, so a publication it did not perform would leave the node still
+// reporting that reviewed integration is required while the parent workspace
+// had already changed underneath it — and no combined-workspace verification
+// would have run at all. Reviewing stays available because that is what the
+// retained worktree is for.
+func TestOrchestratedGoalCandidateCannotBePublishedByDelegateIntegrationEvaluation(t *testing.T) {
+	workspace := orchestratedWriterGitFixture(t)
+	before := writerFixtureState(t, workspace)
+	client := &scopedWriterClient{t: t, written: map[string]bool{}, files: map[string]string{
+		"extend alpha": "alpha/extra.go",
+	}}
+	runtime := newWriterEvaluationRuntime(t, workspace, client, []plan.Step{
+		writerStep(1, "extend alpha", "alpha/"),
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
+	defer cancel()
+	if _, err := runtime.Agent.Run(ctx, "Produce the approved candidate.", func(event.Event) {}); err != nil {
+		t.Fatalf("a verified candidate wave reported an error: %v", err)
+	}
+	if outcome, _ := runtime.GoalGraph.Outcome(); outcome != goalgraph.OutcomeAwaitingReview {
+		t.Fatalf("graph outcome=%q, want awaiting_review", outcome)
+	}
+	candidate := ""
+	for _, status := range runtime.Team.Snapshot() {
+		if status.Write {
+			candidate = status.ID
+			if !status.GraphNode {
+				t.Fatalf("a graph-owned candidate is not marked as one: %+v", status)
+			}
+		}
+	}
+	if candidate == "" {
+		t.Fatal("the wave produced no write delegate")
+	}
+
+	// Review is allowed and shows the real diff.
+	preview, err := runtime.PrepareDelegateIntegration(ctx, candidate)
+	if err != nil {
+		t.Fatalf("reviewing a graph candidate was refused: %v", err)
+	}
+	if !preview.GraphOwned || len(preview.Files) == 0 {
+		t.Fatalf("preview=%+v, want a graph-owned preview with files", preview)
+	}
+
+	selections := make([]app.DelegateIntegrationSelection, 0, len(preview.Files))
+	for _, file := range preview.Files {
+		hunks, parseErr := diffmodel.ParseHunks(file.Unified)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		keep := make([]bool, len(hunks))
+		for i := range keep {
+			keep[i] = true
+		}
+		selections = append(selections, app.DelegateIntegrationSelection{Path: file.Path, Keep: keep})
+	}
+
+	// Every publication path refuses, including the primary-agent reviewed one
+	// that carries a valid review token.
+	applied, err := runtime.ApplyDelegateIntegration(ctx, candidate, selections)
+	if err == nil {
+		t.Fatalf("delegate integration published a graph candidate: %v", applied)
+	}
+	if !strings.Contains(err.Error(), "Orchestrated Goal candidate") {
+		t.Fatalf("refusal does not explain itself: %v", err)
+	}
+	if _, err := runtime.ApplyReviewedDelegateIntegration(ctx, candidate, preview.ReviewToken, selections); err == nil {
+		t.Fatal("reviewed delegate integration published a graph candidate")
+	}
+	if _, err := runtime.PrepareReviewedDelegateIntegrationAction(ctx, candidate, preview.ReviewToken, selections); err == nil {
+		t.Fatal("a graph candidate produced an authorizable integration action")
+	}
+
+	// The parent is untouched and the graph's account of the node still holds.
+	if after := writerFixtureState(t, workspace); after != before {
+		t.Fatalf("a refused publication changed the parent workspace:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	node := runtime.GoalGraph.Snapshot().Nodes[0]
+	if node.State != goalgraph.NodeAwaitingReview {
+		t.Fatalf("node state=%q, want awaiting_review", node.State)
+	}
+	if tree := runtime.GoalGraph.RetainedWorktrees()[0]; tree.Verification != "passed" {
+		t.Fatalf("the candidate lost its verification: %+v", tree)
 	}
 }

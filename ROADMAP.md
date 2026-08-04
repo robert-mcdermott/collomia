@@ -174,7 +174,10 @@ Standard evidence-gated execution remains the default.
 made every retained worktree observable and disposable by the user, OG-3B6
 completed the adversarial campaign, and OG-3C added the product evaluations
 that proved the exit gate. **OG-4 — Reviewed integration** is now the active
-milestone. See the
+milestone, and its first increment shipped: a graph candidate could be
+published into the parent workspace through `/agents apply` while the graph
+still reported that reviewed integration was required, and that path is now
+closed. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1893,6 +1896,13 @@ roadmap remains the source of priority and completion status.
   - [ ] **OG-4 — Reviewed integration:** add recoverable publication,
     conservative candidate synthesis, and fresh combined-parent verification
     before a logical node can finish.
+    - [x] **OG-4A — No unaccounted publication of a graph candidate:** mark a
+      candidate graph-owned from dispatch through the durable delegate record
+      and a resumed session, and refuse publication at the single funnel every
+      apply path shares — operator, primary-agent reviewed, and model tool —
+      while keeping review available. Closes a path that changed the parent
+      workspace while the node still reported that reviewed integration was
+      required. *(Completed 2026-08-03.)*
   - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
     state without replaying mutations, finish adversarial/performance
     evaluations, and make an evidence-based graduation decision.
@@ -2095,23 +2105,23 @@ evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future integration and exact scheduler-recovery claims. The next orchestration
-slice is **the first OG-4 increment — reviewed integration and combined
-verification**, which is the first time the runtime mutates the parent
-workspace. Until it ships, every candidate still remains in its own worktree
-and the primary workspace is unchanged.
+slice is **OG-4B — the recoverable pre-integration checkpoint**, which belongs
+before anything that writes to the parent. Until the rest of OG-4 ships, every
+candidate remains in its own worktree, the primary workspace is unchanged, and
+there is now no path at all that publishes one.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
    recognizer after OG-3A.8's ecosystem breadth and OG-3B2's composition rule,
    and whether two interventions is the right bound. Keep this local and
    inspectable rather than adding telemetry by default.
-2. Take **OG-4 — reviewed integration and combined verification**, now that
-   OG-3 is closed. Decompose it before starting: it is the first milestone in
-   which the runtime writes to the parent workspace, and the recoverable
-   pre-integration checkpoint belongs before anything that writes. Combined
+2. Continue **OG-4 — reviewed integration and combined verification**. OG-4A
+   closed the one path that could publish a graph candidate without the graph
+   knowing. Next is the recoverable pre-integration checkpoint, which belongs
+   before anything that writes to the parent; then combined-parent
    verification, deterministic candidate eligibility with a visible rationale,
    freshness-bound hunk application under ordinary integration permission, and
-   the user-authored waiver representation are separable increments. A score,
+   the user-authored waiver representation, as separable increments. A score,
    child test, or plan approval still never grants permission.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never

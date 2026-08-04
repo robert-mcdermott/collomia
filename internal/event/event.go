@@ -230,13 +230,17 @@ type DelegateVerification struct {
 // delegated task. Lifecycle updates replace earlier snapshots with the same
 // ID when a session is restored; no stored task is ever executed by replay.
 type DelegateStatus struct {
-	ID                   string                 `json:"id"`
-	Name                 string                 `json:"name"`
-	Task                 string                 `json:"task,omitempty"`
-	Profile              string                 `json:"profile,omitempty"`
-	Provider             string                 `json:"provider,omitempty"`
-	Model                string                 `json:"model,omitempty"`
-	Write                bool                   `json:"write,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Task     string `json:"task,omitempty"`
+	Profile  string `json:"profile,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Write    bool   `json:"write,omitempty"`
+	// GraphNode marks a candidate owned by an Orchestrated Goal node. Omission
+	// means an ordinary delegate, which is what every record written before
+	// this field existed was.
+	GraphNode            bool                   `json:"graph_node,omitempty"`
 	WriteScopes          []string               `json:"write_scopes,omitempty"`
 	ScopeViolations      []string               `json:"scope_violations,omitempty"`
 	PlanStep             int                    `json:"plan_step,omitempty"`

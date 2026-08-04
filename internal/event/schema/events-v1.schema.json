@@ -192,6 +192,7 @@
         "provider": { "type": "string" },
         "model": { "type": "string" },
         "write": { "type": "boolean" },
+        "graph_node": { "type": "boolean" },
         "write_scopes": { "type": "array", "maxItems": 64, "items": { "type": "string" } },
         "scope_violations": { "type": "array", "items": { "type": "string" } },
         "plan_step": { "type": "integer", "minimum": 0 },

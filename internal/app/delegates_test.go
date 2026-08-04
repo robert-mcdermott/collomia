@@ -738,3 +738,73 @@ func runGitOutputTest(t *testing.T, workspace string, args ...string) []byte {
 	}
 	return out
 }
+
+// A graph-owned candidate is reviewable and unpublishable through this path.
+// The model-facing tool matters as much as the operator one: the primary agent
+// holds no authority to publish a node's candidate either, and a refusal that
+// only covered the human surface would leave the model's route open.
+func TestGraphOwnedCandidateIsReviewableButNotPublishableHere(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	fixture.runtime.Team.Enqueue(agent.DelegateStart{ID: "g1", Name: "goal-write-1", Task: "extend alpha", Write: true, GraphNode: true})
+	fixture.runtime.Team.FinishDetailed("g1", "extended alpha", []string{"verified"}, []string{"sample.txt"}, fixture.worktree, fixture.branch, fixture.base, provider.Usage{}, nil)
+	data, err := os.ReadFile(fixture.delegatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.delegatedFile, []byte(strings.Replace(string(data), "line B", "line B from the graph writer", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parentBefore, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reviewing is allowed: the retained worktree exists to be looked at.
+	preview, err := fixture.runtime.PrepareDelegateIntegration(t.Context(), "g1")
+	if err != nil {
+		t.Fatalf("reviewing a graph candidate was refused: %v", err)
+	}
+	if !preview.GraphOwned || len(preview.Files) != 1 {
+		t.Fatalf("preview=%+v, want one graph-owned file", preview)
+	}
+	selections := []DelegateIntegrationSelection{{Path: "sample.txt", Keep: []bool{true}}}
+
+	for _, publish := range []struct {
+		name string
+		run  func() error
+	}{
+		{"operator apply", func() error {
+			_, err := fixture.runtime.ApplyDelegateIntegration(t.Context(), "g1", selections)
+			return err
+		}},
+		{"reviewed apply", func() error {
+			_, err := fixture.runtime.ApplyReviewedDelegateIntegration(t.Context(), "g1", preview.ReviewToken, selections)
+			return err
+		}},
+		{"reviewed action", func() error {
+			_, err := fixture.runtime.PrepareReviewedDelegateIntegrationAction(t.Context(), "g1", preview.ReviewToken, selections)
+			return err
+		}},
+	} {
+		err := publish.run()
+		if err == nil {
+			t.Fatalf("%s published a graph-owned candidate", publish.name)
+		}
+		if !strings.Contains(err.Error(), "Orchestrated Goal candidate") {
+			t.Fatalf("%s refusal does not explain itself: %v", publish.name, err)
+		}
+	}
+	parentAfter, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(parentBefore, parentAfter) {
+		t.Fatal("a refused publication changed the parent workspace")
+	}
+
+	// An ordinary delegate on the same worktree is unaffected, so the refusal
+	// is about graph ownership rather than about this repository state.
+	if _, err := fixture.runtime.PrepareDelegateIntegration(t.Context(), "d1"); err != nil {
+		t.Fatalf("an ordinary delegate was caught by the graph refusal: %v", err)
+	}
+}

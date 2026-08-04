@@ -2909,7 +2909,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/agents steer <id> <guidance...>` | Queue bounded guidance for the child's next model boundary. It never answers an approval or grants permission. |
 | `/agents verify <id>` | Detect and run the retained child worktree's standard build/lint/test suite sequentially. Every command receives its own ordinary `run_command` policy decision. |
 | `/agents compare <id> <id> [id…]` | Compare two to six completed write candidates by conflicts, selectable hunks, fresh verification, evidence, and token usage without selecting or publishing one. |
-| `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. |
+| `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. An Orchestrated Goal candidate is refused here — the graph owns its node, attempt, and evidence; inspect it with `/orchestrate status` and manage its worktree with `/orchestrate reconcile` and `/orchestrate discard`. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
 | `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
 | `/attachments` | List images attached to the pending prompt. |
@@ -3082,6 +3082,15 @@ required,” dependents remain closed, and the parent workspace is unchanged.
 Use the displayed worktree and the Session agent view to inspect the result.
 Automatic candidate selection and integration are OG-4 work; this preview does
 not apply, commit, merge, push, or publish the candidate.
+
+`/agents apply` will not publish one either. A graph candidate is an ordinary
+delegate's retained worktree as far as that surface is concerned, so it can be
+reviewed there, but publishing it would change your workspace while the node
+still said reviewed integration was required and no combined-workspace
+verification had run. Both operator and primary-agent publication are refused
+for graph candidates until the rest of OG-4 ships. Reviewing, `/agents verify`,
+and the `/orchestrate reconcile` and `/orchestrate discard` worktree controls
+all remain available.
 
 ### Reconciling retained worktrees
 

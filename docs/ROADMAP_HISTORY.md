@@ -45,6 +45,37 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-4A no unaccounted publication of a graph candidate
+
+- **A graph candidate could be published into the parent workspace, and the
+  graph would not know.** A graph writer is an ordinary delegate to the Team,
+  and the delegate integration path had no idea the graph existed, so
+  `/agents apply` on a retained candidate wrote its hunks into the parent and
+  succeeded. The node stayed `awaiting_review` still saying reviewed
+  integration was required, the graph's recorded evidence and workspace token
+  described a parent that no longer existed, and no combined-workspace
+  verification ran at all. This was reproduced against a real graph before
+  anything was changed, and the new evaluation was confirmed to fail without
+  the fix.
+- **It also contradicted what the product claimed.** The capability matrix and
+  the user documentation both said no candidate is selected or integrated —
+  true of what the runtime does automatically, false of what a user could reach
+  in two commands. Closing the path restored the claim rather than weakening
+  it, which is why this is a defect in the code and not in the documentation.
+- **Candidates are now marked graph-owned** from dispatch, through the durable
+  delegate record, and across a resumed session, with `graph_node` additive in
+  the event schema. Publication is refused at the single funnel every apply
+  path runs through — operator, primary-agent reviewed, and model tool — so no
+  surface stays open. The model's route mattered as much as the human's: the
+  primary agent holds no authority to publish a node's candidate either.
+- **Review is deliberately still allowed.** The retained worktree exists to be
+  looked at, and OG-3B5's whole argument was that a person decides against
+  contents rather than against a path. The TUI refuses before opening the hunk
+  selection UI rather than after the user has finished choosing.
+- What this does not do is publish anything. Graph-owned integration with a
+  recoverable checkpoint and combined-workspace verification is the rest of
+  OG-4; for now the honest state is that no path publishes a candidate at all.
+
 ### 2026-08-03 — OG-3C writer-wave product evaluation, and OG-3 closes
 
 - **The evaluation matrix had no isolated-writer case at all.** Every OG-3
