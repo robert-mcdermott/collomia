@@ -2047,6 +2047,17 @@ roadmap remains the source of priority and completion status.
       review rather than blocked. A reporting correction came with it:
       percentage deltas are suppressed between modes that completed different
       amounts of work. *(Completed 2026-08-04.)*
+    - [x] **OG-5J — cancellation compared:** put a test behind one of the few
+      measures the strategy states as an absolute — duplicate or
+      post-cancellation actions must remain zero — and measure what pressing
+      Ctrl-C actually costs in each mode. Both modes make zero provider calls
+      after cancellation, asserted for Standard mode too, since a cancellation
+      that leaks one further action means nothing in either. Standard mode
+      leaves its half-finished change in the repository; the wave leaves the
+      repository untouched and both in-flight candidates retained and
+      attributable. A writer cancelled before changing anything correctly
+      retains no worktree, since an empty directory is not evidence. **No
+      defect found.** *(Completed 2026-08-04.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2273,7 +2284,10 @@ make: the same broken change wrecks the workspace in Standard mode and never
 reaches it in the wave, and the wave's cost profile inverts when work fails. OG-5I then measured the
 other side — same-scope nodes, where the wave pays everything and overlaps
 nothing — and found a partial plan describing itself as finished while
-offering to discard the half that never ran.
+offering to discard the half that never ran. OG-5J then compared cancellation
+and found the mechanism already sound: zero post-cancellation actions in both
+modes, with the wave leaving the repository untouched and its in-flight work
+retained.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the

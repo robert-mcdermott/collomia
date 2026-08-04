@@ -544,6 +544,8 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5J changes nothing shipped: evaluation apparatus only, no product code.
+
 OG-5I changes no persisted shape. The `awaiting_review` outcome reason and the
 completion answer gain an account of nodes the graph never started; both are
 prose and were never a stable interface. The unstarted account is derived from

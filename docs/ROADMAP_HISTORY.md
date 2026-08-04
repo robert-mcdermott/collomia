@@ -45,6 +45,29 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — OG-5J compares cancellation
+
+- **One of the strategy's few absolutes now has a test behind it.** Duplicate or
+  post-cancellation actions must remain zero. Both modes make zero provider
+  calls after cancellation, and Standard mode is asserted too — a cancellation
+  that leaks a single further action means nothing in either mode.
+- **What Ctrl-C costs differs sharply.** Standard mode had already written into
+  your repository, and that half-finished change is still there when the run
+  stops. The wave's writers were mid-flight in their own worktrees, so your
+  repository is untouched and the work survives as retained trees still
+  attributable to their node and attempt.
+- **Those trees stay accounted for.** `/orchestrate reconcile` lists them and
+  the archive gate refuses to release a graph still pointing at a tree nobody
+  has looked at, so cancelling does not orphan anything.
+- **A design detail surfaced and is correct.** A writer cancelled before it
+  changed anything retains no worktree — an empty directory is not evidence and
+  keeping it would add a reconciliation decision about nothing. The first
+  version of this evaluation cancelled idle writers and so proved nothing about
+  whether in-progress work survives; it now makes each writer produce a change
+  first.
+- **No defect found.** The mechanism was already right. The value is that a
+  stated absolute is now tested rather than argued.
+
 ### 2026-08-04 — OG-5I measures the negative case and fixes a partial plan that called itself finished
 
 - **Guidance that only says "use it" is not guidance.** The previous slice

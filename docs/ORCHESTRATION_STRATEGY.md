@@ -2101,6 +2101,45 @@ completed, and the reporter suppresses percentage deltas between modes whose
 scope differs rather than printing a comparison that inverts the finding. The
 evaluation asserts the scopes differ, so the suppression cannot regress.
 
+#### OG-5J — Cancellation compared
+
+**Status: complete (2026-08-04). No defect found.**
+
+Cancellation is on the comparison list and carries one of the few measures the
+strategy states as an absolute: duplicate or post-cancellation actions must
+remain zero. It is also where the two modes differ in a way nobody has to
+interpret, because pressing Ctrl-C is not a rare event and what it leaves
+behind is the whole question.
+
+Cancelled with work genuinely in flight:
+
+| | standard | writer wave |
+| --- | --- | --- |
+| post-cancellation provider calls | **0** | **0** |
+| user's repository changed | yes | no |
+| graph outcome | — | `cancelled` |
+| retained worktrees | — | 2, both attributable to their node and attempt |
+
+**The absolute holds in both modes**, which is the result that matters most and
+the reason this is asserted for Standard mode too: cancellation that leaks a
+single further action means nothing in either mode.
+
+The difference is what cancelling costs. Standard mode had already written into
+the repository, and that half-finished change is still there when the run
+stops. The wave's writers were mid-flight in their own worktrees, so the
+repository is untouched and the work survives as attributable retained trees
+that `/orchestrate reconcile` lists and the archive gate refuses to orphan.
+
+**One design detail surfaced while writing this, and it is correct.** A writer
+cancelled before it changed anything retains no worktree at all — an empty
+directory is not evidence, and keeping it would add a reconciliation decision
+about nothing. The first version of this evaluation cancelled idle writers and
+so proved nothing about whether work in progress survives; it now makes each
+writer produce a change first, which is the case that actually matters.
+
+This slice found no defect. The mechanism was already right, and the value is
+that a stated absolute now has a test behind it rather than an argument.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -2235,8 +2274,12 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5I — the negative case, and a partial plan that
-  called itself finished** — same-scope nodes cannot overlap, so the wave pays
+- Last completed slice: **OG-5J — cancellation compared** — zero
+  post-cancellation actions in both modes, with Standard mode leaving a
+  half-finished change in the repository and the wave leaving it untouched with
+  both in-flight candidates retained and attributable. No defect found. It
+  follows OG-5I — the negative case, and a partial plan that called itself
+  finished — same-scope nodes cannot overlap, so the wave pays
   every cost for none of its benefit and needs a review cycle per node; and the
   `awaiting_review` stop called itself finished while inviting a cancel that
   would have discarded approved work never mentioned. It follows OG-5H —
@@ -2311,8 +2354,8 @@ Every agent or contributor continuing this program must:
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
   the OG-4 closure are `af71dba`, OG-5A through OG-5G plus the never-default
-  decision are committed through `344c5ae`, OG-5H is `6b6a995`, and OG-5I is
-  the working tree on top of them.**
+  decision are committed through `344c5ae`, OG-5H is `6b6a995`, OG-5I is
+  `f37f044`, and OG-5J is the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
