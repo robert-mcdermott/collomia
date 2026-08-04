@@ -1840,6 +1840,39 @@ time — each of which would be a claim about something that did not happen, in 
 record whose entire purpose is stopping a terminal state from overstating what
 passed.
 
+#### OG-5E — A check bound to a superseded workspace is named, not counted
+
+**Status: complete (2026-08-03).**
+
+The other half of graduation clause 2 is the word *stale*. OG-5D covered a node
+a revision deleted; this covers one whose evidence quietly stopped describing
+the workspace.
+
+A node's gate is evaluated against the state it completed in, which is the only
+state it can be evaluated against, and nothing re-runs it afterwards. A
+graph-made mutation stales unconsumed read-only nodes, but a finished primary
+node keeps its `done` state and its verification token. So node 1 can implement
+feature A and pass `go test ./featureA`, node 2 can then change code and pass
+only `go test ./featureB`, and the graph reports that all required nodes passed
+their runtime acceptance gates — while feature A may be broken. The probe drove
+exactly that and got that reason back.
+
+Re-verification is not the answer here. Staling every finished node on each
+mutation would stop a multi-node plan converging, and the graph does not run
+commands itself — it observes the ones the model runs. Nor can the runtime tell
+a repository-wide check from a narrow one without interpreting command lines,
+which is the kind of judgement it declines to fake elsewhere and should not
+start faking here.
+
+So it claims neither that the earlier work still holds nor that it is broken.
+At `done` it names the passing checks whose workspace token is not the final
+one, in the terminal reason, in `/orchestrate status`, and in the completion
+answer — the last because the model writes that summary from inside the final
+node, where an earlier node's suite is not something it re-ran or is likely to
+mention. A node whose check *did* run against the final state is not named, and
+a plan with nothing behind gains no qualification at all, because a warning
+attached to every completion is one nobody reads.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -1899,8 +1932,9 @@ The mode remains experimental until all of these hold:
 
 - no silent overwrite or duplicated mutation in the adversarial corpus, whose
   publication half OG-5C records;
-- no `done` with an open, stale, or unverified required node, and none that
-  reports a node a revision retired as one that passed (OG-5D);
+- no `done` with an open, stale, or unverified required node: none that reports
+  a node a revision retired as one that passed (OG-5D), and none that counts a
+  check bound to a workspace later work changed without naming it (OG-5E);
 - permission decisions are equivalent to the same actions in Standard mode,
   asserted at the parent-workspace boundary as OG-5B defines it;
 - resume is mutation-safe;
@@ -1957,8 +1991,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5D — a retired node is never reported as one that
-  passed** — a revision that omits a node deletes it, which let a graph the
+- Last completed slice: **OG-5E — a check bound to a superseded workspace is
+  named, not counted** — an earlier node's passing suite stops describing the
+  workspace as soon as a later node mutates it, and `done` was counting it
+  anyway. It follows OG-5D — a retired node is never reported as one that
+  passed — a revision that omits a node deletes it, which let a graph the
   model could not finish reach `done` claiming every required node passed its
   gates. Retiring work stays legal; the terminal state now records it and says
   so. It follows OG-5C — the adversarial publication corpus — five
@@ -1993,11 +2030,12 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
   decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
   the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the fifth OG-5 increment.** OG-5A shipped the
+- Next unblocked slice: **the sixth OG-5 increment.** OG-5A shipped the
   recovery work the decomposition put first, OG-5B closed the graduation
   gate's permission-equivalence clause and the bypass that testing it found,
   OG-5C recorded the publication half of its adversarial-corpus clause, and
-  OG-5D closed the false-completion path a graph revision opened.
+  OG-5D closed the false-completion path a graph revision opened, and OG-5E
+  closed the one a later node's mutation opened.
   What remains of OG-5 is the rest of the
   security/reliability/compatibility/performance campaigns, the
   Standard-versus-Orchestrated comparison — including whether competing
@@ -2009,7 +2047,7 @@ Every agent or contributor continuing this program must:
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, and OG-5A through OG-5D are the working tree
+  the OG-4 closure are `af71dba`, and OG-5A through OG-5E are the working tree
   on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers

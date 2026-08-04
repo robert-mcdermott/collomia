@@ -45,6 +45,31 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-5E stops done from counting a check the workspace outgrew
+
+- **An earlier node's passing suite can stop describing your repository, and
+  the graph was still counting it.** A node's gate is evaluated against the
+  state it completed in — the only state it can be evaluated against — and
+  nothing re-runs it afterwards. So node 1 implements feature A and passes
+  `go test ./featureA`; node 2 then changes code and passes only
+  `go test ./featureB`; and the graph reports that all required nodes passed
+  their acceptance gates while feature A may be broken.
+- **Re-verifying is not the fix.** Staling every finished node on each mutation
+  would stop a multi-node plan converging at all, and the graph does not run
+  commands itself — it observes the ones the model runs. It also cannot tell a
+  repository-wide check from a narrow one without interpreting command lines,
+  which is exactly the judgement it declines to fake everywhere else.
+- **So it says what it knows and nothing more.** A completed graph now names
+  the passing checks whose workspace token is not the final one, in its reason,
+  in `/orchestrate status`, and in the completion answer. Whether those checks
+  still pass is stated as not established either way, because it is not.
+- **The answer carries it because the model will not.** The closing summary is
+  written from inside the final node, where an earlier node's suite is not
+  something the model re-ran or is likely to bring up.
+- **A clean plan gains no qualification.** A node whose check did run against
+  the final state is not named, and a plan with nothing behind reads exactly as
+  it did before — a warning attached to every completion is one nobody reads.
+
 ### 2026-08-03 — OG-5D stops a revision from deleting its way to success
 
 - **The model could delete a node it could not finish and be told the plan

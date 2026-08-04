@@ -3279,6 +3279,89 @@ func (g *Graph) Revise(ctx context.Context, baseGeneration uint64, reason string
 	return g.persistLocked(ctx, true)
 }
 
+// SupersededVerification names one done node whose verification evidence is
+// bound to a workspace state a later node changed.
+type SupersededVerification struct {
+	NodeID  int    `json:"node_id"`
+	Title   string `json:"title"`
+	Command string `json:"command,omitempty"`
+	// Token is the state the check actually ran against, which is no longer
+	// the state the graph is finishing in.
+	Token string `json:"token"`
+}
+
+// supersededVerificationsLocked reports done nodes whose passing checks ran
+// against a workspace that later nodes have since changed.
+//
+// A node's gate is evaluated against the state it completed in, which is the
+// only state it could be evaluated against. Nothing re-runs it afterwards, and
+// nothing should: staling every finished node on each mutation would make a
+// multi-node plan unable to converge. But it means a later node with a
+// narrower check can break an earlier node's work and still let the graph
+// finish — feature B's suite passing says nothing about feature A.
+//
+// The runtime cannot tell a repository-wide check from a narrow one without
+// interpreting commands, which is exactly the kind of judgement it declines to
+// fake. So it does not claim the earlier work still holds, and it does not
+// claim it is broken either. It says which checks ran against a state that is
+// no longer current, and leaves the conclusion to the person reading it.
+func (g *Graph) supersededVerificationsLocked() []SupersededVerification {
+	final := g.state.WorkspaceToken
+	if final == "" {
+		return nil
+	}
+	var superseded []SupersededVerification
+	for i := range g.state.Nodes {
+		node := &g.state.Nodes[i]
+		if node.State != NodeDone || node.AcceptedAttemptID == "" {
+			continue
+		}
+		var stale *Evidence
+		for j := range g.state.Evidence {
+			evidence := &g.state.Evidence[j]
+			if evidence.NodeID != node.ID || evidence.Kind != EvidenceVerification || evidence.Status != "passed" {
+				continue
+			}
+			if evidence.WorkspaceToken == "" || evidence.WorkspaceToken == final {
+				// A check bound to the final state still describes it, so this
+				// node is accounted for however many others are not.
+				stale = nil
+				break
+			}
+			stale = evidence
+		}
+		if stale != nil {
+			superseded = append(superseded, SupersededVerification{
+				NodeID: node.ID, Title: node.Title, Command: stale.Command, Token: stale.WorkspaceToken,
+			})
+		}
+	}
+	return superseded
+}
+
+// SupersededVerifications reports done nodes whose passing checks ran against
+// a workspace state that later work has changed.
+func (g *Graph) SupersededVerifications() []SupersededVerification {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.supersededVerificationsLocked()
+}
+
+func supersededSummary(superseded []SupersededVerification) string {
+	if len(superseded) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(superseded))
+	for _, item := range superseded {
+		if item.Command != "" {
+			parts = append(parts, fmt.Sprintf("node %d (%s) passed %q against an earlier workspace state", item.NodeID, item.Title, item.Command))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("node %d (%s) was verified against an earlier workspace state", item.NodeID, item.Title))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // RetiredNodes returns the nodes revisions removed before they completed.
 func (g *Graph) RetiredNodes() []RetiredNode {
 	g.mu.Lock()
@@ -3911,6 +3994,16 @@ func (g *Graph) Inspect(nodeID int) (string, error) {
 		}
 		b.WriteByte('\n')
 	}
+	if superseded := g.supersededVerificationsLocked(); len(superseded) > 0 {
+		b.WriteString("\nVerified against an earlier workspace state (not re-run since)\n")
+		for _, item := range superseded {
+			if item.Command != "" {
+				fmt.Fprintf(&b, "  node %d (%s) · %s\n", item.NodeID, item.Title, bounded(item.Command, 120))
+				continue
+			}
+			fmt.Fprintf(&b, "  node %d (%s)\n", item.NodeID, item.Title)
+		}
+	}
 	// A node the plan no longer contains cannot appear in the node list above,
 	// so this is the only place an operator can see that the approved plan was
 	// reduced and what left it.
@@ -4120,6 +4213,13 @@ func (g *Graph) reduceOutcomeLocked() {
 		// was met needs to know the set shrank and which work left with it.
 		if retired := g.retiredSummaryLocked(); retired != "" {
 			g.state.Reason = "every remaining required node passed runtime acceptance gates, but the approved plan was reduced first — " + retired
+		}
+		// Each gate was evaluated against the state its node completed in, and
+		// a later node may have changed that state since. Saying which checks
+		// no longer describe the workspace is the difference between an
+		// accurate completion and an overstated one.
+		if superseded := supersededSummary(g.supersededVerificationsLocked()); superseded != "" {
+			g.state.Reason += "; checks that have not been re-run against the final workspace: " + superseded
 		}
 		g.stopActiveLocked(g.now().UTC())
 		g.clearPauseLocked()

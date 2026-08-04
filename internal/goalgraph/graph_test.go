@@ -2290,3 +2290,105 @@ func TestSnapshotRejectsAnIncoherentRetirementRecord(t *testing.T) {
 		t.Fatalf("a coherent retirement record was rejected: %v", err)
 	}
 }
+
+// verifiedMutatingNode drives one node through a mutation and a passing check,
+// which is the shape every gate in a mutating plan has.
+func verifiedMutatingNode(t *testing.T, graph *Graph, startToken, endToken, command string) Decision {
+	t.Helper()
+	_, attempt, err := graph.StartNext(t.Context(), startToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "edit_file", Risk: "write", Summary: "change", PotentialMutation: true, NonReplayable: true}, startToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "edit_file", Risk: "write", Summary: "changed", WorkspaceToken: endToken}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.BeginTool(t.Context(), attempt.ID, ToolAction{Tool: "run_command", Risk: "execute", Summary: command, PotentialMutation: true, NonReplayable: true}, endToken); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.FinishTool(t.Context(), attempt.ID, ToolResult{Tool: "run_command", Command: command, Risk: "execute", Summary: "ok", Verification: true, WorkspaceToken: endToken}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := graph.ProposeCompletion(t.Context(), "node complete and checked", endToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decision
+}
+
+// A node's gate is evaluated against the state it completed in, and nothing
+// re-runs it afterwards — nor should it, since staling every finished node on
+// each mutation would stop a multi-node plan converging. But that means a later
+// node with a narrower check can break an earlier node's work and still let the
+// graph finish: feature B's suite passing says nothing about feature A.
+//
+// The runtime cannot tell a repository-wide check from a narrow one without
+// interpreting commands, so it claims neither that the earlier work still holds
+// nor that it is broken. It reports which checks ran against a state that is no
+// longer current and leaves the conclusion to the reader.
+func TestDoneNamesChecksALaterMutationLeftBehind(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "two features", Nodes: []NodeSpec{
+		{ID: 1, Title: "feature A with tests", Acceptance: []string{"A's tests pass"}},
+		{ID: 2, Title: "feature B with tests", DependsOn: []int{1}, Acceptance: []string{"B's tests pass"}},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision := verifiedMutatingNode(t, graph, "state-0", "state-A", "go test ./featureA"); decision.Kind != DecisionAccepted {
+		t.Fatalf("node 1 decision=%+v", decision)
+	}
+	if decision := verifiedMutatingNode(t, graph, "state-A", "state-B", "go test ./featureB"); decision.Kind != DecisionDone {
+		t.Fatalf("node 2 decision=%+v", decision)
+	}
+
+	snapshot := graph.Snapshot()
+	if snapshot.Outcome != OutcomeDone {
+		t.Fatalf("outcome=%q, want done: a later mutation must not block a finished plan", snapshot.Outcome)
+	}
+	superseded := graph.SupersededVerifications()
+	// Node 2's check ran against the final state, so it is accounted for. Only
+	// node 1's is behind — which is also what proves this discriminates rather
+	// than flagging every node in a mutating plan.
+	if len(superseded) != 1 || superseded[0].NodeID != 1 || superseded[0].Command != "go test ./featureA" || superseded[0].Token != "state-A" {
+		t.Fatalf("superseded=%+v, want only node 1's check", superseded)
+	}
+	for _, phrase := range []string{"have not been re-run against the final workspace", "node 1 (feature A with tests)", "go test ./featureA"} {
+		if !strings.Contains(snapshot.Reason, phrase) {
+			t.Fatalf("the done reason does not say %q:\n%s", phrase, snapshot.Reason)
+		}
+	}
+	status, err := graph.Inspect(0)
+	if err != nil || !strings.Contains(status, "Verified against an earlier workspace state") || !strings.Contains(status, "go test ./featureA") {
+		t.Fatalf("status does not surface the superseded check err=%v\n%s", err, status)
+	}
+}
+
+// The negative control. A plan whose last check describes the state it finished
+// in has nothing to disclose, and saying otherwise would make the warning above
+// noise that gets ignored.
+func TestDoneSaysNothingExtraWhenEveryCheckDescribesTheFinalWorkspace(t *testing.T) {
+	fixture := &graphFixture{}
+	graph, err := New(Spec{Goal: "one feature", Nodes: []NodeSpec{
+		{ID: 1, Title: "feature A with tests", Acceptance: []string{"A's tests pass"}},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision := verifiedMutatingNode(t, graph, "state-0", "state-A", "go test ./..."); decision.Kind != DecisionDone {
+		t.Fatalf("node 1 decision=%+v", decision)
+	}
+	if superseded := graph.SupersededVerifications(); len(superseded) != 0 {
+		t.Fatalf("a check bound to the final workspace was reported as superseded: %+v", superseded)
+	}
+	snapshot := graph.Snapshot()
+	if snapshot.Reason != "all required nodes passed runtime acceptance gates" {
+		t.Fatalf("an unqualified completion gained a qualification: %q", snapshot.Reason)
+	}
+	status, err := graph.Inspect(0)
+	if err != nil || strings.Contains(status, "Verified against an earlier workspace state") {
+		t.Fatalf("status warns about nothing err=%v\n%s", err, status)
+	}
+}

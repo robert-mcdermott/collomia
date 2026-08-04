@@ -544,6 +544,12 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5E changes no persisted shape. It derives the superseded-check account from
+the workspace tokens already recorded on verification evidence, so no snapshot
+field is added and every existing snapshot reports correctly. The `done`
+outcome's `reason` gains a clause when such checks exist; that is prose and was
+never a stable interface.
+
 OG-5D adds an optional `retired_nodes` array to graph schema 1, each entry
 naming a node a revision removed before it completed. It is additive: a
 snapshot written before this slice has no such array and validates unchanged,

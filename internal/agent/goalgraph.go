@@ -482,16 +482,30 @@ func goalDoneAnswer(content string, graph *goalgraph.Graph) string {
 		return content
 	}
 	retired := graph.RetiredNodes()
-	if len(retired) == 0 {
+	superseded := graph.SupersededVerifications()
+	if len(retired) == 0 && len(superseded) == 0 {
 		return content
 	}
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(content, "\n"))
-	fmt.Fprintf(&b, "\n\nThe approved plan was reduced before this finished: %d node(s) were removed by revision without completing, so nothing verified them.\n", len(retired))
-	for _, node := range retired {
-		fmt.Fprintf(&b, "  - node %d (%s), removed while %s: %s\n", node.ID, node.Title, node.State, node.Reason)
+	if len(retired) > 0 {
+		fmt.Fprintf(&b, "\n\nThe approved plan was reduced before this finished: %d node(s) were removed by revision without completing, so nothing verified them.\n", len(retired))
+		for _, node := range retired {
+			fmt.Fprintf(&b, "  - node %d (%s), removed while %s: %s\n", node.ID, node.Title, node.State, node.Reason)
+		}
 	}
-	b.WriteString("\nReview whether that still meets your goal. /orchestrate status shows the same account.")
+	if len(superseded) > 0 {
+		fmt.Fprintf(&b, "\n\n%d earlier check(s) passed against a workspace that later work changed, and were not re-run:\n", len(superseded))
+		for _, item := range superseded {
+			if item.Command != "" {
+				fmt.Fprintf(&b, "  - node %d (%s): %s\n", item.NodeID, item.Title, item.Command)
+				continue
+			}
+			fmt.Fprintf(&b, "  - node %d (%s)\n", item.NodeID, item.Title)
+		}
+		b.WriteString("\nWhether they still pass is not established either way. Re-run them if it matters.")
+	}
+	b.WriteString("\n\nReview whether that still meets your goal. /orchestrate status shows the same account.")
 	return b.String()
 }
 

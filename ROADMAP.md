@@ -1986,6 +1986,15 @@ roadmap remains the source of priority and completion status.
       the removal is now a typed durable record, `done` says the approved plan
       was reduced and names what left, and both the completion answer and the
       terminal guard carry it. *(Completed 2026-08-03.)*
+    - [x] **OG-5E — a check bound to a superseded workspace is named, not
+      counted:** close the other half of the false-completion clause. A node's
+      gate is evaluated against the state it completed in and nothing re-runs
+      it, so a later node with a narrower check can break an earlier node's
+      work while the graph reports that every required node passed. Neither
+      re-verifying nor staling finished nodes is right, so `done` now names the
+      passing checks whose workspace is no longer current — in the reason,
+      `/orchestrate status`, and the completion answer — while a plan with
+      nothing behind gains no qualification. *(Completed 2026-08-03.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2198,7 +2207,9 @@ OG-5C then took the adversarial-corpus clause and found the opposite — the
 mechanism sound, the evidence missing — which is reported as such rather than
 dressed up as a fix. OG-5D then took the false-completion clause and found the
 sharpest defect of the three: the model could delete a node it could not finish
-and be told the plan had passed.
+and be told the plan had passed. OG-5E closed the same clause's other half,
+where an earlier node's passing suite silently stopped describing the
+workspace.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
