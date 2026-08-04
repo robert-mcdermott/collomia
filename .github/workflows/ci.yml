@@ -22,14 +22,21 @@ jobs:
           cache: true
       - name: Build
         run: go build ./...
+      # The evaluation package drives complete runtimes against real Git
+      # worktrees and the real Go toolchain, and a candidate wave runs the
+      # repository's checks three times over. Go's default per-package limit is
+      # ten minutes, which is a hang detector rather than a budget, and that
+      # work legitimately exceeds it on the slower Windows runner. The explicit
+      # limits below stay far above the observed cost so a genuine hang is still
+      # caught, without failing a suite that is merely doing what it says.
       - name: Cross-platform unit, integration, and evaluation tests
-        run: go test -count=1 ./...
+        run: go test -count=1 -timeout=30m ./...
       - name: Race detector
         if: runner.os != 'Windows'
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -timeout=45m ./...
       - name: Race detector
         if: runner.os == 'Windows'
-        run: go test -race -p=1 -count=1 ./...
+        run: go test -race -p=1 -count=1 -timeout=60m ./...
       - name: Static analysis
         run: go vet ./...
       - name: Test shell installer
@@ -71,7 +78,7 @@ jobs:
       - name: Scan reachable Go dependencies
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Deterministic offline agent evaluations
-        run: go test -count=1 ./internal/eval
+        run: go test -count=1 -timeout=30m ./internal/eval
       - name: Interruption and cancellation stress
         run: >-
           go test -count=5

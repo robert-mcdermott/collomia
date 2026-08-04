@@ -825,6 +825,10 @@ func checkpointSession(t *testing.T, fixture integrationFixture) *session.Sessio
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The session holds its record file open. Windows refuses to unlink an open
+	// file, so leaving it to the garbage collector makes TempDir's cleanup fail
+	// the test on that platform for a reason unrelated to what it asserts.
+	t.Cleanup(sess.Close)
 	fixture.runtime.Session = sess
 	return sess
 }

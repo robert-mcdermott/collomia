@@ -616,7 +616,7 @@ func TestGoalGraphControllerRequiresFreshVerificationAfterPrimaryWrite(t *testin
 			token = "workspace-after"
 			return "changed", nil
 		}},
-		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: fmt.Sprintf("cd %q && go test ./... 2>&1", workspace)}, Run: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: fmt.Sprintf(`cd "%s" && go test ./... 2>&1`, workspace)}, Run: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }},
 	)
 	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
 		switch call {
@@ -1214,7 +1214,7 @@ func TestCompletionControllerPreservesPlanningAndIterationLimits(t *testing.T) {
 
 func TestVerificationCommandRecognitionRejectsShellSuccessMasking(t *testing.T) {
 	workspace := t.TempDir()
-	for _, command := range []string{"go test ./...", "go test ./internal/agent -run TestAgent", "uv run pytest -q", "UV_CACHE_DIR=.uv-cache uv run pytest -v", ".venv/bin/pytest -v", ".venv/bin/python -m pytest -v", "python3 -m mypy app", "uv run python -m pytest -q", "ruff check .", "uv run ruff format --check .", "npm run lint", fmt.Sprintf("cd %q && UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1", workspace), "cd . && .venv/bin/pytest -q 2>&1"} {
+	for _, command := range []string{"go test ./...", "go test ./internal/agent -run TestAgent", "uv run pytest -q", "UV_CACHE_DIR=.uv-cache uv run pytest -v", ".venv/bin/pytest -v", ".venv/bin/python -m pytest -v", "python3 -m mypy app", "uv run python -m pytest -q", "ruff check .", "uv run ruff format --check .", "npm run lint", fmt.Sprintf(`cd "%s" && UV_CACHE_DIR=.uv-cache uv run pytest -v 2>&1`, workspace), "cd . && .venv/bin/pytest -q 2>&1"} {
 		if !isVerificationCommand(command, workspace) {
 			t.Errorf("verification command was not recognized: %q", command)
 		}
@@ -1222,7 +1222,7 @@ func TestVerificationCommandRecognitionRejectsShellSuccessMasking(t *testing.T) 
 	// `git diff --check` is a whitespace linter that passes on nearly any tree.
 	// Accepting it would let a mutating node close its verification gate
 	// without any check of the change it just made.
-	for _, command := range []string{"echo tests passed", "go test ./... || true", "go test ./...; echo ok", "ruff format .", "uv run ruff format .", "cat test.log", "git diff --check", "git status", fmt.Sprintf("cd %q && uv run pytest -q 2>&1 | tail -20", workspace), "cd /tmp && uv run pytest -q 2>&1"} {
+	for _, command := range []string{"echo tests passed", "go test ./... || true", "go test ./...; echo ok", "ruff format .", "uv run ruff format .", "cat test.log", "git diff --check", "git status", fmt.Sprintf(`cd "%s" && uv run pytest -q 2>&1 | tail -20`, workspace), "cd /tmp && uv run pytest -q 2>&1"} {
 		if isVerificationCommand(command, workspace) {
 			t.Errorf("non-verification command was recognized: %q", command)
 		}
@@ -1246,7 +1246,7 @@ func TestVerificationRecognitionAcceptsPreparationBeforeTheVerifier(t *testing.T
 		"source .venv/bin/activate && pytest -q",
 		". .venv/bin/activate && python -m pytest",
 		"npm ci && npm test",
-		fmt.Sprintf("cd %q && export FOO=bar && uv run pytest", workspace),
+		fmt.Sprintf(`cd "%s" && export FOO=bar && uv run pytest`, workspace),
 	} {
 		if !isVerificationCommand(command, workspace) {
 			t.Errorf("preparation before a verifier was refused: %q", command)
