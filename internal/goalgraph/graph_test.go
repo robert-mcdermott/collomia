@@ -2068,3 +2068,87 @@ func TestWorkspaceStateTokenCoversStagedAndUnstagedBytesBeforeFirstCommit(t *tes
 		t.Fatal("unborn repository token missed unstaged bytes layered over the index")
 	}
 }
+
+// OG-5's first claim is that a restart reproduces a multi-worker schedule
+// rather than approximating one. Three things have to survive: which nodes the
+// scheduler picks and in what order, that no running attempt is ever resumed
+// in place, and that the aggregate envelope is not quietly refilled. The last
+// is the one worth stating plainly — a restart is *charged* for the work it
+// re-does. Starts that reset on restore would make an unstable session an
+// unbounded one, which is precisely the budget a person agreed to when they
+// approved the graph.
+func TestRestartReproducesTheMultiWorkerScheduleAndItsSpentBudget(t *testing.T) {
+	fixture := &graphFixture{}
+	spec := Spec{Goal: "diagnose then repair", Nodes: []NodeSpec{
+		{ID: 1, Title: "inspect API", Execution: ExecutionReadOnly, Acceptance: []string{"API evidence is grounded"}},
+		{ID: 2, Title: "inspect tests", Execution: ExecutionReadOnly, Acceptance: []string{"test evidence is grounded"}},
+		{ID: 3, Title: "repair", DependsOn: []int{1, 2}, Execution: ExecutionPrimary},
+	}}
+	graph, err := New(spec, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(claims) != 2 || claims[0].Node.ID != 1 || claims[1].Node.ID != 2 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	before := graph.Snapshot()
+	if before.ReadFanout.Starts != 2 {
+		t.Fatalf("fan-out before the restart=%+v", before.ReadFanout)
+	}
+
+	// Round-trip through JSON rather than handing the in-memory snapshot
+	// across: the durable record is bytes, and a field that only survives
+	// because it shared a pointer would not survive an actual restart.
+	raw, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durable Snapshot
+	if err := json.Unmarshal(raw, &durable); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Restore(durable, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Recover(t.Context(), "state"); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := restored.Snapshot()
+	// Neither worker is resumed in place. Both attempts are closed as
+	// interrupted and preserved, and both nodes are schedulable again.
+	for i, attempt := range recovered.Attempts {
+		if attempt.State != AttemptInterrupted {
+			t.Fatalf("attempt %d state=%s, want every interrupted worker closed", i, attempt.State)
+		}
+	}
+	if recovered.Nodes[0].State != NodeReady || recovered.Nodes[1].State != NodeReady || recovered.Nodes[2].State != NodeProposed {
+		t.Fatalf("recovered node states=%+v", recovered.Nodes)
+	}
+	if recovered.Outcome != "" {
+		t.Fatalf("recovery made an interrupted read wave terminal: %q %q", recovered.Outcome, recovered.Reason)
+	}
+	// The spent envelope carries across the restart untouched, including the
+	// wall clock the wave started against.
+	if recovered.ReadFanout != before.ReadFanout {
+		t.Fatalf("fan-out after recovery=%+v, want %+v", recovered.ReadFanout, before.ReadFanout)
+	}
+
+	next, err := restored.StartReadyReads(t.Context(), "state", 2)
+	if err != nil || len(next) != 2 {
+		t.Fatalf("reissued claims=%+v err=%v", next, err)
+	}
+	if next[0].Node.ID != claims[0].Node.ID || next[1].Node.ID != claims[1].Node.ID {
+		t.Fatalf("restart reordered the schedule: %d,%d then %d,%d",
+			claims[0].Node.ID, claims[1].Node.ID, next[0].Node.ID, next[1].Node.ID)
+	}
+	// Fresh attempts, not the interrupted ones handed back.
+	if next[0].Attempt.ID == claims[0].Attempt.ID || next[1].Attempt.ID == claims[1].Attempt.ID {
+		t.Fatalf("restart reused an interrupted attempt: %s %s", next[0].Attempt.ID, next[1].Attempt.ID)
+	}
+	if spent := restored.Snapshot().ReadFanout.Starts; spent != 4 {
+		t.Fatalf("starts after re-claiming=%d, want the restart charged for both (4)", spent)
+	}
+}

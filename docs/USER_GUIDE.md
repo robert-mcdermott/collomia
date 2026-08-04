@@ -2927,7 +2927,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/sessions` (alias `/resume`) | Fuzzy-pick and switch to another durable session in place. |
 | `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
 | `/restore [turn]` | Branch the conversation and reverse the agent's tracked file changes back to an earlier completed turn. Refuses the whole operation, naming every file, if any changed outside Collomia. |
-| `/restore integration [id]` | List integrations that were interrupted before recording an outcome, or put one back to the exact state recorded before it started. It restores rather than completes: a half-applied publication is never re-run. |
+| `/restore integration [id [keep]]` | List integrations that were interrupted before recording an outcome, or put one back to the exact state recorded before it started. It restores rather than completes: a half-applied publication is never re-run. `keep` records that you inspected the workspace and are keeping it as it stands, changing no bytes. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
@@ -3095,6 +3095,17 @@ integration, because repeating a mutation whose effect nobody observed is
 exactly the replay it refuses everywhere else. Very large files are named as
 unrestorable rather than silently dropped, so you always know what you have to
 reconcile by hand.
+
+An interruption like that never resolves itself, and Collomia cannot end it by
+looking: a file matching its recorded prior bytes may never have been written,
+or may have been written and edited back. Only you can say which, so both of
+your answers are recordable. `/restore integration <id>` puts the prior bytes
+back. `/restore integration <id> keep` records that you inspected the workspace
+and are keeping what was published, and changes nothing on disk. Until you
+choose one, no Orchestrated Goal integration, combined verification, or waiver
+will proceed — each of those is a claim about the combined workspace, and a
+workspace that may hold some of a candidate's files and not others is not a
+state any of them can honestly be made about.
 
 `/orchestrate integrate <node-id>` is the one path that publishes a candidate
 into your workspace. It applies the whole candidate — never a subset, because

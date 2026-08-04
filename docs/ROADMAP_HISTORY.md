@@ -45,6 +45,40 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-5A restart fidelity and unresolved parent publications
+
+- **The slice started by measuring the thing it was going to build, and the
+  measurement changed the slice.** OG-5's first bullet was extending exact
+  restoration to multi-worker scheduler order, claims, and aggregate bounds. A
+  probe that interrupted a two-worker read wave, round-tripped the snapshot
+  through JSON, and recovered it found that already true: the same nodes are
+  reselected in the same order, no interrupted attempt is ever resumed in
+  place, and the spent envelope carries across untouched. It is now pinned by
+  a test instead of being reimplemented. The part worth stating plainly is
+  that a restart is *charged* for the starts it re-spends — starts that reset
+  on restore would turn an unstable session into an unbounded one, which is
+  not the budget anybody approved.
+- **The same probe found the real gap, and it was a safety one.** Recovery
+  returns immediately on a terminal graph, and `awaiting_review` and
+  `awaiting_verification` are terminal — so a session that stopped partway
+  through publishing a candidate into your workspace recovered nothing. The
+  durable record existed: OG-4B writes a checkpoint before the first byte
+  moves, so a publication that never recorded an outcome is precisely the
+  evidence that the workspace may hold some of a candidate's files and not
+  others. Nothing consulted it beyond a startup warning.
+- **Every later step is a claim about the combined workspace**, so none of
+  them may be made about one the runtime has already written down as unknown.
+  Integrating a second candidate, running combined verification, and recording
+  a waiver now all refuse while an interrupted publication is unresolved,
+  naming the checkpoint, the plan node it belonged to, and both ways out.
+- **Resolving it needed a second answer, not just a warning.** `pending` never
+  resolves itself, and the only exit was `/restore integration <id>`, which
+  undoes the publication. `/restore integration <id> keep` records that you
+  looked and are keeping the workspace as it stands, and changes no bytes. The
+  runtime cannot end the ambiguity by inspection — a file matching its recorded
+  prior bytes may never have been written, or may have been written and edited
+  back — so only a person can, and both of their answers have to be sayable.
+
 ### 2026-08-03 — OG-4 closes; an orchestrated goal runs end to end
 
 - **OG-4 met its exit gate**, recorded clause by clause against the tests and

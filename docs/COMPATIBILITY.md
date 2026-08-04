@@ -544,6 +544,15 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5A adds one value to the `integration_checkpoint` record's `state`
+vocabulary: `accepted`, meaning a person inspected an interrupted publication
+and kept the workspace as it stood. It is additive and resolves the same
+`pending` state that `restored` already resolves, so a reader that treats the
+field as an opaque string is unaffected, and one that enumerates it sees a
+resolved record it does not recognise rather than a pending one it does. No
+graph snapshot, event, or `run.result` shape changes; a restart's scheduler
+fidelity is a property of existing fields rather than a new one.
+
 The OG-4 closure changes no persisted or machine-readable shape. It records the
 milestone's exit-gate evidence and adds one evaluation.
 OG-4D changes no persisted or machine-readable shape. Combined-workspace

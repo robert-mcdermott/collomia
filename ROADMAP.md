@@ -183,7 +183,12 @@ before the first byte moves, so an interrupted one can be inspected and undone;
 and a verified candidate can now be published into the workspace on an explicit
 request and completed only when the repository's own checks pass against the
 combined result — or when you record an explicit written waiver.
-**OG-5 — Reproducible recovery and graduation** is now the active milestone.
+**OG-5 — Reproducible recovery and graduation** is now the active milestone,
+and its recovery increment has shipped: a restart reproduces a multi-worker
+schedule exactly, and no integration, verification, or waiver will proceed
+while an earlier publication into the workspace never recorded an outcome —
+you resolve that first by putting the prior bytes back or by recording that
+you are keeping what was published.
 See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
@@ -1948,6 +1953,14 @@ roadmap remains the source of priority and completion status.
   - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
     state without replaying mutations, finish adversarial/performance
     evaluations, and make an evidence-based graduation decision.
+    - [x] **OG-5A — restart fidelity and unresolved parent publications:**
+      pin multi-worker scheduler restoration as exact — same nodes, same
+      order, no attempt resumed in place, and the spent envelope carried
+      across so a restart is charged for the starts it re-spends — and stop
+      every step that reasons about the combined parent workspace while an
+      earlier publication into it never recorded an outcome, with
+      `/restore integration <id> keep` added as the resolution that keeps
+      what was published instead of undoing it. *(Completed 2026-08-03.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2146,10 +2159,14 @@ Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
-future integration and exact scheduler-recovery claims. The next orchestration
-slice is **the first OG-5 increment — reproducible graph recovery**. An
-Orchestrated Goal now runs end to end; what it cannot yet do is reproduce a
-multi-worker schedule exactly after a restart.
+future graduation claims. The next orchestration slice is **the second OG-5
+increment**. An Orchestrated Goal now runs end to end and survives a restart:
+OG-5A pinned multi-worker scheduler restoration as exact and closed the case
+where an interrupted publication left the parent workspace in a state no
+later step could honestly reason about. What is left is measurement rather
+than mechanism — the security, reliability, compatibility, and performance
+campaigns, the Standard-versus-Orchestrated comparison, and the graduation
+decision.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the

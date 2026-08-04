@@ -35,6 +35,9 @@ func (r *Runtime) IntegrateOrchestratedCandidate(ctx context.Context, nodeID int
 	}
 	r.orchestrationMu.Lock()
 	defer r.orchestrationMu.Unlock()
+	if err := r.interruptedIntegrationRefusal(fmt.Sprintf("integrate node %d", nodeID)); err != nil {
+		return "", err
+	}
 	graph, err := r.reconcilableGoalGraphLocked(ctx)
 	if err != nil {
 		return "", err
@@ -155,6 +158,9 @@ func (r *Runtime) VerifyOrchestratedIntegration(ctx context.Context, onOutput fu
 	}
 	r.orchestrationMu.Lock()
 	defer r.orchestrationMu.Unlock()
+	if err := r.interruptedIntegrationRefusal("run combined-workspace verification"); err != nil {
+		return "", err
+	}
 	graph, err := r.reconcilableGoalGraphLocked(ctx)
 	if err != nil {
 		return "", err
@@ -233,6 +239,9 @@ func (r *Runtime) WaiveOrchestratedVerification(ctx context.Context, reason stri
 	}
 	r.orchestrationMu.Lock()
 	defer r.orchestrationMu.Unlock()
+	if err := r.interruptedIntegrationRefusal("waive combined-workspace verification"); err != nil {
+		return "", err
+	}
 	graph, err := r.reconcilableGoalGraphLocked(ctx)
 	if err != nil {
 		return "", err

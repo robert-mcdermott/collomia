@@ -207,9 +207,13 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   such as a sandbox-required cache redirect or a virtualenv activation is fine
   — while `||`, `;`, pipelines, backgrounding, redirection, a check that is not
   last, and a leading segment that would run it outside the workspace do not. Graph-hidden plan/delegation tools are blocked again before
-  their arguments are decoded. There is
-  no optional-branch/node cancellation, automatic candidate integration, or
-  exact multi-worker recovery. Configuration, a repository, a saved graph,
+  their arguments are decoded. A restart now reproduces a
+  multi-worker schedule exactly, and an earlier publication that never recorded
+  an outcome stops integration, combined verification, and waiver until you
+  either restore the prior bytes or record that you are keeping what was
+  published. There is
+  no optional-branch/node cancellation and no automatic candidate integration.
+  Configuration, a repository, a saved graph,
   and a headless flag still cannot enable the preview. Standard execution
   remains the default.
 - Prompt caching is requested on the Anthropic Messages routes only, with the

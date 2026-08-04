@@ -595,6 +595,14 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			m.addPanel("Interrupted integrations", summary)
 			break
 		}
+		if len(args) == 3 && strings.EqualFold(args[0], "integration") && strings.EqualFold(args[2], "keep") {
+			if err := m.runtime.AcceptIntegrationCheckpoint(args[1]); err != nil {
+				m.addError(err)
+				break
+			}
+			m.addSystem(fmt.Sprintf("Kept the workspace as the interrupted publication left it and recorded %s as accepted. No file was changed.", args[1]))
+			break
+		}
 		if len(args) == 2 && strings.EqualFold(args[0], "integration") {
 			restored, err := m.runtime.RestoreIntegrationCheckpoint(context.Background(), args[1])
 			if err != nil {
@@ -605,7 +613,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			break
 		}
 		if len(args) != 1 {
-			m.addError(fmt.Errorf("usage: /restore [completed-turn-number | integration [checkpoint-id]]"))
+			m.addError(fmt.Errorf("usage: /restore [completed-turn-number | integration [checkpoint-id [keep]]]"))
 			break
 		}
 		turn, err := strconv.Atoi(args[0])

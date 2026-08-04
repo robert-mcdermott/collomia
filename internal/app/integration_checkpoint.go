@@ -117,8 +117,77 @@ func (r *Runtime) DescribeInterruptedIntegrations() string {
 			fmt.Fprintf(&b, "    %s\n", checkpoint.Detail)
 		}
 	}
-	b.WriteString("\nRestore the recorded prior state with /restore integration <checkpoint-id>, or inspect the files and accept them as they are.")
+	b.WriteString("\nRestore the recorded prior state with /restore integration <checkpoint-id>, or keep the workspace as it stands with /restore integration <checkpoint-id> keep.")
 	return b.String()
+}
+
+// interruptedIntegrationRefusal reports why no further Orchestrated Goal
+// integration step may proceed while a publication into this workspace never
+// recorded an outcome.
+//
+// Every remaining step in the milestone reasons about the combined workspace:
+// integrating a second candidate diffs against it, combined verification runs
+// the repository's checks against it, and a waiver is a person's statement
+// about it. A workspace that may hold some of a candidate's files and not
+// others is not a state any of those three claims can be made about, and the
+// runtime has a durable record saying exactly that. Refusing is not caution
+// about an unlikely case — it is declining to build evidence on top of bytes
+// the runtime has already written down as unknown.
+func (r *Runtime) interruptedIntegrationRefusal(step string) error {
+	pending := r.InterruptedIntegrations()
+	if len(pending) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(pending))
+	for _, checkpoint := range pending {
+		id := checkpoint.ID
+		if checkpoint.GraphNode > 0 {
+			id = fmt.Sprintf("%s (node %d)", id, checkpoint.GraphNode)
+		}
+		ids = append(ids, id)
+	}
+	return fmt.Errorf("cannot %s: %d earlier publication(s) into this workspace never recorded an outcome, so the workspace may hold some of a candidate's files and not others (%s). Resolve each one first with /restore integration <id> to put the prior bytes back, or /restore integration <id> keep to accept the workspace as it stands",
+		step, len(pending), strings.Join(ids, "; "))
+}
+
+// AcceptIntegrationCheckpoint records that a person inspected an interrupted
+// publication and chose to keep the workspace as it is. It writes no file.
+//
+// It is the other half of restoration rather than a way to dismiss a warning.
+// An interrupted publication is ambiguous, and the runtime cannot resolve the
+// ambiguity by looking — a file matching its recorded prior bytes may never
+// have been written, or may have been written and edited back. Only a person
+// can end it, and both of their answers have to be sayable.
+func (r *Runtime) AcceptIntegrationCheckpoint(id string) error {
+	if r == nil || r.Session == nil {
+		return errors.New("durable session state is unavailable")
+	}
+	checkpoint, ok := r.Session.IntegrationCheckpointByID(id)
+	if !ok {
+		return fmt.Errorf("unknown integration checkpoint %q", id)
+	}
+	if checkpoint.Workspace != r.Workspace {
+		return fmt.Errorf("integration checkpoint %q belongs to another workspace", id)
+	}
+	if checkpoint.State != session.IntegrationPending {
+		return fmt.Errorf("integration checkpoint %q is already %s", id, checkpoint.State)
+	}
+	checkpoint.State, checkpoint.Ended = session.IntegrationAccepted, time.Now().UTC()
+	accepted := "accepted by the user; the workspace was kept as the interrupted publication left it and no bytes were changed"
+	// A checkpoint that could not retain some file's prior content says so in
+	// Detail, and that stays true after acceptance — it is the record of what
+	// this session could never have put back.
+	if checkpoint.Detail != "" {
+		accepted = checkpoint.Detail + "; " + accepted
+	}
+	checkpoint.Detail = accepted
+	// Unlike a completed publication, nothing here has happened yet that a
+	// failed write would contradict, so this one is reported rather than warned
+	// past: an acceptance that was not recorded has not been made.
+	if err := r.Session.AppendIntegrationCheckpoint(checkpoint); err != nil {
+		return fmt.Errorf("record acceptance of integration checkpoint %s: %w", id, err)
+	}
+	return nil
 }
 
 // RestoreIntegrationCheckpoint puts every recorded path back exactly as it was

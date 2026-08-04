@@ -45,7 +45,7 @@ var slashCommands = []commandInfo{
 	{name: "/ps", args: "", desc: "list background processes (stop with /ps stop <id>)"},
 	{name: "/sessions", args: "", desc: "pick a saved session to resume"},
 	{name: "/rewind", args: "[turn]", desc: "branch from an earlier completed turn without undoing files"},
-	{name: "/restore", args: "[turn|integration [id]]", desc: "return to a completed turn, or inspect and undo an interrupted integration"},
+	{name: "/restore", args: "[turn|integration [id [keep]]]", desc: "return to a completed turn, or inspect, undo, or keep an interrupted integration"},
 	{name: "/retry", args: "", desc: "load the previous prompt for review without running it"},
 	{name: "/new", args: "", desc: "start a fresh session (current one stays saved)"},
 	{name: "/compact", args: "[focus]", desc: "summarize older context to free the window"},

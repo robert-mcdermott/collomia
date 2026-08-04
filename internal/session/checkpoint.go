@@ -28,6 +28,11 @@ const (
 	// IntegrationRestored means a person explicitly restored the recorded prior
 	// bytes after an interruption.
 	IntegrationRestored = "restored"
+	// IntegrationAccepted means a person inspected the interrupted workspace and
+	// chose to keep it as it stands. It changes no bytes. It exists because
+	// `pending` never resolves itself, and without a way to say "I looked and
+	// this is fine" the only exit from an interruption would be undoing it.
+	IntegrationAccepted = "accepted"
 )
 
 const (

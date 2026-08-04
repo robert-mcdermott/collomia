@@ -1666,6 +1666,65 @@ or reproduce a multi-worker schedule exactly after restart. Those are OG-5.
 Graduation does not imply universal automatic use. Even a graduated graph
 engine should be selected only for work that benefits from decomposition.
 
+#### OG-5A — Restart fidelity and unresolved parent publications
+
+**Status: complete (2026-08-03).**
+
+This slice began by measuring the first bullet rather than building it, and
+the measurement changed what the slice was. A probe that interrupted a
+two-worker read wave, round-tripped the snapshot through JSON, and recovered
+it found that multi-worker restoration was **already exact**: the scheduler
+reselected the same nodes in the same order, both interrupted attempts were
+closed rather than resumed, and the aggregate envelope — starts, tokens, and
+the wall clock the wave began against — carried across untouched, so the
+restart was charged for the work it re-did instead of being handed a refilled
+budget. That is a property worth having and no test held it, so this slice
+pins it in `TestRestartReproducesTheMultiWorkerScheduleAndItsSpentBudget`
+rather than reimplementing it. Starts that reset on restore would turn an
+unstable session into an unbounded one, which is not the budget anybody
+agreed to when they approved the graph.
+
+The same probe found the real gap, in the third bullet. `Recover` returns
+immediately on a terminal graph, and `awaiting_review` and
+`awaiting_verification` are terminal — so a session that stopped partway
+through publishing a candidate into the parent recovered nothing. The durable
+half of that story existed already: OG-4B's checkpoint is written before the
+first byte moves and marked complete afterwards, so a publication that never
+recorded an outcome is exactly the record that says the workspace may hold
+some of a candidate's files and not others. Nothing consulted it. It was
+surfaced as a startup warning and listed by `/restore integration`, and no
+orchestration step looked at it at all.
+
+Every remaining step in the milestone reasons about the combined parent
+workspace: integrating a second candidate diffs against it, combined
+verification runs the repository's checks against it, and a waiver is a
+person's written statement about it. None of those three claims can honestly
+be made about a workspace the runtime has already written down as unknown, so
+all three now refuse until the interruption is resolved, naming the
+checkpoint, the plan node it belonged to, and both ways out. This is not
+caution about an unlikely case; it is declining to build evidence on top of
+bytes already recorded as ambiguous.
+
+Resolving it needed a second verb. `pending` never resolves itself, and until
+now the only exit was `/restore integration <id>`, which undoes the
+publication. The operator text already invited the other answer — "inspect the
+files and accept them as they are" — but nothing recorded that decision, so
+the warning repeated every startup and the new refusal would have been a dead
+end for any user who wanted to keep what was published. `/restore integration
+<id> keep` records the acceptance and changes no bytes. It is the other half
+of restoration rather than a way to dismiss a warning: an interrupted
+publication is genuinely ambiguous — a file matching its recorded prior bytes
+may never have been written, or may have been written and edited back — so
+the runtime cannot end it by looking, only a person can, and both of their
+answers have to be sayable.
+
+Not done here, and deliberately: no archive gate for a pending checkpoint. The
+retained-worktree gate exists because archiving makes the graph, the only
+record of a real directory, unreachable. A checkpoint is not orphaned that
+way — it lives in the session and `/restore integration` still lists it after
+the graph is released — so the same argument does not carry, and a refusal
+without it would be ceremony.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -1780,10 +1839,16 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-4 closure** — the exit gate recorded clause by
+- Last completed slice: **OG-5A — restart fidelity and unresolved parent
+  publications** — multi-worker scheduler restoration measured and pinned as
+  exact, including that a restart is charged for the starts it re-spends, and
+  an interrupted publication into the parent workspace now stopping every
+  step that reasons about the combined workspace until a person restores the
+  prior bytes or records that they are keeping what was published. It follows
+  the OG-4 closure — the exit gate recorded clause by
   clause with its evidence, the integration-denial evaluation that closed the
   last untested clause, and the two deliverable bullets not delivered
-  literally written down rather than dropped. It follows OG-4D's
+  literally written down rather than dropped — and OG-4D's
   combined-workspace verification and node acceptance, OG-4C's graph-owned
   candidate integration, OG-4B's
   recoverable pre-integration checkpoint, OG-4A's closure of
@@ -1796,20 +1861,22 @@ Every agent or contributor continuing this program must:
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
-  decision.** OG-4 met its exit gate on 2026-08-03 and is complete.
-- Next unblocked slice: **the first OG-5 increment.** OG-5 should be
-  decomposed before it is started: exact multi-worker scheduler restoration,
-  safe restart of pending read-only work, reconciling interrupted writer and
-  integration states without replay, the security/reliability/compatibility/
-  performance campaigns, the Standard-versus-Orchestrated comparison, and the
-  graduation decision are separable. The recovery work should come first,
-  because the campaigns and the comparison both measure a system whose
-  restart semantics ought to be settled.
+  decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
+  the recovery increment, shipped on 2026-08-03.
+- Next unblocked slice: **the second OG-5 increment.** OG-5A shipped the
+  recovery work the decomposition put first: multi-worker scheduler
+  restoration is now pinned as exact rather than asserted, and an
+  interrupted publication into the parent workspace now stops every step that
+  reasons about the combined workspace until a person restores or keeps it.
+  What remains of OG-5 is the security/reliability/compatibility/performance
+  campaigns, the Standard-versus-Orchestrated comparison — including whether
+  competing candidates for one node are worth their multiplied per-node cost —
+  and the graduation decision. Those measure a system whose restart semantics
+  are now settled, which is why they were sequenced after this slice.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
-  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C, OG-4A, plus
-  OG-4B,
-  plus OG-4C, OG-4D, and the OG-4 closure are the working tree on top of
+  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
+  the OG-4 closure are `af71dba`, and OG-5A is the working tree on top of
   them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
@@ -1818,13 +1885,20 @@ Every agent or contributor continuing this program must:
   `awaiting_review`, plus cooperative pause/resume, safe retry of eligible
   blocked nodes, durable aggregate accounting, bounded retained evidence,
   attributable retained worktrees across every way a wave can end, explicit
-  observation and user-decided disposal of those worktrees, and a
-  user-configurable whole-graph execution envelope a person can extend**.
+  observation and user-decided disposal of those worktrees, a
+  user-configurable whole-graph execution envelope a person can extend,
+  explicit user-authorised whole-candidate integration under a recoverable
+  pre-publication checkpoint, combined-workspace verification or an explicit
+  user-authored waiver before an integrated node completes, and a restart that
+  reproduces a multi-worker schedule exactly and refuses to reason about a
+  workspace an interrupted publication left ambiguous**.
 - Current default behavior: Standard model-directed execution with
   evidence-gated goal completion.
 - Preserved implementation constraint: only approved `read_only` and narrowly
   scoped `isolated_write` nodes may be automatically delegated; writers never
-  touch the parent workspace, no candidate is selected or integrated, primary
+  touch the parent workspace, no candidate is ever selected or integrated
+  automatically — publication into the parent is reachable only by an explicit
+  user command, never by the model and never by an autonomy mode — primary
   parent writes stay serial, workers cannot recurse or control the graph, and
   a saved graph remains inert until explicit resume.
 - Parallel program requirement: continue the remaining Phase 8 security and

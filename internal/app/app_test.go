@@ -11,6 +11,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
@@ -1233,5 +1234,100 @@ func TestConfiguredOrchestrationEnvelopeReachesTheGraph(t *testing.T) {
 	}
 	if budget.Grant.Tokens != 8_000_000 {
 		t.Fatalf("a later user grant would not add the configured envelope: %+v", budget.Grant)
+	}
+}
+
+// Every remaining Orchestrated Goal step reasons about the combined parent
+// workspace: integrating a second candidate diffs against it, combined
+// verification runs the repository's checks against it, and a waiver is a
+// person's statement about it. When an earlier publication stopped without
+// recording an outcome, the runtime has already written down that the
+// workspace may hold some of a candidate's files and not others — so none of
+// those three claims can honestly be made until a person ends the ambiguity.
+func TestInterruptedPublicationStopsEveryCombinedWorkspaceStep(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{
+		Workspace:        t.TempDir(),
+		OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.GoalGraph = retainedWorktreeGraph(t, "/tmp/retained-candidate")
+
+	const marker = "never recorded an outcome"
+	steps := map[string]func() error{
+		"integrate": func() error {
+			_, err := runtime.IntegrateOrchestratedCandidate(t.Context(), 1)
+			return err
+		},
+		"verify": func() error {
+			_, err := runtime.VerifyOrchestratedIntegration(t.Context(), nil)
+			return err
+		},
+		"waive": func() error {
+			_, err := runtime.WaiveOrchestratedVerification(t.Context(), "the repository has no automated checks")
+			return err
+		},
+	}
+
+	// Each step already refuses for its own ordinary reason. Pinning that here
+	// is what makes the refusal below evidence of the gate rather than of the
+	// fixture being incomplete.
+	for name, step := range steps {
+		if err := step(); err == nil || strings.Contains(err.Error(), marker) {
+			t.Fatalf("%s before any interruption: err=%v", name, err)
+		}
+	}
+
+	// A process that recorded the checkpoint, started publishing, and stopped.
+	// The workspace path has to come from the runtime rather than the temp
+	// directory it was built from: the runtime canonicalises it, and a
+	// checkpoint recorded against the uncanonical spelling belongs, as far as
+	// the filter is concerned, to a different workspace.
+	prior := "before publication\n"
+	checkpoint := session.NewIntegrationCheckpoint("checkpoint-interrupted", "writer-1", runtime.Workspace, 1,
+		[]session.IntegrationFile{{Path: "docs/guide.md", Existed: true, Before: &prior, Mode: 0o644}}, time.Now())
+	if err := runtime.Session.AppendIntegrationCheckpoint(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, step := range steps {
+		err := step()
+		if err == nil || !strings.Contains(err.Error(), marker) {
+			t.Fatalf("%s during an unresolved interruption: err=%v", name, err)
+		}
+		// The refusal has to be actionable: which record, which plan node, and
+		// both ways out. A refusal that only says no leaves the user stuck.
+		if !strings.Contains(err.Error(), "checkpoint-interrupted") || !strings.Contains(err.Error(), "node 1") {
+			t.Fatalf("%s refusal does not name the record: %v", name, err)
+		}
+		if !strings.Contains(err.Error(), "/restore integration <id> keep") {
+			t.Fatalf("%s refusal does not offer both resolutions: %v", name, err)
+		}
+	}
+
+	// Accepting is the resolution that changes no bytes. It is recorded as the
+	// user's decision, and it is the only thing that lets the milestone
+	// continue without undoing what was published.
+	if err := runtime.AcceptIntegrationCheckpoint("checkpoint-interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if pending := runtime.InterruptedIntegrations(); len(pending) != 0 {
+		t.Fatalf("an accepted checkpoint is still reported as interrupted: %+v", pending)
+	}
+	resolved, ok := runtime.Session.IntegrationCheckpointByID("checkpoint-interrupted")
+	if !ok || resolved.State != session.IntegrationAccepted {
+		t.Fatalf("resolved checkpoint=%+v, want an accepted record", resolved)
+	}
+	if err := runtime.AcceptIntegrationCheckpoint("checkpoint-interrupted"); err == nil {
+		t.Fatal("a resolved checkpoint was accepted a second time")
+	}
+
+	for name, step := range steps {
+		if err := step(); err == nil || strings.Contains(err.Error(), marker) {
+			t.Fatalf("%s after acceptance: err=%v", name, err)
+		}
 	}
 }
