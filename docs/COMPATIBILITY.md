@@ -544,6 +544,8 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5G changes nothing shipped: evaluation apparatus only, no product code.
+
 OG-5F changes nothing shipped: it is evaluation apparatus only, with no
 product code touched.
 

@@ -1995,6 +1995,26 @@ roadmap remains the source of priority and completion status.
       passing checks whose workspace is no longer current — in the reason,
       `/orchestrate status`, and the completion answer — while a plan with
       nothing behind gains no qualification. *(Completed 2026-08-03.)*
+    - [x] **OG-5F — the mode comparison harness:** replace a flaky
+      total-wall-clock comparison with critical-path measurement — the union of
+      the windows in which work was actually running — so a loaded machine
+      slows every mode without inverting the result. Each mode now yields a
+      record carrying tokens and provider iterations beside the time, printed
+      as a table with deltas, because a clause about whether a benefit
+      justifies an overhead needs numbers rather than an assertion that held.
+      Read fan-out halves the critical path for roughly 2.1x the tokens, and a
+      serial graph pays that premium for no time benefit at all. **This does
+      not close the cost/benefit clauses.** *(Completed 2026-08-04.)*
+    - [x] **OG-5G — the isolated-writer wave measured:** close the matrix's
+      largest hole. Against Standard mode doing the same two package changes,
+      the wave halves the implementation critical path for +8% tokens — but
+      runs the repository's detected verification set three times instead of
+      once, and leaves nothing in the user's repository until two explicit
+      integrations and a combined verification. The verification multiplier is
+      structural and scales with the suite's real time, which makes it the cost
+      that matters rather than tokens. Rounds are counted rather than commands
+      because commands measure the model's taste and rounds measure the
+      structure. **Clauses 5 and 6 remain open.** *(Completed 2026-08-04.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2212,7 +2232,10 @@ where an earlier node's passing suite silently stopped describing the
 workspace. OG-5F then built the apparatus the cost/benefit clauses need and
 produced its first data points: halving the critical path on independent reads
 costs roughly 2.1x the tokens, and a serial graph pays that premium for no time
-benefit at all.
+benefit at all. OG-5G then measured the writer wave, where the token premium
+turns out not to be the story: it halves the implementation critical path for
++8% tokens while running the verification set three times instead of once, and
+finishes with nothing in the repository until the user integrates.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the

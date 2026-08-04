@@ -1930,6 +1930,61 @@ wave, which is where the real cost sits — are unmeasured. Clauses 5 and 6 stay
 open, and the honest summary of this slice is that the apparatus for answering
 them now exists and has produced its first two data points.
 
+#### OG-5G — The isolated-writer wave measured
+
+**Status: complete (2026-08-04). It does not close clauses 5 and 6 either.**
+
+OG-5F built the harness and measured read fan-out, where the wave's cost is
+extra provider calls. The writer wave is where the real cost sits and was the
+largest hole in the matrix: it creates a Git worktree per node, runs the
+repository's detected verification set inside each one, and runs it again over
+the combined workspace after integration.
+
+Measured against Standard mode doing the same two package changes serially:
+
+| | standard | writer wave |
+| --- | --- | --- |
+| implementation critical path | 2.40s | 1.27s (**-47%**) |
+| tokens | 52 | 56 (+8%) |
+| verification rounds | 1 | **3** |
+| verification commands | 1 | 9 |
+| work in the user's repository at the end | yes | **no - not until two explicit integrations and a combined verification** |
+
+**The token premium is not the story; the verification multiplier is.** Read
+fan-out cost +110% tokens for its overlap. The writer wave costs +8% tokens
+here - and runs the repository's whole verification set three times instead of
+once. On this fixture that is seconds. On a repository whose suite takes ten
+minutes it is thirty minutes against ten, and the multiplier is structural: one
+round per candidate tree plus one combined, however many nodes and however slow
+the suite. The two candidate rounds run concurrently, so the elapsed penalty is
+nearer twice than three times; the compute is three times either way.
+
+Rounds are counted rather than commands, deliberately. Each of the wave's
+rounds runs the full detected set - `go build`, `go vet`, `go test` - because
+the runtime detected it, while a Standard-mode round contains whatever the
+model chose to run. Comparing 9 against 1 would measure the model's taste;
+comparing 3 against 1 measures the structure, which is what is true of every
+repository. Token deltas are similarly fixture-dependent and the round count is
+not.
+
+**The two modes do not finish in the same place, and the comparison says so.**
+Standard mode ends with the work in the user's repository. The wave ends at
+`awaiting_review` with the parent byte-for-byte untouched - the evaluation
+asserts that - and reaching Standard's end state takes two explicit
+integrations and a combined verification the user has to ask for. That is the
+feature working as designed, not a defect, but comparing cost without stating
+it would be the most misleading number here, so the end state is measured for
+both modes and the wave's is asserted twice: untouched at review, landed after
+integration.
+
+**What this buys, stated plainly.** Roughly half the implementation critical
+path and a parent workspace that cannot be touched without review, in exchange
+for triple verification and a completion that is not one. Whether that trade is
+worth making depends on how long the suite takes and how much the review
+boundary is worth, and neither is a number this harness can supply. Clauses 5
+and 6 remain open, now with the writer wave's shape on the record beside read
+fan-out's.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -2048,7 +2103,12 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5F — the mode comparison harness** — critical-path
+- Last completed slice: **OG-5G — the isolated-writer wave measured** — half the
+  implementation critical path for +8% tokens, but three verification rounds
+  against one and no work in the repository until the user integrates. The
+  verification multiplier is structural and scales with the suite's real time,
+  which makes it the cost that matters rather than tokens. It follows OG-5F —
+  the mode comparison harness — critical-path
   measurement replacing a flaky total-wall-clock comparison, with each mode
   yielding a record carrying tokens and iterations beside the time. It does not
   close the cost/benefit clauses: one scenario family is measured and the
@@ -2091,7 +2151,7 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
   decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
   the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the seventh OG-5 increment — extending the comparison matrix**, most valuably to the isolated-writer wave. OG-5A shipped the
+- Next unblocked slice: **the eighth OG-5 increment — extending the comparison matrix further**, to the failure cases (verification failure and repair, permission denial, cancellation) and to same-file work that should stay serial, all unmeasured. OG-5A shipped the
   recovery work the decomposition put first, OG-5B closed the graduation
   gate's permission-equivalence clause and the bypass that testing it found,
   OG-5C recorded the publication half of its adversarial-corpus clause, and
@@ -2108,7 +2168,7 @@ Every agent or contributor continuing this program must:
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, and OG-5A through OG-5F are the working tree
+  the OG-4 closure are `af71dba`, and OG-5A through OG-5G are the working tree
   on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers

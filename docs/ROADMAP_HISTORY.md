@@ -45,6 +45,38 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — OG-5G measures the isolated-writer wave
+
+- **The largest hole in the comparison matrix is now measured.** Read fan-out
+  overlaps provider calls; the writer wave creates a Git worktree per node, runs
+  the repository's detected verification set inside each one, and runs it again
+  over the combined workspace after integration. That is where the cost is.
+- **Against Standard mode doing the same two package changes:** the wave halves
+  the implementation critical path (2.40s to 1.27s), costs +8% tokens, and runs
+  three verification rounds against one.
+- **The token premium is not the story; the verification multiplier is.** Read
+  fan-out cost +110% tokens. The writer wave costs +8% — and triples the
+  verification work. On this fixture that is seconds; on a repository whose
+  suite takes ten minutes it is thirty against ten, and the multiplier is
+  structural: one round per candidate tree plus one combined, however slow the
+  suite. The two candidate rounds run concurrently, so the elapsed penalty is
+  nearer twice than three times; the compute is three times either way.
+- **Rounds are counted rather than commands, on purpose.** Each of the wave's
+  rounds runs the full detected set because the runtime detected it, while a
+  Standard-mode round holds whatever the model chose. Comparing 9 commands
+  against 1 would measure the model's taste; comparing 3 rounds against 1
+  measures the structure.
+- **The two modes do not finish in the same place, and the comparison refuses
+  to pretend otherwise.** Standard ends with the work in your repository. The
+  wave ends at `awaiting_review` with the parent byte-for-byte untouched, and
+  reaching the same end state takes two explicit integrations and a combined
+  verification you have to ask for. That is the design working, but omitting it
+  would make the cost comparison meaningless, so both end states are measured.
+- **What the trade actually is:** about half the implementation critical path
+  and a workspace that cannot be touched without review, in exchange for triple
+  verification and a completion that is not one. Whether that is worth it
+  depends on your suite's runtime and what the review boundary is worth to you.
+
 ### 2026-08-04 — OG-5F builds the mode comparison harness
 
 - **The cost/benefit clauses need numbers, and the old comparison produced

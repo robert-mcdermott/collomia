@@ -288,15 +288,44 @@ type comparisonMeasurement struct {
 	inputTokens  int
 	outputTokens int
 	iterations   int
+	// verifications counts real executions of the repository's own test
+	// command. It is the cost simulated latency cannot show: a candidate wave
+	// runs the suite once per worktree and again over the combined workspace,
+	// and those are real minutes on a real repository.
+	verifications int
+	// verificationCommands is the individual command count behind those rounds.
+	// It is reported and never compared across modes: the wave's rounds run the
+	// full detected set because the runtime detected it, while a Standard-mode
+	// round contains whatever the model chose, so the two count different
+	// things. Rounds are the comparable unit.
+	verificationCommands int
+	// wall is the whole run's elapsed time. It is reported and never asserted
+	// on — it contains Git, compilation, and whatever else the machine was
+	// doing — but omitting it would hide that the suite ran more than once.
+	wall time.Duration
+	// landed records whether the work is in the user's workspace at the end.
+	// Two modes that differ on this have not done the same job, and comparing
+	// their cost without saying so would be the most misleading number here.
+	landed bool
 }
 
 func (m comparisonMeasurement) tokens() int { return m.inputTokens + m.outputTokens }
 
 func (m comparisonMeasurement) String() string {
 	overlap := m.simulated - m.criticalPath
-	return fmt.Sprintf("%-12s critical-path %-7s of %-7s simulated (%-7s overlapped) · %d tokens (%d in, %d out) · %d provider iterations",
+	out := fmt.Sprintf("%-12s critical-path %-7s of %-7s simulated (%-7s overlapped) · %d tokens (%d in, %d out) · %d provider iterations",
 		m.mode, m.criticalPath.Round(time.Millisecond), m.simulated.Round(time.Millisecond),
 		overlap.Round(time.Millisecond), m.tokens(), m.inputTokens, m.outputTokens, m.iterations)
+	if m.verifications > 0 {
+		out += fmt.Sprintf(" · %d verification round(s)", m.verifications)
+		if m.verificationCommands > 0 {
+			out += fmt.Sprintf(" (%d command(s))", m.verificationCommands)
+		}
+	}
+	if m.wall > 0 {
+		out += fmt.Sprintf(" · %s wall", m.wall.Round(100*time.Millisecond))
+	}
+	return out
 }
 
 // reportComparison prints the modes as one table. The graduation decision needs
