@@ -3,10 +3,10 @@
 **Status:** approved product and architecture strategy; evidence-gated durable
 execution is available experimentally through completed OG-2, OG-3A's
 verified isolated-writer candidate wave, OG-3A.1–.8 trial- and audit-driven
-controller corrections, and OG-3B1–B5's retained-worktree accountability
+controller corrections, and OG-3B1–B6's retained-worktree accountability
 closure, verification-composition correction, budget-accounting correction,
-user-owned execution envelope, and retained-worktree reconciliation; OG-3B's
-adversarial campaign is next
+user-owned execution envelope, retained-worktree reconciliation, and
+adversarial campaign; the OG-3 sufficiency judgement is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-03
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -60,7 +60,7 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-3B5 boundary supports one serial primary lane, at
+The shipped OG-1 through OG-3B6 boundary supports one serial primary lane, at
 most two governed automatic read-only workers, and—only in a candidate-only
 graph—one bounded wave of at most two pairwise-disjoint terminal isolated
 writers from a clean stable Git commit. It provides durable graph
@@ -880,7 +880,7 @@ Completion evidence and retained decision:
 
 ### OG-3 — Isolated writer candidates
 
-**Status: in progress; OG-3A plus corrections through OG-3A.8 and OG-3B1–B5 complete (2026-08-03); OG-3B's adversarial campaign remains.**
+**Status: in progress; OG-3A plus corrections through OG-3A.8 and OG-3B1–B6 complete (2026-08-03); only the OG-3 sufficiency judgement remains.**
 
 - Automatically dispatch only dependency-ready writers with declared disjoint
   scopes and a stable base.
@@ -1367,11 +1367,47 @@ OG-3B5 retained-worktree reconciliation:
   retained candidate is OG-4, and the exact scheduler-state recovery this
   reconciliation feeds is OG-5. This slice decides only what is *there*.
 
+OG-3B6 adversarial campaign:
+
+- The campaign is complete. Every dispatch and acceptance gate on the writer
+  path now has an application-level test that proves it fails closed, which is
+  the remaining half of OG-3B's exit gate.
+- Hook refusal of a wave is covered through a real configured hook rather than
+  a stub, because the gate it exercises is a user's own script. A refusal never
+  becomes an automatic in-graph retry — `FailureHook` blocks immediately — but
+  an explicit user retry is permitted and should be: the hook is external
+  policy the person may have just changed, and a new attempt consults it again
+  rather than assuming either answer. That is precisely what distinguishes a
+  hook refusal from an interrupted action, which stays unsafe however often it
+  is asked.
+- Parent drift between the durable claim and dispatch refuses the whole wave
+  before any worktree exists. The claim records the exact parent state writers
+  may branch from, so a moved parent would otherwise produce candidates built
+  on a base that no longer describes the workspace.
+- Verification spanning a changing tree is rejected. Evidence is bound to one
+  state of one tree, and the team layer discards results bound to a superseded
+  state, so a suite whose commands passed against different states cannot
+  aggregate to `passed`. The graph's own mixed-token check behind it is
+  defence in depth rather than the only barrier.
+- Scopes differing only in case are serialized, exercising the deliberate
+  asymmetry OG-3A.8 introduced: `Overlap` folds case because over-detecting a
+  collision only costs parallelism, while missing one would let two writers
+  claim the same directory from one commit.
+- Every writer in a wave failing ends the graph honestly, blocks both nodes,
+  and leaves the parent workspace untouched.
+- **The earlier contract item "complete the provider-failure campaign beyond
+  the single-wave case" was not implementable as written and has been
+  withdrawn.** `defaultMaxWriterStarts` and `defaultMaxWriterConcurrency` are
+  both 2, so two starts *is* one wave and a second wave cannot occur. What the
+  item can usefully mean was covered instead: every writer failing rather than
+  one, and the fate of a writer node beyond the starts bound. That node is
+  never silently finished, and once an explicit retry reopens the graph the
+  spent starts budget stops it as `budget_exhausted` rather than as a failure —
+  the same speed-bump treatment every other resource bound receives under
+  OG-3B4, and therefore extendable rather than fatal.
+
 OG-3B remaining contract:
 
-- complete the provider-failure campaign beyond the single-wave case, and
-  exercise hook refusal, overlapping and case-folded scopes, post-claim parent
-  drift, and child verification drift through application-level paths; and
 - confirm the inspection/recovery handoff is sufficient before marking OG-3
   complete or beginning automatic reviewed integration.
 
@@ -1522,21 +1558,21 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-3B5 — Retained-worktree reconciliation**,
-  following OG-3B1–B4's retained-worktree accountability closure,
-  verification-composition correction, budget-accounting correction, and
-  user-owned execution envelope, OG-3A's verified isolated-writer candidate
-  wave, and its eight trial- and audit-driven corrections.
+- Last completed slice: **OG-3B6 — Adversarial campaign**, following OG-3B5's
+  retained-worktree reconciliation and OG-3B1–B4's retained-worktree
+  accountability closure, verification-composition correction,
+  budget-accounting correction, and user-owned execution envelope, OG-3A's
+  verified isolated-writer candidate wave, and its eight trial- and
+  audit-driven corrections.
 - Active milestone: **OG-3 — Isolated writer candidates**.
-- Next unblocked slice: **the remainder of OG-3B — the adversarial campaign**,
-  whose open items are the two remaining bullets of the OG-3B remaining
-  contract above: hook refusal, overlapping and case-folded scopes, post-claim
-  parent drift, child verification drift, and provider failure beyond a single
-  wave, all through application-level paths; then the sufficiency judgement on
-  the inspection/recovery handoff.
+- Next unblocked slice: **the OG-3 sufficiency judgement** — the last item of
+  the OG-3B remaining contract. Every exit-gate property now has a test; what
+  remains is the deliberate decision that the inspection and recovery handoff
+  is good enough to mark OG-3 complete and unblock OG-4's reviewed integration.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
-  `fd1c2bc`, and OG-3B5 is the working tree on top of them.**
+  `fd1c2bc`, OG-3B5 is `205bff2`, and OG-3B6 is the working tree on top of
+  them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
@@ -1804,6 +1840,19 @@ Every agent or contributor continuing this program must:
   is itself a symlink on macOS, so Git's spelling and the graph's never match
   literally, and a naive comparison reports every retained tree orphaned —
   the failure mode that would have made the whole surface untrustworthy.
+- Withdraw a contract item rather than satisfy it dishonestly. "Beyond the
+  single-wave case" could not be implemented while two starts is one wave, and
+  writing a test that appeared to cover it would have made the exit gate a
+  claim about the fixture rather than about the runtime. State what the bound
+  actually is and test what is actually reachable.
+- Treat the writer starts bound as budget exhaustion rather than as a failure,
+  consistent with every other resource bound. A graph that ran out of writer
+  slots has not done anything wrong, so it stops for a decision and stays
+  extendable.
+- Let an explicit user retry reopen a hook-refused node, while automatic retry
+  stays closed. A hook is external policy that a person can change between
+  attempts, so re-running consults it again; the runtime is not entitled to
+  assume either that the refusal stands or that it has been lifted.
 
 ## Open implementation decisions
 

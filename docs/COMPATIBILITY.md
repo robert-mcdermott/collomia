@@ -544,6 +544,11 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-3B6 changes no persisted or machine-readable shape. It is an adversarial
+test campaign over the isolated-writer dispatch and acceptance gates, and it
+confirmed rather than altered one classification worth recording: exhausting
+the whole-graph writer starts bound ends the graph `budget_exhausted`, not
+`blocked`, so it is extendable like every other resource bound.
 OG-3B2 changes no persisted or machine-readable shape. Verification recognition
 is a runtime decision about a command, and the refused-check diagnostic behind
 a stalled node's blocker is in-memory attempt-scoped state that informs a

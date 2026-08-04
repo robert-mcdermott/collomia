@@ -627,6 +627,101 @@ func TestGraphWriterClaimsRejectDirtyBaseAndSerializeOverlappingScopes(t *testin
 	}
 }
 
+// Two scopes differing only in case may address the same directory on a
+// case-insensitive filesystem, so the wave must serialize them. Overlap folds
+// case for exactly this reason: over-detecting a collision costs parallelism,
+// while missing one lets two writers claim the same path from one commit.
+func TestGraphWriterClaimsSerializeScopesDifferingOnlyByCase(t *testing.T) {
+	graph, err := New(Spec{Goal: "bounded writers", Nodes: []NodeSpec{
+		{ID: 1, Title: "lower", Execution: ExecutionIsolatedWrite, WritePaths: []string{"src/"}},
+		{ID: 2, Title: "upper", Execution: ExecutionIsolatedWrite, WritePaths: []string{"SRC/"}},
+	}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := graph.StartReadyWriters(t.Context(), WriterBase{WorkspaceToken: "state", Commit: "abc", Clean: true}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 1 || claims[0].Node.ID != 1 {
+		t.Fatalf("case-folded sibling scopes were co-scheduled: claims=%+v", claims)
+	}
+}
+
+// The wave bound is two starts for the whole graph, so a third writer is
+// reachable in a valid graph and must never silently become finished work. It
+// stays unattempted while the graph is terminal, and once an explicit retry
+// reopens the graph the spent starts budget blocks with a stated reason rather
+// than leaving the graph running with nothing it can schedule.
+func TestGraphWriterBeyondTheWaveBoundIsNeverSilentlyFinished(t *testing.T) {
+	graph, err := New(Spec{Goal: "bounded writers", Nodes: []NodeSpec{
+		{ID: 1, Title: "alpha", Execution: ExecutionIsolatedWrite, WritePaths: []string{"alpha/"}},
+		{ID: 2, Title: "beta", Execution: ExecutionIsolatedWrite, WritePaths: []string{"beta/"}},
+		{ID: 3, Title: "gamma", Execution: ExecutionIsolatedWrite, WritePaths: []string{"gamma/"}},
+	}}, 1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "state", Commit: "abc", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 2)
+	if err != nil || len(claims) != 2 {
+		t.Fatalf("first wave claims=%+v err=%v", claims, err)
+	}
+	for _, claim := range claims {
+		if err := graph.FinishWriter(t.Context(), WriterResult{
+			AttemptID: claim.Attempt.ID, WorkerID: "writer-" + claim.Attempt.ID, Status: "error",
+			Error: "provider is unavailable", WritePaths: claim.WritePaths,
+			BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+		}); err != nil && !errors.Is(err, ErrGraphTerminal) {
+			t.Fatal(err)
+		}
+	}
+	if outcome, _ := graph.Outcome(); outcome != OutcomeBlocked {
+		t.Fatalf("outcome=%q, want blocked", outcome)
+	}
+	// The unattempted node is reported as never having run, not as done and not
+	// as a candidate. A graph that quietly finished it would be claiming work.
+	gamma := nodeByID(t, graph, 3)
+	if gamma.State == NodeDone || gamma.State == NodeAwaitingReview {
+		t.Fatalf("a writer that never ran is %q", gamma.State)
+	}
+	if len(gamma.AttemptIDs) != 0 {
+		t.Fatalf("a writer that never ran has attempts: %+v", gamma.AttemptIDs)
+	}
+
+	// Reopening the graph must not leave it running with nothing schedulable:
+	// the starts budget is spent, so the next wave attempt blocks and says so.
+	for _, id := range []int{1, 2} {
+		if err := graph.RetryNode(t.Context(), id, "retry requested explicitly by the user"); err != nil {
+			t.Fatalf("retry node %d: %v", id, err)
+		}
+	}
+	if _, err := graph.StartReadyWriters(t.Context(), base, 2); !errors.Is(err, ErrGraphTerminal) {
+		t.Fatalf("wave beyond the starts bound error=%v, want ErrGraphTerminal", err)
+	}
+	// The writer starts bound is a resource bound, so it stops the graph as
+	// budget exhaustion rather than as a failure — the same treatment every
+	// other bound gets, which is what makes it extendable rather than fatal.
+	outcome, reason := graph.Outcome()
+	if outcome != OutcomeBudgetExhausted {
+		t.Fatalf("exhausted writer starts outcome=%q, want budget_exhausted", outcome)
+	}
+	if !strings.Contains(reason, "starts 2/2") {
+		t.Fatalf("the outcome does not say the writer starts budget is spent: %q", reason)
+	}
+}
+
+func nodeByID(t *testing.T, graph *Graph, id int) Node {
+	t.Helper()
+	for _, node := range graph.Snapshot().Nodes {
+		if node.ID == id {
+			return node
+		}
+	}
+	t.Fatalf("graph has no node %d", id)
+	return Node{}
+}
+
 func TestGraphWriterCandidateRejectsStaleParentAndScopeViolations(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

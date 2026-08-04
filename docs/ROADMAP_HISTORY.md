@@ -45,6 +45,38 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-3B6 adversarial campaign
+
+- **Three gates on the writer path had real code and no test at all**: hook
+  refusal of a wave, parent drift between the durable claim and dispatch, and
+  the fate of a writer node beyond the wave's starts bound. Each now has an
+  application-level test proving it fails closed, which is the remaining half
+  of OG-3's exit gate.
+- **Hook refusal is exercised through a real configured hook**, not a stub,
+  because the thing being gated is a user's own script. The refusal never
+  becomes an automatic retry, but an explicit user retry is allowed — the hook
+  is external policy a person may have just changed, so a new attempt consults
+  it again rather than assuming either answer. That is what separates it from
+  an interrupted action, which stays unsafe however often it is asked.
+- **Verification spanning a changing tree is rejected**, and it turns out the
+  team layer already discards evidence bound to a superseded state, so the
+  graph's mixed-token check behind it is defence in depth rather than the only
+  barrier. Worth knowing which one is actually load-bearing.
+- **A contract item was withdrawn rather than faked.** "Complete the
+  provider-failure campaign beyond the single-wave case" is not implementable:
+  `defaultMaxWriterStarts` and `defaultMaxWriterConcurrency` are both 2, so two
+  starts *is* one wave and a second wave cannot occur. Writing a test that
+  appeared to cover it would have made the exit gate a claim about the fixture.
+  What the item can usefully mean was covered instead — every writer failing
+  rather than one, and the node beyond the starts bound.
+- **The writer starts bound classifies as `budget_exhausted`, not as a
+  failure**, which the campaign confirmed rather than assumed. That is the
+  right answer under OG-3B4's principle: running out of writer slots is not
+  wrongdoing, so the graph stops for a decision and stays extendable.
+- Also covered: scopes differing only in case are serialized, exercising the
+  deliberate `Overlap`/`Violations` asymmetry from OG-3A.8, and a wave in which
+  every writer fails ends honestly with the parent workspace untouched.
+
 ### 2026-08-03 — OG-3B5 retained-worktree reconciliation
 
 - **OG-3B1 made every retained worktree attributable, and then nothing ever

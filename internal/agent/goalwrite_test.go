@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
+	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -31,6 +33,13 @@ type writeWave struct {
 }
 
 func newWriteWave(t *testing.T, client provider.Client, approver permission.Approver, nodes ...goalgraph.NodeSpec) *writeWave {
+	t.Helper()
+	return newGatedWriteWave(t, client, approver, nil, nodes...)
+}
+
+// newGatedWriteWave adds configured lifecycle hooks, which gate dispatch
+// separately from permission and carry different consequences for retry.
+func newGatedWriteWave(t *testing.T, client provider.Client, approver permission.Approver, lifecycle *hooks.Runner, nodes ...goalgraph.NodeSpec) *writeWave {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -69,6 +78,7 @@ func newWriteWave(t *testing.T, client provider.Client, approver permission.Appr
 		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
 		Workspace: workspace, Registry: registry, Permissions: permission.New(cfg.Permissions, approver), MaxIterations: 4,
 		GoalGraph: graph, GoalStateToken: func(ctx context.Context) (string, error) { return goalgraph.WorkspaceStateToken(ctx, workspace) },
+		Hooks: lifecycle,
 	})
 	team := NewTeam()
 	runtime.AddDelegationTool(cfg, approver, team)
@@ -383,4 +393,202 @@ func slicesContain(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// blockingHook returns a runner whose hook refuses the named gating event.
+// Hooks are real commands, so this exercises the same path a user's own script
+// would take rather than a stub standing in for one.
+func blockingHook(t *testing.T, workspace, event, reason string) *hooks.Runner {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	script := fmt.Sprintf("printf '%%s' '{\"decision\":\"block\",\"reason\":\"%s\"}'", reason)
+	return hooks.NewRunner(workspace, map[string][]appconfig.Hook{
+		event: {{Command: "sh", Args: []string{"-c", script}, TimeoutSeconds: 10}},
+	}, nil)
+}
+
+// A hook refusal is not a permission denial, and the difference matters after
+// the fact: hook_blocked is one of the failure kinds that makes a node
+// ineligible for safe retry, because the runtime cannot know whether the
+// external policy that refused has changed.
+func TestGoalWriteWaveHookRefusalBlocksBeforeAnyWorktree(t *testing.T) {
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		t.Error("hook-refused writer wave still reached the provider")
+		return provider.Response{Content: "unreachable"}, nil
+	}}
+	workspace := t.TempDir()
+	wave := newGatedWriteWave(t, client, nil, blockingHook(t, workspace, "tool_start", "writers are not permitted in this repository"), writerNode(1, "add candidate file", "new.txt"))
+
+	if _, err := wave.runtime.Run(t.Context(), "create the candidate", func(event.Event) {}); err == nil {
+		t.Fatal("hook-refused wave reported success")
+	}
+	node := wave.node(t, 1)
+	if node.State != goalgraph.NodeBlocked {
+		t.Fatalf("node state=%q, want blocked", node.State)
+	}
+	attempt := wave.attemptFor(t, 1)
+	if len(attempt.Failures) == 0 || attempt.Failures[0].Kind != goalgraph.FailureHook {
+		t.Fatalf("attempt failures=%+v, want a hook failure", attempt.Failures)
+	}
+	if !strings.Contains(attempt.Failures[0].Detail, "not permitted in this repository") {
+		t.Fatalf("the hook's own reason was lost: %q", attempt.Failures[0].Detail)
+	}
+	// Nothing was created, so there is nothing to reconcile afterwards.
+	if attempt.Worktree != "" || attempt.Candidate != nil {
+		t.Fatalf("a refused wave still created a worktree: %+v", attempt)
+	}
+	if len(wave.team.Snapshot()) != 0 {
+		t.Fatalf("hook-refused wave dispatched a child: %+v", wave.team.Snapshot())
+	}
+	// A hook refusal never becomes an automatic in-graph retry — FailureHook is
+	// in the set that blocks immediately rather than being reattempted. But an
+	// explicit user retry is allowed and should be: the hook is external policy
+	// the person may have just changed, and a new attempt consults it again
+	// rather than assuming either answer. That is what separates a hook refusal
+	// from an interrupted action, which stays unsafe however often it is asked.
+	if attempt.State == goalgraph.AttemptRetryable {
+		t.Fatalf("a hook refusal became an automatically retryable attempt: %+v", attempt)
+	}
+	if err := wave.graph.RetryNode(t.Context(), 1, "retry requested explicitly by the user"); err != nil {
+		t.Fatalf("explicit retry after a hook refusal was rejected: %v", err)
+	}
+}
+
+// The claim records the exact parent state a writer may branch from. If the
+// parent moves between the durable claim and dispatch, every candidate would
+// be built on a base that no longer describes the workspace, so the wave must
+// refuse rather than produce work nobody can integrate.
+func TestGoalWriteWaveParentDriftAfterTheClaimBlocksDispatch(t *testing.T) {
+	client := &fakeClient{chat: func(int, provider.Request) (provider.Response, error) {
+		t.Error("drifted writer wave still reached the provider")
+		return provider.Response{Content: "unreachable"}, nil
+	}}
+	var workspace string
+	// Authorization runs after the claim and before the freshness recheck, so
+	// approving from here is the natural place for the parent to move.
+	drifting := func(context.Context, permission.Request) (permission.Decision, error) {
+		if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("the user edited this while approving\n"), 0o644); err != nil {
+			return permission.Decision{}, err
+		}
+		return permission.Decision{Allow: true}, nil
+	}
+	wave := newWriteWave(t, client, drifting, writerNode(1, "add candidate file", "new.txt"))
+	workspace = wave.workspace
+
+	if _, err := wave.runtime.Run(t.Context(), "create the candidate", func(event.Event) {}); err == nil {
+		t.Fatal("wave dispatched from a drifted parent reported success")
+	}
+	node := wave.node(t, 1)
+	if node.State != goalgraph.NodeBlocked {
+		t.Fatalf("node state=%q, want blocked", node.State)
+	}
+	attempt := wave.attemptFor(t, 1)
+	if len(attempt.Failures) == 0 || attempt.Failures[0].Kind != goalgraph.FailureWorkspaceStale {
+		t.Fatalf("attempt failures=%+v, want a stale-workspace failure", attempt.Failures)
+	}
+	if attempt.Worktree != "" || attempt.Candidate != nil {
+		t.Fatalf("a drifted wave still created a worktree: %+v", attempt)
+	}
+	if len(wave.team.Snapshot()) != 0 {
+		t.Fatalf("drifted wave dispatched a child: %+v", wave.team.Snapshot())
+	}
+}
+
+// Verification is evidence about one state of one tree. Commands that passed
+// against different states of the tree prove nothing about the state being
+// offered for review, so the candidate is retained but never accepted.
+func TestGoalWriteWaveRejectsVerificationSpanningAChangingTree(t *testing.T) {
+	client := &fakeClient{chat: writeThenSummarize("new.txt", "candidate\n", "wrote the scoped file")}
+	wave := newWriteWave(t, client, nil, writerNode(1, "add candidate file", "new.txt"))
+	wave.verifyWith(func(ctx context.Context, id string) ([]DelegateVerification, error) {
+		status, ok := wave.team.Get(id)
+		if !ok {
+			return nil, errors.New("missing retained candidate")
+		}
+		before, err := goalgraph.WorkspaceStateToken(ctx, status.Worktree)
+		if err != nil {
+			return nil, err
+		}
+		// The tree changes between the two checks, exactly as it would if
+		// something wrote to the worktree while the suite was running.
+		if err := os.WriteFile(filepath.Join(status.Worktree, "new.txt"), []byte("changed mid-verification\n"), 0o644); err != nil {
+			return nil, err
+		}
+		after, err := goalgraph.WorkspaceStateToken(ctx, status.Worktree)
+		if err != nil {
+			return nil, err
+		}
+		if before == after {
+			t.Fatal("the fixture failed to change the child state token")
+		}
+		// Each command is recorded against the state observed when it ran, which
+		// is exactly what the production verifier does.
+		required := []string{"go build ./...", "go test ./..."}
+		results := []DelegateVerification{
+			{Command: required[0], Status: "passed", StateToken: before},
+			{Command: required[1], Status: "passed", StateToken: after},
+		}
+		wave.team.MarkVerificationResult(id, before, required, results[0])
+		wave.team.MarkVerificationResult(id, after, required, results[1])
+		return results, nil
+	})
+
+	if _, err := wave.runtime.Run(t.Context(), "create the candidate", func(event.Event) {}); err == nil {
+		t.Fatal("a candidate verified across a changing tree reported success")
+	}
+	node := wave.node(t, 1)
+	if node.State != goalgraph.NodeBlocked {
+		t.Fatalf("node state=%q, want blocked", node.State)
+	}
+	attempt := wave.attemptFor(t, 1)
+	if attempt.State == goalgraph.AttemptCandidate {
+		t.Fatal("a candidate whose checks passed against different states was accepted")
+	}
+	if len(attempt.Failures) == 0 || attempt.Failures[0].Kind != goalgraph.FailureVerification {
+		t.Fatalf("attempt failures=%+v, want a verification failure", attempt.Failures)
+	}
+	// The tree is still on disk and still the operator's to look at.
+	if attempt.Candidate == nil || attempt.Worktree == "" {
+		t.Fatalf("the rejected candidate's worktree was not retained: %+v", attempt)
+	}
+}
+
+// Both writers failing is not the same as one failing: the wave must still end
+// the graph honestly rather than reporting a success it never had, and neither
+// node may reach review.
+func TestGoalWriteWaveWithEveryWriterFailingBlocksBothNodes(t *testing.T) {
+	client := &concurrentClient{chat: func(provider.Request) (provider.Response, error) {
+		return provider.Response{}, errors.New("provider is unavailable")
+	}}
+	wave := newWriteWave(t, client, nil,
+		writerNode(1, "alpha node", "alpha.txt"),
+		writerNode(2, "beta node", "beta.txt"),
+	)
+
+	if _, err := wave.runtime.Run(t.Context(), "create both candidates", func(event.Event) {}); err == nil {
+		t.Fatal("a wave in which every writer failed reported success")
+	}
+	if outcome, _ := wave.graph.Outcome(); outcome == goalgraph.OutcomeAwaitingReview {
+		t.Fatal("a wave with no candidate claimed to be awaiting review")
+	}
+	for _, id := range []int{1, 2} {
+		if node := wave.node(t, id); node.State != goalgraph.NodeBlocked {
+			t.Fatalf("node %d state=%q, want blocked", id, node.State)
+		}
+		attempt := wave.attemptFor(t, id)
+		if attempt.State == goalgraph.AttemptCandidate {
+			t.Fatalf("node %d reached candidate state without producing one", id)
+		}
+	}
+	entries, err := os.ReadDir(wave.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "alpha.txt" || entry.Name() == "beta.txt" {
+			t.Fatalf("a failed wave wrote %s into the parent workspace", entry.Name())
+		}
+	}
 }
