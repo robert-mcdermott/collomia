@@ -1459,8 +1459,8 @@ reproduced exactly after restart. Those are OG-4 and OG-5.
 ### OG-4 — Reviewed integration and combined verification
 
 **Status: in progress. OG-3 met its exit gate on 2026-08-03; OG-4A closed the
-unaccounted publication path and OG-4B added the recoverable pre-integration
-checkpoint.**
+unaccounted publication path, OG-4B added the recoverable pre-integration
+checkpoint, and OG-4C published the first graph candidate into the parent.**
 
 OG-4A no unaccounted publication of a graph candidate:
 
@@ -1520,6 +1520,34 @@ OG-4B recoverable pre-integration checkpoint:
 - This lands on the delegate publication path that already writes to the parent
   today, so it is proven against a real mutation rather than built ahead of one.
   Graph-owned publication, which OG-4A closed, will reuse it.
+
+OG-4C graph-owned candidate integration:
+
+- The first time the runtime writes a candidate into the user's own workspace.
+  It is reachable only by a person through `/orchestrate integrate <node-id>`:
+  it is not a tool, so the model cannot call it, and no autonomy mode reaches
+  it, because this is the point at which unreviewed work becomes the user's
+  files.
+- A candidate is published whole or not at all. The child's verification passed
+  against its entire tree, so publishing selected hunks would put bytes into
+  the parent that no verification ever covered. A conflict in any file refuses
+  the whole integration for the same reason: applying the part that still fits
+  would produce a combined workspace that is neither what the child verified
+  nor what the user had.
+- The node moves to a new `integrated` state and the graph to a new
+  `awaiting_verification` outcome. It deliberately does not become `done`: the
+  child's pass says nothing about the parent it has just been merged into, and
+  treating a child pass as a combined pass is exactly what OG-4's exit gate
+  forbids. Nothing in the runtime can mark an integrated node done — the
+  acceptance path for it is OG-4D.
+- Publication advances the mutation generation and stales every previously
+  accepted node, because the workspace those nodes were judged against no
+  longer exists. This is the same treatment an external edit receives.
+- It runs under OG-4B's checkpoint and ordinary integration permission, and the
+  node's reason names the checkpoint that can undo it. A failure at any point
+  leaves the graph untouched, so the node stays awaiting review rather than
+  claiming a state the workspace is not in.
+- `integrated` and `awaiting_verification` are additive within graph schema 1.
 
 - Add explicit combined-parent verification to the graph acceptance path.
 - Add a recoverable pre-integration checkpoint and safe post-failure
@@ -1669,8 +1697,9 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-4B — Recoverable pre-integration checkpoint**,
-  following OG-4A's closure of the unaccounted publication path, OG-3C's
+- Last completed slice: **OG-4C — Graph-owned candidate integration**,
+  following OG-4B's recoverable pre-integration checkpoint, OG-4A's closure of
+  the unaccounted publication path, OG-3C's
   writer-wave product evaluation and OG-3 sign-off, OG-3B6's adversarial
   campaign, OG-3B5's
   retained-worktree reconciliation, OG-3B1–B4's retained-worktree
@@ -1681,16 +1710,19 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-4 — Reviewed integration and combined verification.**
   OG-3 met its exit gate on 2026-08-03 and is complete; OG-4A and OG-4B have
   shipped.
-- Next unblocked slice: **OG-4C — combined-parent verification on the graph
-  acceptance path**, which is what a graph-owned publication has to be gated
-  on before it can exist. Deterministic candidate eligibility with a visible
-  rationale, freshness-bound hunk application under ordinary integration
-  permission, and the user-authored waiver representation follow as separable
-  increments.
+- Next unblocked slice: **OG-4D — combined-workspace verification and node
+  acceptance.** An integrated node currently has no path to `done` at all,
+  which is the correct fail-closed state but not the finished one: the graph
+  needs to run the repository's verification against the combined parent,
+  accept the node only on a fresh pass bound to the current workspace token,
+  and represent a user-authored waiver where no meaningful automated check
+  exists. Deterministic eligibility among competing candidates with a visible
+  rationale follows.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C, OG-4A, plus
-  OG-4B are the working tree on top of them.**
+  OG-4B,
+  plus OG-4C are the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
@@ -1989,6 +2021,16 @@ Every agent or contributor continuing this program must:
   inspected, and OG-3B5's argument was that a person decides against contents
   rather than against a path; a refusal that also hid the diff would have made
   the candidate less reviewable in the name of safety.
+- Publish a graph candidate whole or not at all. The unit the child verified
+  is its entire tree, so hunk-level selection — correct for an ordinary
+  delegate, where the user is the only judge — would publish bytes no
+  verification covered. The conservative choice is the simpler one here.
+- Give an integrated node its own state rather than reusing done or blocked.
+  Done would assert a combined result nothing checked; blocked would report a
+  successful publication as a failure.
+- Leave an integrated node with no path to done in this slice. A fail-closed
+  gap is a better intermediate state than an acceptance path that has nothing
+  to verify against, and it makes the next increment's contract obvious.
 - Write the integration checkpoint before the first byte and its outcome
   after, so an interruption is evidenced by a missing outcome rather than
   inferred from file contents. A file that matches its recorded prior bytes may

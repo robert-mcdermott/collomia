@@ -188,7 +188,12 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   knows they exist. Nothing reuses a candidate: that is still review work you
   do yourself, and `/agents apply` refuses a graph candidate rather than
   publishing it behind the graph's back — you can review it there, but not
-  apply it. There is
+  apply it. `/orchestrate integrate <node-id>` is the one path that does
+  publish one: it applies the whole candidate under the pre-integration
+  checkpoint, refuses outright if any file conflicts with your own changes,
+  and leaves the node reading `integrated` rather than `done`, because the
+  child's tests passed in its own worktree and nothing has yet verified the
+  combined workspace. There is
   deterministic feedback when a verification-like shell command cannot count
   as evidence, naming the direct command to run wherever the check sits in
   what was refused, and a node that stalls after refused checks repeats it in

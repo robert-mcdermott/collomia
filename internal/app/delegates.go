@@ -230,15 +230,28 @@ func graphOwnedIntegrationRefusal(preview *DelegateIntegration) error {
 }
 
 func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id string, selections []DelegateIntegrationSelection) (*DelegateIntegration, []delegateIntegrationMutation, tools.Action, error) {
+	return r.prepareIntegrationMutations(ctx, id, selections, false)
+}
+
+// prepareIntegrationMutations builds the publication set. viaGraph is set only
+// by the graph's own integration route, which records the publication on the
+// plan node; every other caller leaves it false and is refused for a
+// graph-owned candidate.
+func (r *Runtime) prepareIntegrationMutations(ctx context.Context, id string, selections []DelegateIntegrationSelection, viaGraph bool) (*DelegateIntegration, []delegateIntegrationMutation, tools.Action, error) {
 	preview, err := r.PrepareDelegateIntegration(ctx, id)
 	if err != nil {
 		return nil, nil, tools.Action{}, err
 	}
+	if viaGraph && !preview.GraphOwned {
+		return nil, nil, tools.Action{}, fmt.Errorf("delegate %q is not an Orchestrated Goal candidate", id)
+	}
 	// Every apply path — operator, primary-agent reviewed, and model tool —
 	// funnels through here, which is why the refusal lives at this point rather
 	// than at each caller.
-	if err := graphOwnedIntegrationRefusal(preview); err != nil {
-		return nil, nil, tools.Action{}, err
+	if !viaGraph {
+		if err := graphOwnedIntegrationRefusal(preview); err != nil {
+			return nil, nil, tools.Action{}, err
+		}
 	}
 	files := make(map[string]DelegateIntegrationFile, len(preview.Files))
 	for _, file := range preview.Files {
@@ -309,12 +322,19 @@ func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id st
 }
 
 func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mutations []delegateIntegrationMutation, fireHooks bool) ([]string, error) {
+	paths, _, err := r.publishDelegateIntegrationCheckpointed(ctx, id, mutations, fireHooks)
+	return paths, err
+}
+
+// publishDelegateIntegrationCheckpointed also reports the durable checkpoint
+// that can undo the publication, which the graph route records on the node.
+func (r *Runtime) publishDelegateIntegrationCheckpointed(ctx context.Context, id string, mutations []delegateIntegrationMutation, fireHooks bool) ([]string, string, error) {
 	// Approval may have taken arbitrarily long. Re-read every source and target
 	// and refuse if either side changed while the dialog was open.
 	fresh, err := r.PrepareDelegateIntegration(ctx, id)
 	if err != nil {
 		r.markDelegateIntegration(id, "blocked", err)
-		return nil, err
+		return nil, "", err
 	}
 	freshFiles := make(map[string]DelegateIntegrationFile, len(fresh.Files))
 	for _, file := range fresh.Files {
@@ -327,7 +347,7 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 			!sameOSFileState(file.After, file.AfterMode, mutation.expectedChild, mutation.childMode) {
 			err = fmt.Errorf("%s changed while integration approval was pending; review again", mutation.path)
 			r.markDelegateIntegration(id, "blocked", err)
-			return nil, err
+			return nil, "", err
 		}
 	}
 
@@ -339,7 +359,7 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 	checkpoint, checkpointErr := r.beginIntegrationCheckpoint(id, mutations)
 	if checkpointErr != nil {
 		r.markDelegateIntegration(id, "blocked", checkpointErr)
-		return nil, checkpointErr
+		return nil, "", checkpointErr
 	}
 
 	applied := make([]delegateIntegrationMutation, 0, len(mutations))
@@ -357,7 +377,7 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 			r.finishIntegrationCheckpoint(checkpoint, session.IntegrationReverted, "rolled back after "+mutation.path+" failed to publish")
 			err = fmt.Errorf("integrate %s: %w", mutation.path, err)
 			r.markDelegateIntegration(id, "blocked", err)
-			return nil, err
+			return nil, "", err
 		}
 		applied = append(applied, mutation)
 	}
@@ -389,7 +409,7 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 		}
 	}
 	r.Team.MarkIntegrationOutcome(id, outcome, integrated, "")
-	return integrated, nil
+	return integrated, checkpoint.ID, nil
 }
 
 func (r *Runtime) markDelegateIntegration(id, status string, err error) {

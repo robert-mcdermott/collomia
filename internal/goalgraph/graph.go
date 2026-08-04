@@ -83,7 +83,14 @@ const (
 	// node: a verified candidate is retained and reviewed integration is the
 	// next step. It is deliberately not "blocked", which would report the
 	// feature working as the feature failing.
-	NodeAwaitingReview  NodeState = "awaiting_review"
+	NodeAwaitingReview NodeState = "awaiting_review"
+	// NodeIntegrated is a candidate whose bytes are now in the parent
+	// workspace and whose combined result nothing has verified yet. It is
+	// deliberately distinct from done: the child's verification passed against
+	// its own isolated tree, and that says nothing about the parent it has now
+	// been merged into. Treating a child pass as a combined pass is precisely
+	// what OG-4's exit gate forbids.
+	NodeIntegrated      NodeState = "integrated"
 	NodeCancelled       NodeState = "cancelled"
 	NodeBudgetExhausted NodeState = "budget_exhausted"
 	NodeDone            NodeState = "done"
@@ -115,6 +122,12 @@ const (
 	// integration. Nothing failed; the graph stops because selecting and
 	// integrating a candidate is user authority this milestone does not hold.
 	OutcomeAwaitingReview Outcome = "awaiting_review"
+	// OutcomeAwaitingVerification means a candidate's bytes are now in the
+	// parent workspace and nothing has verified the combined result. It is
+	// separate from awaiting_review because the two ask the user for different
+	// things, and reporting a published workspace as merely awaiting review
+	// would understate what has already changed on disk.
+	OutcomeAwaitingVerification Outcome = "awaiting_verification"
 )
 
 type FailureKind string
@@ -1285,7 +1298,7 @@ func ValidateSnapshot(snapshot Snapshot) error {
 
 func validNodeState(state NodeState) bool {
 	switch state {
-	case NodeProposed, NodeReady, NodeRunning, NodeRetryable, NodeStale, NodeBlocked, NodeAwaitingReview, NodeCancelled, NodeBudgetExhausted, NodeDone:
+	case NodeProposed, NodeReady, NodeRunning, NodeRetryable, NodeStale, NodeBlocked, NodeAwaitingReview, NodeIntegrated, NodeCancelled, NodeBudgetExhausted, NodeDone:
 		return true
 	default:
 		return false
@@ -1369,7 +1382,7 @@ func validateWriterCandidate(candidate WriterCandidate) error {
 
 func validOutcome(outcome Outcome) bool {
 	switch outcome {
-	case "", OutcomeDone, OutcomeBlocked, OutcomeAwaitingReview, OutcomeCancelled, OutcomeBudgetExhausted:
+	case "", OutcomeDone, OutcomeBlocked, OutcomeAwaitingReview, OutcomeAwaitingVerification, OutcomeCancelled, OutcomeBudgetExhausted:
 		return true
 	default:
 		return false
@@ -2030,6 +2043,132 @@ func (g *Graph) RecordWriterWorktree(ctx context.Context, attemptID, worktree, b
 	}
 	attempt.Worktree, attempt.Branch = bounded(worktree, 4096), bounded(branch, 512)
 	return g.persistLocked(ctx, true)
+}
+
+// CandidateIntegration is what the application publishes and the graph
+// records. It carries no authority: permission, freshness, and the durable
+// pre-integration checkpoint are the application's to enforce before calling,
+// and the graph's job is to say what the publication means for the plan.
+type CandidateIntegration struct {
+	AttemptID string
+	// Files is every path published. A candidate is always published whole:
+	// the child's verification passed against its entire tree, so publishing a
+	// subset would put bytes into the parent that no verification ever covered.
+	Files []string
+	// ParentWorkspaceToken is the machine-observed state of the parent *after*
+	// publication. It becomes the token every later verification is judged
+	// against.
+	ParentWorkspaceToken string
+	// AlreadyIdentical names candidate files whose bytes already matched the
+	// parent, so publishing them was a no-op. Recording them separately is
+	// what lets the graph insist the whole candidate was accounted for without
+	// mistaking an unchanged file for an excluded one.
+	AlreadyIdentical []string
+	// CheckpointID names the durable record that can undo this publication.
+	CheckpointID string
+}
+
+// PrepareCandidateIntegration reports the candidate a node would publish, and
+// refuses when the node is not in a state where publishing means anything. It
+// mutates nothing, so a caller can use it to decide whether to ask the user at
+// all.
+func (g *Graph) PrepareCandidateIntegration(nodeID int) (WriterCandidate, string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	node := g.nodeLocked(nodeID)
+	if node == nil {
+		return WriterCandidate{}, "", fmt.Errorf("goal graph has no node %d", nodeID)
+	}
+	if node.State == NodeIntegrated {
+		return WriterCandidate{}, "", fmt.Errorf("goal graph node %d is already integrated and awaiting combined verification", nodeID)
+	}
+	if node.State != NodeAwaitingReview {
+		return WriterCandidate{}, "", fmt.Errorf("goal graph node %d is %s, not awaiting review; only a verified retained candidate can be integrated", nodeID, node.State)
+	}
+	for i := len(node.AttemptIDs) - 1; i >= 0; i-- {
+		attempt := g.attemptLocked(node.AttemptIDs[i])
+		if attempt == nil || attempt.State != AttemptCandidate || attempt.Candidate == nil {
+			continue
+		}
+		// The graph only ever reached awaiting_review through a passing
+		// verification, but say so explicitly rather than relying on that
+		// history: this is the last point before the parent changes.
+		if attempt.Candidate.VerificationState != "passed" {
+			return WriterCandidate{}, "", fmt.Errorf("goal graph node %d holds a candidate whose verification is %q, not passed", nodeID, attempt.Candidate.VerificationState)
+		}
+		if len(attempt.Candidate.ScopeViolations) > 0 {
+			return WriterCandidate{}, "", fmt.Errorf("goal graph node %d holds a candidate that wrote outside its declared scope (%s)", nodeID, strings.Join(attempt.Candidate.ScopeViolations, ", "))
+		}
+		return *attempt.Candidate, attempt.ID, nil
+	}
+	return WriterCandidate{}, "", fmt.Errorf("goal graph node %d has no retained candidate attempt", nodeID)
+}
+
+// IntegrateCandidate records that a node's whole verified candidate is now in
+// the parent workspace. It deliberately does not mark the node done. The
+// child's verification passed against its own isolated tree and says nothing
+// about the parent it has just been merged into, so the node moves to
+// `integrated` and the graph reports that the combined result is unverified.
+//
+// Publication changes the parent, so every earlier accepted node's evidence is
+// invalidated here for the same reason a manual edit invalidates it: the
+// workspace those nodes were judged against no longer exists.
+func (g *Graph) IntegrateCandidate(ctx context.Context, nodeID int, integration CandidateIntegration) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	node := g.nodeLocked(nodeID)
+	if node == nil {
+		return fmt.Errorf("goal graph has no node %d", nodeID)
+	}
+	if node.State != NodeAwaitingReview {
+		return fmt.Errorf("goal graph node %d is %s, not awaiting review", nodeID, node.State)
+	}
+	attempt := g.attemptLocked(integration.AttemptID)
+	if attempt == nil || attempt.NodeID != nodeID || attempt.State != AttemptCandidate || attempt.Candidate == nil {
+		return fmt.Errorf("goal graph attempt %q is not node %d's retained candidate", integration.AttemptID, nodeID)
+	}
+	if len(integration.Files) == 0 {
+		return errors.New("a candidate integration must name the files it published")
+	}
+	if strings.TrimSpace(integration.ParentWorkspaceToken) == "" {
+		return errors.New("a candidate integration must record the parent workspace state it produced")
+	}
+	// Publishing a subset would leave bytes in the parent that the child's
+	// verification never covered, so the recorded set must be the whole
+	// candidate.
+	accounted := sortedCopy(append(append([]string(nil), integration.Files...), integration.AlreadyIdentical...))
+	if !equalStrings(accounted, sortedCopy(attempt.Candidate.ChangedFiles)) {
+		return fmt.Errorf("candidate integration accounted for %d of the candidate's %d changed file(s); a candidate is published whole or not at all", len(accounted), len(attempt.Candidate.ChangedFiles))
+	}
+
+	now := g.now().UTC()
+	g.state.MutationGeneration++
+	attempt.MutationGeneration = g.state.MutationGeneration
+	attempt.State, attempt.Finished = AttemptAccepted, now
+	// Prior accepted work was judged against a workspace that no longer
+	// exists. Staling it is the same treatment an external edit receives.
+	g.invalidateAllDoneLocked(fmt.Sprintf("node %d's candidate was integrated into the combined workspace", nodeID))
+	g.state.WorkspaceToken = integration.ParentWorkspaceToken
+	reason := fmt.Sprintf("candidate %s was integrated into the parent workspace (%d file(s)); the combined result is unverified, and this node cannot complete until fresh combined-workspace verification passes",
+		attempt.Candidate.WorkerID, len(integration.Files))
+	if integration.CheckpointID != "" {
+		reason += fmt.Sprintf("; checkpoint %s can restore the state from before it", integration.CheckpointID)
+	}
+	node.State, node.ActiveAttemptID, node.Reason = NodeIntegrated, "", reason
+	g.addEvidenceLocked(attempt, Evidence{
+		Kind: EvidenceDelegateWrite, Tool: "integrate_candidate", Status: "integrated",
+		Summary: boundedSummary(reason), WorkspaceToken: integration.ParentWorkspaceToken,
+		MutationGeneration: g.state.MutationGeneration, Finished: now,
+	})
+	g.queueUpdateLocked(node.ID, attempt.ID, string(NodeIntegrated), reason)
+	g.reduceOutcomeLocked()
+	return g.persistLocked(ctx, true)
+}
+
+func sortedCopy(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return out
 }
 
 // RetainedWorktree is one directory the graph still points at, with whatever
@@ -3731,7 +3870,7 @@ func (g *Graph) reduceOutcomeLocked() {
 		return
 	}
 	allDone, running := true, false
-	var blockers, exhausted, review []string
+	var blockers, exhausted, review, integrated []string
 	for _, node := range g.state.Nodes {
 		if node.State != NodeDone {
 			allDone = false
@@ -3747,6 +3886,9 @@ func (g *Graph) reduceOutcomeLocked() {
 		}
 		if node.State == NodeBudgetExhausted {
 			exhausted = append(exhausted, fmt.Sprintf("node %d (%s): %s", node.ID, node.Title, node.Reason))
+		}
+		if node.State == NodeIntegrated {
+			integrated = append(integrated, fmt.Sprintf("node %d (%s): %s", node.ID, node.Title, node.Reason))
 		}
 	}
 	if allDone {
@@ -3779,6 +3921,16 @@ func (g *Graph) reduceOutcomeLocked() {
 	// wave's success indistinguishable from its failure. Like a material
 	// blocker, a retained candidate ends the required graph: it cannot unlock a
 	// dependent node before a human integrates it.
+	// A published candidate outranks a merely retained one when both are
+	// present: bytes are already in the user's workspace, and that is the more
+	// urgent thing to say.
+	if len(integrated) > 0 && !running {
+		g.state.Outcome, g.state.Reason = OutcomeAwaitingVerification, strings.Join(integrated, "; ")
+		g.stopActiveLocked(g.now().UTC())
+		g.clearPauseLocked()
+		g.queueUpdateLocked(0, "", string(OutcomeAwaitingVerification), g.state.Reason)
+		return
+	}
 	if len(review) > 0 && !running {
 		g.state.Outcome, g.state.Reason = OutcomeAwaitingReview, strings.Join(review, "; ")
 		g.stopActiveLocked(g.now().UTC())

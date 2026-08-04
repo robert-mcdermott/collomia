@@ -2898,7 +2898,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, observe what is left in each retained worktree, discard one you no longer want, or cancel the experimental Orchestrated Goal preview. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, observe what is left in each retained worktree, discard one you no longer want, or cancel the experimental Orchestrated Goal preview. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -3095,6 +3095,22 @@ integration, because repeating a mutation whose effect nobody observed is
 exactly the replay it refuses everywhere else. Very large files are named as
 unrestorable rather than silently dropped, so you always know what you have to
 reconcile by hand.
+
+`/orchestrate integrate <node-id>` is the one path that publishes a candidate
+into your workspace. It applies the whole candidate — never a subset, because
+the child's verification covered its entire tree — under the pre-integration
+checkpoint, through ordinary integration permission, and only when you ask for
+it by node. If any file conflicts with a change you made since, the whole
+integration is refused rather than half-applied.
+
+Afterwards the node reads `integrated`, not `done`, and the graph reports
+`awaiting_verification`. That is deliberate: the child's tests passed in its
+own isolated worktree, which says nothing about the combined workspace they
+have now been merged into. Every previously accepted node is marked stale for
+the same reason. Verifying the combined result and accepting the node is the
+next milestone increment; until it ships, an integrated node has no path to
+`done` at all, and the node's own text names the checkpoint that can undo the
+publication.
 
 `/agents apply` will not publish one either. A graph candidate is an ordinary
 delegate's retained worktree as far as that surface is concerned, so it can be

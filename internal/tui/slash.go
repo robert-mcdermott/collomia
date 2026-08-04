@@ -255,6 +255,21 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			}
 			break
 		}
+		if len(args) == 2 && strings.EqualFold(args[0], "integrate") {
+			nodeID, convErr := strconv.Atoi(args[1])
+			if convErr != nil || nodeID <= 0 {
+				m.addError(fmt.Errorf("usage: /orchestrate integrate <node-id>"))
+				break
+			}
+			status, err := m.runtime.IntegrateOrchestratedCandidate(context.Background(), nodeID)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal candidate integrated · combined result unverified · experimental", status)
+			break
+		}
 		if len(args) == 1 && strings.EqualFold(args[0], "reconcile") {
 			status, err := m.runtime.ReconcileOrchestratedWorktrees(context.Background())
 			if err != nil {

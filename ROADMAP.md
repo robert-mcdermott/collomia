@@ -177,9 +177,11 @@ that proved the exit gate. **OG-4 — Reviewed integration** is now the active
 milestone, and its first two increments shipped: a graph candidate could be
 published into the parent workspace through `/agents apply` while the graph
 still reported that reviewed integration was required, and that path is now
-closed; and every publication into the parent now records durably what it
-replaced before the first byte moves, so an interrupted one can be inspected
-and undone. See the
+closed; every publication into the parent now records durably what it replaced
+before the first byte moves, so an interrupted one can be inspected and undone;
+and a verified candidate can now be published into the workspace on an explicit
+request, landing in a state that says plainly the combined result is unverified.
+See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1915,6 +1917,15 @@ roadmap remains the source of priority and completion status.
       effect is unknown. Retained content is bounded, and a path past the
       bound is named as unrestorable rather than dropped.
       *(Completed 2026-08-03.)*
+    - [x] **OG-4C — Graph-owned candidate integration:** publish one node's
+      whole verified candidate into the parent workspace through an explicit
+      user-only `/orchestrate integrate <node-id>`, under the OG-4B checkpoint
+      and ordinary integration permission. A candidate goes whole or not at
+      all, since the child verified its entire tree; a conflict in any file
+      refuses the whole integration. The node moves to a new `integrated`
+      state and the graph to `awaiting_verification` — never `done`, because a
+      child's pass says nothing about the parent it was merged into — and every
+      previously accepted node is staled. *(Completed 2026-08-03.)*
   - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
     state without replaying mutations, finish adversarial/performance
     evaluations, and make an evidence-based graduation decision.
@@ -2117,10 +2128,9 @@ evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future integration and exact scheduler-recovery claims. The next orchestration
-slice is **OG-4C — combined-parent verification on the graph acceptance
-path**, which is what a graph-owned publication has to be gated on before it
-can exist. Until the rest of OG-4 ships, every candidate remains in its own
-worktree, the primary workspace is unchanged, and no path publishes one.
+slice is **OG-4D — combined-workspace verification and node acceptance**. An
+integrated node has no path to `done` at all today, which is the correct
+fail-closed state but not the finished one.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
@@ -2129,13 +2139,13 @@ worktree, the primary workspace is unchanged, and no path publishes one.
    inspectable rather than adding telemetry by default.
 2. Continue **OG-4 — reviewed integration and combined verification**. OG-4A
    closed the one path that could publish a graph candidate without the graph
-   knowing, and OG-4B made every publication into the parent recoverable by
-   recording what it replaced before the first byte moves. Next is
-   combined-parent verification on the graph acceptance path, then
-   deterministic candidate eligibility with a visible rationale,
-   freshness-bound hunk application under ordinary integration permission, and
-   the user-authored waiver representation, as separable increments. A score,
-   child test, or plan approval still never grants permission.
+   knowing, OG-4B made every publication into the parent recoverable by
+   recording what it replaced before the first byte moves, and OG-4C published
+   the first graph candidate into the workspace under that checkpoint. Next is
+   combined-workspace verification and node acceptance, then deterministic
+   candidate eligibility with a visible rationale and the user-authored waiver
+   representation. A score, child test, or plan approval still never grants
+   permission.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never
    grants permission. `collo audit --actor` remains the surface that can say

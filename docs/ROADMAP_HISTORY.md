@@ -45,6 +45,36 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-4C graph-owned candidate integration
+
+- **The first time the runtime writes a candidate into your own workspace.**
+  `/orchestrate integrate <node-id>` publishes one node's verified candidate
+  under OG-4B's checkpoint and ordinary integration permission. It is reachable
+  only by a person: it is not a tool, so the model cannot call it, and no
+  autonomy mode reaches it, because this is the point where unreviewed work
+  becomes your files.
+- **A candidate goes whole or not at all.** Hunk-level selection is right for
+  an ordinary delegate, where you are the only judge, but the unit a graph
+  child verified is its entire tree — publishing a subset would put bytes in
+  your workspace that no verification ever covered. A conflict in any file
+  refuses the whole integration for the same reason: applying the part that
+  still fits produces a workspace that is neither what the child verified nor
+  what you had.
+- **The node does not become done, and that is the point.** It moves to a new
+  `integrated` state, and the graph to a new `awaiting_verification` outcome,
+  saying plainly that the combined result is unverified. The child's pass was
+  against its own isolated tree and says nothing about the parent it has just
+  been merged into; treating one as the other is exactly what OG-4's exit gate
+  forbids. Nothing in the runtime can mark an integrated node done — that gap
+  is deliberate and is the next increment's contract.
+- **Publication stales every previously accepted node**, because the workspace
+  those nodes were judged against no longer exists. That is the same treatment
+  an edit made outside Collomia receives.
+- **It is undoable.** The node's reason names the durable checkpoint that can
+  restore the state from before, and a failure at any point leaves the graph
+  untouched, so the node stays awaiting review rather than claiming a state the
+  workspace is not in.
+
 ### 2026-08-03 — OG-4B recoverable pre-integration checkpoint
 
 - **Publication writes into your workspace, and the only record of what it

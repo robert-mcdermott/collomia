@@ -544,6 +544,13 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-4C is additive within graph schema 1. It adds the `integrated` node state
+and the `awaiting_verification` graph outcome. Neither appears in a snapshot
+written before this release, so an older graph restores exactly as it did, and
+the public `run.result` outcome enumeration is deliberately unchanged, so
+automation consumers see no new value. A snapshot carrying either value is
+rejected by an older build's state validation rather than misread, which is the
+intended failure direction.
 OG-4B adds an `integration_checkpoint` session record, additive within
 `schema_version: 1`. It carries the delegate, workspace, state, and each target
 path's prior content, mode, and existence, and is appended before a publication

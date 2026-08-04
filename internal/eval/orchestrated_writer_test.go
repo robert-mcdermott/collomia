@@ -19,6 +19,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/session"
 )
 
 // These are the product evaluations for OG-3's isolated-writer wave. Unlike the
@@ -518,5 +519,124 @@ func TestOrchestratedGoalCandidateCannotBePublishedByDelegateIntegrationEvaluati
 	}
 	if tree := runtime.GoalGraph.RetainedWorktrees()[0]; tree.Verification != "passed" {
 		t.Fatalf("the candidate lost its verification: %+v", tree)
+	}
+}
+
+// The first time the runtime writes a candidate into the user's own workspace.
+// Everything about this path is gated: only a person can reach it, the whole
+// candidate goes or none of it does, and the node explicitly does not complete,
+// because the child's verification passed against its own isolated tree and
+// says nothing about the parent it has just been merged into.
+func TestOrchestratedGoalCandidateIntegrationEvaluation(t *testing.T) {
+	workspace := orchestratedWriterGitFixture(t)
+	before := writerFixtureState(t, workspace)
+	client := &scopedWriterClient{t: t, written: map[string]bool{}, files: map[string]string{
+		"extend alpha": "alpha/extra.go",
+	}}
+	runtime := newWriterEvaluationRuntime(t, workspace, client, []plan.Step{
+		writerStep(1, "extend alpha", "alpha/"),
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
+	defer cancel()
+	if _, err := runtime.Agent.Run(ctx, "Produce the approved candidate.", func(event.Event) {}); err != nil {
+		t.Fatalf("a verified candidate wave reported an error: %v", err)
+	}
+	if outcome, _ := runtime.GoalGraph.Outcome(); outcome != goalgraph.OutcomeAwaitingReview {
+		t.Fatalf("graph outcome=%q, want awaiting_review", outcome)
+	}
+	if state := writerFixtureState(t, workspace); state != before {
+		t.Fatal("the wave changed the parent workspace before anyone integrated")
+	}
+
+	status, err := runtime.IntegrateOrchestratedCandidate(ctx, 1)
+	if err != nil {
+		t.Fatalf("integrating a verified candidate failed: %v", err)
+	}
+
+	// The bytes are really in the parent now.
+	published := filepath.Join(workspace, "alpha", "extra.go")
+	data, err := os.ReadFile(published)
+	if err != nil {
+		t.Fatalf("the candidate was not published into the parent: %v", err)
+	}
+	if !strings.Contains(string(data), "func Extra()") {
+		t.Fatalf("published content is not the candidate's: %q", data)
+	}
+	if state := writerFixtureState(t, workspace); state == before {
+		t.Fatal("integration reported success without changing the parent workspace")
+	}
+
+	// And the node is explicitly not finished.
+	snapshot := runtime.GoalGraph.Snapshot()
+	node := snapshot.Nodes[0]
+	if node.State != goalgraph.NodeIntegrated {
+		t.Fatalf("node state=%q, want integrated", node.State)
+	}
+	if node.State == goalgraph.NodeDone {
+		t.Fatal("a child's verification was accepted as the combined workspace's")
+	}
+	if !strings.Contains(node.Reason, "combined") || !strings.Contains(node.Reason, "unverified") {
+		t.Fatalf("the node does not say the combined result is unverified: %q", node.Reason)
+	}
+	if snapshot.Outcome != goalgraph.OutcomeAwaitingVerification {
+		t.Fatalf("graph outcome=%q, want awaiting_verification", snapshot.Outcome)
+	}
+	if !strings.Contains(status, string(goalgraph.NodeIntegrated)) {
+		t.Fatalf("status does not report the integration:\n%s", status)
+	}
+
+	// The publication is undoable: a durable checkpoint recorded what the
+	// parent held before it, and the node names it.
+	checkpoints := runtime.Session.AllIntegrationCheckpoints()
+	if len(checkpoints) != 1 || checkpoints[0].State != session.IntegrationApplied {
+		t.Fatalf("integration checkpoints=%+v", checkpoints)
+	}
+	if checkpoints[0].GraphNode != 1 {
+		t.Fatalf("the checkpoint is not attributed to the plan node: %+v", checkpoints[0])
+	}
+	if !strings.Contains(node.Reason, checkpoints[0].ID) {
+		t.Fatalf("the node does not name the checkpoint that can undo it: %q", node.Reason)
+	}
+
+	// Integrating twice is refused rather than republished.
+	if _, err := runtime.IntegrateOrchestratedCandidate(ctx, 1); err == nil {
+		t.Fatal("a node was integrated twice")
+	}
+}
+
+// A candidate whose parent moved underneath it is refused whole. Publishing
+// the part that still applies would produce a combined workspace that is
+// neither what the child verified nor what the user had.
+func TestOrchestratedGoalIntegrationRefusesAConflictedCandidateEvaluation(t *testing.T) {
+	workspace := orchestratedWriterGitFixture(t)
+	client := &scopedWriterClient{t: t, written: map[string]bool{}, files: map[string]string{
+		"extend alpha": "alpha/extra.go",
+	}}
+	runtime := newWriterEvaluationRuntime(t, workspace, client, []plan.Step{
+		writerStep(1, "extend alpha", "alpha/"),
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
+	defer cancel()
+	if _, err := runtime.Agent.Run(ctx, "Produce the approved candidate.", func(event.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user writes their own version of the same file after the wave.
+	if err := os.WriteFile(filepath.Join(workspace, "alpha", "extra.go"),
+		[]byte("package alpha\n\nfunc Extra() string { return \"mine\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mine := writerFixtureState(t, workspace)
+
+	_, err := runtime.IntegrateOrchestratedCandidate(ctx, 1)
+	if err == nil {
+		t.Fatal("integration overwrote the user's own conflicting change")
+	}
+	if state := writerFixtureState(t, workspace); state != mine {
+		t.Fatal("a refused integration still changed the parent workspace")
+	}
+	if node := runtime.GoalGraph.Snapshot().Nodes[0]; node.State != goalgraph.NodeAwaitingReview {
+		t.Fatalf("a refused integration moved the node to %q", node.State)
 	}
 }
