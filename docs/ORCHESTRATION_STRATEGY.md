@@ -1725,6 +1725,45 @@ way — it lives in the session and `/restore integration` still lists it after
 the graph is released — so the same argument does not carry, and a refusal
 without it would be ceremony.
 
+#### OG-5B — Permission-decision equivalence at the parent-workspace boundary
+
+**Status: complete (2026-08-03).**
+
+Graduation clause 3 requires that permission decisions be equivalent to the
+same actions in Standard mode. Testing it found a real bypass rather than
+confirming a property.
+
+The write tools resolve a target through the workspace path guard, which
+follows symlinks. Integration named its targets by joining the workspace
+string as configured. On any workspace reached through a symlink — which on
+macOS includes everything under `/tmp` and `/var`, and generally any symlinked
+checkout — those two produce different absolute paths for the same file. A
+`deny` rule written in the resolved form that the configuration documents and
+that correctly stopped `write_file` did not match at integration, so
+publishing a delegate's candidate was a way around a rule the user had already
+been obeyed on. Both modes now resolve identically, because integration
+borrows the tools' own resolver rather than reimplementing it, and the two
+cannot drift apart again.
+
+The clause's scope is now stated rather than assumed, because the modes are
+not identical everywhere and pretending otherwise would be the more dangerous
+claim. Equivalence is asserted **at the parent-workspace boundary**. A
+candidate worktree is not the user's repository: it is a quarantined copy at a
+different path whose bytes cannot reach the parent except through
+`integrate_delegate`. A path rule a user wrote for their own repository does
+not follow a scratch directory around the filesystem, and should not — what
+must hold is that the rule governs every byte that actually lands in their
+workspace, in either mode, and that it is the same rule that says so. The
+evaluation asserts both halves, including that the candidate *is* produced
+inside its quarantine, so the boundary being relied on is visible rather than
+implied.
+
+Two properties keep the evaluation honest. The rule discriminates rather than
+blanket-refusing — a sibling package outside its scope is written in the same
+Standard-mode run — and the graph refusal is checked to be a permission denial
+carrying the user's own reason text, not merely some error. Deleting the fix
+makes it fail with the denied path published into the parent.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -1784,7 +1823,8 @@ The mode remains experimental until all of these hold:
 
 - no silent overwrite or duplicated mutation in the adversarial corpus;
 - no `done` with an open, stale, or unverified required node;
-- permission decisions are equivalent to the same actions in Standard mode;
+- permission decisions are equivalent to the same actions in Standard mode,
+  asserted at the parent-workspace boundary as OG-5B defines it;
 - resume is mutation-safe;
 - decomposable tasks show a meaningful quality or elapsed-time improvement;
 - the improvement justifies visible token/cost overhead;
@@ -1839,8 +1879,13 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5A — restart fidelity and unresolved parent
-  publications** — multi-worker scheduler restoration measured and pinned as
+- Last completed slice: **OG-5B — permission-decision equivalence at the
+  parent-workspace boundary** — a path `deny` rule that stopped `write_file`
+  was not matching at integration on any symlinked workspace, so publishing a
+  candidate was a way around it; both paths now resolve targets through the
+  same guard, and an evaluation runs the identical rule through both modes. It
+  follows OG-5A — restart fidelity and unresolved parent
+  publications — multi-worker scheduler restoration measured and pinned as
   exact, including that a restart is charged for the starts it re-spends, and
   an interrupted publication into the parent workspace now stopping every
   step that reasons about the combined workspace until a person restores the
@@ -1863,21 +1908,22 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
   decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
   the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the second OG-5 increment.** OG-5A shipped the
-  recovery work the decomposition put first: multi-worker scheduler
-  restoration is now pinned as exact rather than asserted, and an
-  interrupted publication into the parent workspace now stops every step that
-  reasons about the combined workspace until a person restores or keeps it.
-  What remains of OG-5 is the security/reliability/compatibility/performance
-  campaigns, the Standard-versus-Orchestrated comparison — including whether
-  competing candidates for one node are worth their multiplied per-node cost —
-  and the graduation decision. Those measure a system whose restart semantics
-  are now settled, which is why they were sequenced after this slice.
+- Next unblocked slice: **the third OG-5 increment.** OG-5A shipped the
+  recovery work the decomposition put first, and OG-5B closed the graduation
+  gate's permission-equivalence clause and the bypass that testing it found.
+  What remains of OG-5 is the rest of the
+  security/reliability/compatibility/performance campaigns, the
+  Standard-versus-Orchestrated comparison — including whether competing
+  candidates for one node are worth their multiplied per-node cost — and the
+  graduation decision. The graduation gate is the right backlog to work
+  through: its eight clauses are specific, and OG-5B is the evidence that
+  auditing one clause at a time finds real defects rather than confirming
+  what was already believed.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, and OG-5A is the working tree on top of
-  them.**
+  the OG-4 closure are `af71dba`, and OG-5A and OG-5B are the working tree on
+  top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-

@@ -1037,7 +1037,14 @@ permission or write content.
 The review token binds worktree/branch/base identity, exact parent and child
 bytes and modes, the composed result, and conflict state. The user selects
 text hunks in a floating review; normal `integrate_delegate` permission rules
-still apply. The entire comparison is recomputed after interactive approval
+still apply, and they apply to the same resolved path the write tools would
+have been judged against. That last point was a real bypass until 2026-08-03:
+integration named its targets by joining the configured workspace string while
+the write tools resolve through the workspace path guard, which follows
+symlinks, so on any workspace reached through a symlink a path `deny` rule
+that correctly stopped `write_file` did not match at integration. Publishing a
+delegate's candidate was a way around a rule that had already been obeyed.
+Both paths now resolve through the same guard. The entire comparison is recomputed after interactive approval
 to close the approval-time race. Rooted atomic replacement/removal, multi-file
 rollback, and the ordinary change tracker then publish only selected clean
 content. The child worktree and branch are retained. Collomia never creates a

@@ -332,6 +332,14 @@ func TestConversationRewindEvaluation(t *testing.T) {
 
 func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, mode string) (*agent.Agent, interface{ Changed() []string }) {
 	t.Helper()
+	return newRuledEvaluationAgent(t, workspace, client, mode, nil)
+}
+
+// newRuledEvaluationAgent is the Standard-mode half of the permission
+// comparison: the same workspace-scoped rules, evaluated by the same manager,
+// against an agent that writes directly into the user's own workspace.
+func newRuledEvaluationAgent(t *testing.T, workspace string, client provider.Client, mode string, rules []appconfig.Rule) (*agent.Agent, interface{ Changed() []string }) {
+	t.Helper()
 	// Evaluation commands run with the production minimal environment and
 	// default-on sandbox. Keep Go's build cache inside the writable fixture
 	// workspace so nested `go test` commands remain isolated and deterministic.
@@ -344,6 +352,7 @@ func newEvaluationAgent(t *testing.T, workspace string, client provider.Client, 
 	// minimal command environment in every evaluation mode.
 	cfg.Permissions.CommandEnv = "minimal"
 	cfg.Permissions.SandboxReadableRoots = append(cfg.Permissions.SandboxReadableRoots, evaluationSandboxReadableRoots()...)
+	cfg.Permissions.Rules = append(cfg.Permissions.Rules, rules...)
 	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
 	if err != nil {
 		t.Fatal(err)

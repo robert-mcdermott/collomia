@@ -45,6 +45,37 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-5B closes a permission bypass at the integration boundary
+
+- **A rule that stopped a write was not stopping the same bytes arriving by
+  another route.** Collomia's write tools resolve a target path through the
+  workspace guard, which follows symlinks. Delegate integration named its
+  targets by joining the workspace string as configured. On any workspace
+  reached through a symlink — on macOS that is everything under /tmp and /var,
+  and generally any symlinked checkout — those are two different absolute
+  paths for the same file, so a `deny` rule written in the resolved form the
+  configuration documents matched `write_file` and did not match integration.
+  Publishing a delegate's candidate was a way around a rule that had already
+  been obeyed. Both paths now resolve through the same guard, borrowed from
+  the tools rather than reimplemented, so they cannot drift apart again.
+- **The bug was found by testing a claim rather than by writing a feature.**
+  The graduation gate says permission decisions must be equivalent to the same
+  actions in Standard mode; nothing had checked it. Auditing that one clause
+  produced a real defect rather than a confirmation, which is the argument for
+  working through the remaining clauses the same way.
+- **What equivalence means is now stated instead of assumed.** It is asserted
+  at the parent-workspace boundary. A candidate worktree is not your
+  repository — it is a quarantined copy at a different path whose bytes cannot
+  reach your files except through integration — and a rule you wrote for your
+  repository does not follow a scratch directory around the filesystem. What
+  must hold is that your rule governs every byte that actually lands in your
+  workspace, in either mode, and that it is the same rule that says so.
+- **One evaluation runs the identical rule through both modes**, asserts the
+  rule discriminates rather than blanket-refusing, checks the graph refusal is
+  a permission denial carrying the user's own reason, and confirms the refused
+  candidate is still retained for review. Removing the fix makes it fail with
+  the denied path published into the parent.
+
 ### 2026-08-03 — OG-5A restart fidelity and unresolved parent publications
 
 - **The slice started by measuring the thing it was going to build, and the

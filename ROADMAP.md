@@ -1961,6 +1961,14 @@ roadmap remains the source of priority and completion status.
       earlier publication into it never recorded an outcome, with
       `/restore integration <id> keep` added as the resolution that keeps
       what was published instead of undoing it. *(Completed 2026-08-03.)*
+    - [x] **OG-5B — permission-decision equivalence at the parent-workspace
+      boundary:** close the graduation gate's permission clause, and with it a
+      real bypass the test found — a path `deny` rule that correctly stopped
+      `write_file` did not match at integration on any workspace reached
+      through a symlink, so publishing a delegate's candidate got around it.
+      Both paths now resolve targets through the same guard, and one
+      evaluation runs the identical rule through Standard and Orchestrated
+      mode. *(Completed 2026-08-03.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2166,7 +2174,9 @@ where an interrupted publication left the parent workspace in a state no
 later step could honestly reason about. What is left is measurement rather
 than mechanism — the security, reliability, compatibility, and performance
 campaigns, the Standard-versus-Orchestrated comparison, and the graduation
-decision.
+decision. OG-5B started that measurement by auditing the graduation gate's
+permission clause and found a real bypass rather than confirming a property,
+which is the argument for working through the remaining clauses the same way.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the

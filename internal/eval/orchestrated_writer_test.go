@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
+	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
@@ -67,6 +69,14 @@ func newWriterEvaluationRuntime(t *testing.T, workspace string, client provider.
 // the evaluation reaches a refusal that no autonomy mode can override.
 func newGatedWriterEvaluationRuntime(t *testing.T, workspace string, client provider.Client, steps []plan.Step, deniedTools []string) *app.Runtime {
 	t.Helper()
+	return newRuledWriterEvaluationRuntime(t, workspace, client, steps, deniedTools, nil)
+}
+
+// newRuledWriterEvaluationRuntime additionally carries scoped permission rules,
+// which is how the evaluation asks whether a rule a user wrote for their own
+// workspace governs the graph the same way it governs Standard mode.
+func newRuledWriterEvaluationRuntime(t *testing.T, workspace string, client provider.Client, steps []plan.Step, deniedTools []string, rules []appconfig.Rule) *app.Runtime {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -87,6 +97,7 @@ func newGatedWriterEvaluationRuntime(t *testing.T, workspace string, client prov
 			"command_env":            "minimal",
 			"sandbox_readable_roots": evaluationSandboxReadableRoots(),
 			"denied_tools":           deniedTools,
+			"rules":                  rules,
 		},
 	}
 	encoded, err := json.Marshal(config)
@@ -813,5 +824,116 @@ func TestOrchestratedGoalIntegrationDenialLeavesEverythingUntouchedEvaluation(t 
 	// recoverable rather than merely refused.
 	if tree := runtime.GoalGraph.RetainedWorktrees()[0]; tree.Verification != "passed" {
 		t.Fatalf("the candidate lost its verification after a denial: %+v", tree)
+	}
+}
+
+// betaOffLimitsRule is the same user-written rule for both halves of the
+// comparison: one scoped deny on a directory of the parent workspace.
+//
+// It is written in the resolved form, which is what `permissions.rules`
+// documents ("resolved path glob") and what the write tools match against. A
+// temporary directory on macOS is reached through a symlink, so this is also
+// the spelling that catches a mode evaluating the unresolved one.
+func betaOffLimitsRule(t *testing.T, workspace string) appconfig.Rule {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return appconfig.Rule{
+		Action: "deny",
+		Path:   filepath.ToSlash(filepath.Join(resolved, "beta")) + "/**",
+		Reason: "beta is off limits in this repository",
+	}
+}
+
+// Graduation clause: permission decisions must be equivalent to the same
+// actions in Standard mode. This evaluation states what that means precisely,
+// because the two modes are not identical everywhere and pretending otherwise
+// would be the more dangerous claim.
+//
+// Equivalence is asserted at the *parent workspace boundary*. A candidate
+// worktree is not the user's workspace — it is a quarantined copy at a
+// different path whose bytes cannot reach the parent except through
+// `integrate_delegate`, and a path rule the user wrote for their own
+// repository does not, and should not, follow a scratch directory around the
+// filesystem. What must hold is that the rule governs every byte that actually
+// lands in the user's workspace, in either mode, and that it is the *same*
+// rule that says so.
+func TestOrchestratedGoalPermissionDecisionsMatchStandardModeEvaluation(t *testing.T) {
+	// Standard mode: the agent writes straight into the user's workspace, so
+	// the rule is evaluated against the final path directly.
+	standardWorkspace := orchestratedWriterGitFixture(t)
+	standardClient := &scriptedProvider{t: t, steps: []scriptedStep{
+		{response: toolResponse("allowed", "write_file", `{"path":"alpha/extra.go","content":"package alpha\n\nfunc Extra() string { return \"extra\" }\n"}`)},
+		{response: toolResponse("denied", "write_file", `{"path":"beta/extra.go","content":"package beta\n\nfunc Extra() string { return \"extra\" }\n"}`)},
+		{check: requireLastToolContains("beta is off limits in this repository"), response: provider.Response{Content: "beta was refused by a permission rule; alpha was written."}},
+	}}
+	standardAgent, _ := newRuledEvaluationAgent(t, standardWorkspace, standardClient, "workspace", []appconfig.Rule{betaOffLimitsRule(t, standardWorkspace)})
+	var standardEvents []event.Event
+	if _, err := standardAgent.Run(t.Context(), "Extend alpha and beta.", func(e event.Event) { standardEvents = append(standardEvents, e) }); err != nil {
+		t.Fatalf("standard mode run: %v", err)
+	}
+	// The rule discriminates rather than blanket-refusing: the sibling package
+	// outside its scope was written in the same run.
+	if _, err := os.Stat(filepath.Join(standardWorkspace, "alpha/extra.go")); err != nil {
+		t.Fatalf("standard mode refused a write the rule does not cover: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(standardWorkspace, "beta/extra.go")); !os.IsNotExist(err) {
+		t.Fatalf("standard mode wrote a denied path: %v", err)
+	}
+	if deniedDecisions(standardEvents) != 1 {
+		t.Fatalf("standard mode denied decisions=%d, want exactly the beta write", deniedDecisions(standardEvents))
+	}
+
+	// Orchestrated mode: the same rule, the same target path, a separate
+	// repository so neither half can affect the other.
+	graphWorkspace := orchestratedWriterGitFixture(t)
+	before := writerFixtureState(t, graphWorkspace)
+	graphClient := &scopedWriterClient{t: t, written: map[string]bool{}, files: map[string]string{
+		"extend beta": "beta/extra.go",
+	}}
+	runtime := newRuledWriterEvaluationRuntime(t, graphWorkspace, graphClient, []plan.Step{
+		writerStep(1, "extend beta", "beta/"),
+	}, nil, []appconfig.Rule{betaOffLimitsRule(t, graphWorkspace)})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
+	defer cancel()
+	if _, err := runtime.Agent.Run(ctx, "Produce the approved candidate.", func(event.Event) {}); err != nil {
+		t.Fatalf("candidate wave: %v", err)
+	}
+
+	// The candidate exists inside its quarantine. This is the honest half of
+	// the finding and is asserted rather than glossed: the writer's own path
+	// is not the path the rule names, so the rule does not stop it there — and
+	// it does not need to, because nothing in that directory is the user's
+	// repository yet.
+	trees := runtime.GoalGraph.RetainedWorktrees()
+	if len(trees) != 1 {
+		t.Fatalf("retained worktrees=%+v, want one", trees)
+	}
+	if _, err := os.Stat(filepath.Join(trees[0].Worktree, "beta/extra.go")); err != nil {
+		t.Fatalf("the candidate was not produced in its own tree: %v", err)
+	}
+
+	// The boundary that matters. The identical rule refuses the publication,
+	// and it is the same rule: the denial carries the reason the user wrote.
+	_, err := runtime.IntegrateOrchestratedCandidate(t.Context(), 1)
+	if err == nil {
+		t.Fatal("a denied path was published into the parent workspace through the graph")
+	}
+	if !strings.Contains(err.Error(), "beta is off limits in this repository") {
+		t.Fatalf("the graph refusal does not name the user's rule: %v", err)
+	}
+	if !errors.Is(err, permission.ErrDenied) {
+		t.Fatalf("the graph refusal is not a permission denial: %v", err)
+	}
+	if after := writerFixtureState(t, graphWorkspace); after != before {
+		t.Fatalf("a refused publication changed the parent workspace:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	// A denial is not a loss. The verified candidate is still there to review,
+	// which is what makes the refusal a decision the user can revisit.
+	if state := runtime.GoalGraph.Snapshot().Nodes[0].State; state != goalgraph.NodeAwaitingReview {
+		t.Fatalf("node state after a refused publication=%q, want awaiting_review", state)
 	}
 }

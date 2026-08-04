@@ -544,6 +544,15 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5B changes no persisted or machine-readable shape. It changes which
+absolute path string `integrate_delegate` is authorized against: the resolved
+one the write tools already use, rather than the configured workspace string
+joined to the relative target. On a workspace not reached through a symlink
+the two are identical. Where they differ, a path rule that previously failed
+to match at integration now matches, which is the defect being fixed — an
+existing configuration can therefore see an integration correctly refused
+where it was previously allowed, and the refusal names the rule.
+
 OG-5A adds one value to the `integration_checkpoint` record's `state`
 vocabulary: `accepted`, meaning a person inspected an interrupted publication
 and kept the workspace as it stood. It is additive and resolves the same

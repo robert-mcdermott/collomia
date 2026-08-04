@@ -311,14 +311,46 @@ func (r *Runtime) prepareIntegrationMutations(ctx context.Context, id string, se
 	if len(mutations) == 0 {
 		return nil, nil, tools.Action{}, errors.New("no delegated hunks were selected")
 	}
-	paths := make([]string, len(mutations))
+	paths := r.integrationActionPaths(mutations)
 	var combined strings.Builder
-	for i, mutation := range mutations {
-		paths[i] = filepath.Join(r.Workspace, filepath.FromSlash(mutation.path))
+	for _, mutation := range mutations {
 		combined.WriteString(mutation.preview)
 	}
 	action := tools.Action{Risk: tools.RiskWrite, Summary: fmt.Sprintf("integrate %d file(s) from delegated agent %s (%s)", len(mutations), preview.Name, id), Paths: paths, Preview: combined.String()}
 	return preview, mutations, action, nil
+}
+
+// integrationActionPaths names each target the way the write tools name it, so
+// a path rule sees one spelling per file however the bytes arrive.
+//
+// This is a permission boundary, not a cosmetic detail. The write tools resolve
+// a target through the workspace path guard, which follows symlinks, while this
+// path used to join the workspace string as configured. On any workspace
+// reached through a symlink — which on macOS includes everything under /tmp and
+// /var — the two produced different absolute paths for the same file, so a
+// `deny` rule written in the resolved form that correctly stopped `write_file`
+// simply did not match at integration. Publishing a delegate's candidate was a
+// way around a rule the user had already been obeyed on. The resolution is
+// borrowed from the tools rather than reimplemented here, so the two cannot
+// drift apart again.
+func (r *Runtime) integrationActionPaths(mutations []delegateIntegrationMutation) []string {
+	paths := make([]string, len(mutations))
+	for i, mutation := range mutations {
+		paths[i] = filepath.Join(r.Workspace, filepath.FromSlash(mutation.path))
+	}
+	guard, err := tools.NewPathGuard(r.Workspace, false)
+	if err != nil {
+		return paths
+	}
+	for i, mutation := range mutations {
+		// A path that cannot be resolved keeps the joined spelling. That is the
+		// same conservative target the publication itself will write, so the
+		// decision is still made about the file being changed.
+		if resolved, outside, resolveErr := guard.Resolve(mutation.path); resolveErr == nil && !outside {
+			paths[i] = resolved
+		}
+	}
+	return paths
 }
 
 func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mutations []delegateIntegrationMutation, fireHooks bool) ([]string, error) {
