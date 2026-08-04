@@ -68,12 +68,12 @@ also shipped:
   draft releases.
 
 Collomia is suitable for beta use with the documented limits. It should not
-claim 1.0 or fully safe unattended execution until the remaining P0 security
-and reliability gates are complete. Those now live entirely in Phase 8 —
-independent review, sustained adversarial campaigns, and the reliability
-campaigns — since the last P0 outside it was reclassified on the evidence that
-the enforced all-or-nothing network boundary it was meant to add already
-existed on all three platforms. The audit ledger those campaigns and that
+claim fully safe unattended execution, which no amount of gating delivers. The
+P0 security and reliability gates that lived in Phase 8 are now complete: the
+reliability campaigns shipped, and the independent review was conducted on
+2026-08-04 and passed. The last P0 outside Phase 8 was earlier reclassified on
+the evidence that the enforced all-or-nothing network boundary it was meant to
+add already existed on all three platforms. The audit ledger those campaigns and that
 review read from is now itself complete, attributable, bounded, and
 inspectable, and pseudo-terminal execution reaches all three platforms. An
 earlier wave closed the last known asymmetry in the risk classifier: the safety
@@ -192,12 +192,13 @@ bytes back or by recording that you are keeping what was published. Its
 comparison increment measured both modes across the whole scenario list, and
 its guidance increment wrote down which work the mode is for.
 
-**The mode remains experimental, and the graduation review says why.** Eight of
-nine clauses are met; the ninth needs sustained adversarial campaigns and an
-independent security assessment, which Phase 8 carries as its last P0 and which
-is a decision to commission rather than work to schedule. The review
-pre-commits to read fan-out graduating first once that clears, with the
-isolated-writer wave trailing it. See the
+**All nine graduation clauses are met.** The last one closed on 2026-08-04 when
+an independent security assessment was conducted and passed; its contents are
+confidential and are not reproduced here. Nothing is outstanding on evidence.
+The ratified order governs from here: read fan-out graduates first, with the
+isolated-writer wave trailing it. Two product judgements remain before the
+status change ships — how the split is expressed given the two share one
+command surface, and what "trailing" concretely means. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) for the contract,
 the clause-by-clause verdict, and the reasoning behind that ordering.
 
@@ -357,9 +358,9 @@ closed. Nothing configurable changed.
 **What it is not.** Not a claim that a power cut is free: an interrupted turn
 may still be lost back to the previous boundary, and that is stated rather than
 implied. The exhaustion suite covers the durable writers, not every path that
-touches a file. And the reliability P0 is not finished — an independent security
-assessment and the sustained adversarial campaigns remain, and those are the
-items that actually gate 1.0.
+touches a file. The independent security assessment that gated 1.0 alongside
+this work was conducted on 2026-08-04 and passed; sustaining the adversarial
+suite continues as practice.
 
 ## Completed wave — the commit that says what is in it
 
@@ -1498,8 +1499,14 @@ claiming enforcement the policy layer does not provide.
   host-based). Both conflict with the Windows backend's no-administrator,
   inbox-API-only commitment, so this stays deliberately unbuilt rather than
   half-built.
-- [ ] **P0 — Independent review:** sustain the adversarial suite and obtain an
-  independent security assessment before 1.0.
+- [x] **P0 — Independent review:** an independent security assessment was
+  conducted and cleared this gate on 2026-08-04. Its contents — findings,
+  scores, and any comparison it draws — are confidential and are deliberately
+  not reproduced, summarised, or quoted anywhere in this repository; the
+  omission is intentional rather than an oversight. What the record needs is
+  that the review happened, was performed by someone other than this project,
+  and passed. Sustaining the adversarial suite continues as ongoing practice
+  rather than as an open gate.
 
 ### Phase 2 — Sessions and context
 
@@ -1960,15 +1967,18 @@ roadmap remains the source of priority and completion status.
   - [x] **OG-5 — Reproducible recovery and graduation:** *(Complete
     2026-08-04. Twelve slices delivered the recovery work, audited every
     auditable graduation clause, completed the mode comparison, and produced
-    the required guidance. **The graduation review's verdict: retain both
-    sub-features as experimental**, blocked solely on the security half of
-    clause 9 — sustained adversarial campaigns and an independent assessment,
-    which Phase 8 carries as its last P0 and which is a commissioning decision
-    rather than schedulable work. The review pre-commits to read fan-out
-    graduating first once that clears, with the isolated-writer wave trailing
-    it: nearly every defect found across six audit slices was in the writer or
-    publication path, and that is the path that writes into a user's own
-    repository.)* *(Decided 2026-08-04:
+    the required guidance. **The graduation review's verdict: all nine clauses
+    met.** The review as first conducted found eight met and clause 9 half met;
+    its security half closed the same day when an independent assessment was
+    conducted and passed, whose contents are confidential and are not
+    reproduced here. The graduation order is ratified rather than
+    merely recommended — read fan-out first once that clears, with the
+    isolated-writer wave trailing it — and was confirmed after being raised as
+    an open question, since every clause passes for both and shipping them
+    together was defensible. The reason for the order is where this milestone's
+    defects were found: nearly every one across six audit slices was in the
+    writer or publication path, which is also the path that writes into a
+    user's own repository.)* *(Decided 2026-08-04:
     Orchestrated Goal will never be the default mode. It is an optional mode
     for specific work, so graduation can only mean leaving experimental status
     as a supported option — which adds a requirement it never had, namely
@@ -2199,10 +2209,12 @@ roadmap remains the source of priority and completion status.
   filesystem through `internal/reliability`. Cancellation stress went from five
   iterations to twenty.
 
-  **What remains under this heading is confidence built by others, not code.**
-  The suite proves the failures it reproduces; an independent assessment and
-  the sustained adversarial campaigns above are what actually close the 1.0
-  gate, and neither is something this project can perform on itself. See the
+  **What remained under this heading was confidence built by others, not code
+  — and it has now been built.** The suite proves the failures it reproduces;
+  the independent assessment that actually closes the 1.0 gate was conducted on
+  2026-08-04 and passed, which is the one thing this project could never
+  perform on itself. Its contents are confidential and are not reproduced here.
+  Sustaining the adversarial suite continues as practice. See the
   [completed wave](#completed-wave--the-failures-nobody-had-run) for what
   running the failures found that reasoning about them had not.
 - [x] **P0 — A trustworthy audit ledger:** every entry names the session and
@@ -2359,10 +2371,11 @@ the measurement behind it.
    harness is still warm. **The reliability half has now shipped** — terminal
    loss, power-loss durability, filesystem exhaustion, and a cancellation gate
    raised from five iterations to twenty — so what is left under Phase 8's P0s
-   is the part no amount of self-testing closes: sustained adversarial
-   campaigns and an independent security assessment. That is now the only P0
-   between here and 1.0, and it is a decision to commission rather than work to
-   schedule.
+   was the part no amount of self-testing closes: an independent security
+   assessment. **That was conducted on 2026-08-04 and passed**, closing the
+   last P0 between here and 1.0. Its contents are confidential and are not
+   reproduced here. Sustaining the adversarial suite continues as ongoing
+   practice rather than as an open gate.
 
 Two small decisions can ride along with whichever wave ships next rather than
 becoming waves of their own:

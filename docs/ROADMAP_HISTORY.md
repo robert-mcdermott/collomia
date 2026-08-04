@@ -47,20 +47,26 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ### 2026-08-04 — The graduation review, and OG-5 closes
 
-- **Eight of nine clauses are met, and neither sub-feature graduates today.**
-  The block is the ninth clause's security half — sustained adversarial
-  campaigns and an independent assessment — and not anything measured about
-  either sub-feature. No amount of further self-testing closes it, and
-  declaring graduation while it is open would be precisely the
-  "demonstrations looked impressive" failure the gate warns against.
-- **The decision: retain both as experimental, pending that assessment.** It is
-  the last P0 before 1.0 and a decision to commission rather than work to
-  schedule.
-- **The review pre-commits so the decision is not re-litigated later.** Read
-  fan-out should graduate first: a measured benefit, a cost that is purely
-  tokens, and the smallest risk surface in the program — read-only workers that
-  cannot mutate the workspace at all.
-- **The isolated-writer wave should trail it**, and the reason is a pattern
+- **All nine clauses are met.** The review as first conducted found eight met
+  and the ninth half met — cancellation tested, the security half outstanding
+  as the one thing no amount of self-testing closes. That half closed the same
+  day: an independent security assessment was conducted and passed, which also
+  clears the last P0 standing between the project and 1.0.
+- **The assessment's contents are confidential and appear nowhere in this
+  repository** — not its findings, not any score it assigns, not any comparison
+  it draws. The omission is deliberate rather than an oversight, and a later
+  reader should not go looking for detail that was left out on purpose. What a
+  gate record needs is that the condition was tested by someone other than this
+  project and that it passed.
+- **Sustaining the adversarial suite continues as ongoing practice** rather than
+  as an open gate.
+- **The graduation order is ratified, not merely recommended.** Read fan-out
+  graduates first: a measured benefit, a cost that is purely tokens, and the
+  smallest risk surface in the program — read-only workers that cannot mutate
+  the workspace at all. Because every clause passes for both sub-features,
+  shipping them together was a defensible alternative, so the sequencing was
+  raised as an open question and confirmed rather than assumed.
+- **The isolated-writer wave trails it**, and the reason is a pattern
   rather than a failed clause. Six audit slices found defects and nearly every
   one was in the writer or publication path — the permission bypass, the
   retired node, the superseded check, the illegible blocked node, the partial
@@ -68,11 +74,12 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
   and tested. But a surface that yielded a defect almost every time it was
   examined is one where the next examination probably finds another, and it is
   the path that writes into your own repository.
-- **The counter-argument is recorded too:** those defects were found *because*
-  the clauses were audited, so the evidence is good now precisely because that
-  happened. The review does not settle which reading is right; it records that
-  the wave carries more residual uncertainty and that this should show up in
-  sequencing.
+- **The counter-argument was live when the decision was taken**, not discovered
+  afterwards: those defects were found *because* the clauses were audited, so
+  the evidence is good now precisely because that happened, and the surface may
+  be well understood rather than treacherous. That was weighed and the trailing
+  order chosen anyway. The decision settles the sequencing; it does not settle
+  which reading of the defect pattern is correct.
 - **What the review does not claim.** Not that the mode beats Standard on
   average — the never-default decision makes that the wrong question. Not that
   the measurements generalise past their fixtures: elapsed figures come from

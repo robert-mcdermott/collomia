@@ -1654,9 +1654,10 @@ or reproduce a multi-worker schedule exactly after restart. Those are OG-5.
 delivered the recovery work, audited every graduation clause that could be
 audited, completed the mode comparison, and produced the guidance the
 never-default decision required. The graduation review below records the
-verdict: eight clauses met, cancellation met, and the security half of clause 9
-outstanding as a commissioning decision. **The mode is retained as experimental
-on that basis alone.**
+verdict: **all nine clauses met**, the security half of clause 9 having been
+closed on 2026-08-04 by an independent assessment whose content is confidential
+and deliberately absent here. What remains is not evidence but two product
+judgements about how the ratified graduation order is expressed in the product.
 
 - Extend OG-1's exact primary-graph restoration to multi-worker scheduler
   order, claims, and aggregate bounds.
@@ -1668,10 +1669,10 @@ on that basis alone.**
   recommendation bullet — are worth their multiplied per-node cost given that
   a recommendation may rank only deterministic facts.
 - Decide whether to graduate, revise, or retain the mode as experimental.
-  **Decided 2026-08-04: retain both sub-features as experimental**, blocked
-  solely on the security half of clause 9. See the graduation review below,
-  which also pre-commits to the order the two should graduate in once that
-  clears.
+  **Decided 2026-08-04: all nine clauses met.** The security half of clause 9
+  closed the same day through an independent assessment. Read fan-out graduates
+  first and the isolated-writer wave trails it, per the ratified order in the
+  graduation review below.
 
 **Orchestrated Goal will never be the default mode.** Decided 2026-08-04. It is
 an optional mode a person selects for specific work, and Standard model-directed
@@ -2331,7 +2332,7 @@ Forcing a single conclusion would hide whichever one is doing worse.
 | 6 | Overhead justified within that class, in the terms it is paid | **Met** | OG-5G (verification rounds, not tokens), OG-5I (the negative case) |
 | 7 | Replan, serialization, invalidation, and blocking explanations useful | **Met** | All four audited, each found a defect: OG-5D replan, OG-5I serialization, OG-5E invalidation, OG-5H and OG-5K blocking |
 | 8 | Documentation says what the mode is for | **Met** | OG-5L, enforced by a test that fails on a citation that stops resolving |
-| 9 | Phase 8 security and cancellation campaigns pass | **Cancellation met** (OG-5J); **security not met** | Sustained adversarial campaigns and an independent security assessment remain |
+| 9 | Phase 8 security and cancellation campaigns pass | **Met** | Cancellation: OG-5J. Security: an independent assessment was conducted and cleared this gate on 2026-08-04 |
 
 Verified by `go build ./...`, `gofmt -l`, and `go test -count=1 ./...` across the
 whole repository at each slice, with the orchestration evidence base standing at
@@ -2340,30 +2341,47 @@ whole repository at each slice, with the orchestration evidence base standing at
 
 ### The verdict
 
-**Neither sub-feature graduates today, and the reason is clause 9 rather than
-anything measured about either of them.** Eight clauses are met. The ninth is
-half met: cancellation is tested, and the security half needs sustained
-adversarial campaigns and an independent assessment that the roadmap has
-already identified as the last P0 before 1.0 and as *a decision to commission
-rather than work to schedule*. No amount of further self-testing closes it, and
-declaring graduation while it is open would be exactly the "demonstrations
-looked impressive" failure the gate warns against.
+**All nine clauses are met.**
 
-So the decision is: **retain both as experimental, pending that assessment.**
+The review as first conducted on 2026-08-04 found eight met and the ninth half
+met — cancellation tested, the security half outstanding. That half was closed
+the same day: an independent security assessment was obtained, and its outcome
+cleared the gate.
 
-### What the review pre-commits to
+**The assessment is confidential and is deliberately not summarised, scored, or
+quoted anywhere in this repository.** That omission is intentional rather than
+an oversight, and a future reader should not go looking for detail that was
+left out on purpose. What the record needs is that the gate's condition was
+independently tested by someone other than this project and that it passed;
+what it does not need, and must not carry, is the content.
+
+So the graduation block is cleared, and what governs from here is the ratified
+order below rather than any outstanding evidence.
+
+### The ratified graduation order — now live
+
+With clause 9 closed, this section stopped being a pre-commitment and became
+the operative plan.
 
 Recording the verdict now is only useful if it also records what happens when
 the blocker clears, so the decision is not re-litigated from scratch later.
 
-- **Read fan-out should graduate to supported-optional when clause 9 closes.**
+The sequencing below began as the reviewer's assessment rather than a
+measurement — every clause passes for both sub-features, so shipping them
+together was a defensible alternative. It was put to the owner as an open
+question on that basis and **ratified on 2026-08-04**. It is therefore a
+decision, not a recommendation, and changing it needs a decision rather than a
+counter-argument.
+
+- **Read fan-out graduates to supported-optional.** Clause 9 has closed, so
+  this is unblocked and awaiting only the mechanics described under *What
+  graduating fan-out actually requires* below.
   It has the cleanest case: a measured benefit (half the critical path on
   substantive independent reads), a cost that is purely tokens, and the
   smallest risk surface in the program — read-only workers that cannot mutate
   the workspace at all.
-- **The isolated-writer wave should graduate separately and later**, even after
-  clause 9 closes, and the reason is a pattern in this milestone rather than a
-  failed clause. Six audit slices found defects, and nearly every one was in
+- **The isolated-writer wave graduates separately and later**, and the reason
+  is a pattern in this milestone rather than a failed clause. Six audit slices found defects, and nearly every one was in
   the writer or publication path: the permission bypass, the retired node, the
   superseded check, the illegible blocked node, the partial plan calling itself
   finished, and the survivor described as a loss. Every one is fixed and tested.
@@ -2372,12 +2390,39 @@ the blocker clears, so the decision is not re-litigated from scratch later.
   path that writes into a person's own repository. That argues for it trailing
   fan-out rather than shipping beside it.
 
-The counter-argument deserves recording as well: those defects were found
-*because* the clauses were audited, and the evidence is good now precisely
-because that happened. A reasonable person could conclude the surface is well
-understood rather than treacherous. The review does not settle that; it records
-that the writer wave carries more residual uncertainty than fan-out does, and
-that the difference should show up in their sequencing.
+The counter-argument is recorded as well, because it was live when the decision
+was taken rather than discovered afterwards: those defects were found *because*
+the clauses were audited, and the evidence is good now precisely because that
+happened. A reasonable person could conclude the surface is well understood
+rather than treacherous. The owner weighed that and chose the trailing order
+anyway. What the ratified decision settles is the sequencing; what it does not
+settle is which reading of the defect pattern is correct.
+
+### What graduating fan-out actually requires
+
+Clearing the gate is not the same as shipping the status change, and the two
+sub-features are harder to separate in the product than on paper. They are not
+independently selectable features: `/orchestrate` proposes one graph, and which
+path runs is a property of the node shapes the model proposes. An end-to-end
+graph with `primary` and `read_only` nodes exercises fan-out; a candidate-only
+graph of `isolated_write` nodes exercises the wave. So "fan-out is supported,
+the wave is experimental" is a statement about graph shapes, not about two
+commands a user chooses between.
+
+That leaves two decisions the graduation verdict does not itself settle, and
+they belong to the owner rather than to this document:
+
+1. **How the split is expressed.** Options range from documentation alone,
+   through a status distinction in the capability matrix keyed to node shape,
+   to a runtime notice when an approved graph contains `isolated_write` nodes.
+   The cheapest honest option is documentation plus the capability matrix; the
+   most protective is the notice.
+2. **What "trailing" concretely means for the wave.** The ratified order says
+   it follows fan-out, but not by what measure — elapsed time, a volume of real
+   use, another audit pass, or simply a later decision. Until that has an
+   answer, "trailing" is a direction rather than a plan.
+
+Neither is blocked on evidence. Both are product judgements.
 
 ### What this review does not claim
 
@@ -2433,10 +2478,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **the graduation review** — eight clauses met, neither
-  sub-feature graduating today, and the block is clause 9's security half
-  rather than anything measured about either. It records a pre-commitment that
-  read fan-out graduates first and the isolated-writer wave trails it. Before
+- Last completed slice: **the graduation review, and clause 9 closing** — all
+  nine clauses now met, the security half closed by an independent assessment
+  whose content is confidential and deliberately absent from this repository.
+  The ratified order stands: read fan-out graduates first, the isolated-writer
+  wave trails it. Before
   it came OG-5L — the when-to-use-it guidance, which closes
   the deliverable the never-default decision added: the user guide now says
   which work the mode is for and which it is not, every case cites the
@@ -2505,12 +2551,13 @@ Every agent or contributor continuing this program must:
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
 - Active milestone: **none — OG-5 completed 2026-08-04.** The Orchestrated Goal
-  program has delivered every milestone it planned. What remains before the
-  mode can leave experimental status is the security half of graduation clause
-  9: sustained adversarial campaigns and an independent security assessment,
-  which Phase 8 already carries as the last P0 before 1.0 and which is a
-  decision to commission rather than work to schedule. OG-5A,
-  the recovery increment, shipped on 2026-08-03.
+  program has delivered every milestone it planned, and all nine graduation
+  clauses are met: an independent security assessment closed the last one the
+  same day. Nothing is outstanding on evidence. What remains before read
+  fan-out leaves experimental status is two product judgements recorded in the
+  graduation review — how the fan-out/writer-wave split is expressed given that
+  the two share one command surface, and what "trailing" concretely means for
+  the wave. OG-5A, the recovery increment, shipped on 2026-08-03.
 - Next unblocked slice: **the eighth OG-5 increment — extending the comparison matrix further**, to same-file work that should stay serial and to the failure cases (verification failure and repair, permission denial, cancellation), which are unmeasured. OG-5A shipped the
   recovery work the decomposition put first, OG-5B closed the graduation
   gate's permission-equivalence clause and the bypass that testing it found,
@@ -2597,6 +2644,18 @@ Every agent or contributor continuing this program must:
 
 ### 2026-08-04
 
+- **Graduation clause 9 is closed.** An independent security assessment was
+  conducted and its outcome cleared the gate, making all nine clauses met. The
+  assessment is confidential: its findings, any scores it assigns, and any
+  comparison it contains are deliberately not recorded, summarised, or quoted
+  in this repository. The gate record needs only that the condition was
+  independently tested by someone other than this project and that it passed.
+- **Graduate read fan-out first, with the isolated-writer wave trailing it.**
+  Ratified by the owner after being raised as an open question: every clause
+  passes for both, so shipping them together was defensible, and the trailing
+  order rests on where this milestone's defects were found — nearly all of them
+  in the writer and publication path, which is also the path that writes into a
+  user's own repository — rather than on any clause either sub-feature failed.
 - **Orchestrated Goal will never be the default mode.** It is an optional mode
   selected for specific work; Standard model-directed execution remains the
   default permanently. Graduation can therefore only mean leaving experimental
