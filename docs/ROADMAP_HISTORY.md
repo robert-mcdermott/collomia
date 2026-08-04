@@ -45,6 +45,35 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — OG-5F builds the mode comparison harness
+
+- **The cost/benefit clauses need numbers, and the old comparison produced
+  none.** It compared total process wall clock, which also contains fixture
+  setup, Git, and whatever else the machine was doing — noise unrelated to the
+  scheduling question and large enough to invert the result. It had already
+  produced one spurious failure.
+- **Critical path replaces wall clock.** The harness measures the union of the
+  windows in which a simulated investigation was actually running, rather than
+  their sum or the whole process. Serial modes pay every window; a wave that
+  truly overlaps pays them once. A loaded machine inflates every mode equally,
+  so the comparison holds — verified by running it twice while two other test
+  packages ran alongside, the condition the original flake appeared under.
+- **Each mode now carries its price beside its benefit** — critical path, total
+  simulated work, overlap achieved, input and output tokens, and provider
+  iterations — printed as a table with percentage deltas. A clause asking
+  whether an improvement justifies an overhead cannot be answered by an
+  assertion that merely held, so the numbers are the output and the assertions
+  only guard the shape.
+- **The first result, for two independent-read scenarios:** the read wave halves
+  the critical path and costs about 2.1x the tokens, and a serial graph pays
+  that same token premium for no time benefit at all.
+- **It does not close the clauses, and says so.** The measurement is of
+  simulated latency against a scripted client, so it captures scheduling
+  overlap rather than real-world speed. Only the independent-read family is
+  covered; cross-layer implementation, ambiguous diagnosis, migrations,
+  same-file serial work, and the isolated-writer wave — where the real cost
+  sits — remain unmeasured.
+
 ### 2026-08-03 — OG-5E stops done from counting a check the workspace outgrew
 
 - **An earlier node's passing suite can stop describing your repository, and

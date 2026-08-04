@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +40,7 @@ type orchestrationComparisonClient struct {
 	delay    time.Duration
 
 	mu              sync.Mutex
+	delays          []comparisonInterval
 	calls           int
 	parentCalls     int
 	activeReads     int
@@ -71,7 +75,7 @@ func (c *orchestrationComparisonClient) Chat(ctx context.Context, request provid
 func (c *orchestrationComparisonClient) standard(ctx context.Context, request provider.Request, call int) (provider.Response, error) {
 	switch call {
 	case 1:
-		if err := waitComparisonDelay(ctx, c.delay); err != nil {
+		if err := c.wait(ctx, c.delay); err != nil {
 			return provider.Response{}, err
 		}
 		return comparisonToolResponse("standard-first", c.scenario.firstPath), nil
@@ -79,7 +83,7 @@ func (c *orchestrationComparisonClient) standard(ctx context.Context, request pr
 		if !requestHasText(request, c.scenario.firstContent) {
 			return provider.Response{}, errors.New("standard mode did not retain the first grounded read")
 		}
-		if err := waitComparisonDelay(ctx, c.delay); err != nil {
+		if err := c.wait(ctx, c.delay); err != nil {
 			return provider.Response{}, err
 		}
 		return comparisonToolResponse("standard-second", c.scenario.secondPath), nil
@@ -96,7 +100,7 @@ func (c *orchestrationComparisonClient) standard(ctx context.Context, request pr
 func (c *orchestrationComparisonClient) primary(ctx context.Context, request provider.Request, call int) (provider.Response, error) {
 	switch call {
 	case 1:
-		if err := waitComparisonDelay(ctx, c.delay); err != nil {
+		if err := c.wait(ctx, c.delay); err != nil {
 			return provider.Response{}, err
 		}
 		return comparisonToolResponse("primary-first", c.scenario.firstPath), nil
@@ -106,7 +110,7 @@ func (c *orchestrationComparisonClient) primary(ctx context.Context, request pro
 		}
 		return comparisonTextResponse(c.scenario.firstSummary), nil
 	case 3:
-		if err := waitComparisonDelay(ctx, c.delay); err != nil {
+		if err := c.wait(ctx, c.delay); err != nil {
 			return provider.Response{}, err
 		}
 		return comparisonToolResponse("primary-second", c.scenario.secondPath), nil
@@ -162,7 +166,7 @@ func (c *orchestrationComparisonClient) automaticRead(ctx context.Context, reque
 		c.finishComparisonRead()
 		return provider.Response{}, ctx.Err()
 	}
-	if err := waitComparisonDelay(ctx, c.delay); err != nil {
+	if err := c.wait(ctx, c.delay); err != nil {
 		c.finishComparisonRead()
 		return provider.Response{}, err
 	}
@@ -209,15 +213,119 @@ func comparisonTextResponse(content string) provider.Response {
 	return provider.Response{Content: content, Usage: provider.Usage{InputTokens: 12, OutputTokens: 4}}
 }
 
-func waitComparisonDelay(ctx context.Context, delay time.Duration) error {
+// comparisonInterval is one window of simulated investigation latency. The
+// harness compares modes by how much of this work overlapped rather than by
+// how long the whole process took, because total elapsed time also contains
+// fixture setup, Git, and whatever else the machine was doing — noise that is
+// unrelated to the scheduling question and large enough to invert the result
+// on a loaded runner.
+type comparisonInterval struct{ start, end time.Time }
+
+func (c *orchestrationComparisonClient) wait(ctx context.Context, delay time.Duration) error {
+	started := time.Now()
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
+	var err error
 	select {
 	case <-timer.C:
-		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		err = ctx.Err()
 	}
+	c.mu.Lock()
+	c.delays = append(c.delays, comparisonInterval{start: started, end: time.Now()})
+	c.mu.Unlock()
+	return err
+}
+
+// criticalPathDelay is the wall time in which at least one simulated
+// investigation was running: the union of the windows, not their sum. Serial
+// modes pay every window; a wave that truly overlaps pays them once.
+func (c *orchestrationComparisonClient) criticalPathDelay() time.Duration {
+	c.mu.Lock()
+	windows := append([]comparisonInterval(nil), c.delays...)
+	c.mu.Unlock()
+	if len(windows) == 0 {
+		return 0
+	}
+	sort.Slice(windows, func(i, j int) bool { return windows[i].start.Before(windows[j].start) })
+	total := time.Duration(0)
+	current := windows[0]
+	for _, window := range windows[1:] {
+		if window.start.After(current.end) {
+			total += current.end.Sub(current.start)
+			current = window
+			continue
+		}
+		if window.end.After(current.end) {
+			current.end = window.end
+		}
+	}
+	return total + current.end.Sub(current.start)
+}
+
+// simulatedWork is the total investigation latency the mode asked for. The gap
+// between this and the critical path is the concurrency actually achieved.
+func (c *orchestrationComparisonClient) simulatedWork() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	total := time.Duration(0)
+	for _, window := range c.delays {
+		total += window.end.Sub(window.start)
+	}
+	return total
+}
+
+// comparisonMeasurement is one mode's record for a scenario. It is the unit
+// the graduation gate's cost/benefit clauses are argued from, so it carries the
+// price beside the benefit: a mode that finishes sooner by spending more model
+// work has not obviously won, and the record has to make that arguable rather
+// than settle it by omission.
+type comparisonMeasurement struct {
+	mode         string
+	answer       string
+	criticalPath time.Duration
+	simulated    time.Duration
+	inputTokens  int
+	outputTokens int
+	iterations   int
+}
+
+func (m comparisonMeasurement) tokens() int { return m.inputTokens + m.outputTokens }
+
+func (m comparisonMeasurement) String() string {
+	overlap := m.simulated - m.criticalPath
+	return fmt.Sprintf("%-12s critical-path %-7s of %-7s simulated (%-7s overlapped) · %d tokens (%d in, %d out) · %d provider iterations",
+		m.mode, m.criticalPath.Round(time.Millisecond), m.simulated.Round(time.Millisecond),
+		overlap.Round(time.Millisecond), m.tokens(), m.inputTokens, m.outputTokens, m.iterations)
+}
+
+// reportComparison prints the modes as one table. The graduation decision needs
+// the numbers, not a pass/fail: a clause asking whether an improvement justifies
+// its overhead cannot be answered by an assertion that merely held.
+func reportComparison(t *testing.T, scenario string, measurements ...comparisonMeasurement) {
+	t.Helper()
+	var b strings.Builder
+	fmt.Fprintf(&b, "\ncomparison · %s\n", scenario)
+	for _, measurement := range measurements {
+		fmt.Fprintf(&b, "  %s\n", measurement)
+	}
+	if len(measurements) > 1 {
+		base := measurements[0]
+		for _, measurement := range measurements[1:] {
+			fmt.Fprintf(&b, "  %s vs %s: critical path %+.0f%%, tokens %+.0f%%\n",
+				measurement.mode, base.mode,
+				percentDelta(float64(measurement.criticalPath), float64(base.criticalPath)),
+				percentDelta(float64(measurement.tokens()), float64(base.tokens())))
+		}
+	}
+	t.Log(b.String())
+}
+
+func percentDelta(value, base float64) float64 {
+	if base == 0 {
+		return 0
+	}
+	return (value - base) / base * 100
 }
 
 // TestOrchestratedGoalComparativeReadFanoutEvaluation keeps the conclusion
@@ -264,9 +372,7 @@ func TestOrchestratedGoalComparativeReadFanoutEvaluation(t *testing.T) {
 			standardWorkspace := comparisonWorkspace(t, scenario)
 			standardClient := &orchestrationComparisonClient{mode: "standard", scenario: scenario, delay: investigationDelay}
 			standard, _ := newEvaluationAgent(t, standardWorkspace, standardClient, "autopilot")
-			started := time.Now()
 			standardAnswer, err := standard.Run(t.Context(), scenario.goal, nil)
-			standardElapsed := time.Since(started)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -274,9 +380,7 @@ func TestOrchestratedGoalComparativeReadFanoutEvaluation(t *testing.T) {
 			primaryWorkspace := comparisonWorkspace(t, scenario)
 			primaryClient := &orchestrationComparisonClient{mode: "primary", scenario: scenario, delay: investigationDelay}
 			primary, primaryGraph, _ := newOrchestratedEvaluationAgent(t, primaryWorkspace, primaryClient, "autopilot", comparisonGraphSpec(scenario, goalgraph.ExecutionPrimary))
-			started = time.Now()
 			primaryAnswer, err := primary.Run(t.Context(), scenario.goal, nil)
-			primaryElapsed := time.Since(started)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -291,9 +395,7 @@ func TestOrchestratedGoalComparativeReadFanoutEvaluation(t *testing.T) {
 			defer fanout.Close()
 			fanoutClient := &orchestrationComparisonClient{mode: "fanout", scenario: scenario, delay: investigationDelay, readWaveReady: make(chan struct{})}
 			fanout.Agent.SetProvider("offline-evaluation", "scripted", appconfig.Provider{Type: "fixture", MaxTokens: 256, Context: 16_000}, fanoutClient)
-			started = time.Now()
 			fanoutAnswer, err := fanout.Agent.Run(t.Context(), scenario.goal, nil)
-			fanoutElapsed := time.Since(started)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -313,14 +415,51 @@ func TestOrchestratedGoalComparativeReadFanoutEvaluation(t *testing.T) {
 			if maxReads != 2 {
 				t.Fatalf("fan-out max concurrent reads=%d", maxReads)
 			}
-			if fanoutElapsed >= standardElapsed || fanoutElapsed >= primaryElapsed {
-				t.Fatalf("controlled elapsed standard=%s primary=%s fanout=%s", standardElapsed, primaryElapsed, fanoutElapsed)
-			}
-			t.Logf("controlled elapsed standard=%s primary-only=%s fan-out=%s", standardElapsed, primaryElapsed, fanoutElapsed)
 			standardUsage := standard.Usage()
+			primaryUsage := primaryGraph.UsageTotals(time.Time{}).Total
 			fanoutUsage := fanout.GoalGraph.UsageTotals(time.Time{}).Total
-			if standardUsage.InputTokens+standardUsage.OutputTokens >= fanoutUsage.InputTokens+fanoutUsage.OutputTokens || fanoutUsage.Iterations != 6 {
-				t.Fatalf("extra work was not visible: standard=%+v fanout=%+v", standardUsage, fanoutUsage)
+			standardRecord := comparisonMeasurement{
+				mode: "standard", answer: standardAnswer,
+				criticalPath: standardClient.criticalPathDelay(), simulated: standardClient.simulatedWork(),
+				inputTokens: standardUsage.InputTokens, outputTokens: standardUsage.OutputTokens,
+			}
+			primaryRecord := comparisonMeasurement{
+				mode: "graph-serial", answer: primaryAnswer,
+				criticalPath: primaryClient.criticalPathDelay(), simulated: primaryClient.simulatedWork(),
+				inputTokens: primaryUsage.InputTokens, outputTokens: primaryUsage.OutputTokens, iterations: primaryUsage.Iterations,
+			}
+			fanoutRecord := comparisonMeasurement{
+				mode: "graph-fanout", answer: fanoutAnswer,
+				criticalPath: fanoutClient.criticalPathDelay(), simulated: fanoutClient.simulatedWork(),
+				inputTokens: fanoutUsage.InputTokens, outputTokens: fanoutUsage.OutputTokens, iterations: fanoutUsage.Iterations,
+			}
+			reportComparison(t, scenario.name, standardRecord, primaryRecord, fanoutRecord)
+
+			// The benefit, measured as overlap rather than as total process
+			// time. Both serial modes must pay for both investigations in
+			// sequence; the wave must pay for them once. The margin is a whole
+			// investigation minus generous slack, so a loaded machine slows
+			// every mode without inverting the comparison.
+			slack := investigationDelay / 2
+			for _, serial := range []comparisonMeasurement{standardRecord, primaryRecord} {
+				if serial.criticalPath < 2*investigationDelay-slack {
+					t.Fatalf("%s did not serialize both investigations: %s", serial.mode, serial)
+				}
+				if fanoutRecord.criticalPath > serial.criticalPath-investigationDelay+slack {
+					t.Fatalf("the wave did not shorten the critical path against %s:\n  %s\n  %s", serial.mode, serial, fanoutRecord)
+				}
+			}
+			// The control that keeps the benefit honest: the wave must have done
+			// the same two investigations, not become faster by doing less.
+			for _, record := range []comparisonMeasurement{standardRecord, primaryRecord, fanoutRecord} {
+				if record.simulated < 2*investigationDelay-slack {
+					t.Fatalf("%s skipped an investigation: %s", record.mode, record)
+				}
+			}
+			// The price. A shorter critical path bought with more model work is
+			// a trade, not a free improvement, and the record has to show it.
+			if fanoutRecord.tokens() <= standardRecord.tokens() || fanoutUsage.Iterations != 6 {
+				t.Fatalf("extra model work was not visible:\n  %s\n  %s", standardRecord, fanoutRecord)
 			}
 		})
 	}

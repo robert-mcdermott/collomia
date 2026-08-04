@@ -2209,7 +2209,10 @@ dressed up as a fix. OG-5D then took the false-completion clause and found the
 sharpest defect of the three: the model could delete a node it could not finish
 and be told the plan had passed. OG-5E closed the same clause's other half,
 where an earlier node's passing suite silently stopped describing the
-workspace.
+workspace. OG-5F then built the apparatus the cost/benefit clauses need and
+produced its first data points: halving the critical path on independent reads
+costs roughly 2.1x the tokens, and a serial graph pays that premium for no time
+benefit at all.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the

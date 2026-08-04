@@ -1873,6 +1873,63 @@ mention. A node whose check *did* run against the final state is not named, and
 a plan with nothing behind gains no qualification at all, because a warning
 attached to every completion is one nobody reads.
 
+#### OG-5F — The mode comparison harness
+
+**Status: complete (2026-08-04). It does not close clauses 5 and 6.**
+
+Graduation clauses 5 and 6 ask whether decomposable tasks show a real
+improvement and whether that improvement justifies the visible token and cost
+overhead. Answering them needs measurements, not assertions, and the existing
+comparison produced neither: it compared total process wall clock, which also
+contains fixture setup, Git, and whatever else the machine was doing. That
+noise is unrelated to the scheduling question and large enough to invert the
+result — it had already produced one spurious failure at `standard=3.00s
+fanout=3.20s`.
+
+The harness now measures **critical path** instead: the union of the windows in
+which a simulated investigation was actually running, rather than their sum or
+the whole process. Serial modes pay every window; a wave that truly overlaps
+pays them once. Both modes are inflated equally by a loaded machine, so the
+comparison holds. It survived two runs with the app and agent suites running
+concurrently, which is the condition the original flake appeared under.
+
+Each mode now yields a record carrying the price beside the benefit — critical
+path, total simulated work, overlap achieved, input/output tokens, and provider
+iterations — and the test prints them as a table with percentage deltas.
+A clause about whether a benefit justifies an overhead cannot be answered by an
+assertion that merely held, so the numbers are the output and the assertions
+only guard the shape.
+
+Measured for two independent-read scenarios, identical in both:
+
+| mode | critical path | tokens | iterations |
+| --- | --- | --- | --- |
+| standard | 3.00s of 3.00s simulated | 40 | — |
+| graph, serial nodes | 3.00s of 3.00s simulated | 84 (+110%) | 6 |
+| graph, read fan-out | 1.50s of 3.00s simulated (−50%) | 84 (+110%) | 6 |
+
+The shape of the trade is now on the record: **halving the critical path costs
+roughly 2.1× the tokens**, and the serial graph pays that token premium for no
+time benefit at all. Whether that trade is worth making is exactly the
+judgement clauses 5 and 6 exist to make, and one scenario family does not make
+it.
+
+Two controls keep the benefit honest. Every mode must be shown to have
+performed the same two investigations, so a wave cannot appear faster by doing
+less; and the token premium must be visible, so a shorter critical path is
+recorded as a trade rather than a free improvement.
+
+**What this does not establish.** The measurement is of simulated provider
+latency against a scripted client, so it captures *scheduling overlap*, not
+real-world speed — the structure of which calls can overlap is genuine, the
+duration of each is a fixture constant. Only the independent-read family is
+covered. The comparison list's remaining cases — cross-layer feature
+implementation, ambiguous diagnosis with competing hypotheses, large
+migrations, same-file work that should stay serial, and the isolated-writer
+wave, which is where the real cost sits — are unmeasured. Clauses 5 and 6 stay
+open, and the honest summary of this slice is that the apparatus for answering
+them now exists and has produced its first two data points.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -1991,8 +2048,12 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5E — a check bound to a superseded workspace is
-  named, not counted** — an earlier node's passing suite stops describing the
+- Last completed slice: **OG-5F — the mode comparison harness** — critical-path
+  measurement replacing a flaky total-wall-clock comparison, with each mode
+  yielding a record carrying tokens and iterations beside the time. It does not
+  close the cost/benefit clauses: one scenario family is measured and the
+  isolated-writer wave, where the real cost sits, is not. It follows OG-5E — a
+  check bound to a superseded workspace is named, not counted — an earlier node's passing suite stops describing the
   workspace as soon as a later node mutates it, and `done` was counting it
   anyway. It follows OG-5D — a retired node is never reported as one that
   passed — a revision that omits a node deletes it, which let a graph the
@@ -2030,7 +2091,7 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
   decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
   the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the sixth OG-5 increment.** OG-5A shipped the
+- Next unblocked slice: **the seventh OG-5 increment — extending the comparison matrix**, most valuably to the isolated-writer wave. OG-5A shipped the
   recovery work the decomposition put first, OG-5B closed the graduation
   gate's permission-equivalence clause and the bypass that testing it found,
   OG-5C recorded the publication half of its adversarial-corpus clause, and
@@ -2047,7 +2108,7 @@ Every agent or contributor continuing this program must:
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, and OG-5A through OG-5E are the working tree
+  the OG-4 closure are `af71dba`, and OG-5A through OG-5F are the working tree
   on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers

@@ -544,6 +544,9 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5F changes nothing shipped: it is evaluation apparatus only, with no
+product code touched.
+
 OG-5E changes no persisted shape. It derives the superseded-check account from
 the workspace tokens already recorded on verification evidence, so no snapshot
 field is added and every existing snapshot reports correctly. The `done`
