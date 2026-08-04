@@ -209,7 +209,12 @@ func TestDiscardRequiresConfirmationForAWorktreeThatStillHoldsChanges(t *testing
 
 // isolateGlobalFiles points per-user state at a scratch home so tests never
 // read or write the real ~/.collomia. It returns that home.
-func isolateGlobalFiles(t *testing.T) string {
+// isolateGlobalFiles takes testing.TB rather than *testing.T so benchmarks can
+// use it too. A benchmark that isolates HOME but writes no configuration is
+// asking for a runtime the product no longer builds: a provider stopped being a
+// built-in default, so an unconfigured home is now a setup prompt rather than a
+// working Ollama assumption.
+func isolateGlobalFiles(t testing.TB) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -219,7 +224,7 @@ func isolateGlobalFiles(t *testing.T) string {
 }
 
 // writeGlobalConfig installs a user-layer configuration in the isolated home.
-func writeGlobalConfig(t *testing.T, home, configJSON string) {
+func writeGlobalConfig(t testing.TB, home, configJSON string) {
 	t.Helper()
 	dir := filepath.Join(home, ".collomia")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -714,9 +719,9 @@ func TestRuntimeCloseWaitsForBackgroundProcesses(t *testing.T) {
 }
 
 func BenchmarkRuntimeStartup(b *testing.B) {
-	home := b.TempDir()
-	b.Setenv("HOME", home)
-	b.Setenv("USERPROFILE", home)
+	// Startup reads a user-layer configuration, so measuring it without one
+	// measured a path that now fails outright rather than a faster one.
+	isolateGlobalFiles(b)
 	workspace := b.TempDir()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
