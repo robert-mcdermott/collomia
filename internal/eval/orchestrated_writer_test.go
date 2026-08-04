@@ -60,6 +60,13 @@ func orchestratedWriterGitFixture(t *testing.T) string {
 // application's own child verification.
 func newWriterEvaluationRuntime(t *testing.T, workspace string, client provider.Client, steps []plan.Step) *app.Runtime {
 	t.Helper()
+	return newGatedWriterEvaluationRuntime(t, workspace, client, steps, nil)
+}
+
+// newGatedWriterEvaluationRuntime denies the named tools outright, which is how
+// the evaluation reaches a refusal that no autonomy mode can override.
+func newGatedWriterEvaluationRuntime(t *testing.T, workspace string, client provider.Client, steps []plan.Step, deniedTools []string) *app.Runtime {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -79,6 +86,7 @@ func newWriterEvaluationRuntime(t *testing.T, workspace string, client provider.
 			"sandbox":                evaluationSandboxMode(),
 			"command_env":            "minimal",
 			"sandbox_readable_roots": evaluationSandboxReadableRoots(),
+			"denied_tools":           deniedTools,
 		},
 	}
 	encoded, err := json.Marshal(config)
@@ -751,5 +759,59 @@ func TestOrchestratedGoalFailingCombinedVerificationKeepsTheNodeUnfinishedEvalua
 	// A waiver needs a real reason.
 	if _, err := runtime.WaiveOrchestratedVerification(ctx, "ok"); err == nil {
 		t.Fatal("an empty-ish waiver reason was accepted")
+	}
+}
+
+// Publication is the one graph action that changes the user's files, so a
+// refusal has to leave everything exactly as it was: no bytes, no checkpoint
+// implying a publication happened, and a node still holding its candidate for
+// review rather than claiming a state the workspace is not in.
+func TestOrchestratedGoalIntegrationDenialLeavesEverythingUntouchedEvaluation(t *testing.T) {
+	workspace := orchestratedWriterGitFixture(t)
+	client := &scopedWriterClient{t: t, written: map[string]bool{}, files: map[string]string{
+		"extend alpha": "alpha/extra.go",
+	}}
+	runtime := newGatedWriterEvaluationRuntime(t, workspace, client,
+		[]plan.Step{writerStep(1, "extend alpha", "alpha/")},
+		[]string{"integrate_delegate"})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Second)
+	defer cancel()
+	if _, err := runtime.Agent.Run(ctx, "Produce the approved candidate.", func(event.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, _ := runtime.GoalGraph.Outcome(); outcome != goalgraph.OutcomeAwaitingReview {
+		t.Fatalf("graph outcome=%q, want awaiting_review", outcome)
+	}
+	before := writerFixtureState(t, workspace)
+
+	_, err := runtime.IntegrateOrchestratedCandidate(ctx, 1)
+	if err == nil {
+		t.Fatal("a denied integration published the candidate")
+	}
+	// Pin the reason, so the test cannot pass because integration failed for
+	// some unrelated cause.
+	if !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "integrate_delegate") {
+		t.Fatalf("integration failed for a reason other than the denial: %v", err)
+	}
+	if state := writerFixtureState(t, workspace); state != before {
+		t.Fatal("a denied integration changed the parent workspace")
+	}
+	// No checkpoint: the refusal happened before anything was written, so a
+	// durable record of a publication would itself be a false claim.
+	if checkpoints := runtime.Session.AllIntegrationCheckpoints(); len(checkpoints) != 0 {
+		t.Fatalf("a denied integration recorded a checkpoint: %+v", checkpoints)
+	}
+	snapshot := runtime.GoalGraph.Snapshot()
+	if snapshot.Nodes[0].State != goalgraph.NodeAwaitingReview {
+		t.Fatalf("node state=%q after denial, want awaiting_review", snapshot.Nodes[0].State)
+	}
+	if snapshot.Outcome != goalgraph.OutcomeAwaitingReview {
+		t.Fatalf("graph outcome=%q after denial", snapshot.Outcome)
+	}
+	// The candidate is still there to review, which is what makes the denial
+	// recoverable rather than merely refused.
+	if tree := runtime.GoalGraph.RetainedWorktrees()[0]; tree.Verification != "passed" {
+		t.Fatalf("the candidate lost its verification after a denial: %+v", tree)
 	}
 }

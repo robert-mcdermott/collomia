@@ -174,14 +174,17 @@ Standard evidence-gated execution remains the default.
 made every retained worktree observable and disposable by the user, OG-3B6
 completed the adversarial campaign, and OG-3C added the product evaluations
 that proved the exit gate. **OG-4 — Reviewed integration** is now the active
-milestone, and its first two increments shipped: a graph candidate could be
+milestone through 2026-08-03, when it met its exit gate and closed. Its four
+increments shipped: a graph candidate could be
 published into the parent workspace through `/agents apply` while the graph
 still reported that reviewed integration was required, and that path is now
 closed; every publication into the parent now records durably what it replaced
 before the first byte moves, so an interrupted one can be inspected and undone;
 and a verified candidate can now be published into the workspace on an explicit
 request and completed only when the repository's own checks pass against the
-combined result — or when you record an explicit written waiver. See the
+combined result — or when you record an explicit written waiver.
+**OG-5 — Reproducible recovery and graduation** is now the active milestone.
+See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1897,9 +1900,10 @@ roadmap remains the source of priority and completion status.
         verification, each asserting the parent repository is byte-for-byte
         unchanged, and record the exit-gate evidence that closes OG-3.
         *(Completed 2026-08-03.)*
-  - [ ] **OG-4 — Reviewed integration:** add recoverable publication,
+  - [x] **OG-4 — Reviewed integration:** add recoverable publication,
     conservative candidate synthesis, and fresh combined-parent verification
-    before a logical node can finish.
+    before a logical node can finish. *(Exit gate met 2026-08-03; candidate
+    ranking deferred into OG-5.)*
     - [x] **OG-4A — No unaccounted publication of a graph candidate:** mark a
       candidate graph-owned from dispatch through the durable delegate record
       and a resumed session, and refuse publication at the single funnel every
@@ -1935,6 +1939,12 @@ roadmap remains the source of priority and completion status.
       on a person's written judgement where no automated check applies, and is
       labelled a user-authored waiver rather than verification everywhere it
       appears. *(Completed 2026-08-03.)*
+    - [x] **OG-4 closure:** record the four exit-gate clauses against the tests
+      and commands that proved each, close the last untested clause with an
+      integration-denial evaluation, and write down the two deliverable bullets
+      not delivered literally — hunk-level application superseded by
+      whole-candidate publication, and candidate ranking deferred into OG-5's
+      graduation review. *(Completed 2026-08-03.)*
   - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
     state without replaying mutations, finish adversarial/performance
     evaluations, and make an evidence-based graduation decision.
@@ -2137,11 +2147,9 @@ evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future integration and exact scheduler-recovery claims. The next orchestration
-slice is a decision rather than code: **OG-4E — deterministic candidate
-eligibility with a visible rationale** only becomes meaningful once a graph can
-produce competing candidates for one node, which today it cannot. Decide
-whether to make that reachable or to close OG-4 with its exit gate met and
-defer ranking into OG-5's graduation review.
+slice is **the first OG-5 increment — reproducible graph recovery**. An
+Orchestrated Goal now runs end to end; what it cannot yet do is reproduce a
+multi-worker schedule exactly after a restart.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
@@ -2154,12 +2162,12 @@ defer ranking into OG-5's graduation review.
    recording what it replaced before the first byte moves, and OG-4C published
    the first graph candidate into the workspace under that checkpoint, and
    OG-4D completes an integrated node only on checks that pass against the
-   combined workspace, or on an explicit user-authored waiver. What remains of
-   OG-4's contract is deterministic eligibility among competing candidates,
-   which needs a graph that can produce more than one candidate per node — so
-   decide whether to make that reachable or to close OG-4 and defer ranking
-   into OG-5. A score, child test, or plan approval still never grants
-   permission.
+   combined workspace, or on an explicit user-authored waiver. **OG-4 met its
+   exit gate and closed on 2026-08-03.** Candidate ranking is deferred into
+   OG-5's graduation review rather than built: it presupposes competing
+   candidates for one node, which the runtime cannot produce, and a
+   recommendation may rank only deterministic facts because a score never
+   grants permission.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never
    grants permission. `collo audit --actor` remains the surface that can say

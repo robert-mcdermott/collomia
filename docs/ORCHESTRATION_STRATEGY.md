@@ -1458,7 +1458,7 @@ reproduced exactly after restart. Those are OG-4 and OG-5.
 
 ### OG-4 — Reviewed integration and combined verification
 
-**Status: in progress. OG-3 met its exit gate on 2026-08-03; OG-4A closed the
+**Status: complete (2026-08-03). OG-3 met its exit gate the same day; OG-4A closed the
 unaccounted publication path, OG-4B added the recoverable pre-integration
 checkpoint, OG-4C published the first graph candidate into the parent, and
 OG-4D closed the loop with combined-workspace verification.**
@@ -1589,23 +1589,78 @@ OG-4D combined-workspace verification and node acceptance:
 - Require a user-authored waiver when meaningful automated verification does
   not exist.
 
-Exit gate:
+OG-4 closure and the two bullets not delivered literally:
 
-- stale or conflicting bytes never publish;
-- a child pass never substitutes for combined-parent verification;
-- integration denial or failure leaves a recoverable and inspectable state;
-- terminal `done` is tied to fresh combined-workspace evidence.
+- The milestone's deliverable list contained six items. Four shipped in
+  OG-4A–D. The remaining two are recorded here rather than quietly dropped.
+- *"Apply only freshness-bound selected hunks through ordinary integration
+  permission"* was **superseded** for graph candidates. OG-4C applies the whole
+  candidate instead, because the unit a child verified is its entire tree and
+  publishing selected hunks would put bytes in the parent that no verification
+  ever covered. The freshness binding and the ordinary integration permission
+  both hold. Hunk selection remains available for an ordinary delegate, where
+  the user is the only judge of what to take.
+- *"Allow the coordinator to recommend among deterministically eligible
+  candidates with a visible rationale"* is **deferred to OG-5's graduation
+  review**, and it is not an exit-gate clause. It presupposes competing
+  candidates for one node, which the runtime cannot produce: the wave selects
+  nodes with pairwise-disjoint scopes, so two writers has always meant two
+  different nodes, never two attempts at one. Building it means a second
+  concurrency model beside the existing one, at multiplied per-node cost.
+  Its value is also structurally capped by this document's own authority model:
+  a score never grants permission, so a recommendation may rank only
+  deterministic facts — changed files, checks passed, diff size — which rarely
+  separate two working implementations. Whether that is worth its cost is
+  exactly the question OG-5's Standard-versus-Orchestrated comparison exists to
+  answer with evidence, so it is recorded there rather than guessed at now.
+
+Exit gate — **met on 2026-08-03**:
+
+- *stale or conflicting bytes never publish* — OG-4C applies a candidate whole
+  and refuses the entire integration when any file conflicts, and publication
+  re-reads both sides and refuses when either moved while approval was pending.
+  Covered by the conflicted-candidate evaluation, the parent-drift test, and
+  the stale-review-token test.
+- *a child pass never substitutes for combined-parent verification* — an
+  integrated node reaches `integrated`, never `done`, and only OG-4D's
+  combined-workspace evidence completes it. Covered by the integration
+  evaluation and by the failing-combined-verification evaluation, which breaks
+  a package the candidate never touched — the failure a child worktree
+  structurally cannot see.
+- *integration denial or failure leaves a recoverable and inspectable state* —
+  a denied integration leaves no bytes, no checkpoint, and a node still holding
+  its verified candidate for review; a failed publication rolls back and
+  resolves its durable record; an interrupted one is reported and restorable
+  and is never completed by replay. Covered by the denial evaluation, the
+  rollback test, and the interrupted-integration test.
+- *terminal `done` is tied to fresh combined-workspace evidence* — acceptance
+  requires evidence bound to the workspace state being accepted, or an explicit
+  user-authored waiver that is labelled as such wherever it appears. Covered by
+  the combined-verification evaluation.
+
+Proved by: `go build ./...`, `gofmt -l`, `go test -count=1 -timeout 900s
+./...`, `go test -race -count=1 ./internal/goalgraph/ ./internal/app/
+./internal/tui/`, and `go test -count=1 -run Orchestrated ./internal/eval/`.
+
+**OG-4 is complete.** An Orchestrated Goal now runs end to end: proposal,
+approval, a verified isolated-writer wave, explicit user integration under a
+recoverable checkpoint, combined-workspace verification, and a completed graph.
+What it still does not do is choose between candidates — there are never two —
+or reproduce a multi-worker schedule exactly after restart. Those are OG-5.
 
 ### OG-5 — Reproducible graph recovery and graduation decision
 
-**Status: blocked on OG-4.**
+**Status: unblocked; active milestone. OG-4 met its exit gate on 2026-08-03.**
 
 - Extend OG-1's exact primary-graph restoration to multi-worker scheduler
   order, claims, and aggregate bounds.
 - Restart only safe pending read-only work.
 - Reconcile interrupted writer and integration states without replay.
 - Complete security, reliability, compatibility, and performance campaigns.
-- Compare Standard and Orchestrated modes on the evaluation matrix below.
+- Compare Standard and Orchestrated modes on the evaluation matrix below,
+  including whether competing candidates for one node — OG-4's deferred
+  recommendation bullet — are worth their multiplied per-node cost given that
+  a recommendation may rank only deterministic facts.
 - Decide whether to graduate, revise, or retain the mode as experimental.
 
 Graduation does not imply universal automatic use. Even a graduated graph
@@ -1725,8 +1780,12 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-4D — Combined-workspace verification and node
-  acceptance**, following OG-4C's graph-owned candidate integration, OG-4B's
+- Last completed slice: **OG-4 closure** — the exit gate recorded clause by
+  clause with its evidence, the integration-denial evaluation that closed the
+  last untested clause, and the two deliverable bullets not delivered
+  literally written down rather than dropped. It follows OG-4D's
+  combined-workspace verification and node acceptance, OG-4C's graph-owned
+  candidate integration, OG-4B's
   recoverable pre-integration checkpoint, OG-4A's closure of
   the unaccounted publication path, OG-3C's
   writer-wave product evaluation and OG-3 sign-off, OG-3B6's adversarial
@@ -1736,21 +1795,22 @@ Every agent or contributor continuing this program must:
   budget-accounting correction, and user-owned execution envelope, OG-3A's
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
-- Active milestone: **OG-4 — Reviewed integration and combined verification.**
-  OG-3 met its exit gate on 2026-08-03 and is complete; OG-4A and OG-4B have
-  shipped.
-- Next unblocked slice: **OG-4E — deterministic candidate eligibility with a
-  visible rationale**, the last item of OG-4's contract. It only becomes
-  meaningful once a graph can produce competing candidates for one node,
-  which today it cannot: a node claims one writer per attempt. Decide first
-  whether OG-4E is reachable at all before OG-5, or whether OG-4 should close
-  with its exit gate met and the ranking deferred into OG-5's graduation
-  review.
+- Active milestone: **OG-5 — Reproducible graph recovery and graduation
+  decision.** OG-4 met its exit gate on 2026-08-03 and is complete.
+- Next unblocked slice: **the first OG-5 increment.** OG-5 should be
+  decomposed before it is started: exact multi-worker scheduler restoration,
+  safe restart of pending read-only work, reconciling interrupted writer and
+  integration states without replay, the security/reliability/compatibility/
+  performance campaigns, the Standard-versus-Orchestrated comparison, and the
+  graduation decision are separable. The recovery work should come first,
+  because the campaigns and the comparison both measure a system whose
+  restart semantics ought to be settled.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C, OG-4A, plus
   OG-4B,
-  plus OG-4C and OG-4D are the working tree on top of them.**
+  plus OG-4C, OG-4D, and the OG-4 closure are the working tree on top of
+  them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
@@ -2049,6 +2109,12 @@ Every agent or contributor continuing this program must:
   inspected, and OG-3B5's argument was that a person decides against contents
   rather than against a path; a refusal that also hid the diff would have made
   the candidate less reviewable in the name of safety.
+- Close a milestone against its exit gate, not against its wish list. OG-4's
+  four gate clauses are met; two deliverable bullets are not delivered
+  literally, one superseded by a better rule and one deferred with its
+  reasoning. Recording both is what keeps the gate meaningful — a milestone
+  that quietly drops items teaches nothing, and one that blocks on a bullet
+  its own gate does not require spends effort where no risk is.
 - Keep the graph out of the filesystem even when judging freshness. The
   application observes the workspace before and after running the checks and
   submits a settled token; a graph-side equality check against the token

@@ -544,6 +544,8 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+The OG-4 closure changes no persisted or machine-readable shape. It records the
+milestone's exit-gate evidence and adds one evaluation.
 OG-4D changes no persisted or machine-readable shape. Combined-workspace
 verification and a user-authored waiver both record ordinary verification
 evidence on the accepted attempt, distinguished by the evidence `status`

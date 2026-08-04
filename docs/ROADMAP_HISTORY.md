@@ -45,6 +45,39 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-4 closes; an orchestrated goal runs end to end
+
+- **OG-4 met its exit gate**, recorded clause by clause against the tests and
+  commands that proved each rather than asserted from code inspection. An
+  Orchestrated Goal now runs the whole way: proposal, approval, a verified
+  isolated-writer wave, explicit user integration under a recoverable
+  checkpoint, combined-workspace verification, and a completed graph.
+- **One clause had no test, and it was the one about refusal.** Publication is
+  the single graph action that changes your files, so a denial has to leave
+  nothing behind. A new evaluation denies `integrate_delegate` outright and
+  proves the workspace is byte-identical, *no checkpoint was recorded* — a
+  durable record of a publication that never happened would itself be a false
+  claim — and the node still holds its verified candidate for review.
+- **Two of OG-4's six deliverable bullets were not delivered literally, and
+  both are written down rather than dropped.** Hunk-level application was
+  *superseded* for graph candidates by whole-candidate publication, because the
+  unit a child verified is its entire tree. Candidate ranking is *deferred*
+  into OG-5's graduation review.
+- **Why ranking was deferred rather than built.** It presupposes competing
+  candidates for one node, which the runtime cannot produce: the wave selects
+  nodes with pairwise-disjoint scopes, so two writers has always meant two
+  different nodes, never two attempts at one. Building it means a second
+  concurrency model at multiplied per-node cost — in a mode that has already
+  exhausted its envelope on single-candidate work. Its value is also capped by
+  our own authority model: a score never grants permission, so a recommendation
+  may rank only deterministic facts, which rarely separate two working
+  implementations. Whether that trade is worth making is exactly what OG-5's
+  Standard-versus-Orchestrated comparison exists to answer with evidence.
+- **OG-5 — Reproducible recovery and graduation** is now the active milestone,
+  and it should be decomposed before it is started. The recovery work belongs
+  first: the campaigns and the mode comparison both measure a system whose
+  restart semantics ought to be settled.
+
 ### 2026-08-03 — OG-4D combined-workspace verification and node acceptance
 
 - **An integrated node now completes, but only on evidence about the workspace
