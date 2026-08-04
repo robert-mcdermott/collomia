@@ -544,6 +544,10 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-5C changes no persisted or machine-readable shape, and no behaviour: it
+records the publication half of the adversarial corpus against refusals that
+already held.
+
 OG-5B changes no persisted or machine-readable shape. It changes which
 absolute path string `integrate_delegate` is authorized against: the resolved
 one the write tools already use, rather than the configured workspace string

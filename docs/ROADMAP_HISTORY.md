@@ -45,6 +45,34 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-5C writes down the adversarial publication corpus
+
+- **Publication is where "no silent overwrite" actually bites**, because it is
+  the one operation that puts bytes you did not write into your own workspace.
+  The graduation gate has asked for that property since the program started;
+  nothing had enumerated the ways it could fail.
+- **This audit found the mechanism sound and the evidence missing** — the
+  opposite of the previous slice, and worth saying plainly rather than dressing
+  up as a fix. Three cases were already covered: parent drift reaching a
+  conflict, the post-approval recheck that closes the approval-time race, and a
+  disjoint three-way reconcile that keeps your own edit.
+- **Five were not, and now are.** A symlink standing in for the target file. A
+  symlinked directory component, which the file check structurally cannot catch
+  because nothing exists at the target yet. Both sides independently creating
+  the same path, where any automatic answer destroys one of two authored files
+  and one of them is yours. The parent deleting a file the candidate modified,
+  where republishing would silently undo a deliberate deletion. And publishing
+  the same candidate twice, which must change nothing the second time.
+- **Each asserts the reason rather than just a failure.** A refusal for an
+  unrelated cause would hide exactly the duplicate or overwrite being looked
+  for. The two escape cases also assert that a canary file outside the
+  workspace is byte-identical afterwards.
+- **One corpus covers four routes.** Every apply path — operator,
+  primary-agent reviewed, model tool, and the Orchestrated Goal's own — funnels
+  through the same helper, so a single refusal holds for all of them. That
+  sharing is what makes the corpus cheap, and the previous slice is why it is
+  written down rather than trusted.
+
 ### 2026-08-03 — OG-5B closes a permission bypass at the integration boundary
 
 - **A rule that stopped a write was not stopping the same bytes arriving by

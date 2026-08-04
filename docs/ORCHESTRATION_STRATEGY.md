@@ -1764,6 +1764,43 @@ Standard-mode run — and the graph refusal is checked to be a permission denial
 carrying the user's own reason text, not merely some error. Deleting the fix
 makes it fail with the denied path published into the parent.
 
+#### OG-5C — The adversarial publication corpus
+
+**Status: complete (2026-08-03).**
+
+Graduation clause 1 asks for no silent overwrite and no duplicated mutation in
+the adversarial corpus. Publication is where that clause bites: it is the one
+operation that puts bytes a person did not write into their own workspace.
+Auditing it found the mechanism sound and the evidence missing, which is the
+opposite of OG-5B and is reported as such rather than dressed up as a fix.
+
+Three cases turned out to be covered already — parent drift reaching a
+conflict, the post-approval recheck that closes the approval-time race, and a
+disjoint three-way reconcile preserving the user's own edit. Five were not,
+and are now:
+
+- a symlink standing in for the target file, refused before any write;
+- a symlinked *directory component*, which the file check structurally cannot
+  catch because nothing exists at the target yet;
+- both sides independently creating the same path, where any automatic answer
+  would destroy one of two authored files and one of them is the user's;
+- the parent deleting a file the candidate modified, where republishing it
+  would silently undo a deliberate deletion;
+- publishing the same candidate twice, which must change nothing the second
+  time.
+
+Each asserts the reason, not merely that something failed — a refusal for an
+unrelated cause would hide exactly the duplicate or overwrite being looked
+for — and the two escape cases assert a canary outside the workspace is
+byte-identical afterwards.
+
+They exercise the shared helper every apply path funnels through, so one
+refusal covers the operator, primary-agent reviewed, model-tool, and
+Orchestrated Goal routes at once. That sharing is what makes the corpus
+economical, and OG-5B is why it is written down rather than trusted: those two
+paths had already drifted apart once, silently, and the only reason anybody
+noticed was that a claim about them was finally tested.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -1821,7 +1858,8 @@ Measure:
 
 The mode remains experimental until all of these hold:
 
-- no silent overwrite or duplicated mutation in the adversarial corpus;
+- no silent overwrite or duplicated mutation in the adversarial corpus, whose
+  publication half OG-5C records;
 - no `done` with an open, stale, or unverified required node;
 - permission decisions are equivalent to the same actions in Standard mode,
   asserted at the parent-workspace boundary as OG-5B defines it;
@@ -1879,8 +1917,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5B — permission-decision equivalence at the
-  parent-workspace boundary** — a path `deny` rule that stopped `write_file`
+- Last completed slice: **OG-5C — the adversarial publication corpus** — five
+  previously untested ways the parent workspace can disagree with a candidate,
+  each refused with its reason and each proven not to move a byte outside the
+  workspace or over the user's own work. It follows OG-5B — permission-decision
+  equivalence at the parent-workspace boundary — a path `deny` rule that stopped `write_file`
   was not matching at integration on any symlinked workspace, so publishing a
   candidate was a way around it; both paths now resolve targets through the
   same guard, and an evaluation runs the identical rule through both modes. It
@@ -1908,9 +1949,10 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
   decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
   the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the third OG-5 increment.** OG-5A shipped the
-  recovery work the decomposition put first, and OG-5B closed the graduation
-  gate's permission-equivalence clause and the bypass that testing it found.
+- Next unblocked slice: **the fourth OG-5 increment.** OG-5A shipped the
+  recovery work the decomposition put first, OG-5B closed the graduation
+  gate's permission-equivalence clause and the bypass that testing it found,
+  and OG-5C recorded the publication half of its adversarial-corpus clause.
   What remains of OG-5 is the rest of the
   security/reliability/compatibility/performance campaigns, the
   Standard-versus-Orchestrated comparison — including whether competing
@@ -1922,8 +1964,8 @@ Every agent or contributor continuing this program must:
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, and OG-5A and OG-5B are the working tree on
-  top of them.**
+  the OG-4 closure are `af71dba`, and OG-5A through OG-5C are the working tree
+  on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-

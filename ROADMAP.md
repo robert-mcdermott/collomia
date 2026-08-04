@@ -1969,6 +1969,15 @@ roadmap remains the source of priority and completion status.
       Both paths now resolve targets through the same guard, and one
       evaluation runs the identical rule through Standard and Orchestrated
       mode. *(Completed 2026-08-03.)*
+    - [x] **OG-5C — the adversarial publication corpus:** record the
+      publication half of the graduation gate's no-silent-overwrite,
+      no-duplicated-mutation clause. Three cases were already covered; five
+      were not — a symlink standing in for the target file, a symlinked
+      directory component, both sides creating the same path, the parent
+      deleting a file the candidate modified, and publishing the same
+      candidate twice. Each now asserts its refusal reason, and the escape
+      cases assert a canary outside the workspace is untouched.
+      *(Completed 2026-08-03.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2177,6 +2186,9 @@ campaigns, the Standard-versus-Orchestrated comparison, and the graduation
 decision. OG-5B started that measurement by auditing the graduation gate's
 permission clause and found a real bypass rather than confirming a property,
 which is the argument for working through the remaining clauses the same way.
+OG-5C then took the adversarial-corpus clause and found the opposite — the
+mechanism sound, the evidence missing — which is reported as such rather than
+dressed up as a fix.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
