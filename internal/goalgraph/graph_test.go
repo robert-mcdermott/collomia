@@ -2392,3 +2392,59 @@ func TestDoneSaysNothingExtraWhenEveryCheckDescribesTheFinalWorkspace(t *testing
 		t.Fatalf("status warns about nothing err=%v\n%s", err, status)
 	}
 }
+
+// A candidate can fail verification in four distinguishable ways, and an
+// operator needs to know which. Collapsing them into one message — or letting
+// the child's raw exit code stand alone — turns a blocked node into a mystery.
+func TestCandidateVerificationFailureNamesWhatWentWrong(t *testing.T) {
+	cases := []struct {
+		name      string
+		candidate *WriterCandidate
+		raw       string
+		want      []string
+		absent    string
+	}{
+		{
+			name: "a failed check is named with its command",
+			candidate: &WriterCandidate{VerificationState: "failed", Verification: []CandidateVerification{
+				{Command: "go build ./...", Status: "failed"},
+				{Command: "go vet ./...", Status: "passed"},
+			}},
+			raw:    "command failed: exit status 1",
+			want:   []string{"failed its own verification", "go build ./...", "command failed: exit status 1"},
+			absent: "go vet ./...",
+		},
+		{
+			name:      "no verification at all is a different problem from a failing one",
+			candidate: &WriterCandidate{VerificationState: "failed"},
+			want:      []string{"no machine-observed verification", "nothing established that its changes work"},
+		},
+		{
+			name: "checks that all passed but are not bound to one state",
+			candidate: &WriterCandidate{VerificationState: "passed", Verification: []CandidateVerification{
+				{Command: "go test ./...", Status: "passed", StateToken: "a"},
+			}},
+			want: []string{"not bound to a single settled state"},
+		},
+		{
+			name: "no candidate at all",
+			raw:  "worktree vanished",
+			want: []string{"no candidate to verify", "worktree vanished"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			detail := candidateVerificationFailureDetail(testCase.candidate, testCase.raw)
+			for _, phrase := range testCase.want {
+				if !strings.Contains(detail, phrase) {
+					t.Fatalf("detail does not say %q: %q", phrase, detail)
+				}
+			}
+			// Naming a check that passed would send the operator to the wrong
+			// command, which is worse than saying less.
+			if testCase.absent != "" && strings.Contains(detail, testCase.absent) {
+				t.Fatalf("detail names a check that passed (%q): %q", testCase.absent, detail)
+			}
+		})
+	}
+}

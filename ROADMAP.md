@@ -2020,6 +2020,19 @@ roadmap remains the source of priority and completion status.
       that matters rather than tokens. Rounds are counted rather than commands
       because commands measure the model's taste and rounds measure the
       structure. **Clauses 5 and 6 remain open.** *(Completed 2026-08-04.)*
+    - [x] **OG-5H — failure containment measured, and a blocked node made
+      legible:** every comparison before this measured a success against a
+      success, which is the case the writer wave is least suited to winning.
+      The same non-compiling change breaks the user's repository in Standard
+      mode and never touches it in the wave — the gate's first quality
+      evidence. The cost profile also inverts: a failing candidate
+      short-circuits at the first failed command (2s against the success
+      case's 17s), so the wave is expensive when work succeeds and cheap when
+      it fails, and its expected value rises with the chance the change is
+      wrong. The slice also found and fixed a clause 7 defect: a blocked node
+      read `command failed: exit status 1`, an exit code rather than an
+      explanation, because the raw child error overwrote the diagnosis the
+      graph already held. *(Completed 2026-08-04.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2240,7 +2253,10 @@ costs roughly 2.1x the tokens, and a serial graph pays that premium for no time
 benefit at all. OG-5G then measured the writer wave, where the token premium
 turns out not to be the story: it halves the implementation critical path for
 +8% tokens while running the verification set three times instead of once, and
-finishes with nothing in the repository until the user integrates.
+finishes with nothing in the repository until the user integrates. OG-5H then
+measured the failure case and found the argument the success cases could not
+make: the same broken change wrecks the workspace in Standard mode and never
+reaches it in the wave, and the wave's cost profile inverts when work fails.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the

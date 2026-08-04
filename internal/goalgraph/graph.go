@@ -2595,9 +2595,12 @@ func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 		}
 	case !verificationFresh:
 		failureKind = FailureVerification
-		if detail == "" {
-			detail = "isolated writer candidate lacks fresh passing machine-observed verification"
-		}
+		// The child's raw error is something like "command failed: exit status
+		// 1", which names neither the command nor the fact that it was the
+		// candidate's own verification that rejected it. The graph holds both,
+		// so it leads with the diagnosis and keeps the raw error as detail
+		// rather than letting the raw error stand alone.
+		detail = candidateVerificationFailureDetail(candidate, detail)
 	case attempt.Candidate == nil:
 		failureKind = FailureTool
 		if detail == "" {
@@ -4418,6 +4421,56 @@ func joinFailureDetails(failures []Failure) string {
 		details = append(details, detail)
 	}
 	return strings.Join(details, "; ")
+}
+
+// candidateVerificationFailureDetail explains why a candidate was rejected in
+// terms an operator can act on: which check failed, run against what.
+//
+// A blocked node is the graph declining to use work, and the reason is the only
+// account of why. "command failed: exit status 1" describes an exit code; it
+// does not say that the candidate's own verification rejected it, nor which
+// command did. Both are already recorded on the candidate.
+func candidateVerificationFailureDetail(candidate *WriterCandidate, raw string) string {
+	if candidate == nil {
+		if raw != "" {
+			return "isolated writer produced no candidate to verify: " + raw
+		}
+		return "isolated writer produced no candidate to verify"
+	}
+	var failed []string
+	for _, verification := range candidate.Verification {
+		if verification.Status != "passed" {
+			failed = append(failed, verification.Command)
+		}
+	}
+	switch {
+	case len(failed) > 0:
+		detail := fmt.Sprintf("isolated writer candidate failed its own verification: %s", strings.Join(failed, ", "))
+		if raw != "" {
+			detail += " (" + raw + ")"
+		}
+		return detail
+	case len(candidate.Verification) == 0:
+		detail := "isolated writer candidate produced no machine-observed verification, so nothing established that its changes work"
+		if raw != "" {
+			detail += " (" + raw + ")"
+		}
+		return detail
+	case candidate.VerificationState != "passed":
+		detail := fmt.Sprintf("isolated writer candidate verification is %q rather than passed", candidate.VerificationState)
+		if raw != "" {
+			detail += " (" + raw + ")"
+		}
+		return detail
+	default:
+		// Every recorded command passed but the evidence is not bound to one
+		// settled candidate state, which means the tree moved under the checks.
+		detail := "isolated writer candidate verification is not bound to a single settled state, so its passing checks do not describe the retained tree"
+		if raw != "" {
+			detail += " (" + raw + ")"
+		}
+		return detail
+	}
 }
 
 func (g *Graph) invalidateAllDoneLocked(reason string) {

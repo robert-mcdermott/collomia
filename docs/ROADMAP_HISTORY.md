@@ -45,6 +45,34 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — OG-5H measures failure containment
+
+- **Every comparison before this measured a success against a success**, which
+  is the case the isolated-writer wave is least suited to winning: it pays a
+  verification multiplier for a review boundary nothing needed. Its value, if
+  it has one, shows up when work goes wrong, and nothing had measured that.
+- **The same non-compiling change, in both modes.** Standard mode leaves your
+  repository changed and no longer building, and the agent reports it could not
+  fix it. The wave blocks with the candidate recorded as failed, and your
+  repository is byte-for-byte untouched and still builds.
+- **This is the gate's first quality evidence.** Standard mode's behaviour is
+  not a defect — it is what writing directly into a workspace means — and the
+  evaluation asserts it explicitly so the wave is measured against the real
+  alternative rather than an imagined one.
+- **The cost profile inverts in failure, which changes the guidance.** Three
+  verification rounds is the price of success; a failing candidate
+  short-circuits at the first failed command, taking two seconds against the
+  success case's seventeen. The wave is expensive when work succeeds and cheap
+  when it fails, so its expected value rises with the chance the change is
+  wrong — a measured basis for when to reach for it.
+- **A blocked node also stopped being a mystery.** Its reason read
+  `command failed: exit status 1` — an exit code, not an explanation, saying
+  neither that the candidate's own verification rejected the work nor which
+  check did, though the graph held both. The raw child error was overwriting
+  the diagnosis instead of supplementing it. Four distinguishable cases are now
+  separated, and a check that passed is never named, so nobody is sent to the
+  wrong command.
+
 ### 2026-08-04 — Orchestrated Goal will never be the default mode
 
 - **Decided, and it is a product decision rather than a measurement outcome.**

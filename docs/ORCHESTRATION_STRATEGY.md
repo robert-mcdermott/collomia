@@ -2004,6 +2004,58 @@ boundary is worth, and neither is a number this harness can supply. Clauses 5
 and 6 remain open, now with the writer wave's shape on the record beside read
 fan-out's.
 
+#### OG-5H — Failure containment measured, and a blocked node made legible
+
+**Status: complete (2026-08-04). It is the first quality evidence in the gate.**
+
+Every comparison before this one measured a success against a success, which is
+the case the isolated-writer wave is least suited to winning: it pays a
+verification multiplier for a review boundary nothing needed. Its value, if it
+has one, appears when work goes wrong — and nothing had measured that.
+
+The same non-compiling change, produced by the same client, in both modes:
+
+| | standard | writer wave |
+| --- | --- | --- |
+| user's repository changed | **yes** | no |
+| repository still builds afterwards | **no** | yes |
+| outcome | agent reports it could not fix it | `blocked`, candidate recorded as failed |
+| elapsed | — | 2s, against 17s for the success case |
+
+**This is the wave's actual argument, and it is the first quality evidence the
+gate has.** Standard mode's behaviour is not a defect — it is what writing
+directly into a workspace means, and the evaluation asserts it explicitly so
+the wave's result is measured against the real alternative rather than an
+imagined one. But the user is left with a repository that does not build, and
+recovering is their problem.
+
+**The cost profile inverts in the failure case, which changes the guidance.**
+OG-5G measured three verification rounds against one, but that is the price of
+*success*. A failing candidate short-circuits at the first failed command: this
+run took two seconds against the success case's seventeen. So the wave is
+expensive when work succeeds and cheap when it fails, which means its expected
+value rises with the probability that the change is wrong. That is a real
+basis for "when to use it" — risky or exploratory changes, or any situation
+where a broken workspace is costly — and it is measured rather than asserted.
+
+**The slice also found a clause 7 defect and fixed it.** The blocked node's
+reason read `command failed: exit status 1`. That is an exit code, not an
+explanation: it says neither that the candidate's own verification rejected the
+work nor which check did, though the graph holds both. The raw child error was
+overwriting the diagnosis rather than supplementing it. A blocked node is the
+graph declining to use work, and the reason is the only account of why; it now
+reads `isolated writer candidate failed its own verification: go build ./...
+(command failed: exit status 1)`. The four distinguishable cases — a named
+failing check, no verification at all, verification not bound to one settled
+state, and no candidate — are separated, because collapsing them turns a
+blocked node into a mystery, and a check that *passed* is never named lest the
+operator be sent to the wrong command. Deleting the fix makes the evaluation
+fail on the old message.
+
+**What is still unmeasured:** permission denial, cancellation mid-wave, and
+parent/child drift as comparisons rather than as one-sided tests, and same-file
+work that should stay serial.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -2138,7 +2190,13 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5G — the isolated-writer wave measured** — half the
+- Last completed slice: **OG-5H — failure containment measured, and a blocked
+  node made legible** — the same non-compiling change breaks the user's
+  repository in Standard mode and never touches it in the wave, which is the
+  gate's first quality evidence; the wave's cost profile also inverts in
+  failure (2s against the success case's 17s), so its expected value rises with
+  the chance the change is wrong. It follows OG-5G — the isolated-writer wave
+  measured — half the
   implementation critical path for +8% tokens, but three verification rounds
   against one and no work in the repository until the user integrates. The
   verification multiplier is structural and scales with the suite's real time,
@@ -2203,8 +2261,9 @@ Every agent or contributor continuing this program must:
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, and OG-5A through OG-5G are the working tree
-  on top of them.**
+  the OG-4 closure are `af71dba`, OG-5A through OG-5G plus the never-default
+  decision are committed through `344c5ae`, and OG-5H is the working tree on
+  top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
