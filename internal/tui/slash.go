@@ -255,6 +255,26 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			}
 			break
 		}
+		if len(args) == 1 && strings.EqualFold(args[0], "verify") {
+			status, err := m.runtime.VerifyOrchestratedIntegration(context.Background(), nil)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal combined verification · experimental", status)
+			break
+		}
+		if len(args) >= 2 && strings.EqualFold(args[0], "waive") {
+			status, err := m.runtime.WaiveOrchestratedVerification(context.Background(), strings.Join(args[1:], " "))
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal verification waived by the user · experimental", status)
+			break
+		}
 		if len(args) == 2 && strings.EqualFold(args[0], "integrate") {
 			nodeID, convErr := strconv.Atoi(args[1])
 			if convErr != nil || nodeID <= 0 {

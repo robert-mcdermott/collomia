@@ -1460,7 +1460,8 @@ reproduced exactly after restart. Those are OG-4 and OG-5.
 
 **Status: in progress. OG-3 met its exit gate on 2026-08-03; OG-4A closed the
 unaccounted publication path, OG-4B added the recoverable pre-integration
-checkpoint, and OG-4C published the first graph candidate into the parent.**
+checkpoint, OG-4C published the first graph candidate into the parent, and
+OG-4D closed the loop with combined-workspace verification.**
 
 OG-4A no unaccounted publication of a graph candidate:
 
@@ -1548,6 +1549,33 @@ OG-4C graph-owned candidate integration:
   leaves the graph untouched, so the node stays awaiting review rather than
   claiming a state the workspace is not in.
 - `integrated` and `awaiting_verification` are additive within graph schema 1.
+
+OG-4D combined-workspace verification and node acceptance:
+
+- An integrated node completes only on evidence about the workspace its changes
+  now live in. `/orchestrate verify` runs the repository's own detected checks
+  against the combined parent through ordinary `run_command` permission and
+  policy, requires every one to pass against a workspace that did not move
+  while they ran, and then accepts every integrated node. A child's pass is
+  never sufficient and never substituted, which closes OG-4's exit gate on
+  that point.
+- A failure leaves the node integrated and unfinished. This is the case the
+  separate state exists for: a candidate can apply cleanly, pass its own suite,
+  and still break a package it never touched, and only a check against the
+  merged parent can see that.
+- `/orchestrate waive <reason>` accepts a node on a person's written judgement
+  where no meaningful automated check applies. It requires a specific reason,
+  and it is labelled a user-authored waiver rather than verification in the
+  node reason, the evidence status, and the command's own output — a person's
+  judgement and a passing test are different claims and the record must not
+  blur them. This is the waiver representation OG-4 called for.
+- The graph does not compare the submitted token against the one recorded at
+  integration. Whether evidence describes the workspace *as it is now* is a
+  filesystem question, and the graph never observes the filesystem; the
+  application observes it before and after running the commands and submits the
+  settled token. An equality check there would instead freeze the workspace,
+  making any edit made after integrating leave every node permanently
+  unfinishable — which the evaluation caught.
 
 - Add explicit combined-parent verification to the graph acceptance path.
 - Add a recoverable pre-integration checkpoint and safe post-failure
@@ -1697,8 +1725,9 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-4C — Graph-owned candidate integration**,
-  following OG-4B's recoverable pre-integration checkpoint, OG-4A's closure of
+- Last completed slice: **OG-4D — Combined-workspace verification and node
+  acceptance**, following OG-4C's graph-owned candidate integration, OG-4B's
+  recoverable pre-integration checkpoint, OG-4A's closure of
   the unaccounted publication path, OG-3C's
   writer-wave product evaluation and OG-3 sign-off, OG-3B6's adversarial
   campaign, OG-3B5's
@@ -1710,19 +1739,18 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-4 — Reviewed integration and combined verification.**
   OG-3 met its exit gate on 2026-08-03 and is complete; OG-4A and OG-4B have
   shipped.
-- Next unblocked slice: **OG-4D — combined-workspace verification and node
-  acceptance.** An integrated node currently has no path to `done` at all,
-  which is the correct fail-closed state but not the finished one: the graph
-  needs to run the repository's verification against the combined parent,
-  accept the node only on a fresh pass bound to the current workspace token,
-  and represent a user-authored waiver where no meaningful automated check
-  exists. Deterministic eligibility among competing candidates with a visible
-  rationale follows.
+- Next unblocked slice: **OG-4E — deterministic candidate eligibility with a
+  visible rationale**, the last item of OG-4's contract. It only becomes
+  meaningful once a graph can produce competing candidates for one node,
+  which today it cannot: a node claims one writer per attempt. Decide first
+  whether OG-4E is reachable at all before OG-5, or whether OG-4 should close
+  with its exit gate met and the ranking deferred into OG-5's graduation
+  review.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C, OG-4A, plus
   OG-4B,
-  plus OG-4C are the working tree on top of them.**
+  plus OG-4C and OG-4D are the working tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
@@ -2021,6 +2049,14 @@ Every agent or contributor continuing this program must:
   inspected, and OG-3B5's argument was that a person decides against contents
   rather than against a path; a refusal that also hid the diff would have made
   the candidate less reviewable in the name of safety.
+- Keep the graph out of the filesystem even when judging freshness. The
+  application observes the workspace before and after running the checks and
+  submits a settled token; a graph-side equality check against the token
+  recorded at integration would have frozen the workspace and made any later
+  edit leave every node permanently unfinishable.
+- Label a waiver as a waiver wherever it appears. It completes a node exactly
+  as verification does, so the only thing keeping the two distinguishable is
+  that the record says which one happened.
 - Publish a graph candidate whole or not at all. The unit the child verified
   is its entire tree, so hunk-level selection — correct for an ordinary
   delegate, where the user is the only judge — would publish bytes no

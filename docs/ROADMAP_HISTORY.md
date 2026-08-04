@@ -45,6 +45,37 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-4D combined-workspace verification and node acceptance
+
+- **An integrated node now completes, but only on evidence about the workspace
+  its changes actually live in.** `/orchestrate verify` runs the repository's
+  own detected checks against the merged parent through ordinary `run_command`
+  permission, requires every one to pass against a workspace that did not move
+  while they ran, and then accepts every integrated node. A child's pass is
+  never sufficient and never substituted — which is the last clause of OG-4's
+  exit gate.
+- **A failing merge leaves the node unfinished**, which is the case the
+  separate `integrated` state exists for. The evaluation proves it with the
+  failure a child worktree structurally cannot see: a candidate that applies
+  cleanly, passes its own suite, and sits beside a package it never touched
+  that is now broken.
+- **`/orchestrate waive <reason>` completes a node on your written judgement**
+  where no meaningful automated check applies. It needs a specific reason, and
+  it is labelled a user-authored waiver rather than verification in the node's
+  reason, the evidence status, and the command output. It completes a node
+  exactly as verification does, so the only thing keeping the two
+  distinguishable is that the record says which one happened.
+- **Two defects the evaluations caught before the docs did.** Accepting nodes
+  left the graph outcome stuck at `awaiting_verification`, because outcome
+  reduction returns early on an already-terminal graph — the acceptance now
+  clears the outcome it is resolving. And the graph compared the submitted
+  workspace token against the one recorded at integration, which would have
+  frozen the workspace: any edit made after integrating left every node
+  permanently unfinishable. Whether evidence describes the workspace *now* is a
+  filesystem question, and the graph never touches the filesystem; the
+  application observes it before and after the checks and submits a settled
+  token.
+
 ### 2026-08-03 — OG-4C graph-owned candidate integration
 
 - **The first time the runtime writes a candidate into your own workspace.**

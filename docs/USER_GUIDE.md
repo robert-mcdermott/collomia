@@ -2898,7 +2898,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, observe what is left in each retained worktree, discard one you no longer want, or cancel the experimental Orchestrated Goal preview. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, or cancel the experimental Orchestrated Goal preview. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -3107,10 +3107,23 @@ Afterwards the node reads `integrated`, not `done`, and the graph reports
 `awaiting_verification`. That is deliberate: the child's tests passed in its
 own isolated worktree, which says nothing about the combined workspace they
 have now been merged into. Every previously accepted node is marked stale for
-the same reason. Verifying the combined result and accepting the node is the
-next milestone increment; until it ships, an integrated node has no path to
-`done` at all, and the node's own text names the checkpoint that can undo the
-publication.
+the same reason. The node's own text names the checkpoint that can undo the publication.
+
+`/orchestrate verify` is what completes it. It runs the checks this repository
+conventionally uses against the merged workspace, through the same
+`run_command` permission you would get by typing them, and completes the
+integrated nodes only when every one passes against a workspace that did not
+change while they were running. If anything fails, the node stays `integrated`
+and unfinished — which is the whole reason for the separate state, because a
+candidate can apply cleanly, pass its own tests, and still break a package it
+never touched.
+
+Where no meaningful automated check applies, `/orchestrate waive <reason>`
+completes the node on your written judgement instead. It needs a specific
+reason, and it is recorded as a user-authored waiver rather than as
+verification in the node's text, in the evidence, and in the command output.
+It finishes a node exactly as verification does, so the record saying which one
+happened is the only thing keeping them apart.
 
 `/agents apply` will not publish one either. A graph candidate is an ordinary
 delegate's retained worktree as far as that surface is concerned, so it can be

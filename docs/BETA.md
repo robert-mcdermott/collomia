@@ -193,7 +193,12 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   checkpoint, refuses outright if any file conflicts with your own changes,
   and leaves the node reading `integrated` rather than `done`, because the
   child's tests passed in its own worktree and nothing has yet verified the
-  combined workspace. There is
+  combined workspace. `/orchestrate verify` then runs this repository's own
+  checks against the merged result and completes the node only when they all
+  pass; a failure leaves it integrated and unfinished, which is exactly the
+  case a child worktree's own suite cannot see. Where no automated check
+  applies, `/orchestrate waive <reason>` completes it on your written
+  judgement, recorded as a waiver rather than as verification. There is
   deterministic feedback when a verification-like shell command cannot count
   as evidence, naming the direct command to run wherever the check sits in
   what was refused, and a node that stalls after refused checks repeats it in

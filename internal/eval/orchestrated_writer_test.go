@@ -640,3 +640,116 @@ func TestOrchestratedGoalIntegrationRefusesAConflictedCandidateEvaluation(t *tes
 		t.Fatalf("a refused integration moved the node to %q", node.State)
 	}
 }
+
+// The last gate: an integrated node completes only on evidence about the
+// combined workspace it now lives in. This is the whole point of the separate
+// `integrated` state — the child's suite passed in an isolated worktree, and
+// running the repository's own checks against the merged parent is a different
+// question with a different answer.
+func TestOrchestratedGoalCombinedVerificationCompletesTheGoalEvaluation(t *testing.T) {
+	workspace := orchestratedWriterGitFixture(t)
+	client := &scopedWriterClient{t: t, written: map[string]bool{}, files: map[string]string{
+		"extend alpha": "alpha/extra.go",
+	}}
+	runtime := newWriterEvaluationRuntime(t, workspace, client, []plan.Step{
+		writerStep(1, "extend alpha", "alpha/"),
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Second)
+	defer cancel()
+	if _, err := runtime.Agent.Run(ctx, "Produce the approved candidate.", func(event.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.IntegrateOrchestratedCandidate(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if node := runtime.GoalGraph.Snapshot().Nodes[0]; node.State != goalgraph.NodeIntegrated {
+		t.Fatalf("node state=%q, want integrated", node.State)
+	}
+
+	status, err := runtime.VerifyOrchestratedIntegration(ctx, nil)
+	if err != nil {
+		t.Fatalf("combined verification of a good merge failed: %v", err)
+	}
+	snapshot := runtime.GoalGraph.Snapshot()
+	if snapshot.Nodes[0].State != goalgraph.NodeDone {
+		t.Fatalf("node state=%q after passing combined verification, want done", snapshot.Nodes[0].State)
+	}
+	if snapshot.Outcome != goalgraph.OutcomeDone {
+		t.Fatalf("graph outcome=%q, want done", snapshot.Outcome)
+	}
+	if !strings.Contains(status, "Combined-workspace verification passed") {
+		t.Fatalf("status does not report what completed the goal:\n%s", status)
+	}
+	// The completing evidence is machine-observed and bound to the workspace
+	// the node was accepted in.
+	combined := false
+	for _, evidence := range snapshot.Evidence {
+		if evidence.Tool == "verify_combined_workspace" && evidence.Status == "passed" {
+			combined = true
+			if evidence.WorkspaceToken != snapshot.WorkspaceToken {
+				t.Fatalf("combined evidence is not bound to the accepted workspace: %+v", evidence)
+			}
+		}
+	}
+	if !combined {
+		t.Fatalf("no combined-workspace verification evidence was recorded: %+v", snapshot.Evidence)
+	}
+}
+
+// A merge that breaks the repository must not complete the goal, however
+// cleanly it applied and however well the child's own tests did.
+func TestOrchestratedGoalFailingCombinedVerificationKeepsTheNodeUnfinishedEvaluation(t *testing.T) {
+	workspace := orchestratedWriterGitFixture(t)
+	client := &scopedWriterClient{t: t, written: map[string]bool{}, files: map[string]string{
+		"extend alpha": "alpha/extra.go",
+	}}
+	runtime := newWriterEvaluationRuntime(t, workspace, client, []plan.Step{
+		writerStep(1, "extend alpha", "alpha/"),
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Second)
+	defer cancel()
+	if _, err := runtime.Agent.Run(ctx, "Produce the approved candidate.", func(event.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.IntegrateOrchestratedCandidate(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Break a package the candidate never touched, which is exactly the class
+	// of failure a child worktree's own suite cannot see.
+	if err := os.WriteFile(filepath.Join(workspace, "beta", "beta.go"),
+		[]byte("package beta\n\nfunc Name() string { return \"broken\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runtime.VerifyOrchestratedIntegration(ctx, nil); err == nil {
+		t.Fatal("a failing combined workspace completed the goal")
+	}
+	snapshot := runtime.GoalGraph.Snapshot()
+	if snapshot.Nodes[0].State == goalgraph.NodeDone {
+		t.Fatal("a node completed on a failing combined workspace")
+	}
+	if snapshot.Outcome == goalgraph.OutcomeDone {
+		t.Fatalf("graph outcome=%q on a failing combined workspace", snapshot.Outcome)
+	}
+
+	// A waiver is the user's own claim, and it is recorded as such rather than
+	// as verification.
+	waived, err := runtime.WaiveOrchestratedVerification(ctx, "the beta package is broken by an unrelated local edit, not by this candidate")
+	if err != nil {
+		t.Fatalf("recording a waiver failed: %v", err)
+	}
+	if !strings.Contains(waived, "user-authored waiver") || !strings.Contains(waived, "not machine-observed") {
+		t.Fatalf("a waiver does not distinguish itself from verification:\n%s", waived)
+	}
+	final := runtime.GoalGraph.Snapshot()
+	if final.Nodes[0].State != goalgraph.NodeDone {
+		t.Fatalf("node state=%q after an explicit waiver, want done", final.Nodes[0].State)
+	}
+	if !strings.Contains(final.Nodes[0].Reason, "user-authored waiver") {
+		t.Fatalf("the completed node does not record how it was accepted: %q", final.Nodes[0].Reason)
+	}
+	// A waiver needs a real reason.
+	if _, err := runtime.WaiveOrchestratedVerification(ctx, "ok"); err == nil {
+		t.Fatal("an empty-ish waiver reason was accepted")
+	}
+}

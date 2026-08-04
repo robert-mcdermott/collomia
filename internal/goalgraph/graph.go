@@ -2171,6 +2171,122 @@ func sortedCopy(values []string) []string {
 	return out
 }
 
+// CombinedVerification is machine-observed evidence about the parent
+// workspace after one or more candidates were integrated into it. It is the
+// only thing that can complete an integrated node: a child's pass was about
+// its own isolated tree, and the combined result is a different question.
+type CombinedVerification struct {
+	// Commands is what actually ran against the combined workspace.
+	Commands []CandidateVerification
+	// WorkspaceToken is the machine-observed parent state the commands ran
+	// against. It must still be the graph's current state, or the evidence
+	// describes a workspace that has since moved.
+	WorkspaceToken string
+	// Waiver is a user-authored reason accepted in place of automated
+	// evidence. It is recorded as explicitly user-authored rather than
+	// machine-observed, because a person's judgement and a passing test are
+	// different kinds of claim and the record must not blur them.
+	Waiver string
+}
+
+// AcceptIntegratedNodes completes every node whose candidate is in the parent
+// workspace, given fresh evidence about that combined workspace. It refuses
+// stale evidence, refuses evidence that did not pass, and refuses to invent a
+// waiver: a node that cannot be verified stays integrated and unfinished until
+// a person says why that is acceptable.
+func (g *Graph) AcceptIntegratedNodes(ctx context.Context, verification CombinedVerification) ([]int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var pending []*Node
+	for i := range g.state.Nodes {
+		if g.state.Nodes[i].State == NodeIntegrated {
+			pending = append(pending, &g.state.Nodes[i])
+		}
+	}
+	if len(pending) == 0 {
+		return nil, errors.New("no integrated node is waiting for combined-workspace verification")
+	}
+	token := strings.TrimSpace(verification.WorkspaceToken)
+	if token == "" {
+		return nil, errors.New("combined verification must name the workspace state it observed")
+	}
+	// Deliberately no comparison against the token recorded at integration.
+	// Whether this evidence describes the workspace as it is *now* is a
+	// filesystem question, and the graph never observes the filesystem — the
+	// application observes it before and after running the commands and passes
+	// the settled token. Requiring equality with the integration-time token
+	// would instead freeze the workspace: any edit the user made after
+	// integrating would make every node permanently unfinishable.
+	waiver := strings.TrimSpace(verification.Waiver)
+	if waiver == "" {
+		if len(verification.Commands) == 0 {
+			return nil, errors.New("combined verification produced no evidence; run the repository's checks against the workspace, or record an explicit waiver saying why none applies")
+		}
+		for _, command := range verification.Commands {
+			if command.Status != "passed" {
+				return nil, fmt.Errorf("combined verification command %q reported %q; an integrated node cannot complete on failing evidence", command.Command, command.Status)
+			}
+			if command.StateToken != token {
+				return nil, fmt.Errorf("combined verification command %q ran against a different workspace state than the one being accepted", command.Command)
+			}
+		}
+	}
+
+	now := g.now().UTC()
+	summary := fmt.Sprintf("combined-workspace verification passed against %d command(s)", len(verification.Commands))
+	status := "passed"
+	if waiver != "" {
+		// Say what this is every time it is rendered. A waiver that reads like
+		// a test result is the one way this record could mislead.
+		summary = "user-authored waiver, not machine-observed verification: " + boundedReason(waiver)
+		status = "waived"
+	}
+	// This graph is terminal at awaiting_verification, and accepting nodes is
+	// exactly the event that can end that. Clear the outcome so it is derived
+	// again from the states below rather than left at the one being resolved.
+	g.state.Outcome, g.state.Reason = "", ""
+	g.state.WorkspaceToken = token
+	accepted := make([]int, 0, len(pending))
+	for _, node := range pending {
+		attemptID := ""
+		for i := len(node.AttemptIDs) - 1; i >= 0; i-- {
+			if attempt := g.attemptLocked(node.AttemptIDs[i]); attempt != nil && attempt.State == AttemptAccepted {
+				attemptID = attempt.ID
+				g.addEvidenceLocked(attempt, Evidence{
+					Kind: EvidenceVerification, Tool: "verify_combined_workspace", Status: status,
+					Summary: boundedSummary(summary), WorkspaceToken: token,
+					MutationGeneration: g.state.MutationGeneration, Finished: now,
+				})
+				break
+			}
+		}
+		node.State, node.AcceptedAttemptID, node.ActiveAttemptID = NodeDone, attemptID, ""
+		node.Reason = summary
+		g.queueUpdateLocked(node.ID, attemptID, string(NodeDone), summary)
+		accepted = append(accepted, node.ID)
+	}
+	g.refreshReadyLocked("combined-workspace verification accepted an integrated node")
+	g.reduceOutcomeLocked()
+	if err := g.persistLocked(ctx, true); err != nil {
+		return nil, err
+	}
+	return accepted, nil
+}
+
+// IntegratedNodes lists nodes whose candidates are in the parent workspace and
+// whose combined result nothing has verified.
+func (g *Graph) IntegratedNodes() []Node {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []Node
+	for _, node := range g.state.Nodes {
+		if node.State == NodeIntegrated {
+			out = append(out, cloneNode(node))
+		}
+	}
+	return out
+}
+
 // RetainedWorktree is one directory the graph still points at, with whatever
 // the runtime last observed about it. It is a read-only projection: reviewed
 // integration, selection, and reuse remain out of scope here.

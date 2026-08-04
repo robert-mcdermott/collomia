@@ -180,8 +180,8 @@ still reported that reviewed integration was required, and that path is now
 closed; every publication into the parent now records durably what it replaced
 before the first byte moves, so an interrupted one can be inspected and undone;
 and a verified candidate can now be published into the workspace on an explicit
-request, landing in a state that says plainly the combined result is unverified.
-See the
+request and completed only when the repository's own checks pass against the
+combined result — or when you record an explicit written waiver. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1926,6 +1926,15 @@ roadmap remains the source of priority and completion status.
       state and the graph to `awaiting_verification` — never `done`, because a
       child's pass says nothing about the parent it was merged into — and every
       previously accepted node is staled. *(Completed 2026-08-03.)*
+    - [x] **OG-4D — Combined-workspace verification and node acceptance:** run
+      the repository's detected checks against the merged parent through
+      ordinary `run_command` permission with `/orchestrate verify`, require
+      every one to pass against a workspace that did not move while they ran,
+      and only then complete the integrated nodes. A failure leaves the node
+      integrated and unfinished. `/orchestrate waive <reason>` accepts a node
+      on a person's written judgement where no automated check applies, and is
+      labelled a user-authored waiver rather than verification everywhere it
+      appears. *(Completed 2026-08-03.)*
   - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
     state without replaying mutations, finish adversarial/performance
     evaluations, and make an evidence-based graduation decision.
@@ -2128,9 +2137,11 @@ evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future integration and exact scheduler-recovery claims. The next orchestration
-slice is **OG-4D — combined-workspace verification and node acceptance**. An
-integrated node has no path to `done` at all today, which is the correct
-fail-closed state but not the finished one.
+slice is a decision rather than code: **OG-4E — deterministic candidate
+eligibility with a visible rationale** only becomes meaningful once a graph can
+produce competing candidates for one node, which today it cannot. Decide
+whether to make that reachable or to close OG-4 with its exit gate met and
+defer ranking into OG-5's graduation review.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
@@ -2141,10 +2152,13 @@ fail-closed state but not the finished one.
    closed the one path that could publish a graph candidate without the graph
    knowing, OG-4B made every publication into the parent recoverable by
    recording what it replaced before the first byte moves, and OG-4C published
-   the first graph candidate into the workspace under that checkpoint. Next is
-   combined-workspace verification and node acceptance, then deterministic
-   candidate eligibility with a visible rationale and the user-authored waiver
-   representation. A score, child test, or plan approval still never grants
+   the first graph candidate into the workspace under that checkpoint, and
+   OG-4D completes an integrated node only on checks that pass against the
+   combined workspace, or on an explicit user-authored waiver. What remains of
+   OG-4's contract is deterministic eligibility among competing candidates,
+   which needs a graph that can produce more than one candidate per node — so
+   decide whether to make that reachable or to close OG-4 and defer ranking
+   into OG-5. A score, child test, or plan approval still never grants
    permission.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never
