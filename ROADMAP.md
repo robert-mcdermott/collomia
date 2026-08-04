@@ -1950,7 +1950,12 @@ roadmap remains the source of priority and completion status.
       not delivered literally — hunk-level application superseded by
       whole-candidate publication, and candidate ranking deferred into OG-5's
       graduation review. *(Completed 2026-08-03.)*
-  - [ ] **OG-5 — Reproducible recovery and graduation:** restore scheduler
+  - [ ] **OG-5 — Reproducible recovery and graduation:** *(Decided 2026-08-04:
+    Orchestrated Goal will never be the default mode. It is an optional mode
+    for specific work, so graduation can only mean leaving experimental status
+    as a supported option — which adds a requirement it never had, namely
+    documented evidence-backed guidance on when to use it, and allows read
+    fan-out and the isolated-writer wave to graduate separately.)* restore scheduler
     state without replaying mutations, finish adversarial/performance
     evaluations, and make an evidence-based graduation decision.
     - [x] **OG-5A — restart fidelity and unresolved parent publications:**

@@ -45,6 +45,30 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — Orchestrated Goal will never be the default mode
+
+- **Decided, and it is a product decision rather than a measurement outcome.**
+  Standard model-directed execution remains what runs unless a person asks for
+  something else. That does not depend on how the mode comparison turns out.
+- **It settles what graduation can mean.** Not "becomes what runs by default",
+  only "leaves experimental status as a supported optional mode". The mode does
+  not have to beat Standard on average to earn that, because nobody is handed
+  it by default — it has to be genuinely better for an identifiable class of
+  work, and you have to be able to tell when you are in that class.
+- **It adds a requirement rather than only removing one.** Graduation now
+  requires documented, evidence-backed guidance on when to reach for the mode
+  and when not to, and every case that guidance names must be one the
+  evaluation matrix measured. A mode that cannot say what it is for is not
+  ready to be offered, even optionally.
+- **The hazard is named in the strategy rather than left implicit.** Relaxing a
+  bar while evidence is coming in badly is how gates get quietly rewritten to
+  match whatever was built. What keeps it honest is that the decision was made
+  independently of the measurements, and that it narrows the gate as much as it
+  widens it.
+- **The two sub-features may graduate separately.** Read fan-out buys overlap
+  for tokens; the writer wave buys a review boundary and pays in verification
+  passes. Forcing one verdict would hide whichever is doing worse.
+
 ### 2026-08-04 — OG-5G measures the isolated-writer wave
 
 - **The largest hole in the comparison matrix is now measured.** Read fan-out
@@ -59,8 +83,7 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
   verification work. On this fixture that is seconds; on a repository whose
   suite takes ten minutes it is thirty against ten, and the multiplier is
   structural: one round per candidate tree plus one combined, however slow the
-  suite. The two candidate rounds run concurrently, so the elapsed penalty is
-  nearer twice than three times; the compute is three times either way.
+  suite.
 - **Rounds are counted rather than commands, on purpose.** Each of the wave's
   rounds runs the full detected set because the runtime detected it, while a
   Standard-mode round holds whatever the model chose. Comparing 9 commands

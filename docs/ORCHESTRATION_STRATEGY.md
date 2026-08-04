@@ -1663,8 +1663,28 @@ or reproduce a multi-worker schedule exactly after restart. Those are OG-5.
   a recommendation may rank only deterministic facts.
 - Decide whether to graduate, revise, or retain the mode as experimental.
 
-Graduation does not imply universal automatic use. Even a graduated graph
-engine should be selected only for work that benefits from decomposition.
+**Orchestrated Goal will never be the default mode.** Decided 2026-08-04. It is
+an optional mode a person selects for specific work, and Standard model-directed
+execution remains what runs unless someone asks for something else. This is a
+product decision, not a measurement outcome, and it does not depend on how the
+comparison turns out.
+
+What that settles is the question the graduation gate was still implicitly
+asking. "Graduate" cannot mean "becomes what runs by default", so it can only
+mean "leaves experimental status as a supported optional mode". The mode does
+not have to beat Standard on average to earn that, because nobody is ever
+handed it by default — it has to be genuinely better for an identifiable class
+of work, and a person has to be able to tell when they are in that class.
+
+**This reframing is also a hazard, and it is named here rather than left
+implicit.** Relaxing a bar after evidence starts coming in badly is exactly how
+gates get quietly rewritten to match whatever was built. Two things keep this
+honest. The decision is about product positioning and was made independently of
+the measurements, not derived from them. And it is a narrowing as much as a
+loosening: it adds a deliverable that "become the default" never required —
+documented, evidence-backed guidance on when to reach for the mode, and when
+not to. A mode that cannot say what it is for is not ready to be offered, even
+optionally.
 
 #### OG-5A — Restart fidelity and unresolved parent publications
 
@@ -1944,23 +1964,22 @@ Measured against Standard mode doing the same two package changes serially:
 
 | | standard | writer wave |
 | --- | --- | --- |
-| implementation critical path | 2.40s | 1.27s (**-47%**) |
+| implementation critical path | 2.40s | 1.27s (**−47%**) |
 | tokens | 52 | 56 (+8%) |
 | verification rounds | 1 | **3** |
 | verification commands | 1 | 9 |
-| work in the user's repository at the end | yes | **no - not until two explicit integrations and a combined verification** |
+| work in the user's repository at the end | yes | **no — not until two explicit integrations and a combined verification** |
 
 **The token premium is not the story; the verification multiplier is.** Read
 fan-out cost +110% tokens for its overlap. The writer wave costs +8% tokens
-here - and runs the repository's whole verification set three times instead of
+here — and runs the repository's whole verification set three times instead of
 once. On this fixture that is seconds. On a repository whose suite takes ten
 minutes it is thirty minutes against ten, and the multiplier is structural: one
 round per candidate tree plus one combined, however many nodes and however slow
-the suite. The two candidate rounds run concurrently, so the elapsed penalty is
-nearer twice than three times; the compute is three times either way.
+the suite.
 
 Rounds are counted rather than commands, deliberately. Each of the wave's
-rounds runs the full detected set - `go build`, `go vet`, `go test` - because
+rounds runs the full detected set — `go build`, `go vet`, `go test` — because
 the runtime detected it, while a Standard-mode round contains whatever the
 model chose to run. Comparing 9 against 1 would measure the model's taste;
 comparing 3 against 1 measures the structure, which is what is true of every
@@ -1969,8 +1988,8 @@ not.
 
 **The two modes do not finish in the same place, and the comparison says so.**
 Standard mode ends with the work in the user's repository. The wave ends at
-`awaiting_review` with the parent byte-for-byte untouched - the evaluation
-asserts that - and reaching Standard's end state takes two explicit
+`awaiting_review` with the parent byte-for-byte untouched — the evaluation
+asserts that — and reaching Standard's end state takes two explicit
 integrations and a combined verification the user has to ask for. That is the
 feature working as designed, not a defect, but comparing cost without stating
 it would be the most misleading number here, so the end state is measured for
@@ -2050,13 +2069,29 @@ The mode remains experimental until all of these hold:
 - permission decisions are equivalent to the same actions in Standard mode,
   asserted at the parent-workspace boundary as OG-5B defines it;
 - resume is mutation-safe;
-- decomposable tasks show a meaningful quality or elapsed-time improvement;
-- the improvement justifies visible token/cost overhead;
+- there is an identifiable class of work where the mode is meaningfully better
+  on quality or elapsed time — not that it wins on average, which the
+  never-default decision above makes the wrong question, but that the class is
+  real and the advantage inside it is measured;
+- the overhead is justified *within that class* and stated in the terms it is
+  actually paid in. OG-5G is why this is worded so: the writer wave's cost is
+  not tokens (+8%) but verification rounds (three against one, concurrent for
+  the candidates and so nearer twice the elapsed penalty than three times),
+  which scales with the repository's own suite rather than with the fixture;
+- the documentation says which work the mode is for and which it is not, and
+  every case it names is one the evaluation matrix measured;
 - replan, serialization, invalidation, and blocking explanations are useful to
   an operator;
 - the Phase 8 security and cancellation campaigns pass.
 
-Do not make it default merely because demonstrations look impressive.
+Do not make it default at all — see the decision above — and do not recommend
+it for a class of work merely because a demonstration looked impressive.
+
+The two sub-features may also deserve different verdicts, and the gate does not
+require one answer for both. Read fan-out and the isolated-writer wave have
+different economics on the evidence so far: fan-out buys overlap for tokens,
+while the wave buys a review boundary and pays for it in verification passes.
+Forcing a single conclusion would hide whichever one is doing worse.
 
 ## Explicit non-goals for the initial program
 
@@ -2151,7 +2186,7 @@ Every agent or contributor continuing this program must:
 - Active milestone: **OG-5 — Reproducible graph recovery and graduation
   decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
   the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the eighth OG-5 increment — extending the comparison matrix further**, to the failure cases (verification failure and repair, permission denial, cancellation) and to same-file work that should stay serial, all unmeasured. OG-5A shipped the
+- Next unblocked slice: **the eighth OG-5 increment — extending the comparison matrix further**, to same-file work that should stay serial and to the failure cases (verification failure and repair, permission denial, cancellation), which are unmeasured. OG-5A shipped the
   recovery work the decomposition put first, OG-5B closed the graduation
   gate's permission-equivalence clause and the bypass that testing it found,
   OG-5C recorded the publication half of its adversarial-corpus clause, and
@@ -2185,7 +2220,9 @@ Every agent or contributor continuing this program must:
   reproduces a multi-worker schedule exactly and refuses to reason about a
   workspace an interrupted publication left ambiguous**.
 - Current default behavior: Standard model-directed execution with
-  evidence-gated goal completion.
+  evidence-gated goal completion. **This is permanent, not a staging state:**
+  Orchestrated Goal will never be the default mode (decided 2026-08-04), so
+  graduation can only mean leaving experimental status as an optional mode.
 - Preserved implementation constraint: only approved `read_only` and narrowly
   scoped `isolated_write` nodes may be automatically delegated; writers never
   touch the parent workspace, no candidate is ever selected or integrated
@@ -2230,6 +2267,20 @@ Every agent or contributor continuing this program must:
   family. Require a newly generated pending plan with concrete acceptance
   criteria, a separate explicit approval, and explicit resume of inert saved
   state. Defer headless activation and automatic actors.
+
+### 2026-08-04
+
+- **Orchestrated Goal will never be the default mode.** It is an optional mode
+  selected for specific work; Standard model-directed execution remains the
+  default permanently. Graduation can therefore only mean leaving experimental
+  status as a supported optional mode, never becoming what runs unasked.
+- Require documented, evidence-backed guidance on when to use the mode as a
+  condition of graduation. A mode offered optionally must be able to say what
+  it is for, and every case the documentation names must be one the evaluation
+  matrix actually measured.
+- Allow the two sub-features to graduate separately. Read fan-out and the
+  isolated-writer wave have different measured economics, and a single verdict
+  would obscure the weaker one.
 
 ### 2026-08-02
 
