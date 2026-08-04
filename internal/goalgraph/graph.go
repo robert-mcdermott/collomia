@@ -2585,9 +2585,7 @@ func (g *Graph) FinishWriter(ctx context.Context, result WriterResult) error {
 		}
 	case !freshParent || !identityMatches:
 		failureKind = FailureWorkspaceStale
-		if detail == "" {
-			detail = "parent workspace or candidate Git base changed while the isolated writer was running"
-		}
+		detail = candidateStaleBaseDetail(candidate, freshParent, identityMatches, detail)
 	case !scopeMatches || len(violations) > 0:
 		failureKind = FailureTool
 		if detail == "" {
@@ -4481,6 +4479,41 @@ func joinFailureDetails(failures []Failure) string {
 		details = append(details, detail)
 	}
 	return strings.Join(details, "; ")
+}
+
+// candidateStaleBaseDetail explains a candidate rejected because the ground
+// moved under it, rather than because anything about it was wrong.
+//
+// Two things were missing from the old message. It said the parent workspace
+// "or" the Git base had changed, when the runtime knows which — offering an
+// operator a choice of two explanations it could have distinguished is the
+// same failure as naming an exit code instead of a command. And it never
+// mentioned that the candidate survived: this is the one rejection where the
+// work is complete, often passing its own checks, and still on disk. Reading
+// only that the node is blocked, a person would reasonably assume the work was
+// lost, when in fact it is retained and inspectable.
+func candidateStaleBaseDetail(candidate *WriterCandidate, freshParent, identityMatches bool, raw string) string {
+	var moved string
+	switch {
+	case !freshParent && !identityMatches:
+		moved = "the parent workspace changed and the candidate's Git base commit moved"
+	case !freshParent:
+		moved = "the parent workspace changed"
+	default:
+		moved = "the candidate's Git base commit moved"
+	}
+	detail := moved + " while the isolated writer was running, so its work was never checked against the workspace it would be integrated into"
+	if candidate != nil && candidate.Worktree != "" {
+		if candidate.VerificationState == "passed" {
+			detail += fmt.Sprintf("; the candidate passed its own checks and is retained at %s, so nothing is lost — it needs re-checking against the moved workspace", candidate.Worktree)
+		} else {
+			detail += fmt.Sprintf("; the candidate is retained at %s for inspection", candidate.Worktree)
+		}
+	}
+	if raw != "" {
+		detail += " (" + raw + ")"
+	}
+	return detail
 }
 
 // candidateVerificationFailureDetail explains why a candidate was rejected in

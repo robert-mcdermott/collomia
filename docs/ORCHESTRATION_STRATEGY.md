@@ -2140,6 +2140,43 @@ writer produce a change first, which is the case that actually matters.
 This slice found no defect. The mechanism was already right, and the value is
 that a stated absolute now has a test behind it rather than an argument.
 
+#### OG-5K — Parent drift compared, and a survivor that read as a loss
+
+**Status: complete (2026-08-04). This completes the comparison list.**
+
+Drift is where the modes differ structurally rather than by degree. Standard
+mode has one workspace, so there is nothing to drift *from*: an edit the user
+makes mid-run is simply the state the agent is working in, silently overwritten
+or silently built upon, with no record that anything moved. The wave pins each
+candidate to the base it started from, so the same edit is detectable — and
+what the runtime does on detecting it is what this measures.
+
+It detects it and refuses to treat the candidate as integrable, blocking the
+node while keeping the worktree. That part was already right.
+
+**The explanation was not.** It read "parent workspace *or* candidate Git base
+changed while the isolated writer was running". The runtime knows which —
+`freshParent` and `identityMatches` are separate — so offering an operator a
+choice between two explanations it could have distinguished is the same failure
+OG-5H fixed for exit codes.
+
+**And it read as a loss when nothing was lost.** This is the one rejection
+where the work is finished, frequently passing its own checks, and still on
+disk. A person reading only that their node is blocked because the workspace
+changed would reasonably conclude the work was thrown away. The reason now
+names what moved, says the candidate passed its own checks and where it is
+retained, and says plainly that nothing is lost and what it needs is
+re-checking against the moved workspace. An unverified candidate is still
+reported as retained, but without the claim that it passed.
+
+Deleting the fix makes the evaluation fail on the old either/or message.
+
+**With this the comparison list is complete:** cross-layer reads, the
+isolated-writer wave, failure containment, same-scope serialization,
+cancellation, and drift. The remaining graduation deliverable is the
+when-to-use-it guidance the never-default decision requires, and the evidence
+for it now exists.
+
 ## Evaluation and graduation
 
 OG-1 establishes the internal primary-only baseline: real product evaluations
@@ -2274,7 +2311,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5J — cancellation compared** — zero
+- Last completed slice: **OG-5K — parent drift compared** — the wave detects an
+  edit made under a running writer where Standard mode structurally cannot, but
+  described the survivor as a loss: the reason offered an undistinguished
+  either/or and never said the verified candidate was retained on disk. This
+  completes the comparison list. It follows OG-5J — cancellation compared — zero
   post-cancellation actions in both modes, with Standard mode leaving a
   half-finished change in the repository and the wave leaving it untouched with
   both in-flight candidates retained and attributable. No defect found. It
@@ -2355,7 +2396,8 @@ Every agent or contributor continuing this program must:
   `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
   the OG-4 closure are `af71dba`, OG-5A through OG-5G plus the never-default
   decision are committed through `344c5ae`, OG-5H is `6b6a995`, OG-5I is
-  `f37f044`, and OG-5J is the working tree on top of them.**
+  `f37f044`, OG-5J is `d368ff7`, and OG-5K is the working tree on top of
+  them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-

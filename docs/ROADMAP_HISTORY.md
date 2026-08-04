@@ -45,6 +45,33 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — OG-5K compares parent drift and completes the comparison list
+
+- **Drift is where the two modes differ structurally, not by degree.** Standard
+  mode has one workspace, so there is nothing to drift from: an edit you make
+  while it runs is simply the state it is working in, silently overwritten or
+  silently built upon, with no record that anything moved. The wave pins each
+  candidate to the base it started from, so the same edit is detectable.
+- **Detection was already right.** The wave blocks the node and keeps the
+  worktree rather than integrating work that was never checked against the
+  workspace it would land in.
+- **The explanation was not.** It read "parent workspace or candidate Git base
+  changed", when the runtime knows which of the two moved. Offering a choice
+  between two explanations it could have distinguished is the same failure as
+  reporting an exit code instead of a command.
+- **And it read as a loss when nothing was lost.** This is the one rejection
+  where the work is finished, usually passing its own checks, and still on
+  disk. Reading only that your node is blocked because the workspace changed,
+  you would reasonably conclude the work was discarded. The reason now names
+  what moved, says the candidate passed and where it is retained, and says
+  plainly that nothing is lost and it needs re-checking against the moved
+  workspace. An unverified candidate is still reported as retained, without the
+  claim that it passed.
+- **The comparison list is now complete** — cross-layer reads, the
+  isolated-writer wave, failure containment, same-scope serialization,
+  cancellation, and drift — which is exactly the condition the never-default
+  decision set before the when-to-use-it guidance could be written.
+
 ### 2026-08-04 — OG-5J compares cancellation
 
 - **One of the strategy's few absolutes now has a test behind it.** Duplicate or

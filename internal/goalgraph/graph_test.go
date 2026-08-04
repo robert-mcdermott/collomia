@@ -2502,3 +2502,54 @@ func TestUnstartedNodesExcludeWorkThatAlreadyRan(t *testing.T) {
 		}
 	}
 }
+
+// A candidate rejected because the ground moved under it is the one rejection
+// where the work is finished, often passing, and still on disk. The reason has
+// to say which thing moved — the runtime knows — and has to say the work
+// survived, or a person reads a blocked node as lost work.
+func TestStaleBaseDetailNamesWhatMovedAndWhatSurvived(t *testing.T) {
+	passing := &WriterCandidate{Worktree: "/tmp/candidate", VerificationState: "passed"}
+	cases := []struct {
+		name            string
+		candidate       *WriterCandidate
+		freshParent     bool
+		identityMatches bool
+		want            []string
+		absent          string
+	}{
+		{
+			name: "only the parent moved", candidate: passing, identityMatches: true,
+			want:   []string{"the parent workspace changed", "passed its own checks", "/tmp/candidate", "nothing is lost"},
+			absent: "Git base commit moved",
+		},
+		{
+			name: "only the Git base moved", candidate: passing, freshParent: true,
+			want:   []string{"the candidate's Git base commit moved", "nothing is lost"},
+			absent: "the parent workspace changed",
+		},
+		{
+			name:      "both moved",
+			candidate: passing,
+			want:      []string{"the parent workspace changed and the candidate's Git base commit moved"},
+		},
+		{
+			name:      "an unverified candidate is retained without claiming it passed",
+			candidate: &WriterCandidate{Worktree: "/tmp/candidate", VerificationState: "failed"}, identityMatches: true,
+			want:   []string{"retained at /tmp/candidate"},
+			absent: "passed its own checks",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			detail := candidateStaleBaseDetail(testCase.candidate, testCase.freshParent, testCase.identityMatches, "")
+			for _, phrase := range testCase.want {
+				if !strings.Contains(detail, phrase) {
+					t.Fatalf("detail does not say %q: %q", phrase, detail)
+				}
+			}
+			if testCase.absent != "" && strings.Contains(detail, testCase.absent) {
+				t.Fatalf("detail claims %q when it did not happen: %q", testCase.absent, detail)
+			}
+		})
+	}
+}

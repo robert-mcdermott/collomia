@@ -2058,6 +2058,17 @@ roadmap remains the source of priority and completion status.
       attributable. A writer cancelled before changing anything correctly
       retains no worktree, since an empty directory is not evidence. **No
       defect found.** *(Completed 2026-08-04.)*
+    - [x] **OG-5K — parent drift compared:** the last comparison, and the one
+      where the modes differ structurally. Standard mode has one workspace, so
+      an edit made mid-run is simply the state the agent works in, silently
+      overwritten or built upon with no record. The wave pins each candidate to
+      its base, detects the edit, and blocks the node while keeping the
+      worktree — but described a survivor as a loss. The reason offered
+      "parent workspace **or** candidate Git base changed" when the runtime
+      knows which, and never said the finished, passing candidate was still on
+      disk. It now names what moved, where the candidate is retained, and that
+      nothing is lost. **This completes the comparison list.**
+      *(Completed 2026-08-04.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -2287,7 +2298,9 @@ nothing — and found a partial plan describing itself as finished while
 offering to discard the half that never ran. OG-5J then compared cancellation
 and found the mechanism already sound: zero post-cancellation actions in both
 modes, with the wave leaving the repository untouched and its in-flight work
-retained.
+retained. OG-5K then completed the list with parent drift, where the wave
+detects what Standard mode structurally cannot — and where a verified candidate
+sitting safely on disk was being described as though it had been thrown away.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
