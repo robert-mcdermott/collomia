@@ -1650,7 +1650,13 @@ or reproduce a multi-worker schedule exactly after restart. Those are OG-5.
 
 ### OG-5 — Reproducible graph recovery and graduation decision
 
-**Status: unblocked; active milestone. OG-4 met its exit gate on 2026-08-03.**
+**Status: complete (2026-08-04).** Twelve slices — OG-5A through OG-5L —
+delivered the recovery work, audited every graduation clause that could be
+audited, completed the mode comparison, and produced the guidance the
+never-default decision required. The graduation review below records the
+verdict: eight clauses met, cancellation met, and the security half of clause 9
+outstanding as a commissioning decision. **The mode is retained as experimental
+on that basis alone.**
 
 - Extend OG-1's exact primary-graph restoration to multi-worker scheduler
   order, claims, and aggregate bounds.
@@ -1662,6 +1668,10 @@ or reproduce a multi-worker schedule exactly after restart. Those are OG-5.
   recommendation bullet — are worth their multiplied per-node cost given that
   a recommendation may rank only deterministic facts.
 - Decide whether to graduate, revise, or retain the mode as experimental.
+  **Decided 2026-08-04: retain both sub-features as experimental**, blocked
+  solely on the security half of clause 9. See the graduation review below,
+  which also pre-commits to the order the two should graduate in once that
+  clears.
 
 **Orchestrated Goal will never be the default mode.** Decided 2026-08-04. It is
 an optional mode a person selects for specific work, and Standard model-directed
@@ -2305,6 +2315,79 @@ different economics on the evidence so far: fan-out buys overlap for tokens,
 while the wave buys a review boundary and pays for it in verification passes.
 Forcing a single conclusion would hide whichever one is doing worse.
 
+## The graduation review
+
+**Conducted 2026-08-04, at the close of OG-5.**
+
+### Clause by clause
+
+| # | Clause | Verdict | Evidence |
+| --- | --- | --- | --- |
+| 1 | No silent overwrite or duplicated mutation | **Met** for publication | OG-5C: five untested cases added — symlinked target, symlinked directory component, add/add collision, delete/modify, repeated publication — each asserting its refusal reason, plus three already covered |
+| 2 | No `done` with an open, stale, or unverified required node | **Met** | OG-5D: a revision could delete an unfinished node and reach `done`; OG-5E: a check bound to a workspace later work changed was counted |
+| 3 | Permission decisions equivalent to Standard mode | **Met** | OG-5B, which found and closed a real bypass at the integration boundary |
+| 4 | Resume is mutation-safe | **Met** | OG-5A: multi-worker restoration proven exact; unresolved parent publications now block every later step |
+| 5 | An identifiable class where the mode is meaningfully better | **Met** | OG-5H (containment — the quality evidence), OG-5F (overlap — the elapsed evidence) |
+| 6 | Overhead justified within that class, in the terms it is paid | **Met** | OG-5G (verification rounds, not tokens), OG-5I (the negative case) |
+| 7 | Replan, serialization, invalidation, and blocking explanations useful | **Met** | All four audited, each found a defect: OG-5D replan, OG-5I serialization, OG-5E invalidation, OG-5H and OG-5K blocking |
+| 8 | Documentation says what the mode is for | **Met** | OG-5L, enforced by a test that fails on a citation that stops resolving |
+| 9 | Phase 8 security and cancellation campaigns pass | **Cancellation met** (OG-5J); **security not met** | Sustained adversarial campaigns and an independent security assessment remain |
+
+Verified by `go build ./...`, `gofmt -l`, and `go test -count=1 ./...` across the
+whole repository at each slice, with the orchestration evidence base standing at
+25 orchestration evaluations in `internal/eval` and 61 focused tests in
+`internal/goalgraph`.
+
+### The verdict
+
+**Neither sub-feature graduates today, and the reason is clause 9 rather than
+anything measured about either of them.** Eight clauses are met. The ninth is
+half met: cancellation is tested, and the security half needs sustained
+adversarial campaigns and an independent assessment that the roadmap has
+already identified as the last P0 before 1.0 and as *a decision to commission
+rather than work to schedule*. No amount of further self-testing closes it, and
+declaring graduation while it is open would be exactly the "demonstrations
+looked impressive" failure the gate warns against.
+
+So the decision is: **retain both as experimental, pending that assessment.**
+
+### What the review pre-commits to
+
+Recording the verdict now is only useful if it also records what happens when
+the blocker clears, so the decision is not re-litigated from scratch later.
+
+- **Read fan-out should graduate to supported-optional when clause 9 closes.**
+  It has the cleanest case: a measured benefit (half the critical path on
+  substantive independent reads), a cost that is purely tokens, and the
+  smallest risk surface in the program — read-only workers that cannot mutate
+  the workspace at all.
+- **The isolated-writer wave should graduate separately and later**, even after
+  clause 9 closes, and the reason is a pattern in this milestone rather than a
+  failed clause. Six audit slices found defects, and nearly every one was in
+  the writer or publication path: the permission bypass, the retired node, the
+  superseded check, the illegible blocked node, the partial plan calling itself
+  finished, and the survivor described as a loss. Every one is fixed and tested.
+  But a surface that yielded a defect almost every time it was examined is a
+  surface where the next examination is likely to find one too, and it is the
+  path that writes into a person's own repository. That argues for it trailing
+  fan-out rather than shipping beside it.
+
+The counter-argument deserves recording as well: those defects were found
+*because* the clauses were audited, and the evidence is good now precisely
+because that happened. A reasonable person could conclude the surface is well
+understood rather than treacherous. The review does not settle that; it records
+that the writer wave carries more residual uncertainty than fan-out does, and
+that the difference should show up in their sequencing.
+
+### What this review does not claim
+
+It does not claim the mode is better than Standard on average — the
+never-default decision makes that the wrong question. It does not claim the
+measurements generalise beyond their fixtures: elapsed figures come from
+simulated provider latency and capture scheduling overlap rather than
+real-world speed, and token deltas are fixture-dependent. What is structural,
+and does generalise, is the verification-round count and the review boundary.
+
 ## Explicit non-goals for the initial program
 
 - Arbitrary model-generated orchestration code.
@@ -2350,7 +2433,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-5L — the when-to-use-it guidance**, which closes
+- Last completed slice: **the graduation review** — eight clauses met, neither
+  sub-feature graduating today, and the block is clause 9's security half
+  rather than anything measured about either. It records a pre-commitment that
+  read fan-out graduates first and the isolated-writer wave trails it. Before
+  it came OG-5L — the when-to-use-it guidance, which closes
   the deliverable the never-default decision added: the user guide now says
   which work the mode is for and which it is not, every case cites the
   evaluation that measured it, and a test fails if a citation stops resolving.
@@ -2417,8 +2504,12 @@ Every agent or contributor continuing this program must:
   budget-accounting correction, and user-owned execution envelope, OG-3A's
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
-- Active milestone: **OG-5 — Reproducible graph recovery and graduation
-  decision.** OG-4 met its exit gate on 2026-08-03 and is complete. OG-5A,
+- Active milestone: **none — OG-5 completed 2026-08-04.** The Orchestrated Goal
+  program has delivered every milestone it planned. What remains before the
+  mode can leave experimental status is the security half of graduation clause
+  9: sustained adversarial campaigns and an independent security assessment,
+  which Phase 8 already carries as the last P0 before 1.0 and which is a
+  decision to commission rather than work to schedule. OG-5A,
   the recovery increment, shipped on 2026-08-03.
 - Next unblocked slice: **the eighth OG-5 increment — extending the comparison matrix further**, to same-file work that should stay serial and to the failure cases (verification failure and repair, permission denial, cancellation), which are unmeasured. OG-5A shipped the
   recovery work the decomposition put first, OG-5B closed the graduation

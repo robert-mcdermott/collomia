@@ -45,6 +45,41 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — The graduation review, and OG-5 closes
+
+- **Eight of nine clauses are met, and neither sub-feature graduates today.**
+  The block is the ninth clause's security half — sustained adversarial
+  campaigns and an independent assessment — and not anything measured about
+  either sub-feature. No amount of further self-testing closes it, and
+  declaring graduation while it is open would be precisely the
+  "demonstrations looked impressive" failure the gate warns against.
+- **The decision: retain both as experimental, pending that assessment.** It is
+  the last P0 before 1.0 and a decision to commission rather than work to
+  schedule.
+- **The review pre-commits so the decision is not re-litigated later.** Read
+  fan-out should graduate first: a measured benefit, a cost that is purely
+  tokens, and the smallest risk surface in the program — read-only workers that
+  cannot mutate the workspace at all.
+- **The isolated-writer wave should trail it**, and the reason is a pattern
+  rather than a failed clause. Six audit slices found defects and nearly every
+  one was in the writer or publication path — the permission bypass, the
+  retired node, the superseded check, the illegible blocked node, the partial
+  plan calling itself finished, the survivor described as a loss. All are fixed
+  and tested. But a surface that yielded a defect almost every time it was
+  examined is one where the next examination probably finds another, and it is
+  the path that writes into your own repository.
+- **The counter-argument is recorded too:** those defects were found *because*
+  the clauses were audited, so the evidence is good now precisely because that
+  happened. The review does not settle which reading is right; it records that
+  the wave carries more residual uncertainty and that this should show up in
+  sequencing.
+- **What the review does not claim.** Not that the mode beats Standard on
+  average — the never-default decision makes that the wrong question. Not that
+  the measurements generalise past their fixtures: elapsed figures come from
+  simulated latency and capture scheduling overlap, and token deltas are
+  fixture-dependent. What is structural is the verification-round count and the
+  review boundary.
+
 ### 2026-08-04 — OG-5L writes the when-to-use-it guidance
 
 - **Deciding the mode will never be the default changed the question.** Not "is

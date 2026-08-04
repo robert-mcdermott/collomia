@@ -544,6 +544,10 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+The graduation review changes nothing shipped. It is a recorded decision:
+the mode stays experimental, so every compatibility note below continues to
+apply unchanged.
+
 OG-5L changes nothing shipped: user-guide guidance and a test that enforces its
 citations. No product code.
 

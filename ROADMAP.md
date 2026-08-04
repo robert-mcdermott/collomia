@@ -183,16 +183,23 @@ before the first byte moves, so an interrupted one can be inspected and undone;
 and a verified candidate can now be published into the workspace on an explicit
 request and completed only when the repository's own checks pass against the
 combined result — or when you record an explicit written waiver.
-**OG-5 — Reproducible recovery and graduation** is now the active milestone,
-and its recovery increment has shipped: a restart reproduces a multi-worker
-schedule exactly, and no integration, verification, or waiver will proceed
-while an earlier publication into the workspace never recorded an outcome —
-you resolve that first by putting the prior bytes back or by recording that
-you are keeping what was published.
-See the
-[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
-[Recommended next sequence](#recommended-next-sequence) for its contract and
-exit gate.
+**OG-5 — Reproducible recovery and graduation** is complete as of 2026-08-04,
+and with it the whole Orchestrated Goal program. Its recovery increment
+shipped — a restart reproduces a multi-worker schedule exactly, and no
+integration, verification, or waiver proceeds while an earlier publication into
+the workspace never recorded an outcome, which you resolve by putting the prior
+bytes back or by recording that you are keeping what was published. Its
+comparison increment measured both modes across the whole scenario list, and
+its guidance increment wrote down which work the mode is for.
+
+**The mode remains experimental, and the graduation review says why.** Eight of
+nine clauses are met; the ninth needs sustained adversarial campaigns and an
+independent security assessment, which Phase 8 carries as its last P0 and which
+is a decision to commission rather than work to schedule. The review
+pre-commits to read fan-out graduating first once that clears, with the
+isolated-writer wave trailing it. See the
+[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) for the contract,
+the clause-by-clause verdict, and the reasoning behind that ordering.
 
 ## Completed wave — evidence-gated goal completion
 
@@ -1950,7 +1957,18 @@ roadmap remains the source of priority and completion status.
       not delivered literally — hunk-level application superseded by
       whole-candidate publication, and candidate ranking deferred into OG-5's
       graduation review. *(Completed 2026-08-03.)*
-  - [ ] **OG-5 — Reproducible recovery and graduation:** *(Decided 2026-08-04:
+  - [x] **OG-5 — Reproducible recovery and graduation:** *(Complete
+    2026-08-04. Twelve slices delivered the recovery work, audited every
+    auditable graduation clause, completed the mode comparison, and produced
+    the required guidance. **The graduation review's verdict: retain both
+    sub-features as experimental**, blocked solely on the security half of
+    clause 9 — sustained adversarial campaigns and an independent assessment,
+    which Phase 8 carries as its last P0 and which is a commissioning decision
+    rather than schedulable work. The review pre-commits to read fan-out
+    graduating first once that clears, with the isolated-writer wave trailing
+    it: nearly every defect found across six audit slices was in the writer or
+    publication path, and that is the path that writes into a user's own
+    repository.)* *(Decided 2026-08-04:
     Orchestrated Goal will never be the default mode. It is an optional mode
     for specific work, so graduation can only mean leaving experimental status
     as a supported option — which adds a requirement it never had, namely
