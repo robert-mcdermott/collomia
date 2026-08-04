@@ -2427,9 +2427,9 @@ they belong to the owner rather than to this document:
    audit pass over the writer and publication path that finds nothing changing
    what a user gets, bounded so that wording-only findings do not become a
    permanent veto. Elapsed time is arbitrary, and usage volume would need
-   telemetry this project has deliberately refused to add by default. The first
-   such pass is recorded above; whether its single finding clears the bar is
-   the open question, not the criterion.
+   telemetry this project has deliberately refused to add by default. Two passes
+   are recorded above. The first found one wording issue; the second found a
+   restart-durability defect that put the answer beyond argument.
 
 Neither was blocked on evidence. Both were product judgements, and both are now
 settled except for the call on that pass.
@@ -2471,6 +2471,47 @@ slices averaged a behavioural defect each — but two areas is a thin sample, an
 the areas not probed are named here rather than implied: waiver behaviour under
 a failed candidate, budget exhaustion mid-wave, and a candidate whose changes
 are already present in the parent.
+
+**Those three were then probed, and the pass is not clean.** Two found real
+defects, one of them the most serious the milestone produced. The thin first
+pass would have graduated the wave with it live, which is the clearest argument
+available for having probed further rather than declaring victory.
+
+**Integration was undurable across a restart.** `validEvidence` accepts only
+`accepted` for write-candidate evidence, but integration records `integrated`
+and combined verification records `waived`. Neither status was ever added to
+the validator, and `Restore` validates. So a session that integrated a
+candidate, closed, and reopened found its graph rejected as structurally false:
+resume failed, archive failed, and the graph could not be read back at all.
+Every graph that reached integration was affected — the read-fan-out shape too,
+wherever it had integrated a candidate, so this was never purely a writer-wave
+defect. It was invisible to every in-session test because the failure only
+appears once the process ends and the snapshot is read again, which is exactly
+the shape of bug an audit exists to find. Both statuses are now valid, and a
+JSON round-trip test covers the integrated, waived, and verified end states.
+
+**A graph completed entirely by waiver claimed its gates had passed.** The
+terminal reason read "all required nodes passed runtime acceptance gates" after
+combined verification had failed and the user had overridden it. The node's own
+reason was honest; the graph's was not, and that sentence is the one most likely
+to be read and quoted. Waivers are now recorded structurally in a durable
+`waived_nodes` record — mirroring OG-5D's retirements rather than matching on
+reason text — and surfaced in the done reason, `/orchestrate status`, and the
+completion answer. A completion backed by real evidence gains no qualification,
+which is asserted so the warning cannot decay into noise.
+
+**Budget exhaustion mid-wave was clean.** The node blocks, the candidate is
+retained unverified, the parent is untouched, and the explanation names both
+the absent verification and the budget as its cause.
+
+**A candidate already present in the parent was accurate but a dead end.** The
+refusal was correct — integration would move no bytes — but said nothing about
+what to do with a node that can now never complete. It names the two exits.
+
+**This settles the trailing question.** The bound was findings that change what
+a user gets; a graph that cannot be reopened is decisively past it. The
+isolated-writer wave remains experimental, and the next pass starts from the
+areas this one did not reach.
 
 ### What this review does not claim
 

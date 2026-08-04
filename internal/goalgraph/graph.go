@@ -449,16 +449,21 @@ type RetiredNode struct {
 // a new snapshot on every meaningful transition; loading uses only the latest
 // one and never reconstructs runtime truth from model messages.
 type Snapshot struct {
-	Schema             int             `json:"schema"`
-	ID                 string          `json:"id"`
-	LogicalRevision    uint64          `json:"logical_revision"`
-	Generation         uint64          `json:"generation"`
-	Goal               string          `json:"goal"`
-	Nodes              []Node          `json:"nodes"`
-	Attempts           []Attempt       `json:"attempts,omitempty"`
-	Evidence           []Evidence      `json:"evidence,omitempty"`
-	Revisions          []Revision      `json:"revisions,omitempty"`
-	RetiredNodes       []RetiredNode   `json:"retired_nodes,omitempty"`
+	Schema          int           `json:"schema"`
+	ID              string        `json:"id"`
+	LogicalRevision uint64        `json:"logical_revision"`
+	Generation      uint64        `json:"generation"`
+	Goal            string        `json:"goal"`
+	Nodes           []Node        `json:"nodes"`
+	Attempts        []Attempt     `json:"attempts,omitempty"`
+	Evidence        []Evidence    `json:"evidence,omitempty"`
+	Revisions       []Revision    `json:"revisions,omitempty"`
+	RetiredNodes    []RetiredNode `json:"retired_nodes,omitempty"`
+	// WaivedNodes records nodes a person completed on written judgement rather
+	// than machine-observed combined verification. It is durable because the
+	// distinction outlives the session: a graph read back months later must
+	// still be able to say which completions rested on evidence.
+	WaivedNodes        []WaivedNode    `json:"waived_nodes,omitempty"`
 	MutationGeneration uint64          `json:"mutation_generation"`
 	WorkspaceToken     string          `json:"workspace_token,omitempty"`
 	RevisionCount      int             `json:"revision_count,omitempty"`
@@ -1108,6 +1113,13 @@ func ValidateSnapshot(snapshot Snapshot) error {
 	for _, node := range snapshot.Nodes {
 		present[node.ID] = true
 	}
+	for _, waived := range snapshot.WaivedNodes {
+		// A waiver is a person's claim standing in for evidence. One naming no
+		// node, or carrying no reason or time, is a claim about nothing.
+		if waived.NodeID <= 0 || strings.TrimSpace(waived.Title) == "" || strings.TrimSpace(waived.Reason) == "" || waived.Time.IsZero() {
+			return fmt.Errorf("goal graph waiver for node %d is incomplete", waived.NodeID)
+		}
+	}
 	for _, retired := range snapshot.RetiredNodes {
 		if retired.ID <= 0 || strings.TrimSpace(retired.Title) == "" || strings.TrimSpace(retired.Reason) == "" {
 			return errors.New("goal graph snapshot has an unattributable retired node")
@@ -1364,9 +1376,24 @@ func validAttemptState(state AttemptState) bool {
 func validEvidence(item Evidence) bool {
 	switch item.Kind {
 	case EvidenceToolResult, EvidenceVerification:
-		return item.Status == "passed" || item.Status == "failed"
-	case EvidenceNodeResult, EvidenceDelegateRead, EvidenceDelegateWrite:
+		// "waived" is a third outcome, not a variant of passed: it is what
+		// combined verification records when a person completed integrated
+		// nodes on their own written judgement instead of running checks.
+		// Omitting it here made a waived graph fail its own snapshot
+		// validation, so resuming or archiving one reported the record as
+		// structurally false and the graph became unreadable.
+		return item.Status == "passed" || item.Status == "failed" || item.Status == "waived"
+	case EvidenceNodeResult, EvidenceDelegateRead:
 		return item.Status == "accepted"
+	case EvidenceDelegateWrite:
+		// A write candidate is recorded twice over its life: "accepted" when
+		// the wave retains it for review, and "integrated" when a person
+		// publishes it into the parent. The second status was added with the
+		// integration path but never added here, so every graph that reached
+		// integration failed its own snapshot validation — resume and archive
+		// both rejected it as structurally false, which made the whole
+		// integration path undurable across a restart.
+		return item.Status == "accepted" || item.Status == "integrated"
 	default:
 		return false
 	}
@@ -2295,6 +2322,11 @@ func (g *Graph) AcceptIntegratedNodes(ctx context.Context, verification Combined
 	g.state.WorkspaceToken = token
 	accepted := make([]int, 0, len(pending))
 	for _, node := range pending {
+		if waiver != "" {
+			g.state.WaivedNodes = append(g.state.WaivedNodes, WaivedNode{
+				NodeID: node.ID, Title: node.Title, Reason: boundedReason(waiver), Time: now,
+			})
+		}
 		attemptID := ""
 		for i := len(node.AttemptIDs) - 1; i >= 0; i-- {
 			if attempt := g.attemptLocked(node.AttemptIDs[i]); attempt != nil && attempt.State == AttemptAccepted {
@@ -3363,6 +3395,35 @@ func supersededSummary(superseded []SupersededVerification) string {
 	return strings.Join(parts, "; ")
 }
 
+// WaivedNode is a node a person completed on their own written judgement
+// instead of machine-observed combined-workspace verification.
+type WaivedNode struct {
+	NodeID int       `json:"node_id"`
+	Title  string    `json:"title"`
+	Reason string    `json:"reason"`
+	Time   time.Time `json:"time"`
+}
+
+// waivedSummary renders the account a completed graph owes when some of its
+// nodes finished on judgement rather than evidence.
+func waivedSummary(waived []WaivedNode) string {
+	if len(waived) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(waived))
+	for _, node := range waived {
+		parts = append(parts, fmt.Sprintf("node %d (%s): %s", node.NodeID, node.Title, node.Reason))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// WaivedNodes returns the nodes completed by an explicit user waiver.
+func (g *Graph) WaivedNodes() []WaivedNode {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]WaivedNode(nil), g.state.WaivedNodes...)
+}
+
 // UnstartedNode is a required node the graph never began.
 type UnstartedNode struct {
 	NodeID int    `json:"node_id"`
@@ -4263,6 +4324,13 @@ func (g *Graph) reduceOutcomeLocked() {
 	if allDone {
 		g.state.Outcome = OutcomeDone
 		g.state.Reason = "all required nodes passed runtime acceptance gates"
+		// A node completed on a waiver did not pass a gate — a person decided
+		// it was acceptable without one. The node's own reason has always said
+		// so; the graph's terminal reason claimed the opposite, which is the
+		// single sentence most likely to be read and quoted.
+		if waived := waivedSummary(g.state.WaivedNodes); waived != "" {
+			g.state.Reason = fmt.Sprintf("required nodes are complete, but %d finished on a user-authored waiver rather than machine-observed verification — %s", len(g.state.WaivedNodes), waived)
+		}
 		// Say what was dropped. "Every required node passed" is true only of
 		// the nodes still in the graph, and a reader deciding whether the goal
 		// was met needs to know the set shrank and which work left with it.

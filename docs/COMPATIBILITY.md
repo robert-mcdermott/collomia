@@ -544,6 +544,19 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+Graph schema 1 gains an optional `waived_nodes` array recording nodes completed
+on an explicit user waiver. It is additive: a snapshot written before this slice
+has none and validates unchanged, and a reader ignoring the field sees the graph
+as it did.
+
+The snapshot validator now also accepts `integrated` on write-candidate evidence
+and `waived` on verification evidence. This is a widening, so every snapshot that
+validated before still validates — and it **repairs** snapshots that could not be
+read at all: a graph that had integrated a candidate previously failed its own
+validation, so resuming or archiving one reported it as structurally false. Such
+a session can now be reopened. The `done` outcome reason also gains a clause when
+nodes finished on a waiver; reasons are prose and were never a stable interface.
+
 The fan-out/wave split changes two user-visible things and no persisted shape.
 The capability matrix gains a second Orchestrated Goal row, so a consumer
 keying on the single previous row title will not find it — the end-to-end row is

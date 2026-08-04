@@ -483,7 +483,8 @@ func goalDoneAnswer(content string, graph *goalgraph.Graph) string {
 	}
 	retired := graph.RetiredNodes()
 	superseded := graph.SupersededVerifications()
-	if len(retired) == 0 && len(superseded) == 0 {
+	waived := graph.WaivedNodes()
+	if len(retired) == 0 && len(superseded) == 0 && len(waived) == 0 {
 		return content
 	}
 	var b strings.Builder
@@ -504,6 +505,13 @@ func goalDoneAnswer(content string, graph *goalgraph.Graph) string {
 			fmt.Fprintf(&b, "  - node %d (%s)\n", item.NodeID, item.Title)
 		}
 		b.WriteString("\nWhether they still pass is not established either way. Re-run them if it matters.")
+	}
+	if len(waived) > 0 {
+		fmt.Fprintf(&b, "\n\n%d node(s) completed on your written judgement rather than machine-observed verification:\n", len(waived))
+		for _, node := range waived {
+			fmt.Fprintf(&b, "  - node %d (%s): %s\n", node.NodeID, node.Title, node.Reason)
+		}
+		b.WriteString("\nA waiver and a passing check are different claims, and this record keeps them apart.")
 	}
 	b.WriteString("\n\nReview whether that still meets your goal. /orchestrate status shows the same account.")
 	return b.String()

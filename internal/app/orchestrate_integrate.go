@@ -62,7 +62,7 @@ func (r *Runtime) IntegrateOrchestratedCandidate(ctx context.Context, nodeID int
 		return "", err
 	}
 	if len(selections) == 0 && len(identical) == len(preview.Files) {
-		return "", fmt.Errorf("node %d's candidate is already present in the parent workspace; nothing would change", nodeID)
+		return "", fmt.Errorf("node %d's candidate is already present in the parent workspace, so there is nothing left to publish — the change you wanted is in place, but the graph cannot record this node as integrated when integration would move no bytes; discard the candidate with /orchestrate discard %d, or release the graph with /orchestrate cancel", nodeID, nodeID)
 	}
 
 	_, mutations, action, err := r.prepareIntegrationMutations(ctx, candidate.WorkerID, selections, true)

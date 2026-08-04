@@ -200,8 +200,12 @@ isolated-writer wave trailing it. Both product judgements that remained are now
 settled: the capability matrix carries two rows, approving a graph with
 isolated_write nodes announces that it will change nothing until you publish,
 and "trailing" means an audit pass over the writer path that stops finding
-things which change what a user gets. The first such pass found one wording
-defect, now fixed; whether that clears the bar is the open call. See the
+things which change what a user gets. Two passes have run. The first found one
+wording defect; the second found that a graph which had integrated a candidate
+could not be reopened at all — the snapshot validator never learned the
+`integrated` and `waived` evidence statuses, so resume and archive rejected it
+as structurally false. That is decisively past the bar, so the wave stays
+experimental. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) for the contract,
 the clause-by-clause verdict, and the reasoning behind that ordering.
 

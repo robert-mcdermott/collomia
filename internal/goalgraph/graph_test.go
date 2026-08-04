@@ -2553,3 +2553,188 @@ func TestStaleBaseDetailNamesWhatMovedAndWhatSurvived(t *testing.T) {
 		})
 	}
 }
+
+// A waiver is a person deciding that work is acceptable without evidence. The
+// node's own reason has always said so; the graph's terminal reason claimed
+// every required node passed its acceptance gates, which about a waived node is
+// false — and that sentence is the one most likely to be read and quoted.
+func TestDoneDistinguishesAWaiverFromAPassedGate(t *testing.T) {
+	fixture := &graphFixture{}
+	graph := integratedCandidateGraph(t, fixture)
+
+	accepted, err := graph.AcceptIntegratedNodes(t.Context(), CombinedVerification{
+		WorkspaceToken: "combined-state", Waiver: "this repository has no automated checks worth running",
+	})
+	if err != nil || len(accepted) != 1 {
+		t.Fatalf("accepted=%v err=%v", accepted, err)
+	}
+	outcome, reason := graph.Outcome()
+	if outcome != OutcomeDone {
+		t.Fatalf("outcome=%q", outcome)
+	}
+	for _, phrase := range []string{"user-authored waiver", "rather than machine-observed verification", "no automated checks worth running"} {
+		if !strings.Contains(reason, phrase) {
+			t.Fatalf("the done reason does not say %q: %q", phrase, reason)
+		}
+	}
+	if strings.Contains(reason, "all required nodes passed runtime acceptance gates") {
+		t.Fatalf("a waived completion still claims every gate passed: %q", reason)
+	}
+	waived := graph.WaivedNodes()
+	if len(waived) != 1 || waived[0].NodeID != 1 || waived[0].Reason == "" || waived[0].Time.IsZero() {
+		t.Fatalf("waiver record=%+v", waived)
+	}
+	// The record is durable, because the distinction outlives the session.
+	restored, err := Restore(graph.Snapshot(), fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.WaivedNodes()) != 1 {
+		t.Fatal("the waiver did not survive a restore")
+	}
+}
+
+// The same graph completed on real evidence gains no qualification, or the
+// warning above becomes noise attached to every completion.
+func TestDoneStaysUnqualifiedWhenCombinedVerificationActuallyPassed(t *testing.T) {
+	fixture := &graphFixture{}
+	graph := integratedCandidateGraph(t, fixture)
+	if _, err := graph.AcceptIntegratedNodes(t.Context(), CombinedVerification{
+		WorkspaceToken: "combined-state",
+		Commands:       []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: "combined-state"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, reason := graph.Outcome()
+	if reason != "all required nodes passed runtime acceptance gates" {
+		t.Fatalf("an evidence-backed completion gained a qualification: %q", reason)
+	}
+	if len(graph.WaivedNodes()) != 0 {
+		t.Fatal("an evidence-backed completion recorded a waiver")
+	}
+}
+
+// A snapshot may not carry a waiver that names nothing: a claim standing in for
+// evidence, with no node, reason, or time, is a claim about nothing.
+func TestIncoherentWaiverIsRejectedOnRestore(t *testing.T) {
+	fixture := &graphFixture{}
+	graph := integratedCandidateGraph(t, fixture)
+	if _, err := graph.AcceptIntegratedNodes(t.Context(), CombinedVerification{
+		WorkspaceToken: "combined-state", Waiver: "accepted deliberately for this fixture",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := graph.Snapshot()
+	snapshot.WaivedNodes[0].Reason = ""
+	if err := ValidateSnapshot(snapshot); err == nil {
+		t.Fatal("a waiver with no reason was accepted")
+	}
+}
+
+// integratedCandidateGraph drives one isolated writer through a verified
+// candidate and an integration, leaving the graph awaiting combined
+// verification — the state every waiver decision is made from.
+func integratedCandidateGraph(t *testing.T, fixture *graphFixture) *Graph {
+	t.Helper()
+	graph, err := New(Spec{Goal: "produce a candidate", Nodes: []NodeSpec{
+		{ID: 1, Title: "change docs", Execution: ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+	}}, 1, fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	if err := graph.FinishWriter(t.Context(), WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "done",
+		Summary: "implemented and checked candidate", Evidence: []string{"edit_file: completed — candidate changed"},
+		WritePaths: claims[0].WritePaths, ChangedFiles: []string{"docs/guide.md"},
+		Worktree: "/tmp/candidate", Branch: "collomia/writer-1", BaseCommit: base.Commit,
+		ParentWorkspaceToken: base.WorkspaceToken, VerificationState: "passed", VerificationToken: "child-state",
+		Verification: []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: "child-state"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	candidate, attemptID, err := graph.PrepareCandidateIntegration(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = candidate
+	if err := graph.IntegrateCandidate(t.Context(), 1, CandidateIntegration{
+		AttemptID: attemptID, Files: []string{"docs/guide.md"},
+		ParentWorkspaceToken: "combined-state", CheckpointID: "checkpoint-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return graph
+}
+
+// An integrated candidate and a waived completion are both durable states a
+// person can leave a session in, so both must survive being written down and
+// read back. Neither did: the statuses recorded on their evidence were never
+// added to the snapshot validator, so a graph that had integrated a candidate
+// failed its own validation. Resume and archive both rejected it as
+// structurally false, which made the entire integration path undurable across a
+// restart — the failure only appears after the process ends, which is why no
+// in-session test had caught it.
+func TestIntegratedAndWaivedGraphsSurviveARestart(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		accept func(*testing.T, *Graph)
+		state  NodeState
+	}{
+		{
+			name:   "integrated but not yet verified",
+			accept: func(*testing.T, *Graph) {},
+			state:  NodeIntegrated,
+		},
+		{
+			name: "completed on a waiver",
+			accept: func(t *testing.T, graph *Graph) {
+				if _, err := graph.AcceptIntegratedNodes(t.Context(), CombinedVerification{
+					WorkspaceToken: "combined-state", Waiver: "this repository has no automated checks worth running",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			state: NodeDone,
+		},
+		{
+			name: "completed on real combined verification",
+			accept: func(t *testing.T, graph *Graph) {
+				if _, err := graph.AcceptIntegratedNodes(t.Context(), CombinedVerification{
+					WorkspaceToken: "combined-state",
+					Commands:       []CandidateVerification{{Command: "go test ./...", Status: "passed", StateToken: "combined-state"}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			state: NodeDone,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := &graphFixture{}
+			graph := integratedCandidateGraph(t, fixture)
+			testCase.accept(t, graph)
+
+			// Round-trip through JSON, because that is what a session does.
+			raw, err := json.Marshal(graph.Snapshot())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored Snapshot
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := Restore(stored, fixture.options())
+			if err != nil {
+				t.Fatalf("a saved graph could not be read back: %v", err)
+			}
+			if got := restored.Snapshot().Nodes[0].State; got != testCase.state {
+				t.Fatalf("restored node state=%q, want %q", got, testCase.state)
+			}
+		})
+	}
+}

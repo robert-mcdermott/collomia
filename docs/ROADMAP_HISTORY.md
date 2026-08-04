@@ -45,6 +45,42 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-04 — A second audit pass finds integration undurable across a restart
+
+- **Probing the three areas the thin pass had skipped was the right call.** Two
+  of them found real defects, and one is the most serious the milestone
+  produced. Graduating the writer wave on the first pass would have shipped it.
+- **A graph that had integrated a candidate could not be reopened.** The
+  snapshot validator accepts only `accepted` for write-candidate evidence, but
+  integration records `integrated` and combined verification records `waived`;
+  neither status was ever added, and restoring validates. So integrating,
+  closing the session, and reopening it left the graph rejected as structurally
+  false — resume failed, archive failed, and it could not be read back at all.
+- **It was never purely a writer-wave defect.** Every graph that reached
+  integration was affected, read fan-out included wherever it had integrated a
+  candidate.
+- **No in-session test could have caught it.** The failure appears only once the
+  process ends and the snapshot is read again, which is exactly the shape of bug
+  an audit exists to find. A JSON round-trip test now covers the integrated,
+  waived, and verified end states.
+- **A graph completed entirely by waiver claimed its gates had passed.** The
+  terminal reason said "all required nodes passed runtime acceptance gates"
+  after combined verification had failed and the user had overridden it. The
+  node's own reason was honest; the graph's was not, and that is the sentence
+  most likely to be read and quoted. Waivers are now a durable structured
+  record rather than reason text, and appear in the done reason,
+  `/orchestrate status`, and the completion answer. An evidence-backed
+  completion gains no qualification, which is asserted so the warning cannot
+  decay into noise.
+- **Budget exhaustion mid-wave was clean** — the node blocks, the candidate is
+  retained unverified, the parent is untouched, and the explanation names both
+  the absent verification and the budget as its cause.
+- **An already-present candidate was accurate but a dead end**; the refusal now
+  names the two exits.
+- **The isolated-writer wave stays experimental.** The bound was findings that
+  change what a user gets, and a graph that cannot be reopened is past it
+  without argument.
+
 ### 2026-08-04 — The fan-out/wave split ships, and the writer path is audited
 
 - **The capability matrix now carries two rows.** End-to-end graphs with
