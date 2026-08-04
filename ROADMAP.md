@@ -170,9 +170,11 @@ authority boundary: approval always initializes runtime nodes pending, and
 both `/orchestrate cancel` and `/plan off` provide visible recovery from an
 unapproved read-only proposal.
 Standard evidence-gated execution remains the default.
-**OG-3 — Isolated writer candidates** is now in progress: OG-3B5 made every
-retained worktree observable and disposable by the user, OG-3B6 completed the
-adversarial campaign, and only the sufficiency judgement remains. See the
+**OG-3 — Isolated writer candidates is complete** as of 2026-08-03: OG-3B5
+made every retained worktree observable and disposable by the user, OG-3B6
+completed the adversarial campaign, and OG-3C added the product evaluations
+that proved the exit gate. **OG-4 — Reviewed integration** is now the active
+milestone. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) and
 [Recommended next sequence](#recommended-next-sequence) for its contract and
 exit gate.
@@ -1743,9 +1745,9 @@ roadmap remains the source of priority and completion status.
             run the comparative scenario matrix, and retain fan-out only if
             quality or elapsed-time evidence justifies its added work.
             *(Completed 2026-08-02.)*
-  - [ ] **OG-3 — Isolated writer candidates:** dispatch only ready,
+  - [x] **OG-3 — Isolated writer candidates:** dispatch only ready,
     disjoint-scope writers on a stable base; require child verification and
-    stop at reviewable candidates.
+    stop at reviewable candidates. *(Exit gate met 2026-08-03.)*
     - [x] **OG-3A — One verified isolated-writer candidate wave:** add
       explicit narrow `isolated_write` scopes, claim at most two pairwise-
       disjoint writers from one clean stable commit, reuse ordinary delegate
@@ -1867,6 +1869,27 @@ roadmap remains the source of priority and completion status.
         work — repository text, skills, hooks, and the model still cannot widen
         it, and the permission, verification, scope, and publication gates are
         unaffected. *(Completed 2026-08-03.)*
+      - [x] **OG-3B5 — Retained-worktree reconciliation:** observe each
+        retained worktree and record a typed disposition durably
+        (`present`, `empty`, `missing`, `orphaned`, `base_unreachable`,
+        `discarded`) through `/orchestrate reconcile`; add `/orchestrate
+        discard <node-id> [confirm]`, reachable only by the user, refusing an
+        unreconciled tree, requiring confirmation for one holding changes, and
+        refusing outright a directory Git no longer registers; and refuse to
+        archive a graph that is still the only record of an unobserved tree.
+        *(Completed 2026-08-03.)*
+      - [x] **OG-3B6 — Adversarial campaign:** prove the dispatch and
+        acceptance gates fail closed through application-level paths — hook
+        refusal, post-claim parent drift, verification spanning a changing
+        tree, case-folded sibling scopes, every writer in a wave failing, and
+        a writer beyond the wave's starts bound, which stops the graph as
+        `budget_exhausted` rather than as a failure. *(Completed 2026-08-03.)*
+      - [x] **OG-3C — Writer-wave product evaluation and OG-3 sign-off:** add
+        the isolated-writer wave's missing evaluation-matrix cases on a full
+        runtime with real worktrees and the application's own child
+        verification, each asserting the parent repository is byte-for-byte
+        unchanged, and record the exit-gate evidence that closes OG-3.
+        *(Completed 2026-08-03.)*
   - [ ] **OG-4 — Reviewed integration:** add recoverable publication,
     conservative candidate synthesis, and fresh combined-parent verification
     before a logical node can finish.
@@ -2065,29 +2088,31 @@ OG-3A's first verified isolated-writer candidate wave, its seven trial-driven
 controller corrections, OG-3A.8's audit-driven review-readiness corrections, and
 OG-3B1–B6's retained-worktree accountability closure, verification-composition
 correction, budget-accounting correction, user-owned execution envelope,
-retained-worktree reconciliation, and adversarial campaign are now complete.
+retained-worktree reconciliation, and adversarial campaign, and OG-3C's product
+evaluations and exit-gate sign-off are now complete. OG-3 is closed.
 Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
 future integration and exact scheduler-recovery claims. The next orchestration
-slice is **the OG-3 sufficiency judgement**, after which OG-4's reviewed
-integration unblocks. Every candidate still remains in its own worktree and the
-primary workspace is unchanged.
+slice is **the first OG-4 increment — reviewed integration and combined
+verification**, which is the first time the runtime mutates the parent
+workspace. Until it ships, every candidate still remains in its own worktree
+and the primary workspace is unchanged.
 
 1. Gather real-session evidence from the Standard completion gate: how often
    each rule intervenes, which verification commands are still missed by the
    recognizer after OG-3A.8's ecosystem breadth and OG-3B2's composition rule,
    and whether two interventions is the right bound. Keep this local and
    inspectable rather than adding telemetry by default.
-2. Close **OG-3**. Both halves of OG-3B have now shipped: OG-3B1 and OG-3B5
-   made every retained worktree attributable, observable, and disposable, and
-   OG-3B6 proved the dispatch and acceptance gates fail closed — hook refusal,
-   post-claim parent drift, verification spanning a changing tree, case-folded
-   sibling scopes, every writer failing, and a writer beyond the wave's starts
-   bound. What remains is the deliberate judgement that the inspection and
-   recovery handoff is sufficient, which is what unblocks OG-4's reviewed
-   integration and the first parent-workspace mutation.
+2. Take **OG-4 — reviewed integration and combined verification**, now that
+   OG-3 is closed. Decompose it before starting: it is the first milestone in
+   which the runtime writes to the parent workspace, and the recoverable
+   pre-integration checkpoint belongs before anything that writes. Combined
+   verification, deterministic candidate eligibility with a visible rationale,
+   freshness-bound hunk application under ordinary integration permission, and
+   the user-authored waiver representation are separable increments. A score,
+   child test, or plan approval still never grants permission.
 3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
    and durable graph recovery. A score, child test, or plan approval never
    grants permission. `collo audit --actor` remains the surface that can say

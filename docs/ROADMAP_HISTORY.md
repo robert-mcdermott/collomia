@@ -45,6 +45,38 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-03 — OG-3C writer-wave product evaluation, and OG-3 closes
+
+- **The evaluation matrix had no isolated-writer case at all.** Every OG-3
+  guarantee was proven by focused agent, graph, and application tests, while
+  the matrix covering OG-1 and OG-2 stopped before the writer wave existed.
+  Signing off OG-3 on that basis would have made it the first milestone
+  accepted to a lower standard than its predecessors, and the strategy's own
+  handoff protocol forbids marking a milestone complete from code inspection
+  alone. This was a real gap, not paperwork.
+- **Three product evaluations now drive a complete runtime** — real delegate
+  permission, real Git worktrees, and the application's own child verification
+  running the fixture repository's actual `go test` inside each candidate tree.
+  The focused tests stub that verifier out, which is exactly why the evaluation
+  is worth having: a stubbed step is where the difference between what the
+  tests assert and what the product does would hide.
+- **They cover** a verified two-writer disjoint wave reaching `awaiting_review`
+  and reporting a finished run naming the review step; a wave in which one
+  writer fails while its sibling's verified candidate survives; and the
+  operator's whole recovery path from retained tree through reconcile, refused
+  unconfirmed discard, confirmed discard, and release.
+- **Each asserts the parent repository is byte-for-byte unchanged**, comparing
+  HEAD, porcelain status including untracked files, and the full file list.
+  That comparison is itself verified to notice both a new untracked file and
+  edited tracked content, so the central exit-gate assertion cannot pass
+  vacuously. Asserting on whole state rather than on the files a writer
+  happened to create is the point: the gate is that *nothing* changed, and a
+  check written around the expected change cannot see an unexpected one.
+- **OG-3 — Isolated writer candidates is complete**, with all three exit-gate
+  clauses recorded against the tests and commands that proved them.
+  **OG-4 — Reviewed integration** is now the active milestone, and it is the
+  first in which the runtime writes to the parent workspace at all.
+
 ### 2026-08-03 — OG-3B6 adversarial campaign
 
 - **Three gates on the writer path had real code and no test at all**: hook

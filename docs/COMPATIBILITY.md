@@ -544,6 +544,9 @@ retained worktree, one without a time of observation, and a time of observation
 without a disposition — each of which would be a claim about nothing. A
 discarded tree keeps its recorded identity, so a removed candidate stays
 distinguishable from one that never existed.
+OG-3C changes no persisted or machine-readable shape. It adds the
+isolated-writer wave's product evaluations and records OG-3's exit-gate
+evidence.
 OG-3B6 changes no persisted or machine-readable shape. It is an adversarial
 test campaign over the isolated-writer dispatch and acceptance gates, and it
 confirmed rather than altered one classification worth recording: exhausting

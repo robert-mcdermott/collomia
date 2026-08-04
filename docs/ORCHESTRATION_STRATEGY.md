@@ -3,10 +3,11 @@
 **Status:** approved product and architecture strategy; evidence-gated durable
 execution is available experimentally through completed OG-2, OG-3A's
 verified isolated-writer candidate wave, OG-3A.1–.8 trial- and audit-driven
-controller corrections, and OG-3B1–B6's retained-worktree accountability
-closure, verification-composition correction, budget-accounting correction,
-user-owned execution envelope, retained-worktree reconciliation, and
-adversarial campaign; the OG-3 sufficiency judgement is next
+controller corrections, OG-3B1–B6's retained-worktree accountability closure,
+verification-composition correction, budget-accounting correction, user-owned
+execution envelope, retained-worktree reconciliation, and adversarial
+campaign, and OG-3C's product evaluations and sign-off; OG-3 is complete and
+OG-4 reviewed integration is next
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
 **Last updated:** 2026-08-03
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
@@ -60,7 +61,7 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-3B6 boundary supports one serial primary lane, at
+The shipped OG-1 through OG-3 boundary supports one serial primary lane, at
 most two governed automatic read-only workers, and—only in a candidate-only
 graph—one bounded wave of at most two pairwise-disjoint terminal isolated
 writers from a clean stable Git commit. It provides durable graph
@@ -880,7 +881,7 @@ Completion evidence and retained decision:
 
 ### OG-3 — Isolated writer candidates
 
-**Status: in progress; OG-3A plus corrections through OG-3A.8 and OG-3B1–B6 complete (2026-08-03); only the OG-3 sufficiency judgement remains.**
+**Status: complete (2026-08-03). OG-3A plus corrections through OG-3A.8, OG-3B1–B6, and OG-3C's product evaluations and exit-gate sign-off all shipped.**
 
 - Automatically dispatch only dependency-ready writers with declared disjoint
   scopes and a stable base.
@@ -1406,21 +1407,58 @@ OG-3B6 adversarial campaign:
   the same speed-bump treatment every other resource bound receives under
   OG-3B4, and therefore extendable rather than fatal.
 
-OG-3B remaining contract:
+OG-3C writer-wave product evaluation and OG-3 sign-off:
 
-- confirm the inspection/recovery handoff is sufficient before marking OG-3
-  complete or beginning automatic reviewed integration.
+- The evaluation matrix had no isolated-writer case at all. Every OG-3
+  guarantee was proven by focused agent, graph, and application tests, while
+  the matrix that covers OG-1 and OG-2 stopped before the writer wave existed.
+  Signing off OG-3 on that basis would have made it the first milestone
+  accepted to a lower standard than its predecessors, and the handoff protocol
+  below explicitly forbids marking a milestone complete from code inspection
+  alone.
+- `internal/eval/orchestrated_writer_test.go` adds three cases on a full
+  `app.New` runtime with a Git fixture whose tests pass at the base commit and
+  whose packages are genuinely disjoint. The child verification is the
+  application's real one, so each candidate's evidence is a detected `go`
+  command actually executed inside that worktree and bound to its state token —
+  the focused tests stub that step, which is precisely why the evaluation is
+  worth having.
+- Each case compares the parent repository before and after by HEAD, porcelain
+  status including untracked files, and the full file list. That comparison is
+  itself verified to notice both a new untracked file and edited tracked
+  content, so the central exit-gate assertion cannot pass vacuously.
 
-Exit gate:
+Exit gate — **met on 2026-08-03**:
 
-- adversarial overlap, scope, drift, cancellation, and provider-failure tests
-  produce no parent mutation before reviewed integration;
-- no two writers can overwrite each other or the parent;
-- every candidate remains attributable to its plan node and attempt.
+- *adversarial overlap, scope, drift, cancellation, and provider-failure tests
+  produce no parent mutation before reviewed integration* — overlap and
+  case-folded scopes, out-of-scope writes, post-claim parent drift,
+  verification spanning a changing tree, cancellation, hook refusal, delegate
+  denial, one writer failing, and every writer failing are covered across
+  `internal/goalgraph/graph_test.go`, `internal/agent/goalwrite_test.go`, and
+  the three product evaluations, which assert parent immutability directly.
+- *no two writers can overwrite each other or the parent* — a wave admits only
+  pairwise-disjoint scopes from one clean commit, scopes differing only in case
+  are serialized, observed changed files are validated against the declared
+  scope, and writers never hold the parent workspace.
+- *every candidate remains attributable to its plan node and attempt* —
+  identity is recorded durably at creation before the child runs, retained
+  across cancellation, accounting failure, and process boundary, surfaced for
+  the whole graph live or saved, and OG-3B5 adds the observed disposition of
+  each tree so attribution survives the directory itself.
+
+Proved by: `go build ./...`, `gofmt -l`, `go test -count=1 ./...`, `go test
+-race -count=1 ./internal/agent/ ./internal/goalgraph/ ./internal/app/
+./internal/tui/ ./internal/config/`, and `go test -count=1 -timeout 600s -run
+Orchestrated ./internal/eval/`.
+
+**OG-3 is complete.** What it does not include remains explicit: no candidate
+is selected, integrated, or reused, and no multi-worker scheduler order is
+reproduced exactly after restart. Those are OG-4 and OG-5.
 
 ### OG-4 — Reviewed integration and combined verification
 
-**Status: blocked on OG-3.**
+**Status: unblocked; next milestone. OG-3 met its exit gate on 2026-08-03.**
 
 - Add explicit combined-parent verification to the graph acceptance path.
 - Add a recoverable pre-integration checkpoint and safe post-failure
@@ -1471,7 +1509,19 @@ cooperative pause/resume and safe blocked-node retry without weakening the
 non-replay guarantee. OG-2B2b1 makes proposal, primary, and worker model work
 durably visible. OG-2B2b2 bounds that aggregate and establishes the narrow
 comparative case for substantive independent reads while preserving Standard
-as the default and serializing unsuitable work.
+as the default and serializing unsuitable work. OG-3C adds the isolated-writer
+wave's own product evaluations, which had been the gap: every OG-3 guarantee
+was proven by focused tests while the evaluation matrix stopped at OG-2. Three
+cases now drive a complete runtime — real delegate permission, real Git
+worktrees, and the application's own child verification running the
+repository's actual `go test` inside each candidate tree, rather than the
+stubbed verifier the focused tests use. They cover a verified two-writer
+disjoint wave reaching `awaiting_review`, a wave in which one writer fails
+while its sibling's verified candidate survives, and the operator's whole
+recovery path from retained tree through reconcile, refused discard, confirmed
+discard, and release. Each asserts the parent repository is byte-for-byte
+unchanged, comparing HEAD, porcelain status, and the full untracked file list
+before and after.
 
 Compare Standard and Orchestrated modes on:
 
@@ -1558,21 +1608,26 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **OG-3B6 — Adversarial campaign**, following OG-3B5's
-  retained-worktree reconciliation and OG-3B1–B4's retained-worktree
+- Last completed slice: **OG-3C — Writer-wave product evaluation and OG-3
+  sign-off**, following OG-3B6's adversarial campaign, OG-3B5's
+  retained-worktree reconciliation, OG-3B1–B4's retained-worktree
   accountability closure, verification-composition correction,
   budget-accounting correction, and user-owned execution envelope, OG-3A's
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
-- Active milestone: **OG-3 — Isolated writer candidates**.
-- Next unblocked slice: **the OG-3 sufficiency judgement** — the last item of
-  the OG-3B remaining contract. Every exit-gate property now has a test; what
-  remains is the deliberate decision that the inspection and recovery handoff
-  is good enough to mark OG-3 complete and unblock OG-4's reviewed integration.
+- Active milestone: **OG-4 — Reviewed integration and combined verification.**
+  OG-3 met its exit gate on 2026-08-03 and is complete.
+- Next unblocked slice: **the first OG-4 increment.** OG-4 is where the runtime
+  mutates the parent workspace for the first time, so it should be decomposed
+  before it is started: combined-parent verification, a recoverable
+  pre-integration checkpoint, deterministic eligibility with a visible
+  rationale, freshness-bound hunk application under ordinary integration
+  permission, and the waiver representation are separable, and the checkpoint
+  belongs before anything that writes.
 - Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
   `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
-  `fd1c2bc`, OG-3B5 is `205bff2`, and OG-3B6 is the working tree on top of
-  them.**
+  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, and OG-3C is the working
+  tree on top of them.**
 - Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
@@ -1853,6 +1908,16 @@ Every agent or contributor continuing this program must:
   stays closed. A hook is external policy that a person can change between
   attempts, so re-running consults it again; the runtime is not entitled to
   assume either that the refusal stands or that it has been lifted.
+- Hold a milestone's sign-off to the same evidence standard as its
+  predecessors. OG-3 had thorough focused tests and no product evaluation,
+  which is a real gap rather than a formality: the evaluation runs the
+  application's own verifier against a real repository, and that is where a
+  stubbed step would have hidden a difference between what the tests assert and
+  what the product does.
+- Assert parent immutability by comparing the whole observable repository
+  state, not by looking for the files a writer happened to create. The gate is
+  that *nothing* changed, and a check written around the expected change cannot
+  see an unexpected one.
 
 ## Open implementation decisions
 
