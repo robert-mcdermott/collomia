@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,20 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/trust"
 )
+
+// configuredDefaults is the explicit provider fixture used by tests that need
+// a session-ready configuration. Production Defaults deliberately contains no
+// provider because a fresh installation has not verified one.
+func configuredDefaults() Config {
+	cfg := Defaults()
+	cfg.DefaultProvider = "ollama"
+	cfg.DefaultModel = "qwen3-coder"
+	cfg.Providers["ollama"] = Provider{
+		Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1",
+		Model: "qwen3-coder", Context: 32768, MaxTokens: 8192,
+	}
+	return cfg
+}
 
 func TestDefaultRegexDenialsRemainNarrowBackstops(t *testing.T) {
 	patterns := Defaults().Permissions.DeniedCommands
@@ -119,7 +134,7 @@ func TestLoadCanSkipEnvironmentExpansionForDiagnostics(t *testing.T) {
 }
 
 func TestValidateProviderTimeouts(t *testing.T) {
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	p := cfg.Providers["ollama"]
 	p.ConnectTimeoutSeconds = -1
 	p.RequestTimeoutSeconds = -2
@@ -140,7 +155,7 @@ func TestValidateRejectsAnOutputCapAtOrAboveTheWindow(t *testing.T) {
 	// The output cap is spent out of the same budget as the prompt, so this
 	// combination cannot be satisfied by any request. It used to validate
 	// clean and surface mid-session as a provider error naming neither field.
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	p := cfg.Providers["ollama"]
 	p.Context, p.MaxTokens = 32768, 32768
 	cfg.Providers["ollama"] = p
@@ -158,7 +173,7 @@ func TestValidateAllowsAnAbsentContextWindow(t *testing.T) {
 	// unreachable — but it is a legal configuration, and refusing to start over
 	// a field that has always been optional would break every file written
 	// before this was validated. `collo doctor` warns instead.
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	p := cfg.Providers["ollama"]
 	p.Context, p.MaxTokens = 0, 0
 	cfg.Providers["ollama"] = p
@@ -170,7 +185,7 @@ func TestValidateAllowsAnAbsentContextWindow(t *testing.T) {
 func TestNormalizeRecordsThatMaxTokensWasDefaulted(t *testing.T) {
 	// Nothing downstream could otherwise tell a deliberate 8192 from a field
 	// the user never knew existed, and only the second is worth reporting.
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	p := cfg.Providers["ollama"]
 	p.MaxTokens = 0
 	cfg.Providers["ollama"] = p
@@ -269,15 +284,16 @@ func TestProjectLayerMergesOverDefaults(t *testing.T) {
 	if !cfg.Permissions.SandboxAllowReadOutsideWorkspace {
 		t.Fatal("omitted project read policy must inherit the broad-read compatibility default")
 	}
-	// Defaults not mentioned by the project layer survive the merge.
-	if _, ok := cfg.Providers["ollama"]; !ok {
-		t.Fatal("default provider lost during merge")
+	// Defaults not mentioned by the project layer survive the merge, and no
+	// provider is invented for a project that names none.
+	if len(cfg.Providers) != 0 || cfg.DefaultProvider != "" {
+		t.Fatalf("project inherited an unverified provider: default=%q providers=%v", cfg.DefaultProvider, cfg.ProviderNames())
 	}
 	if cfg.Origins["permissions.mode"] != "project" {
 		t.Fatalf("origin=%q", cfg.Origins["permissions.mode"])
 	}
 	if cfg.Origins["default_provider"] != "defaults" {
-		t.Fatalf("origin=%q", cfg.Origins["default_provider"])
+		t.Fatalf("empty built-in selection origin=%q", cfg.Origins["default_provider"])
 	}
 	if report := cfg.LayerReport(); !strings.Contains(report, "project") {
 		t.Fatalf("layer report missing project layer:\n%s", report)
@@ -489,7 +505,9 @@ func TestSchemaVersionTooNewIsRejected(t *testing.T) {
 func TestLegacyV1ConfigWithoutSchemaKeepsLenientCompatibility(t *testing.T) {
 	dir := t.TempDir()
 	writeProject(t, dir, `{
+	  "default_provider": "legacy",
 	  "default_model": "legacy-model",
+	  "providers": {"legacy": {"type":"openai-compatible","base_url":"http://127.0.0.1:1/v1"}},
 	  "future_optional_field": {"ignored": true}
 	}`)
 	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
@@ -532,7 +550,9 @@ func TestValidationErrorsCarryFieldPaths(t *testing.T) {
 func TestEnvironmentOverridesSelection(t *testing.T) {
 	t.Setenv("COLLO_MODEL", "env-model")
 	t.Setenv("COLLO_PROVIDER", "ollama")
-	cfg, err := LoadWithOptions(t.TempDir(), LoadOptions{TrustStatus: trustAll})
+	dir := t.TempDir()
+	writeProject(t, dir, `{"default_provider":"ollama","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"configured-model"}}}`)
+	cfg, err := LoadWithOptions(dir, LoadOptions{TrustStatus: trustAll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +569,7 @@ func TestEnvironmentOverridesSelection(t *testing.T) {
 }
 
 func TestValidateAzureProviderTypes(t *testing.T) {
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	cfg.Providers["azure"] = Provider{Type: "azure-openai", BaseURL: "https://example.openai.azure.com", Deployment: "code"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -563,7 +583,7 @@ func TestValidateAzureProviderTypes(t *testing.T) {
 func TestValidateAzureAuthenticationModes(t *testing.T) {
 	for _, providerType := range []string{"azure-openai", "azure-foundry", "azure-foundry-anthropic"} {
 		for _, auth := range []string{"", "api_key", "bearer", "entra"} {
-			cfg := Defaults()
+			cfg := configuredDefaults()
 			cfg.Providers["azure"] = Provider{Type: providerType, Auth: auth, BaseURL: "https://example.services.ai.azure.com", Model: "deployment"}
 			if err := cfg.Validate(); err != nil {
 				t.Fatalf("type=%s auth=%q should validate: %v", providerType, auth, err)
@@ -585,7 +605,7 @@ func TestValidateAzureAuthenticationModes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := Defaults()
+			cfg := configuredDefaults()
 			cfg.Providers["azure"] = test.provider
 			err := cfg.Validate()
 			if err == nil || !strings.Contains(err.Error(), test.field) {
@@ -597,7 +617,7 @@ func TestValidateAzureAuthenticationModes(t *testing.T) {
 
 func TestNormalizeAzureEntraSettings(t *testing.T) {
 	t.Setenv("COLLO_TEST_ENTRA_SCOPE", "https://ai.azure.com/.default")
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	cfg.Providers["azure"] = Provider{
 		Type: " AZURE-FOUNDRY ", Auth: " EnTrA ", BaseURL: "https://example.services.ai.azure.com",
 		EntraScope: " ${COLLO_TEST_ENTRA_SCOPE} ", EntraTenantID: " tenant-id ", EntraAuthorityHost: " https://login.microsoftonline.us/ ",
@@ -611,14 +631,14 @@ func TestNormalizeAzureEntraSettings(t *testing.T) {
 
 func TestValidateBedrockAuthenticationModes(t *testing.T) {
 	for _, auth := range []string{"", "auto", "sigv4", "bearer"} {
-		cfg := Defaults()
+		cfg := configuredDefaults()
 		cfg.Providers["bedrock"] = Provider{Type: "bedrock", Auth: auth, Model: "model"}
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("auth %q should validate: %v", auth, err)
 		}
 	}
 
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	cfg.Providers["bedrock"] = Provider{Type: "bedrock", Auth: "basic", Model: "model"}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "providers.bedrock.auth") {
 		t.Fatalf("invalid auth error=%v", err)
@@ -636,7 +656,7 @@ func TestValidateBedrockAuthenticationModes(t *testing.T) {
 }
 
 func TestNormalizeBedrockAuthenticationMode(t *testing.T) {
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	cfg.Providers["bedrock"] = Provider{Type: " BEDROCK ", Auth: " BeArEr ", Model: "model"}
 	cfg.normalize()
 	provider := cfg.Providers["bedrock"]
@@ -646,8 +666,30 @@ func TestNormalizeBedrockAuthenticationMode(t *testing.T) {
 }
 
 func TestDefaultsValidate(t *testing.T) {
-	if err := Defaults().Validate(); err != nil {
+	cfg := Defaults()
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	if cfg.DefaultProvider != "" || cfg.DefaultModel != "" || len(cfg.Providers) != 0 {
+		t.Fatalf("fresh defaults must be explicitly unconfigured: selection=%q/%q providers=%v", cfg.DefaultProvider, cfg.DefaultModel, cfg.ProviderNames())
+	}
+	if _, _, _, err := cfg.Selected("", ""); err == nil || !strings.Contains(err.Error(), "collo setup") {
+		t.Fatalf("starting a session from fresh defaults must point to setup: %v", err)
+	} else {
+		var validation ValidationError
+		if !errors.As(err, &validation) {
+			t.Fatalf("unconfigured startup should be classified as configuration failure: %T", err)
+		}
+	}
+}
+
+func TestValidateRejectsASelectionWithoutAProvider(t *testing.T) {
+	cfg := Defaults()
+	cfg.DefaultProvider = "ollama"
+	cfg.DefaultModel = "qwen3-coder"
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "no providers are configured") || !strings.Contains(err.Error(), "stale selection") {
+		t.Fatalf("stale selection error=%v", err)
 	}
 }
 
@@ -718,7 +760,7 @@ func TestValidateExternalEditor(t *testing.T) {
 }
 
 func TestValidatePrimaryAgentReasoningPricingAndBudget(t *testing.T) {
-	cfg := Defaults()
+	cfg := configuredDefaults()
 	cached := 0.25
 	provider := cfg.Providers["ollama"]
 	provider.Reasoning = &Reasoning{Effort: "high"}

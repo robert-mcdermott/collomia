@@ -120,6 +120,41 @@ func TestSetupListsRunningRuntimesAboveOnesThatAreNot(t *testing.T) {
 	}
 }
 
+func TestSetupListsConfiguredProvidersAsReusableActions(t *testing.T) {
+	m := newTestSetupModel(t)
+	m.opts.Existing = setup.Existing{
+		Providers: []string{"bedrock"}, Models: map[string]string{"bedrock": "claude"},
+		Definitions: map[string]appconfig.Provider{"bedrock": {Type: "bedrock", Region: "us-west-2", Model: "claude"}},
+	}
+	m = withProbes(m, []setup.Probe{readyProbe("Ollama", "qwen")})
+	if len(m.choices) == 0 || m.choices[0].configured != "bedrock" {
+		t.Fatalf("configured provider should be the first reusable action: %+v", m.choices)
+	}
+	m.cursor = 0
+	next, cmd := m.onSelect()
+	updated := next.(setupModel)
+	if cmd == nil || updated.name != "bedrock" || updated.opts.Reconfigure != "bedrock" || updated.credPlan != setup.CredentialKeep {
+		t.Fatalf("configured selection did not enter re-verification: name=%q reconfigure=%q credential=%q", updated.name, updated.opts.Reconfigure, updated.credPlan)
+	}
+	if updated.provider.Context != 0 || updated.provider.MaxTokens != 0 {
+		t.Fatal("reusable setup must re-resolve provider limits")
+	}
+}
+
+func TestAutomaticSetupCompletionContinuesIntoSession(t *testing.T) {
+	m := newTestSetupModel(t)
+	m.opts.ContinueToSession = true
+	m.stage = stageDone
+	m.name, m.model = "local", "model"
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "continue into your session") || !strings.Contains(view, "enter start session") {
+		t.Fatalf("automatic completion does not describe the handoff: %q", view)
+	}
+	if strings.Contains(view, "first-run") {
+		t.Fatalf("reusable setup is still labelled first-run: %q", view)
+	}
+}
+
 func TestSetupOffersAzureAndBedrockAsForms(t *testing.T) {
 	// Neither is configurable from a name and a key: Azure addresses a
 	// deployment inside a resource, and Bedrock resolves an identity and grants

@@ -22,6 +22,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/safefile"
+	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -41,6 +42,11 @@ type DelegateIntegration struct {
 	// still runs the normal permission engine and all post-approval checks.
 	ReviewToken string
 	Files       []DelegateIntegrationFile
+	// GraphOwned marks a candidate belonging to an Orchestrated Goal node.
+	// Reviewing one is encouraged — that is what the retained worktree is for —
+	// but publishing it through this path is refused, because the graph would
+	// not know its parent workspace had changed.
+	GraphOwned bool
 }
 
 type DelegateIntegrationFile struct {
@@ -150,6 +156,7 @@ func (r *Runtime) PrepareDelegateIntegration(ctx context.Context, id string) (*D
 		preview.Files = append(preview.Files, file)
 	}
 	preview.ReviewToken = delegateIntegrationReviewToken(preview)
+	preview.GraphOwned = status.GraphNode
 	return preview, nil
 }
 
@@ -209,10 +216,42 @@ func (r *Runtime) ApplyReviewedDelegateIntegration(ctx context.Context, id, revi
 	return r.publishDelegateIntegration(ctx, id, mutations, false)
 }
 
+// graphOwnedIntegrationRefusal keeps a graph-owned candidate out of the
+// ordinary delegate publication path. Publishing one here would change the
+// parent workspace while its plan node still reported that reviewed
+// integration was required, leaving the graph's recorded evidence describing a
+// parent that no longer exists and no combined-workspace verification run at
+// all. Reviewing the candidate remains available; only publication is refused.
+func graphOwnedIntegrationRefusal(preview *DelegateIntegration) error {
+	if preview == nil || !preview.GraphOwned {
+		return nil
+	}
+	return fmt.Errorf("%q is an Orchestrated Goal candidate, so it cannot be published through delegate integration: the graph owns its node, attempt, and evidence, and this path would change the parent workspace without the graph knowing. Review it here or in its worktree %s, and use /orchestrate status to see the node it belongs to; graph-owned integration with combined-workspace verification is OG-4 work that has not shipped", preview.ID, preview.Worktree)
+}
+
 func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id string, selections []DelegateIntegrationSelection) (*DelegateIntegration, []delegateIntegrationMutation, tools.Action, error) {
+	return r.prepareIntegrationMutations(ctx, id, selections, false)
+}
+
+// prepareIntegrationMutations builds the publication set. viaGraph is set only
+// by the graph's own integration route, which records the publication on the
+// plan node; every other caller leaves it false and is refused for a
+// graph-owned candidate.
+func (r *Runtime) prepareIntegrationMutations(ctx context.Context, id string, selections []DelegateIntegrationSelection, viaGraph bool) (*DelegateIntegration, []delegateIntegrationMutation, tools.Action, error) {
 	preview, err := r.PrepareDelegateIntegration(ctx, id)
 	if err != nil {
 		return nil, nil, tools.Action{}, err
+	}
+	if viaGraph && !preview.GraphOwned {
+		return nil, nil, tools.Action{}, fmt.Errorf("delegate %q is not an Orchestrated Goal candidate", id)
+	}
+	// Every apply path — operator, primary-agent reviewed, and model tool —
+	// funnels through here, which is why the refusal lives at this point rather
+	// than at each caller.
+	if !viaGraph {
+		if err := graphOwnedIntegrationRefusal(preview); err != nil {
+			return nil, nil, tools.Action{}, err
+		}
 	}
 	files := make(map[string]DelegateIntegrationFile, len(preview.Files))
 	for _, file := range preview.Files {
@@ -272,23 +311,62 @@ func (r *Runtime) prepareDelegateIntegrationMutations(ctx context.Context, id st
 	if len(mutations) == 0 {
 		return nil, nil, tools.Action{}, errors.New("no delegated hunks were selected")
 	}
-	paths := make([]string, len(mutations))
+	paths := r.integrationActionPaths(mutations)
 	var combined strings.Builder
-	for i, mutation := range mutations {
-		paths[i] = filepath.Join(r.Workspace, filepath.FromSlash(mutation.path))
+	for _, mutation := range mutations {
 		combined.WriteString(mutation.preview)
 	}
 	action := tools.Action{Risk: tools.RiskWrite, Summary: fmt.Sprintf("integrate %d file(s) from delegated agent %s (%s)", len(mutations), preview.Name, id), Paths: paths, Preview: combined.String()}
 	return preview, mutations, action, nil
 }
 
+// integrationActionPaths names each target the way the write tools name it, so
+// a path rule sees one spelling per file however the bytes arrive.
+//
+// This is a permission boundary, not a cosmetic detail. The write tools resolve
+// a target through the workspace path guard, which follows symlinks, while this
+// path used to join the workspace string as configured. On any workspace
+// reached through a symlink — which on macOS includes everything under /tmp and
+// /var — the two produced different absolute paths for the same file, so a
+// `deny` rule written in the resolved form that correctly stopped `write_file`
+// simply did not match at integration. Publishing a delegate's candidate was a
+// way around a rule the user had already been obeyed on. The resolution is
+// borrowed from the tools rather than reimplemented here, so the two cannot
+// drift apart again.
+func (r *Runtime) integrationActionPaths(mutations []delegateIntegrationMutation) []string {
+	paths := make([]string, len(mutations))
+	for i, mutation := range mutations {
+		paths[i] = filepath.Join(r.Workspace, filepath.FromSlash(mutation.path))
+	}
+	guard, err := tools.NewPathGuard(r.Workspace, false)
+	if err != nil {
+		return paths
+	}
+	for i, mutation := range mutations {
+		// A path that cannot be resolved keeps the joined spelling. That is the
+		// same conservative target the publication itself will write, so the
+		// decision is still made about the file being changed.
+		if resolved, outside, resolveErr := guard.Resolve(mutation.path); resolveErr == nil && !outside {
+			paths[i] = resolved
+		}
+	}
+	return paths
+}
+
 func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mutations []delegateIntegrationMutation, fireHooks bool) ([]string, error) {
+	paths, _, err := r.publishDelegateIntegrationCheckpointed(ctx, id, mutations, fireHooks)
+	return paths, err
+}
+
+// publishDelegateIntegrationCheckpointed also reports the durable checkpoint
+// that can undo the publication, which the graph route records on the node.
+func (r *Runtime) publishDelegateIntegrationCheckpointed(ctx context.Context, id string, mutations []delegateIntegrationMutation, fireHooks bool) ([]string, string, error) {
 	// Approval may have taken arbitrarily long. Re-read every source and target
 	// and refuse if either side changed while the dialog was open.
 	fresh, err := r.PrepareDelegateIntegration(ctx, id)
 	if err != nil {
 		r.markDelegateIntegration(id, "blocked", err)
-		return nil, err
+		return nil, "", err
 	}
 	freshFiles := make(map[string]DelegateIntegrationFile, len(fresh.Files))
 	for _, file := range fresh.Files {
@@ -301,8 +379,19 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 			!sameOSFileState(file.After, file.AfterMode, mutation.expectedChild, mutation.childMode) {
 			err = fmt.Errorf("%s changed while integration approval was pending; review again", mutation.path)
 			r.markDelegateIntegration(id, "blocked", err)
-			return nil, err
+			return nil, "", err
 		}
+	}
+
+	// Write the checkpoint before the first byte moves. The rollback closure
+	// below only exists while this process does, so an interruption between the
+	// first file and the last would otherwise leave a workspace that is neither
+	// the parent it was nor the candidate it was becoming, with nothing on disk
+	// able to say which files had already changed or what they had held.
+	checkpoint, checkpointErr := r.beginIntegrationCheckpoint(id, mutations)
+	if checkpointErr != nil {
+		r.markDelegateIntegration(id, "blocked", checkpointErr)
+		return nil, "", checkpointErr
 	}
 
 	applied := make([]delegateIntegrationMutation, 0, len(mutations))
@@ -314,12 +403,17 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 	for _, mutation := range mutations {
 		if err := replaceRooted(r.Workspace, mutation.path, mutation.after, mutation.afterMode); err != nil {
 			rollback()
+			// The rollback restored what it had already changed, so the durable
+			// record says so rather than leaving a pending checkpoint that would
+			// send a later recovery looking for a half-published workspace.
+			r.finishIntegrationCheckpoint(checkpoint, session.IntegrationReverted, "rolled back after "+mutation.path+" failed to publish")
 			err = fmt.Errorf("integrate %s: %w", mutation.path, err)
 			r.markDelegateIntegration(id, "blocked", err)
-			return nil, err
+			return nil, "", err
 		}
 		applied = append(applied, mutation)
 	}
+	r.finishIntegrationCheckpoint(checkpoint, session.IntegrationApplied, "")
 	for _, mutation := range mutations {
 		absolute := filepath.Join(r.Workspace, filepath.FromSlash(mutation.path))
 		if r.Changes != nil {
@@ -347,7 +441,7 @@ func (r *Runtime) publishDelegateIntegration(ctx context.Context, id string, mut
 		}
 	}
 	r.Team.MarkIntegrationOutcome(id, outcome, integrated, "")
-	return integrated, nil
+	return integrated, checkpoint.ID, nil
 }
 
 func (r *Runtime) markDelegateIntegration(id, status string, err error) {
@@ -478,7 +572,17 @@ func validateDelegateWorktree(ctx context.Context, workspace, worktree, branch, 
 	}
 	flush()
 	if !registered {
-		return errors.New("retained delegated path is not the recorded Git worktree for this repository")
+		// A tree Git no longer registers and a tree that is simply gone need
+		// opposite responses: the first is a mismatch worth investigating, the
+		// second is an ordinary consequence of retained worktrees living under
+		// the OS temp directory, where a reboot or a cleaner removes them.
+		// Reporting both as "not the recorded worktree" sends someone looking
+		// for a problem with their repository when the answer is that the
+		// directory was swept and the work is gone with it.
+		if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
+			return fmt.Errorf("the retained worktree %s no longer exists; temporary directories are swept by the operating system, so this candidate's work is gone — run /orchestrate reconcile to record that, then discard the node or retry it", worktree)
+		}
+		return fmt.Errorf("retained delegated path %s is not the recorded Git worktree for this repository", worktree)
 	}
 	resolved, err := exec.CommandContext(timeout, "git", "-C", worktree, "rev-parse", "HEAD").Output()
 	if err != nil {

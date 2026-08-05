@@ -33,6 +33,7 @@ const (
 	KindPermissionDecision Kind = "permission.decision"
 	KindFileChange         Kind = "file.change"
 	KindPlanUpdate         Kind = "plan.update"
+	KindGoalGraphUpdate    Kind = "goal.graph.update"
 	KindDelegateUpdate     Kind = "delegate.update"
 	KindUsage              Kind = "usage"
 	KindCompaction         Kind = "context.compaction"
@@ -58,6 +59,7 @@ type Event struct {
 	File       *FileChange      `json:"file,omitempty"`
 	Usage      *Usage           `json:"usage,omitempty"`
 	ToolCall   *ToolCallDelta   `json:"tool_call,omitempty"`
+	GoalGraph  *GoalGraphStatus `json:"goal_graph,omitempty"`
 	Delegate   *DelegateStatus  `json:"delegate,omitempty"`
 	Result     *RunResult       `json:"result,omitempty"`
 	Provider   *ProviderFailure `json:"provider,omitempty"`
@@ -65,6 +67,21 @@ type Event struct {
 	// FailureID is an opaque per-failure correlation value. It contains no
 	// session, provider, path, prompt, or credential material.
 	FailureID string `json:"failure_id,omitempty"`
+}
+
+// GoalGraphStatus is one bounded runtime-owned graph transition. The complete
+// versioned graph snapshot lives in the durable session record; this public
+// payload is intentionally smaller so headless/activity consumers do not
+// become coupled to scheduler internals.
+type GoalGraphStatus struct {
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	NodeID     int    `json:"node_id,omitempty"`
+	AttemptID  string `json:"attempt_id,omitempty"`
+	State      string `json:"state"`
+	Reason     string `json:"reason,omitempty"`
+	Ready      []int  `json:"ready,omitempty"`
+	Outcome    string `json:"outcome,omitempty"`
 }
 
 // ToolCallDelta carries an incremental provider tool request. ArgumentsDelta
@@ -118,10 +135,15 @@ type FileChange struct {
 }
 
 // RunResult is the final summary of a non-interactive run. Consumers should
-// use Status — not the presence of an error event mid-stream — to decide how
-// the run ended: "ok", "error", or "cancelled".
+// use Status — not the presence of an error event mid-stream — for the process
+// contract, and Outcome for the goal-level terminal state.
 type RunResult struct {
-	Status  string   `json:"status"`
+	Status string `json:"status"`
+	// Outcome is the goal-level terminal state: done, blocked, cancelled, or
+	// budget_exhausted. Status retains its schema-v1 process contract
+	// (ok/error/cancelled); Outcome distinguishes why an error-status run
+	// stopped without making automation parse Error.
+	Outcome string   `json:"outcome,omitempty"`
 	Answer  string   `json:"answer,omitempty"`
 	Error   string   `json:"error,omitempty"`
 	Failure *Failure `json:"failure,omitempty"`
@@ -208,13 +230,17 @@ type DelegateVerification struct {
 // delegated task. Lifecycle updates replace earlier snapshots with the same
 // ID when a session is restored; no stored task is ever executed by replay.
 type DelegateStatus struct {
-	ID                   string                 `json:"id"`
-	Name                 string                 `json:"name"`
-	Task                 string                 `json:"task,omitempty"`
-	Profile              string                 `json:"profile,omitempty"`
-	Provider             string                 `json:"provider,omitempty"`
-	Model                string                 `json:"model,omitempty"`
-	Write                bool                   `json:"write,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Task     string `json:"task,omitempty"`
+	Profile  string `json:"profile,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Write    bool   `json:"write,omitempty"`
+	// GraphNode marks a candidate owned by an Orchestrated Goal node. Omission
+	// means an ordinary delegate, which is what every record written before
+	// this field existed was.
+	GraphNode            bool                   `json:"graph_node,omitempty"`
 	WriteScopes          []string               `json:"write_scopes,omitempty"`
 	ScopeViolations      []string               `json:"scope_violations,omitempty"`
 	PlanStep             int                    `json:"plan_step,omitempty"`

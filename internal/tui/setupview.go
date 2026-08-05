@@ -13,7 +13,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/version"
 )
 
-// setupMaxWidth keeps the wizard readable on a wide terminal for the same
+// setupMaxWidth keeps provider setup readable on a wide terminal for the same
 // reason panels are capped: a two-column form stretched across 300 columns is
 // harder to read, not easier.
 const setupMaxWidth = 84
@@ -64,7 +64,7 @@ func (m setupModel) View() string {
 }
 
 // header is the wordmark, drawn exactly as the session splash draws it, so the
-// wizard is visibly the same program rather than an installer that happens to
+// setup is visibly the same program rather than an installer that happens to
 // ship alongside it.
 func (m setupModel) header() string {
 	art := wordmarkArt
@@ -77,7 +77,7 @@ func (m setupModel) header() string {
 	if !m.theme.plain() {
 		logo = gradient(art, m.theme.Primary, m.theme.Secondary)
 	}
-	subtitle := m.styles.muted.Render("first-run setup · " + version.Short())
+	subtitle := m.styles.muted.Render("provider setup · " + version.Short())
 	return logo + "\n\n" + subtitle + "\n" + m.rule() + "\n"
 }
 
@@ -130,7 +130,7 @@ func (m setupModel) providerView() string {
 			". Nothing is written until a real request to the endpoint succeeds."
 	}
 	lines := []string{
-		m.title("Which provider should Collomia use?"),
+		m.title("Add or change a provider"),
 		m.hint(subtitle),
 		"",
 	}
@@ -436,15 +436,25 @@ func (m setupModel) confirmView() string {
 }
 
 func (m setupModel) doneView() string {
+	next := []string{
+		m.styles.muted.Render("Start a session with ") + m.styles.accent.Render("collo"),
+		m.styles.muted.Render("Inspect the whole configuration with ") + m.styles.accent.Render("collo doctor"),
+		m.styles.muted.Render("Add or change a provider by running ") + m.styles.accent.Render("collo setup") + m.styles.muted.Render(" again"),
+	}
+	if m.opts.ContinueToSession {
+		next = []string{
+			m.styles.panelBody.Render("Provider verified. Press enter to continue into your session."),
+			m.styles.muted.Render("You can add or change providers later with ") + m.styles.accent.Render("collo setup"),
+			m.styles.muted.Render("Inspect the whole configuration with ") + m.styles.accent.Render("collo doctor"),
+		}
+	}
 	return strings.Join([]string{
 		m.title("Done"),
 		"",
 		m.box("✓ "+m.name+" / "+m.model, strings.Join([]string{
 			m.styles.panelBody.Render("Written to " + m.opts.ConfigPath),
 			"",
-			m.styles.muted.Render("Start a session with ") + m.styles.accent.Render("collo"),
-			m.styles.muted.Render("Inspect the whole configuration with ") + m.styles.accent.Render("collo doctor"),
-			m.styles.muted.Render("Add another provider by running ") + m.styles.accent.Render("collo setup") + m.styles.muted.Render(" again"),
+			strings.Join(next, "\n"),
 		}, "\n"), m.theme.Success),
 	}, "\n")
 }
@@ -569,7 +579,11 @@ func (m setupModel) footer() string {
 	case stageConfirm:
 		keys = [][2]string{{"enter", "write"}, {"d", "default"}, {"b", "back"}, {"q", "quit"}}
 	case stageDone:
-		keys = [][2]string{{"enter", "close"}}
+		action := "close"
+		if m.opts.ContinueToSession {
+			action = "start session"
+		}
+		keys = [][2]string{{"enter", action}}
 	}
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {

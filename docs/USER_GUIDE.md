@@ -210,6 +210,11 @@ should follow [Releasing Collomia](RELEASING.md).
 collo setup
 ```
 
+On an installation with no configured provider, simply running `collo` opens
+this same flow automatically. A successful verification writes the provider
+and pressing Enter continues directly into the session. No local runtime or
+model is assumed beforehand.
+
 `collo setup` finds the local model runtimes that are actually running (Ollama,
 LM Studio, vLLM), notices provider API keys the environment already exports,
 lets you choose a model from the endpoint's own catalog, and then **verifies the
@@ -249,13 +254,20 @@ permission error is misread as a Bedrock outage. Authentication modes that have
 nothing to store — Entra, which issues short-lived tokens through
 `DefaultAzureCredential`, and the SigV4 chain — never ask you for a key.
 
-### Re-running setup for a provider you already have
+### Adding or changing a provider later
+
+Run `collo setup` again. Configured providers appear at the top of the provider
+list, so selecting one changes its model and re-verifies its endpoint and
+limits; the other choices add another provider. The current default stays
+visible, and setup asks before repointing it.
+
+To jump directly to a configured provider from the command line:
 
 ```sh
 collo setup --provider bedrock
 ```
 
-This skips the runtime scan and re-enters the wizard pointed at a provider your
+This skips the runtime scan and re-enters setup pointed at a provider your
 configuration already names. The credential is left exactly as it is — the run
 uses whatever already authenticates and never stores, replaces, or asks for a
 key — and everything else is the ordinary path: the endpoint's catalog, the
@@ -417,26 +429,21 @@ This creates:
 - `config.example.jsonc` beside it: commented documentation only; Collomia
   never loads this file.
 
-The global starter includes Ollama, an unselected OpenRouter example, safe
-permission defaults, and common runtime options. `init` never overwrites an
+The global starter includes safe permission defaults and common runtime
+options. It deliberately includes no provider or model because a static file
+cannot establish what is installed or reachable. `init` never overwrites an
 existing file.
 
-If you use the default Ollama setup:
-
-```sh
-ollama pull qwen3-coder
-collo
-```
-
-If you use OpenRouter, set the key in your shell and select the existing
-`openrouter` entry in `~/.collomia/config.json`:
+Copy an explicit provider block from `config.example.jsonc`. For example, if
+you use OpenRouter, set the key in your shell and copy its provider example
+into `~/.collomia/config.json`:
 
 ```sh
 export OR_API_KEY='your-key'       # macOS/Linux
 $env:OR_API_KEY = 'your-key'       # PowerShell, current window
 ```
 
-Change `default_provider` to `openrouter`, then validate:
+Set `default_provider` to `openrouter`, then validate:
 
 ```sh
 collo config validate --strict
@@ -587,8 +594,10 @@ The effective configuration is assembled from lowest to highest precedence:
 
 `default_agent` selects a primary profile after the provider/model defaults;
 `--agent` overrides it for one invocation. `--autonomy` overrides
-`permissions.mode`. `/model`, `/agent`, `/autonomy`, `/plan`, and `/theme` can
-make runtime changes, but they do not rewrite configuration files.
+`permissions.mode`. `/model`, `/agent`, `/autonomy`, `/plan`, `/orchestrate`,
+and `/theme` can make runtime changes, but they do not rewrite configuration
+files. Orchestrated Goal is an explicit per-session experiment; it cannot be
+enabled by any configuration layer.
 
 Later layers override only values they supply. Scalar fields nested in an
 object inherit independently. Named maps such as `providers`, `mcp`, and
@@ -1269,11 +1278,15 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 
 | Field | Meaning |
 | --- | --- |
-| `max_iterations` | Maximum model/tool iterations in one turn; defaults to `24`. |
+| `max_iterations` | Maximum provider/model response cycles in one Standard turn, or consecutive cycles an Orchestrated Goal primary attempt may take without novel durable successful tool evidence; defaults to `24`. It is not a tool-call count. |
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
 | `agent_integration` | `manual` (default) keeps publication behind `/agents apply`; `reviewed` additionally gives the primary freshness-bound inspect, child-worktree verification, candidate comparison, and selective publication tools. Verification still uses ordinary command policy and never authorizes publication. |
+| `orchestration_max_iterations` | Provider iterations one approved Orchestrated Goal may use before it stops and asks you; defaults to `96`, and `0` keeps that default. Reaching it is a speed bump, not a failure: accepted nodes and retained candidates are kept and `/orchestrate extend` grants another envelope of the same size. |
+| `orchestration_max_tokens` | Charged tokens one approved Orchestrated Goal may use before it stops and asks you; defaults to `1000000`, and `0` keeps that default. Charged means new input plus output — prompt tokens the provider served from its cache are reported in `/orchestrate status` but not charged. |
+| `orchestration_max_cost_usd` | Estimated spend one approved Orchestrated Goal may reach before it stops and asks you; defaults to `5`, and `0` keeps that default. It is enforced only when the selected provider has complete pricing, and is an estimate rather than a billing guarantee. |
+| `orchestration_max_active_wall_seconds` | Active execution seconds one approved Orchestrated Goal may use before it stops and asks you; defaults to `1800`, and `0` keeps that default. Only attached, runnable execution counts — a reached pause, a terminal state, and time between sessions do not. |
 | `disabled_tools` | Tool names hidden from the model. This is separate from permission denial. |
 | `transcript_directory` | Reserved configuration field. The current durable session store does not use it; sessions remain under the global `.collomia/sessions` directory. |
 | `theme` | Persistent TUI theme name; defaults to `collomia`. |
@@ -1371,8 +1384,8 @@ where discovery is supported.
 
 ### Ollama
 
-Ollama is the built-in default. Its OpenAI-compatible endpoint normally needs
-no API key:
+Ollama is supported through its OpenAI-compatible endpoint and normally needs
+no API key. This is an example configuration, not an assumption Collomia makes:
 
 ```json
 {
@@ -1434,7 +1447,7 @@ per-model feature metadata; `unknown` is not the same as unsupported.
 
 ### OpenRouter
 
-The generated global starter includes this provider but leaves Ollama selected:
+An explicit OpenRouter configuration begins by exporting its key:
 
 ```sh
 export OR_API_KEY='your-key'
@@ -2856,17 +2869,19 @@ Delegated agents are steered separately with `/agents steer` and `alt+a`.
 | `ctrl+c` | Cancel the active turn; press again to quit. |
 
 Typing `/` filters commands by prefix and substring. Known first arguments for
-`/theme`, `/autonomy`, `/plan`, `/model`, and `/agent` are completed fuzzily. These menus
-remain beside the composer; approvals and questions open as centered,
-theme-aware transient dialogs.
+`/theme`, `/autonomy`, `/plan`, `/orchestrate`, `/model`, and `/agent` are
+completed fuzzily. These menus remain beside the composer; approvals and
+questions open as centered, theme-aware transient dialogs.
 
 While a provider turn is running, the composer remains available for a small
 local-control command lane: `/help`, `/status`, `/context`, `/tasks`, `/tools`,
 `/config`, `/attachments`, `/transcript`, `/activity`, `/diff`, read-only
-`/ps`, and `/agents` inspect/steer/stop. Free-form text and unavailable commands remain in
-the composer as unsent drafts; they are not queued to the model or executed
-concurrently. If the agent asks a question, Collomia preserves and restores the
-draft around the question dialog.
+`/ps`, `/orchestrate status [node]`, `/orchestrate pause`, `/orchestrate
+cancel`, and `/agents`
+inspect/steer/stop. Free-form text and unavailable commands remain in the
+composer as unsent drafts; they are not queued to the model or executed
+concurrently. If the agent asks a question, Collomia preserves and restores
+the draft around the question dialog.
 
 The global actions in this table are configurable. The Help tab always shows
 the effective bindings after defaults, user configuration, and project
@@ -2883,6 +2898,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, or cancel the experimental Orchestrated Goal preview. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -2893,7 +2909,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/agents steer <id> <guidance...>` | Queue bounded guidance for the child's next model boundary. It never answers an approval or grants permission. |
 | `/agents verify <id>` | Detect and run the retained child worktree's standard build/lint/test suite sequentially. Every command receives its own ordinary `run_command` policy decision. |
 | `/agents compare <id> <id> [id…]` | Compare two to six completed write candidates by conflicts, selectable hunks, fresh verification, evidence, and token usage without selecting or publishing one. |
-| `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. |
+| `/agents apply <id>` | Review files/hunks from a retained write worktree and integrate selected safe text changes after permission and drift checks. Run only while the parent is idle. An Orchestrated Goal candidate is refused here — the graph owns its node, attempt, and evidence; inspect it with `/orchestrate status` and manage its worktree with `/orchestrate reconcile` and `/orchestrate discard`. |
 | `/prompt [workspace-file]` | Load a UTF-8 text file into the composer for review; omit the path for a fuzzy file picker. |
 | `/attach [workspace-image]` | Attach a PNG, JPEG, GIF, or WebP to the pending prompt; omit the path for a fuzzy image picker. |
 | `/attachments` | List images attached to the pending prompt. |
@@ -2911,12 +2927,513 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/sessions` (alias `/resume`) | Fuzzy-pick and switch to another durable session in place. |
 | `/rewind [turn]` | Branch safely from an earlier completed turn; omit the turn for a picker. The source conversation and workspace remain unchanged. |
 | `/restore [turn]` | Branch the conversation and reverse the agent's tracked file changes back to an earlier completed turn. Refuses the whole operation, naming every file, if any changed outside Collomia. |
+| `/restore integration [id [keep]]` | List integrations that were interrupted before recording an outcome, or put one back to the exact state recorded before it started. It restores rather than completes: a half-applied publication is never re-run. `keep` records that you inspected the workspace and are keeping it as it stands, changing no bytes. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
 | `/new` | Start a new session while preserving the current one. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
 | `/config [all]` | Show what the configuration resolved to: layers in order, the effective safety stance, anything the containment clamp refused, and the layer that set each value. `all` lists every setting, including those no file mentions. Credential values are redacted. |
 | `/clear` | Clear active conversation context. It does not delete the durable session file or reset cumulative token/cost accounting and budgets. |
 | `/quit` or `/exit` | Exit. |
+
+### Experimental Orchestrated Goal preview
+
+Orchestrated Goal is Collomia's opt-in TUI preview for **evidence-gated durable
+execution**. The model proposes and interprets a bounded dependency graph; the
+runtime owns readiness, attempts, evidence freshness, recovery treatment,
+aggregate bounds, and the terminal outcome. End-to-end graphs keep one serial
+primary lane and can use at most two automatic governed workers for
+independently ready approved `read_only` nodes. As a separate candidate-only
+shape, the preview can produce one bounded wave of verified retained terminal
+candidates for narrowly scoped `isolated_write` nodes. Standard mode
+remains the default.
+
+#### When to use it, and when not to
+
+Orchestrated Goal **will never become the default**. It is an optional mode you
+select for specific work, and Standard mode is what runs otherwise. So the
+useful question is not whether it is better in general — it is when it is
+better, and the answer below is measured rather than asserted. Every case names
+the evaluation that produced it, and a test fails if any of those evaluations
+stops existing.
+
+**Reach for it when:**
+
+- **The work splits into parts that touch different files.** Two writers only
+  run at once when their declared scopes are disjoint, so this is the condition
+  every other benefit depends on.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+- **The change is risky, or a broken workspace would be expensive.** The same
+  non-compiling change leaves Standard mode's workspace changed and no longer
+  building; in a candidate wave your repository is untouched and the failure is
+  reported against the candidate. This is the mode's strongest case.
+  (`TestOrchestratedGoalComparativeFailureContainmentEvaluation`)
+- **You want nothing to reach your files until you have looked.** A wave stops
+  at `awaiting_review` with the parent byte-for-byte unchanged; publication is
+  a separate explicit act.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+- **Several substantive independent investigations can overlap.** Two read
+  nodes that each take real time run as one wave instead of two, halving the
+  critical path for roughly twice the tokens. Work too short to overlap gains
+  nothing, because overlap is the entire benefit.
+  (`TestOrchestratedGoalComparativeReadFanoutEvaluation`)
+- **Interruption is likely.** Cancelling mid-run leaves Standard mode's
+  half-finished change in your repository; a cancelled wave leaves your
+  repository untouched with its in-flight candidates retained and attributable.
+  An edit you make while a writer runs is detected rather than silently built
+  upon. (`TestOrchestratedGoalComparativeCancellationEvaluation`,
+  `TestOrchestratedGoalComparativeParentDriftEvaluation`)
+
+**Do not reach for it when:**
+
+- **The steps touch the same files.** Nodes sharing a write scope can never run
+  together, so the wave pays every cost for none of its benefit and needs a
+  full review cycle per node — work Standard mode does in one pass. This is the
+  clearest case against it.
+  (`TestOrchestratedGoalComparativeSameScopeSerialEvaluation`)
+- **Your test suite is slow and the work will probably succeed.** A wave runs
+  the repository's detected verification set once per candidate worktree and
+  again over the combined result: three rounds against one. The candidate
+  rounds run concurrently, so the elapsed penalty is nearer twice than three
+  times, but the compute is three times either way and it scales with your
+  suite, not with the size of the change.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+- **You need the work in your repository when the run ends.** A wave finishes
+  at `awaiting_review` having changed nothing. Reaching the state Standard mode
+  ends in takes an integration per candidate and a combined verification you
+  ask for.
+  (`TestOrchestratedGoalComparativeWriterWaveEvaluation`)
+
+The short version: it buys containment and a review boundary, and it pays for
+them in repeated verification and in steps you have to take yourself. That is a
+good trade when a change might be wrong and a bad one when it probably is not.
+
+A complete trial looks like this:
+
+```text
+/orchestrate Build the requested feature, update its documentation, and verify it
+/orchestrate status
+/orchestrate approve
+/orchestrate status
+/orchestrate status 2
+/orchestrate pause
+/orchestrate resume
+```
+
+The first command enters read-only proposal mode. Collomia asks the model for a
+new structured plan whose steps are all pending, have valid dependencies, and
+each state at least one concrete acceptance criterion. Each step also declares
+`execution: primary`, `execution: read_only`, or `execution: isolated_write`.
+The proposal prompt prefers one to three substantive outcome nodes for a
+scoped change and four to six only for a broad goal; twelve is a hard maximum,
+not a target. Serial file/layer changes that share a scope and verification
+surface should be one coherent node; distinct
+dependency, permission, write-scope, isolation, or recovery boundaries remain
+separate. Within a node, related operations should be batched. After its final
+successful verifier, the model must return a tool-free completion proposal
+instead of beginning work assigned to a later node.
+Inspection performed to design the proposal is grounding and should not become
+a graph node merely to repeat it. Use a pending `read_only` node only when
+fresh post-approval investigation is itself an explicit dependency.
+Use `read_only` only for bounded repository investigation that needs no file
+change or command. End-to-end build/change goals should use `primary` for all
+implementation nodes. `isolated_write` is currently only for an explicitly
+requested candidate-only preview: it may follow `read_only` prerequisites but
+cannot coexist with `primary`, each writer needs narrow repository-relative
+`write_paths`, and every writer must be a terminal leaf because retained
+candidates cannot unlock dependents before reviewed integration. Omitted
+execution is treated conservatively as serial `primary`. No implementation
+tool is available during this turn. Inspect the proposal with `/orchestrate
+status`; an ordinary plan that existed before the command, a restored plan, or
+a plan without acceptance criteria cannot be approved.
+
+`/orchestrate approve` is the explicit per-session opt-in. It converts that
+fresh proposal into durable runtime graph state and starts primary-agent
+execution. The graph, rather than a final-sounding model message, owns node
+readiness, attempts, failure state, evidence freshness, and terminal outcome.
+Model-authored proposal statuses and evidence are never imported as those
+facts: even if the planning model labels a step `done` or `in_progress`,
+approval initializes every runtime node pending, clears that evidence, and
+creates no attempt until scheduling selects the node.
+Every real tool action still passes through the ordinary permission,
+publication, sandbox, cancellation, and budget controls. Writes require fresh
+verification before the graph can finish.
+
+The evidence gate depends on the kind of work. An automatic read needs a
+non-empty bounded result, at least one successful read tool result, and the
+same Git workspace token as its durable claim when one was recorded. After a
+potential mutation, the runtime requires a recognized successful verification
+command tied to the current Git token and mutation generation; a successful
+structured write must also have changed that token. A model-authored “tests
+passed” statement, an earlier test result, a no-op write, or a success-masked
+command is not proof. Later workspace drift invalidates accepted evidence
+conservatively.
+
+A passing recognized verifier returns an explicit node-boundary receipt. If
+the running node's criteria are satisfied, the next response must be tool-free
+so the runtime can assess and accept it; the model must not begin another node
+until the pinned graph marks that node running. After a non-final node is
+accepted, Collomia replaces the active model context with a compact
+runtime-authored handoff. The next node therefore receives the authoritative
+graph and acceptance notice without repeatedly resending the previous node's
+tool loop. Bounded accepted dependency summaries remain in the pinned graph
+for later synthesis. This handoff makes no provider request and does not remove anything
+from the durable transcript.
+
+Run verification as the direct command whose exit status should become proof.
+Leading environment assignments, virtual-environment executable paths, and
+direct Python module invocation are recognized, so commands such as
+`UV_CACHE_DIR=.uv-cache uv run pytest -v`, `.venv/bin/pytest -v`, and
+`.venv/bin/python -m pytest -v` can qualify. Collomia also safely removes an
+exact redundant `cd` to the current workspace (or `.`) followed by `&&`, and a
+final literal `2>&1`; these wrappers preserve the verifier's exit status.
+Other directories, pipes, semicolons, `||`, and shell composition remain
+ineligible because a later operation can hide that status.
+If a successful command looks like verification but is ineligible, its tool
+result says why and shows the direct form to run; for example,
+`pytest -v 2>&1; echo "$?"` is rejected and suggests `pytest -v`.
+
+After the runtime names a completion gap, remediation is deliberately narrow.
+The agent receives four provider responses to produce concrete repair or
+gate-changing evidence. A real workspace mutation, a novel machine-observed
+verification failure, or evidence that closes the exact gate renews that short
+window. This lets the agent react to a useful failure—for example, adding a
+focused smoke test when the detected verifier reports that no tests exist—and
+then run the verifier directly against current workspace state. Different
+command spellings, an identical failure against unchanged files, and unrelated
+reads remain visible in evidence but do not renew the lease. If the gate still
+does not advance, the node stops `blocked` with the exact reason instead of
+spending the entire graph budget.
+
+When up to two independent `read_only` nodes are ready, the runtime—not the
+model—claims them in stable proposal order and runs them through the existing
+read-only delegated-agent boundary. These workers share the workspace for
+inspection, inherit equal-or-tighter permissions, and appear in the Session
+agent tree, but cannot write files, run commands, update the plan, delegate
+again, or control the graph. Their bounded summary becomes node evidence only
+when a successful tool result was recorded and the Git workspace token still
+matches the durable claim. Both workers finish before the primary lane moves
+on. Primary-only graphs create no child; dependency-serial `read_only` work
+never has more than one worker active and gains no parallelism.
+
+For an explicitly candidate-only proposal, when one or two pairwise-disjoint
+`isolated_write` nodes are dependency-ready,
+the runtime may claim one candidate wave in stable proposal order. The parent
+Git workspace must be clean and unchanged across state checks, and every child
+is created from the same exact commit. `/orchestrate approve` performs this
+preflight before creating durable execution state. If the workspace has
+staged, unstaged, or untracked files, approval names the observed paths and
+keeps the proposal awaiting approval instead of silently omitting those bytes
+or creating an immediately blocked graph. Commit or otherwise reconcile that
+work, then run `/orchestrate approve` again.
+
+Before writer dispatch, Collomia asks for the ordinary `delegate` write
+permission and runs configured hooks. Each writer stays in a separate retained
+`collomia/…` worktree, inherits equal-or-tighter permissions, cannot delegate
+or control the graph, and is checked against its declared `write_paths`.
+Afterward Collomia redetects the repository's standard verification commands
+inside the child worktree and applies the ordinary `run_command` permission and
+hooks to each one. All commands must pass against one unchanged child-state
+token, the base and parent tokens must still match, and every changed path must
+remain in scope.
+
+A passing writer is a candidate, not completed parent work. `/orchestrate
+status <node-id>` shows its retained worktree, branch, base, changed files, and
+verification state. The graph stops `blocked` with “reviewed integration is
+required,” dependents remain closed, and the parent workspace is unchanged.
+Use the displayed worktree and the Session agent view to inspect the result.
+Automatic candidate selection and integration are OG-4 work; this preview does
+not apply, commit, merge, push, or publish the candidate.
+
+Every publication into your workspace — graph candidate or ordinary delegate —
+now records what it replaced before it changes the first byte. That record
+holds each target file's prior content, mode, and whether it existed at all,
+and it is marked applied or reverted when the publication finishes. If the
+process stops partway, the missing outcome is the evidence: Collomia says so at
+startup and in `/restore integration`, names the files, and restores the
+recorded prior state only if you ask. It will not finish a half-applied
+integration, because repeating a mutation whose effect nobody observed is
+exactly the replay it refuses everywhere else. Very large files are named as
+unrestorable rather than silently dropped, so you always know what you have to
+reconcile by hand.
+
+An interruption like that never resolves itself, and Collomia cannot end it by
+looking: a file matching its recorded prior bytes may never have been written,
+or may have been written and edited back. Only you can say which, so both of
+your answers are recordable. `/restore integration <id>` puts the prior bytes
+back. `/restore integration <id> keep` records that you inspected the workspace
+and are keeping what was published, and changes nothing on disk. Until you
+choose one, no Orchestrated Goal integration, combined verification, or waiver
+will proceed — each of those is a claim about the combined workspace, and a
+workspace that may hold some of a candidate's files and not others is not a
+state any of them can honestly be made about.
+
+`/orchestrate integrate <node-id>` is the one path that publishes a candidate
+into your workspace. It applies the whole candidate — never a subset, because
+the child's verification covered its entire tree — under the pre-integration
+checkpoint, through ordinary integration permission, and only when you ask for
+it by node. If any file conflicts with a change you made since, the whole
+integration is refused rather than half-applied.
+
+Afterwards the node reads `integrated`, not `done`, and the graph reports
+`awaiting_verification`. That is deliberate: the child's tests passed in its
+own isolated worktree, which says nothing about the combined workspace they
+have now been merged into. Every previously accepted node is marked stale for
+the same reason. The node's own text names the checkpoint that can undo the publication.
+
+`/orchestrate verify` is what completes it. It runs the checks this repository
+conventionally uses against the merged workspace, through the same
+`run_command` permission you would get by typing them, and completes the
+integrated nodes only when every one passes against a workspace that did not
+change while they were running. If anything fails, the node stays `integrated`
+and unfinished — which is the whole reason for the separate state, because a
+candidate can apply cleanly, pass its own tests, and still break a package it
+never touched.
+
+Where no meaningful automated check applies, `/orchestrate waive <reason>`
+completes the node on your written judgement instead. It needs a specific
+reason, and it is recorded as a user-authored waiver rather than as
+verification in the node's text, in the evidence, and in the command output.
+It finishes a node exactly as verification does, so the record saying which one
+happened is the only thing keeping them apart.
+
+`/agents apply` will not publish one either. A graph candidate is an ordinary
+delegate's retained worktree as far as that surface is concerned, so it can be
+reviewed there, but publishing it would change your workspace while the node
+still said reviewed integration was required and no combined-workspace
+verification had run. Both operator and primary-agent publication are refused
+for graph candidates until the rest of OG-4 ships. Reviewing, `/agents verify`,
+and the `/orchestrate reconcile` and `/orchestrate discard` worktree controls
+all remain available.
+
+### Reconciling retained worktrees
+
+Every worktree Collomia creates is recorded against the node and attempt that
+caused it, the moment Git creates it — so a cancelled wave, an exhausted
+budget, or a session that simply stopped still leaves you a list rather than a
+mystery directory. But a recorded path is a memory, not an observation. These
+trees live under your system temp directory, so by the time you come back one
+may have been swept by the operating system, removed by hand, or be sitting
+there full of unreviewed work.
+
+`/orchestrate reconcile` looks at each one and records what it found:
+
+| Disposition | What it means | What to do |
+| --- | --- | --- |
+| `present` | Registered with Git and still holding changes. | Review it, or discard it with `confirm`. |
+| `empty` | Registered and intact, but nothing changed in it. | Safe to discard; nothing is lost. |
+| `missing` | The directory is gone. | Nothing to do. Discard clears the leftover branch. |
+| `orphaned` | The directory exists, but Git no longer registers it. | Inspect and remove it yourself. |
+| `base_unreachable` | Intact, but the commit it branched from is gone from the parent. | Its changes cannot be diffed against the claim; inspect by hand. |
+| `discarded` | You asked Collomia to remove it, and it did. | Nothing. The record of what was removed stays. |
+
+Until you run it, `/orchestrate status` says `unreconciled` rather than
+implying the path is current.
+
+`/orchestrate discard <node-id>` removes a tree you no longer want. It is
+deliberately awkward in three ways, because it deletes work nothing has
+reviewed:
+
+- it refuses a tree you have not reconciled, so you decide against contents
+  rather than a path;
+- a tree still holding changes needs `/orchestrate discard <node-id> confirm`,
+  after the changed-file count has been shown to you; and
+- an `orphaned` directory is refused outright. Removing it would be a
+  recursive delete of a path rather than a Git operation, and that is yours to
+  perform.
+
+The model cannot run either command, and no autonomy mode reaches them.
+Archiving a terminal graph also waits until its trees have been observed —
+archiving ends the session's pointer to them, and the graph is the only thing
+that knows they exist. Observing is all that is required; a reconciled tree
+full of changes archives fine.
+
+The fixed aggregate automatic-read envelope is visible in `/orchestrate
+status`: at most two concurrent workers, eight starts, 64,000 read tokens, and
+fifteen minutes total read wall time. Each child is also capped at five minutes
+and eight iterations, and each node retains the two-attempt bound. Provider,
+profile, scheduler, permission, and cancellation limits can be tighter. The
+graph records why it delegated and the worker identity, usage, evidence,
+retry, and terminal state.
+
+The whole graph also has an experimental envelope: 96 provider
+iterations, 1,000,000 charged tokens, $5 estimated cost when
+every token-bearing contribution has configured pricing, and 30 minutes of
+active execution after approval. Each is yours to set through
+`options.orchestration_*`, and only an implausible value is refused. The
+resolved limits are stored with the graph and cannot be widened by repository
+content, instructions, skills, hooks, or the model — none of those is you.
+Reaching an exact limit prevents another provider or
+scheduler admission; a response that crosses one records its usage and ends
+the graph `budget_exhausted`, keeping every accepted node and retained
+candidate for `/orchestrate extend`. Automatic workers inherit a share of the
+remaining allowance, while tighter primary/profile/read limits continue to
+win. Older saved graphs retain the ceiling stored when they were created; an
+upgrade never silently grants an in-progress graph more budget. If pricing is
+incomplete, Collomia says cost is unavailable and relies on
+the token, iteration, and active-wall limits—it does not pretend the dollar
+ceiling was observed.
+
+`options.max_iterations` counts provider/model response cycles, not individual
+tool calls: one response may contain several tool calls. In Standard mode it
+limits the whole turn. In Orchestrated Goal it is a consecutive no-progress
+lease inside one immutable primary node attempt. A novel successful tool
+result, newly observed workspace state, fresh verification, or resolution of a
+recoverable failure renews the lease; repeating equivalent evidence does not.
+This leaves room for the model to submit a completion proposal after a final
+productive action instead of stopping at the same boundary. The configured
+whole-graph iteration ceiling remains the outer limit across the proposal, all
+primary attempts, compaction, and automatic workers. This prevents a
+multi-node graph from exhausting an ordinary 24-iteration setting merely
+because earlier work was productive, without making the graph unbounded.
+
+Potentially mutating and external actions still receive a durable write-ahead
+generation before they run. That is the recovery record used to prevent replay
+after an interrupted side effect. Evidence freshness separately follows the
+machine-observed Git workspace token: if a completed process, command, or
+network smoke check leaves that token unchanged, earlier verification remains
+current; if it changes or cannot be observed, fresh verification is required.
+A successful recognized direct verification command returns an explicit
+receipt in the tool result. Direct `python -m pytest`, virtual-environment
+Python module forms, and `uv run python -m pytest` are recognized; shell
+composition that can mask the verifier's exit status is still rejected with a
+safe direct-command suggestion.
+
+The same status panel shows durable aggregate model work. The primary lane
+includes the explicit proposal call plus later serial execution; automatic
+reads and automatic isolated writers have their own lanes. Each reports provider iterations and input/output
+tokens, and the total shows both elapsed time from the start of `/orchestrate`
+and active post-approval execution time. Cost
+appears only when every token-bearing contribution had user-configured
+pricing; otherwise the panel says `cost unavailable` rather than implying the
+work was free. Failed provider requests still count as iterations even when
+they report no tokens. A reached pause, terminal transition, or process
+boundary freezes active time; explicit resume restarts it, so user review,
+paused time, and downtime do not consume the active allowance. These counters
+are measurement, not authority, and do not replace tighter existing bounds.
+
+After approval, Collomia performs one provider-accounted compaction before the
+first graph node executes when enough proposal history exists. During later
+execution it also compacts proactively when the estimated prompt for one call
+would consume at least one-eighth of the graph's remaining cumulative token
+allowance. This trigger is independent of the ordinary 80%-of-context-window
+trigger: a 17,000-token prompt may fit easily in a 500,000-token context window
+while repeated calls still consume a one-million-token graph allowance. The
+Session tab and `/context` therefore show the per-request prompt/window and the
+whole-graph cumulative usage together. Compaction requests consume and record
+tokens like every other provider call.
+
+Accepted-node handoffs are different from those model-authored summaries:
+they are deterministic runtime state transitions, cost no provider iteration
+or tokens, and replace the entire prior node context for the next request. The
+append-only session still retains every original message, tool result, graph
+snapshot, and the handoff marker.
+
+Use `/orchestrate status [node]` at any time to inspect the graph or one node,
+including dependencies, acceptance criteria, attempts, failures, commands,
+evidence, and the fixed preview bounds. `/tasks` and the Session/context-rail
+views project the active graph rather than showing a stale logical plan.
+After approval, whole-plan replacement and model-directed delegation tools are
+not part of the primary tool surface; the runtime owns graph transitions and
+automatic claims. Collomia enforces that tool set again before decoding or
+executing a call, so a model's remembered `update_plan` or `delegate` call is
+blocked rather than allowed to cross the runtime authority boundary.
+`/orchestrate pause` is also available in the limited command lane while a turn
+is running. It durably prevents new graph scheduling, lets the current
+provider/tool/worker iteration finish, and then records a safe paused boundary;
+it does not pretend to suspend an operating-system process. The status bar
+shows `GOAL… · EXP` while the boundary is pending and `GOAL ‖ · EXP` once it
+is reached. `/orchestrate resume` clears only pause state and starts the next
+turn, so an in-process active attempt, its evidence, and its bounds remain
+intact. `/orchestrate cancel` remains the immediate whole-graph stop.
+If the graph is already terminal, cancel instead archives it as the session's
+current resumable graph and reports that the session is ready for another
+`/orchestrate <goal>`; it does not delete the earlier transcript or evidence.
+During an unapproved proposal, `/orchestrate cancel` returns to the mode that
+was active before the proposal. `/plan off` is also an explicit escape: it
+cancels the proposal and returns directly to execution mode. Neither command
+approves the plan or runs an implementation tool.
+
+If a graph ends `blocked`, `/orchestrate retry <node-id>` creates a new attempt
+only when that node has attempt budget remaining and no non-replayable action
+is unresolved. That explicit retry action can also reattach a saved blocked
+graph after the exact conversation is reopened, without first running
+`/orchestrate resume`. The blocked attempt and its evidence remain inspectable.
+Retry fails closed after attempt exhaustion or when an interrupted mutation
+may already have happened; it never converts model prose into proof or repeats
+an ambiguous side effect. There is no node-cancel command because every
+current node is required—cancelling one would be equivalent to cancelling the
+graph.
+
+Every bound on an approved graph is a speed bump, not a wall. If one is
+reached, the graph stops with `budget_exhausted`, keeps every accepted node and
+retained candidate, and waits for you: `/orchestrate extend` grants another
+envelope of the same size and continues. There is no limit on how often you may
+decide to continue, and the count of grants is recorded in the graph. An
+extension is not a resume — each unfinished node starts a new attempt, so it
+rereads whatever state it needs rather than assuming the earlier context, and a
+node that had already spent its attempt bound stays blocked rather than
+becoming ready again.
+
+Size the envelope up front in configuration when you know a job is large:
+
+```json
+{
+  "options": {
+    "orchestration_max_iterations": 300,
+    "orchestration_max_tokens": 5000000,
+    "orchestration_max_cost_usd": 25,
+    "orchestration_max_active_wall_seconds": 7200
+  }
+}
+```
+
+Omit a field, or set it to zero, to keep its default (96 iterations, 1,000,000
+tokens, $5, 1800 seconds). Only implausible values are refused. These are your
+settings: a repository file, skill, hook, or model response cannot widen the
+envelope, and none of this affects the permission, verification, write-scope,
+or publication decisions, which are safety gates rather than resource bounds.
+
+The envelope charges prompt tokens the provider had to read anew plus
+everything generated. Tokens served from the provider's cache are reported in
+`/orchestrate status` but not charged, because a long node resends its whole
+prompt each iteration and charging that would measure conversation length
+rather than work done.
+
+A saved graph is visible but deliberately inert after reopening a session;
+`/orchestrate resume` reattaches a nonterminal graph and clears a saved pause
+only as part of that explicit action. For a terminal blocked graph, an explicit
+`/orchestrate retry <node-id>` may reattach and safely reopen that node in one
+step. Neither command runs merely because persisted bytes exist, preventing
+project or session content from silently opting the user back in.
+
+Resume is mutation-safe, but not yet an exact replay of a multi-worker
+schedule. An interrupted replay-safe read may be recomputed only as a fresh
+bounded attempt. An interrupted isolated writer blocks for inspection and
+cannot use safe retry, because its retained worktree may already have changed.
+A potentially mutating or external parent action is durably marked
+before it starts; if its outcome is ambiguous after interruption, the graph
+blocks for reconciliation and never automatically repeats it. `/orchestrate
+reconcile` tells you what is actually left in that writer's worktree, and
+`/orchestrate discard` removes it if you decide it is worth nothing. Exact
+scheduler recovery, reusing a retained candidate, and reviewed integration are
+later milestones.
+
+An active graph prevents session switching and rewind. After it reaches
+`done`, `blocked`, `cancelled`, or `budget_exhausted`, start another wave in
+the same session with `/orchestrate <new-goal>`. Collomia durably tombstones
+the old graph as the resumable graph and detaches its controls while retaining
+all old snapshots, evidence, and transcript records. The same behavior applies
+to a terminal saved graph after reopening the session; a nonterminal saved
+graph still requires explicit resume or cancellation. This preview has no
+configuration switch, repository-controlled opt-in,
+headless flag, per-node/branch cancellation, or verification waiver.
+Controlled credential-free comparisons support the current narrow fan-out
+decision: substantive independent repository-fact and cross-layer source/test
+investigations produced the same grounded result faster than Standard and
+primary-only graph runs, while their extra iterations and tokens stayed
+visible. This is not a claim that orchestration is always faster or cheaper.
+Automatic candidate selection/integration and exact multi-worker recovery
+remain later Orchestrated Goal work.
 
 ### Workspace paths and prompt files
 
@@ -3371,8 +3888,12 @@ turn.end               run.result
 ```
 
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
-and `plan.update` kinds for consumers that share the event model; do not assume
-those reserved kinds appear in every current CLI stream.
+`plan.update`, `goal.graph.update`, and `delegate.update` kinds for consumers
+that share the event model. `goal.graph.update` is now written to durable
+session activity by the explicitly approved, TUI-only Orchestrated Goal
+preview. Standard mode and headless commands remain unchanged, and there is no
+configuration or automation activation surface. Do not assume reserved kinds
+appear in every current CLI stream.
 
 `tool.call.delta.arguments_delta` may be incomplete JSON while streaming.
 Collomia does not execute it until the provider completes and the adapter
@@ -3386,6 +3907,7 @@ The last line is always `run.result`:
   "kind": "run.result",
   "result": {
     "status": "ok",
+    "outcome": "done",
     "answer": "...",
     "session_id": "20260719-120000-a1b2c3",
     "changed_files": ["main.go"],
@@ -3398,10 +3920,12 @@ The last line is always `run.result`:
 }
 ```
 
-`status` is `ok`, `error`, or `cancelled`. Schema v1 adds optional structured
-`failure`, `partial`, and `refused` fields without changing those established
-status values. Error results make `collo` exit non-zero after writing the final
-record. Exit codes are 0 for success, 1 for execution/provider failure, 2 for
+`status` is `ok`, `error`, or `cancelled`. The additive `outcome` field is
+`done`, `blocked`, `cancelled`, or `budget_exhausted`, separating goal progress
+from the established process-status contract. Schema v1 also carries optional
+structured `failure`, `partial`, and `refused` fields. Error results make
+`collo` exit non-zero after writing the final record. Exit codes are 0 for
+success, 1 for execution/provider/blocked/budget failure, 2 for
 usage/configuration failure, and 130 for cancellation. In shell pipelines,
 enable `pipefail` if the pipeline's exit code must reflect Collomia rather than
 the final parser:
@@ -3594,7 +4118,7 @@ question broker can make the model-visible subset smaller.
 | Tool | Purpose and important bounds |
 | --- | --- |
 | `read_file` | UTF-8 text with line numbers; defaults to 400 lines, maximum 5,000; files over 1 MiB must be read in chunks. |
-| `list_files` | Directory tree including hidden files; skips `.git` and session data; depth 1-8; maximum 5,000 entries. |
+| `list_files` | Directory tree including hidden source files; skips VCS metadata, dependency trees, build output, caches, virtual environments, and session data; depth 1-8; maximum 5,000 entries. |
 | `search_files` | Go-regular-expression search with path/glob and result limits. |
 | `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
 | `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |
@@ -3619,7 +4143,7 @@ question broker can make the model-visible subset smaller.
 | `format_file` | Format one file with the project's language server; an ordinary tracked, undoable write. |
 | `web_search` | Search the public web through DuckDuckGo; no API key or configuration. Default 5 results, maximum 15. |
 | `web_fetch` | Fetch one http(s) URL as readable text, markdown, or raw. Public internet only; 5 MiB response cap. |
-| `update_plan` | Maintain a structured plan persisted with the session. |
+| `update_plan` | Maintain a structured plan persisted with the session; terminal steps require evidence/reasons, dependencies are validated, and `verification_note` records why no meaningful automated check applies. |
 | `load_skill` | Load a relevant skill's full manifest and bundle map on demand. |
 | `delegate` | Run bounded parallel sub-agent tasks; omitted inside sub-agents. |
 | `ask_user` | Pause for a typed answer; interactive TUI only. |
@@ -3632,6 +4156,50 @@ session, an oversized returned string includes an opaque reference that
 `read_tool_result` can inspect in bounded ranges; in ephemeral mode it uses an
 ordinary truncation marker. In either case, omitted output is not evidence
 that an unseen operation succeeded—narrow the request or inspect the reference.
+
+### Evidence-gated completion
+
+In primary execution mode, a model response with no tool calls is a proposed
+finish, not automatically a completed turn. Collomia checks the proposal
+against structured state it can observe:
+
+- An active plan cannot still contain `pending` or `in_progress` steps.
+- `done` steps require evidence; `blocked` and `skipped` steps require a reason
+  in the same `evidence` field. Dependencies must be known and acyclic, and a
+  step cannot be active or done before its dependencies are done or skipped.
+- A successful tracked write makes earlier verification stale. A subsequent
+  direct, conventional build/lint/test command must succeed, or the plan must
+  carry a specific `verification_note` explaining why no meaningful automated
+  check applies. The note is model-authored disclosure, not machine-observed
+  proof.
+- After a tool failure, the agent must use another tool to recover or update
+  the relevant plan step to `blocked` with the exact reason.
+
+When a gap remains, Collomia adds a deterministic controller notice and gives
+the agent another iteration. It does this at most twice; the existing
+iteration, token, cost, cancellation, permission, and persistence limits still
+apply to every continuation. The resulting goal outcome is one of `done`,
+`blocked`, `cancelled`, or `budget_exhausted`.
+
+Read-only planning mode is intentionally exempt: producing a plan whose
+implementation steps remain pending is the successful result of that mode. A
+terminal plan retained from an earlier turn is also historical rather than an
+eternal gate; it becomes active again only when the agent updates it. Purely
+informational work with no active plan, tracked write, or failed tool finishes
+normally.
+
+Delegated agents retain their existing isolated-worktree review and
+parent-verification flow. This first controller slice gates the primary agent,
+which owns the shared goal and structured plan.
+
+Verification recognition is conservative. Collomia recognizes direct common
+commands such as Go build/vet/test, Cargo checks, package-manager scripts,
+pytest/Ruff/mypy, Make targets, and `git diff --check`; shell compounds and
+success-masking forms such as `go test ./... || true` never count. The write
+gate covers file mutations made through Collomia's tracked write tools. A
+command or external tool can have side effects the runtime cannot enumerate,
+so permissions, plan evidence, and the final diff remain necessary review
+surfaces.
 
 ### File editing, diff, and undo
 
@@ -5022,8 +5590,11 @@ manual inspection.
 
 Every run creates or resumes a durable per-workspace session. The append-only
 JSONL file includes metadata, full messages, runtime events, compaction
-markers, structured plan updates, and bounded delegated-agent lifecycle/outcome
-snapshots. These agent records are observational and are never replayed as work.
+markers, structured plan updates, bounded delegated-agent lifecycle/outcome
+snapshots, and—only for the internal OG-1 evaluation path—complete versioned
+goal-graph snapshots. Graph attempts and evidence are restored as state, never
+replayed as work; an interrupted non-replayable action becomes a reconciliation
+blocker.
 
 ### Session commands
 
@@ -5176,11 +5747,16 @@ image reserves a visible rough estimate of about 1,000 tokens.
 The current structured plan is rendered into a pinned session-state section
 on every provider request. It is refreshed after `update_plan`, resume,
 in-process session switching, compaction, and rewind. Because it is outside the
-message history, compaction cannot remove it. `/tasks` shows the same plan the
-model receives.
+message history, compaction cannot remove it. In Standard and planning modes,
+`/tasks` shows the same logical plan the model receives. During an approved
+Orchestrated Goal preview, `/tasks` instead shows the runtime graph and its live
+node states so a completed proposal cannot be mistaken for execution truth.
 
 When estimated active context exceeds 80% of a known window and enough messages
-exist, Collomia asks the active provider to summarize older history. It keeps
+exist, Collomia asks the active provider to summarize older history. An
+approved Orchestrated Goal additionally compacts at its proposal/execution
+boundary and when one current prompt reaches one-eighth of its remaining
+cumulative token allowance. It keeps
 the six most recent messages verbatim and never splits a tool call from its
 results. Up to three recent failure results, bounded to 16 KiB in total, are
 copied verbatim into the summary record rather than trusting the provider to
@@ -5190,7 +5766,8 @@ manually.
 
 Compaction changes only the model's active context. The full durable transcript
 is retained in the session JSONL file. Compaction itself consumes a provider
-request and tokens.
+request and tokens; graph-triggered compaction is included in durable graph
+accounting.
 
 ### Session image storage
 

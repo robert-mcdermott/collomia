@@ -17,8 +17,16 @@ without rewriting it.
 | User/project configuration | `schema_version: 1` | A missing version is legacy version 1. Normal loading tolerates unknown fields; strict validation rejects them. A newer version is rejected before activation. |
 | Headless runtime events | `schema: 1` | Optional additive fields are allowed. Unknown event kinds, incompatible required fields, and other schema versions are rejected by `collo replay`. |
 | Durable session records | `schema_version: 1` | New records carry the version on every JSONL line. Legacy records without it are version 1. Unknown optional fields are ignored; a newer version is rejected without appending to the session. |
+| Runtime-owned goal-graph snapshots | `schema: 1` | OG-1 onward snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. OG-2B2a adds optional pause request/reached/reason fields; omission restores as not paused. OG-2B2b1 adds aggregate accounting plus attempt iteration/cost-estimate fields; a legacy snapshot reconstructs only stored attempt usage and does not invent missing proposal or iteration history. OG-2B2b2 adds fixed aggregate limits, active-time state, and per-read cost/iteration bounds. OG-3A adds explicit narrow writer scopes, a fixed writer envelope, writer accounting, stable-base identity, retained-candidate and child-verification facts, and the `candidate` attempt state. OG-3A.1 raises the hard token ceiling for newly created graphs but does not rewrite a nonzero stored limit, so a graph created under the earlier 192,000-token envelope resumes with 192,000 rather than acquiring the new 1,000,000-token allowance. OG-3A.3 adds optional attempt `last_progress_iteration` and pending-action base workspace/generation fields. OG-3A.4 adds optional `completion_gap` and `completion_gap_iteration` attempt fields; omission means no previously recorded exact gap and grants no inferred remediation progress. Omission never invents prior exact progress; an active legacy attempt with successful tool evidence receives one fresh bounded progress lease on its next accounted provider cycle, while the stored aggregate envelope remains unchanged. Omitted limits restore to the current experimental defaults; legacy nodes remain serial, interrupted writers become blockers, restore freezes active time at the last durable update, and stored limits are rejected when implausible or inconsistent with the recorded envelope grant rather than for exceeding a build default (see the OG-3B4 note below). |
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
+
+OG-3A.6 does not change either schema version. Ending a graph's role as the
+session's current resumable graph appends a `goal_graph` record with no graph
+payload. Replay already applies the latest record, so that tombstone clears
+only the live pointer while older snapshots remain in the append-only file.
+Accepted-node handoffs use the existing `compaction` record and preserve the
+full transcript under the established compaction contract.
 
 Image attachment blobs do not contain an executable schema. Their session
 references carry type, size, and SHA-256 metadata, all of which are rechecked
@@ -403,7 +411,10 @@ Durable session JSONL is append-only. Current releases:
 - discard only a malformed final line, treating it as a possible crash-torn
   write;
 - reject an unsupported record version before opening the session for append;
-- never execute a stored tool call during load, replay, fork, or rewind.
+- never execute a stored tool call during load, replay, fork, or rewind;
+- restore an internal `goal_graph` record only when that programmatic mode is
+  explicitly requested, then retry interrupted read-only work in a new attempt
+  while converting any ambiguous non-replayable action into a blocker.
 
 Before a major upgrade, back up `~/.collomia/` on macOS/Linux or
 `%USERPROFILE%\.collomia\` on Windows if the sessions are important. Do not
@@ -419,7 +430,9 @@ pointing it at state already updated by a newer version.
 Use `collo schema events` to retrieve the JSON Schema embedded in the exact
 binary being run. Consumers should:
 
-- select behavior using `schema`, `kind`, and `run.result.status`;
+- select process behavior using `schema`, `kind`, and `run.result.status`, and
+  use the additive `run.result.outcome` when goal-level
+  done/blocked/cancelled/budget-exhausted behavior matters;
 - tolerate unknown optional fields;
 - avoid inferring success from streamed text or an intermediate error;
 - require the final `run.result` for a complete run;
@@ -428,6 +441,244 @@ binary being run. Consumers should:
 Adding a new event kind is not treated like adding an optional field: existing
 strict replay clients reject unknown kinds, so the change requires an explicit
 compatibility decision.
+
+The OG-1/OG-2 decision is deliberately narrow: `goal.graph.update` remains an
+additive schema-v1 kind. Standard CLI/TUI/headless streams never emit it. The
+explicit TUI-only `/orchestrate` preview does emit it into that session's
+durable activity record, but there is no headless activation flag and no
+persisted setting can opt a process in. A consumer of an experimental graph
+trace must use a binary/schema that knows the kind; an older strict replay
+correctly rejects that trace. The established meanings and required payloads
+of every pre-existing schema-v1 kind remain byte-compatible. OG-2B2b must revisit
+event versioning before Orchestrated Goal is exposed to headless automation.
+
+`plan.steps[].acceptance` is an additive optional session-plan field. Older
+readers ignore it; ordinary plans may omit it. The explicit Orchestrated Goal
+approval path requires at least one non-empty criterion per proposed node.
+`plan.steps[].execution` is also additive and optional. Empty and `primary`
+mean serial primary execution; only an explicitly approved `read_only` step is
+eligible for the bounded automatic worker path. Goal snapshot `read_fanout`
+and attempt worker/usage fields are internal additive schema-1 state, with
+restore tests pinning the serial legacy default.
+
+OG-3A additively permits `execution: isolated_write` only alongside explicit
+narrow `plan.steps[].write_paths`. Graph node scopes, `writer_fanout`,
+automatic-writer accounting, attempt base-commit identity, bounded retained
+candidate facts, verification results/tokens, and attempt state `candidate`
+remain internal schema-1 additions. A legacy snapshot contains no
+`isolated_write` node and therefore cannot gain an automatic writer during
+normalization. Missing writer bounds restore to the fixed two-concurrent,
+two-start ceiling; stored values wider than this build are rejected. Running
+writer attempts require a stable parent token/commit and recovery converts
+them to non-replayable interruption blockers rather than scheduling new work.
+OG-3A.4 changes approval/revision policy rather than the node encoding:
+end-to-end proposals use `primary`, while `isolated_write` is accepted only in
+candidate-only executable graphs whose writers are terminal leaves. Existing
+schema-1 snapshots still restore under structural `ValidateSpec`; the stricter
+rule applies when a new proposal is approved or a live graph is revised, so an
+upgrade does not retroactively reinterpret persisted node state.
+OG-3A.5 adds no persisted field. It refines how the existing completion-gap
+watermark advances: a real observed workspace repair or novel failed-verifier
+evidence can renew the bounded remediation window, while equivalent failures
+cannot. Existing blocked attempts remain immutable; an eligible operator retry
+can explicitly reattach the saved terminal graph and starts a fresh attempt
+under the corrected behavior without changing the schema.
+OG-3A.6 likewise keeps schema 1. A payload-free `goal_graph` record is a
+session-current tombstone: older graph snapshots remain in the append-only log,
+but replay leaves no graph eligible for resume. The deterministic accepted-
+node handoff uses the existing compaction record, so the complete transcript
+continues to survive while only active provider context is replaced.
+OG-3A.7 changes no persisted shape. Proposal plan status/evidence fields keep
+their existing meanings in ordinary plans, while Orchestrated Goal approval
+continues to write a fresh pending plan and schema-1 graph rather than treating
+those model-authored fields as execution history.
+OG-3A.8 is additive within schema 1. Attempts gained `completion_gap_kinds` and
+`evidence_pruned`; a snapshot written before them recovers its gap kinds from
+the stored sentence once at restore, and clears a gap this build cannot
+recognize rather than retaining one it could not enforce. The `awaiting_review`
+node state and graph outcome are new values in existing fields: an older
+snapshot that recorded a retained candidate as a blocked node is restored as
+awaiting review, and `goal.graph.update` — internal-only by the OG-1
+decision — adds `awaiting_review` to its outcome enumeration. The public
+`run.result` outcome enumeration is deliberately unchanged, so automation
+consumers see no new value. Evidence pruning removes only ordinary tool results
+from the snapshot; the complete transcript remains in the append-only session
+log, and the attempt records how many records were dropped.
+OG-3B1 is additive within schema 1. Attempts gained optional `worktree` and
+`branch` fields recording the isolated tree an attempt caused Git to create,
+written durably before the child runs. The two are written and validated
+together, so a snapshot carries either both or neither. Omission means only
+that the snapshot predates the record: an older interrupted writer still
+restores as a blocker, described in the earlier general terms rather than by
+path. A writer that changed nothing has its worktree removed, and the fields
+are cleared with it so a restored graph never points at a directory that is
+gone.
+OG-3B4 is additive within schema 1 and relaxes one validation rule
+deliberately. The aggregate budget gained an optional `grant` object recording
+the size of a single envelope; a snapshot without it derives the grant from its
+stored maximum and extension count, so an older graph keeps exactly the
+envelope it had. Stored limits are no longer rejected for exceeding the build
+default — that check would now refuse a legitimately configured graph — and are
+rejected instead when implausible or inconsistent with the recorded grant.
+`options.orchestration_max_iterations`, `orchestration_max_tokens`,
+`orchestration_max_cost_usd`, and `orchestration_max_active_wall_seconds` are
+new optional configuration fields; omitted or zero keeps the previous fixed
+values, so an existing configuration behaves exactly as before.
+OG-3B3 is additive within schema 1. Accounting groups and attempts gained an
+optional `cached_tokens` field, and the aggregate budget gained an optional
+`extensions` count. A snapshot written before them restores with no cached
+tokens recorded, so its stored history is charged in full exactly as it was
+when written — omission never retroactively refunds allowance. The stored
+aggregate limits are still rejected when wider than this build's ceiling; that
+ceiling is now the fixed envelope times one plus the recorded extension count,
+and the count is itself bounded and validated, so a snapshot cannot claim
+allowance that no user granted.
+OG-3B5 is additive within schema 1. Attempts gained optional
+`worktree_disposition`, `worktree_disposition_detail`, and
+`worktree_reconciled` fields recording what the runtime last observed about a
+retained tree and when. Omission means the tree has never been observed, which
+is the honest state for every snapshot written before this slice and is
+rendered as unreconciled rather than as an assumption either way. Validation
+rejects a disposition outside the vocabulary, one describing an attempt with no
+retained worktree, one without a time of observation, and a time of observation
+without a disposition — each of which would be a claim about nothing. A
+discarded tree keeps its recorded identity, so a removed candidate stays
+distinguishable from one that never existed.
+Graph schema 1 gains an optional `waived_nodes` array recording nodes completed
+on an explicit user waiver. It is additive: a snapshot written before this slice
+has none and validates unchanged, and a reader ignoring the field sees the graph
+as it did.
+
+The snapshot validator now also accepts `integrated` on write-candidate evidence
+and `waived` on verification evidence. This is a widening, so every snapshot that
+validated before still validates — and it **repairs** snapshots that could not be
+read at all: a graph that had integrated a candidate previously failed its own
+validation, so resuming or archiving one reported it as structurally false. Such
+a session can now be reopened. The `done` outcome reason also gains a clause when
+nodes finished on a waiver; reasons are prose and were never a stable interface.
+
+The fan-out/wave split changes two user-visible things and no persisted shape.
+The capability matrix gains a second Orchestrated Goal row, so a consumer
+keying on the single previous row title will not find it — the end-to-end row is
+now titled for that path and reports `implemented`, and candidate waves have
+their own `experimental` row. Approving a graph containing `isolated_write`
+nodes also prints a notice above the status. Node reasons, statuses, and the
+approval status text are prose and were never a stable interface.
+
+An integration refused because its retained worktree no longer exists now says
+so, instead of reporting the same "not the recorded Git worktree" wording used
+for a genuine path mismatch.
+
+The graduation review itself changes nothing shipped. It is a recorded decision:
+the mode stays experimental, so every compatibility note below continues to
+apply unchanged.
+
+OG-5L changes nothing shipped: user-guide guidance and a test that enforces its
+citations. No product code.
+
+OG-5K changes one user-visible string and no persisted shape: a node blocked
+because its candidate's base moved now names which of the parent workspace or
+the Git base changed, and reports the retained candidate. Node reasons are prose
+and were never a stable interface.
+
+OG-5J changes nothing shipped: evaluation apparatus only, no product code.
+
+OG-5I changes no persisted shape. The `awaiting_review` outcome reason and the
+completion answer gain an account of nodes the graph never started; both are
+prose and were never a stable interface. The unstarted account is derived from
+existing node state, so every saved snapshot reports it correctly.
+
+OG-5H changes one user-visible string and no persisted shape: the reason on a
+node blocked by failed candidate verification now names the diagnosis and the
+failing command instead of the child's raw exit-code error. Node reasons are
+prose and were never a stable interface.
+
+OG-5G changes nothing shipped: evaluation apparatus only, no product code.
+
+OG-5F changes nothing shipped: it is evaluation apparatus only, with no
+product code touched.
+
+OG-5E changes no persisted shape. It derives the superseded-check account from
+the workspace tokens already recorded on verification evidence, so no snapshot
+field is added and every existing snapshot reports correctly. The `done`
+outcome's `reason` gains a clause when such checks exist; that is prose and was
+never a stable interface.
+
+OG-5D adds an optional `retired_nodes` array to graph schema 1, each entry
+naming a node a revision removed before it completed. It is additive: a
+snapshot written before this slice has no such array and validates unchanged,
+and a reader that ignores the field sees the graph exactly as it did. Snapshots
+carrying one are rejected if it names a node the graph still contains, one that
+had completed, or one without identity, reason, or time. The `done` outcome's
+`reason` text changes when retirements exist, and the terminal-completion error
+now carries that reason where it previously discarded it; both are prose fields
+that were never a stable interface.
+
+OG-5C changes no persisted or machine-readable shape, and no behaviour: it
+records the publication half of the adversarial corpus against refusals that
+already held.
+
+OG-5B changes no persisted or machine-readable shape. It changes which
+absolute path string `integrate_delegate` is authorized against: the resolved
+one the write tools already use, rather than the configured workspace string
+joined to the relative target. On a workspace not reached through a symlink
+the two are identical. Where they differ, a path rule that previously failed
+to match at integration now matches, which is the defect being fixed — an
+existing configuration can therefore see an integration correctly refused
+where it was previously allowed, and the refusal names the rule.
+
+OG-5A adds one value to the `integration_checkpoint` record's `state`
+vocabulary: `accepted`, meaning a person inspected an interrupted publication
+and kept the workspace as it stood. It is additive and resolves the same
+`pending` state that `restored` already resolves, so a reader that treats the
+field as an opaque string is unaffected, and one that enumerates it sees a
+resolved record it does not recognise rather than a pending one it does. No
+graph snapshot, event, or `run.result` shape changes; a restart's scheduler
+fidelity is a property of existing fields rather than a new one.
+
+The OG-4 closure changes no persisted or machine-readable shape. It records the
+milestone's exit-gate evidence and adds one evaluation.
+OG-4D changes no persisted or machine-readable shape. Combined-workspace
+verification and a user-authored waiver both record ordinary verification
+evidence on the accepted attempt, distinguished by the evidence `status`
+(`passed` versus `waived`) and by the tool name `verify_combined_workspace`,
+both of which existing readers already tolerate as opaque strings.
+OG-4C is additive within graph schema 1. It adds the `integrated` node state
+and the `awaiting_verification` graph outcome. Neither appears in a snapshot
+written before this release, so an older graph restores exactly as it did, and
+the public `run.result` outcome enumeration is deliberately unchanged, so
+automation consumers see no new value. A snapshot carrying either value is
+rejected by an older build's state validation rather than misread, which is the
+intended failure direction.
+OG-4B adds an `integration_checkpoint` session record, additive within
+`schema_version: 1`. It carries the delegate, workspace, state, and each target
+path's prior content, mode, and existence, and is appended before a publication
+changes the first byte and again with its outcome. A reader that does not know
+the type ignores it, exactly as it ignores any unknown optional record; a
+session written before this release simply has none, which restores as no
+interrupted integrations rather than as an unknown state. Retained content is
+bounded per file and per checkpoint, and a path whose content exceeded the
+bound is recorded as unrestorable rather than omitted.
+OG-4A is additive within schema 1. Durable delegate status records gained an
+optional `graph_node` flag marking a candidate owned by an Orchestrated Goal
+node. Omission means an ordinary delegate, which is what every record written
+before the field existed was, so a resumed older session treats its delegates
+exactly as it did — a graph candidate restored from such a session is not
+recognised as one, and the graph's own snapshot remains the durable record of
+which node owns it. The event schema accepts the field additively and older
+readers ignore it.
+OG-3C changes no persisted or machine-readable shape. It adds the
+isolated-writer wave's product evaluations and records OG-3's exit-gate
+evidence.
+OG-3B6 changes no persisted or machine-readable shape. It is an adversarial
+test campaign over the isolated-writer dispatch and acceptance gates, and it
+confirmed rather than altered one classification worth recording: exhausting
+the whole-graph writer starts bound ends the graph `budget_exhausted`, not
+`blocked`, so it is extendable like every other resource bound.
+OG-3B2 changes no persisted or machine-readable shape. Verification recognition
+is a runtime decision about a command, and the refused-check diagnostic behind
+a stalled node's blocker is in-memory attempt-scoped state that informs a
+message rather than a gate.
 
 ## Release and developer checklist
 

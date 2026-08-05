@@ -22,10 +22,16 @@ agents, provider platforms, and the Model Context Protocol specification.
 1. **Enforced endpoint-scoped egress and independent security review** (Phase 1's enumerated adversarial corpus now covers rooted symlink races, hard links, MCP prompt injection, and native network denial in addition to the existing command/process/read/write cases; declared endpoints, host-scoped rules, scoped/allowlist postures, and per-capability grants shipped 2026-07-24, and credential-store protection shipped 2026-07-25, but OS-level endpoint-scoped egress confinement remains open).
 2. **Provider platform hardening**: Azure deployment/project discovery, general Responses routing, and explicit routing/fallback (Phase 4 — optional macOS/Windows keychain credential storage shipped 2026-07-25 — capability declarations/discovery/preflight, normalized cross-adapter streaming including Bedrock `ConverseStream`, resilience, recorded/live protocol contracts, and refreshable Azure Entra authentication shipped 2026-07-19).
 3. **MCP ecosystem remainder**: OAuth authentication, experimental tasks, resource subscriptions, audio/annotation passthrough, and argument-level permission scoping (Phase 5 — skills, hooks, lifecycle/resources/prompts/elicitation/progress/pinning, bounded image passthrough, external-data provenance framing, safe list-change refresh, and conformance fixtures have shipped).
-4. **Multi-agent orchestration polish**: automatic plan-graph execution,
-   combined-parent verification/ranking, safe pending-work recovery, and fuller
-   transcript audit (Phase 6 — named primary/delegated profiles, portable
-   reasoning, durable token/cost budgets, restrictive permissions,
+4. **Multi-agent orchestration polish**: the user-approved Orchestrated Goal
+   evidence-gated durable execution mode, automatic writer candidates,
+   combined-parent verification/ranking, exact multi-worker recovery, and
+   fuller transcript audit (Phase 6 now has the OG-1 durable controller,
+   explicit TUI-only OG-2A preview, OG-2B1 bounded automatic read fan-out, and
+   OG-2B2a cooperative pause/resume plus safe blocked-node retry, OG-2B2b1
+   durable primary-plus-worker accounting/status presentation, and OG-2B2b2
+   fixed aggregate enforcement plus comparative read-fan-out evidence,
+   in addition to named primary/delegated profiles, portable reasoning,
+   durable token/cost budgets, restrictive permissions,
    scheduling/isolation, declared-scope serialization, structured results,
    plan-step association, durable outcomes, a live parent/child tree,
    boundary-safe steering, machine-observed child verification, and
@@ -38,6 +44,1595 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-04 — A second audit pass finds integration undurable across a restart
+
+- **Probing the three areas the thin pass had skipped was the right call.** Two
+  of them found real defects, and one is the most serious the milestone
+  produced. Graduating the writer wave on the first pass would have shipped it.
+- **A graph that had integrated a candidate could not be reopened.** The
+  snapshot validator accepts only `accepted` for write-candidate evidence, but
+  integration records `integrated` and combined verification records `waived`;
+  neither status was ever added, and restoring validates. So integrating,
+  closing the session, and reopening it left the graph rejected as structurally
+  false — resume failed, archive failed, and it could not be read back at all.
+- **It reached only the experimental shape.** Integration requires a candidate,
+  candidates require `isolated_write` nodes, and those cannot be mixed with
+  `primary` — so an end-to-end graph never integrates, and the graduated
+  read-fan-out shape was never exposed to this. A candidate-only graph that also
+  used read fan-out shares its graph's fate, but the failure is the wave's.
+- **No in-session test could have caught it.** The failure appears only once the
+  process ends and the snapshot is read again, which is exactly the shape of bug
+  an audit exists to find. A JSON round-trip test now covers the integrated,
+  waived, and verified end states.
+- **A graph completed entirely by waiver claimed its gates had passed.** The
+  terminal reason said "all required nodes passed runtime acceptance gates"
+  after combined verification had failed and the user had overridden it. The
+  node's own reason was honest; the graph's was not, and that is the sentence
+  most likely to be read and quoted. Waivers are now a durable structured
+  record rather than reason text, and appear in the done reason,
+  `/orchestrate status`, and the completion answer. An evidence-backed
+  completion gains no qualification, which is asserted so the warning cannot
+  decay into noise.
+- **Budget exhaustion mid-wave was clean** — the node blocks, the candidate is
+  retained unverified, the parent is untouched, and the explanation names both
+  the absent verification and the budget as its cause.
+- **An already-present candidate was accurate but a dead end**; the refusal now
+  names the two exits.
+- **The isolated-writer wave stays experimental.** The bound was findings that
+  change what a user gets, and a graph that cannot be reopened is past it
+  without argument.
+
+### 2026-08-04 — The fan-out/wave split ships, and the writer path is audited
+
+- **The capability matrix now carries two rows.** End-to-end graphs with
+  governed read fan-out are implemented; isolated-writer candidate waves remain
+  experimental. One row saying "supported except the part that is not" is a
+  hedge nobody parses correctly.
+- **Approving a graph with `isolated_write` nodes now says what will happen.**
+  The wave stops at `awaiting_review` with your workspace byte-for-byte
+  unchanged, which is the design rather than a failure, and nothing reaches
+  your files until you publish a candidate yourself. That notice was chosen on
+  grounds independent of graduation: the end state is the single thing users
+  read wrongly, so it would earn its place even if the wave were fully
+  supported. Marking the experimental path is a side benefit.
+- **The trailing condition got an answer.** An audit pass over the writer and
+  publication path that finds nothing changing what a user gets — bounded so
+  wording-only findings cannot become a permanent veto. Elapsed time is
+  arbitrary; usage volume would need telemetry this project has refused to add.
+- **Scope enforcement held under a real adversarial writer.** A child that wrote
+  outside its declared scope was refused with the offending path named, rejected
+  before verification, the parent untouched, the stray file quarantined in the
+  worktree. This is what makes running two writers at once safe, and it had unit
+  coverage but no end-to-end evaluation until now.
+- **A vanished worktree was refused correctly and explained wrongly.** Retained
+  trees live under the OS temp directory, so one disappearing is ordinary.
+  Integration refused and nothing moved — but the message covered both a genuine
+  path mismatch, worth investigating, and a swept directory, which is not,
+  sending someone hunting for a repository fault when the work was simply gone.
+  Now distinguished, naming the path, the cause, and what to do.
+- **Whether that counts as a clean pass is left open rather than declared.** By
+  the stated bound it is wording, not behaviour. Against that, it changed what a
+  person would do next. The rate is the better signal — one wording issue across
+  two adversarial areas, where earlier slices averaged a behavioural defect each
+  — but two areas is a thin sample, and the unprobed ones are named.
+
+### 2026-08-04 — The graduation review, and OG-5 closes
+
+- **All nine clauses are met.** The review as first conducted found eight met
+  and the ninth half met — cancellation tested, the security half outstanding
+  as the one thing no amount of self-testing closes. That half closed the same
+  day: an independent security assessment was conducted and passed, which also
+  clears the last P0 standing between the project and 1.0.
+- **The assessment's contents are confidential and appear nowhere in this
+  repository** — not its findings, not any score it assigns, not any comparison
+  it draws. The omission is deliberate rather than an oversight, and a later
+  reader should not go looking for detail that was left out on purpose. What a
+  gate record needs is that the condition was tested by someone other than this
+  project and that it passed.
+- **Sustaining the adversarial suite continues as ongoing practice** rather than
+  as an open gate.
+- **The graduation order is ratified, not merely recommended.** Read fan-out
+  graduates first: a measured benefit, a cost that is purely tokens, and the
+  smallest risk surface in the program — read-only workers that cannot mutate
+  the workspace at all. Because every clause passes for both sub-features,
+  shipping them together was a defensible alternative, so the sequencing was
+  raised as an open question and confirmed rather than assumed.
+- **The isolated-writer wave trails it**, and the reason is a pattern
+  rather than a failed clause. Six audit slices found defects and nearly every
+  one was in the writer or publication path — the permission bypass, the
+  retired node, the superseded check, the illegible blocked node, the partial
+  plan calling itself finished, the survivor described as a loss. All are fixed
+  and tested. But a surface that yielded a defect almost every time it was
+  examined is one where the next examination probably finds another, and it is
+  the path that writes into your own repository.
+- **The counter-argument was live when the decision was taken**, not discovered
+  afterwards: those defects were found *because* the clauses were audited, so
+  the evidence is good now precisely because that happened, and the surface may
+  be well understood rather than treacherous. That was weighed and the trailing
+  order chosen anyway. The decision settles the sequencing; it does not settle
+  which reading of the defect pattern is correct.
+- **What the review does not claim.** Not that the mode beats Standard on
+  average — the never-default decision makes that the wrong question. Not that
+  the measurements generalise past their fixtures: elapsed figures come from
+  simulated latency and capture scheduling overlap, and token deltas are
+  fixture-dependent. What is structural is the verification-round count and the
+  review boundary.
+
+### 2026-08-04 — OG-5L writes the when-to-use-it guidance
+
+- **Deciding the mode will never be the default changed the question.** Not "is
+  it better on average" — nobody is ever handed it — but "when is it better,
+  and can you tell". The second question needs an answer written where you will
+  actually meet it.
+- **The guidance is in the user guide's Orchestrated Goal section**, before the
+  worked example rather than after it, because choosing the mode comes before
+  using it. Each case cites the evaluation that produced it.
+- **Its summary:** the mode buys containment and a review boundary, and pays
+  for them in repeated verification and in steps you take yourself. A good
+  trade when a change might be wrong; a bad one when it probably is not.
+- **The condition is enforced by a test, not by intention.** Guidance outlives
+  the measurements behind it — an evaluation gets renamed, or deleted for
+  looking redundant, and the claim it justified stays on the page with nothing
+  underneath. A test extracts every citation and fails if one no longer
+  resolves, naming it and saying to restore the evaluation or drop the claim.
+- **Two more checks guard the shape.** The section must exist under its known
+  heading, so renaming it away fails loudly instead of passing on an empty
+  string. And the "when not to" half must cite evidence itself, because
+  guidance that only says when to use something is marketing, and the case
+  against is the half you most need when the mode is optional.
+- **It does not check that numbers in the prose match what the evaluations
+  print.** That would be brittle across fixtures and machines, and the
+  evaluations are the durable record. What it catches is the silent failure: a
+  citation pointing at nothing.
+
+### 2026-08-04 — OG-5K compares parent drift and completes the comparison list
+
+- **Drift is where the two modes differ structurally, not by degree.** Standard
+  mode has one workspace, so there is nothing to drift from: an edit you make
+  while it runs is simply the state it is working in, silently overwritten or
+  silently built upon, with no record that anything moved. The wave pins each
+  candidate to the base it started from, so the same edit is detectable.
+- **Detection was already right.** The wave blocks the node and keeps the
+  worktree rather than integrating work that was never checked against the
+  workspace it would land in.
+- **The explanation was not.** It read "parent workspace or candidate Git base
+  changed", when the runtime knows which of the two moved. Offering a choice
+  between two explanations it could have distinguished is the same failure as
+  reporting an exit code instead of a command.
+- **And it read as a loss when nothing was lost.** This is the one rejection
+  where the work is finished, usually passing its own checks, and still on
+  disk. Reading only that your node is blocked because the workspace changed,
+  you would reasonably conclude the work was discarded. The reason now names
+  what moved, says the candidate passed and where it is retained, and says
+  plainly that nothing is lost and it needs re-checking against the moved
+  workspace. An unverified candidate is still reported as retained, without the
+  claim that it passed.
+- **The comparison list is now complete** — cross-layer reads, the
+  isolated-writer wave, failure containment, same-scope serialization,
+  cancellation, and drift — which is exactly the condition the never-default
+  decision set before the when-to-use-it guidance could be written.
+
+### 2026-08-04 — OG-5J compares cancellation
+
+- **One of the strategy's few absolutes now has a test behind it.** Duplicate or
+  post-cancellation actions must remain zero. Both modes make zero provider
+  calls after cancellation, and Standard mode is asserted too — a cancellation
+  that leaks a single further action means nothing in either mode.
+- **What Ctrl-C costs differs sharply.** Standard mode had already written into
+  your repository, and that half-finished change is still there when the run
+  stops. The wave's writers were mid-flight in their own worktrees, so your
+  repository is untouched and the work survives as retained trees still
+  attributable to their node and attempt.
+- **Those trees stay accounted for.** `/orchestrate reconcile` lists them and
+  the archive gate refuses to release a graph still pointing at a tree nobody
+  has looked at, so cancelling does not orphan anything.
+- **A design detail surfaced and is correct.** A writer cancelled before it
+  changed anything retains no worktree — an empty directory is not evidence and
+  keeping it would add a reconciliation decision about nothing. The first
+  version of this evaluation cancelled idle writers and so proved nothing about
+  whether in-progress work survives; it now makes each writer produce a change
+  first.
+- **No defect found.** The mechanism was already right. The value is that a
+  stated absolute is now tested rather than argued.
+
+### 2026-08-04 — OG-5I measures the negative case and fixes a partial plan that called itself finished
+
+- **Guidance that only says "use it" is not guidance.** The previous slice
+  measured where the isolated-writer wave wins; this measures where it loses,
+  which the never-default decision made a graduation requirement.
+- **Two nodes touching the same files are the clear "do not use it here".** The
+  wave selects pairwise-disjoint scopes precisely so two writers cannot collide
+  in your workspace, so overlap — its one benefit — is unavailable by
+  construction while every cost is still paid. It started one writer of two.
+  Finishing needs integration, combined verification, and a second wave: a full
+  review cycle per node, for work Standard mode does in one pass.
+- **The evaluation found something worse than the cost.** At that stop the
+  answer read "Orchestrated Goal finished with verified candidates retained for
+  review" and closed by offering `/orchestrate cancel`. The second node was
+  approved, never ran, and was never mentioned. Following that instruction
+  would have discarded work you were never told about.
+- **The graph now reports what it never started**, in the outcome reason and in
+  the answer, and no longer says "finished" when it is not. It also states the
+  non-obvious part: those nodes are not blocked, they are waiting on the review
+  above; integrating is what lets them run; cancel would abandon them. A node
+  that ran and failed recoverably is excluded, since it already carries its own
+  reason.
+- **A reporting correction came out of the same run.** The comparison first
+  printed the wave at "-50% critical path, -46% tokens" — which reads as a win
+  and was nothing of the kind, since it had done half the plan. Measurements now
+  record the scope of work each mode completed, and percentage deltas are
+  suppressed between modes whose scope differs rather than printing a
+  comparison that inverts the finding.
+
+### 2026-08-04 — OG-5H measures failure containment
+
+- **Every comparison before this measured a success against a success**, which
+  is the case the isolated-writer wave is least suited to winning: it pays a
+  verification multiplier for a review boundary nothing needed. Its value, if
+  it has one, shows up when work goes wrong, and nothing had measured that.
+- **The same non-compiling change, in both modes.** Standard mode leaves your
+  repository changed and no longer building, and the agent reports it could not
+  fix it. The wave blocks with the candidate recorded as failed, and your
+  repository is byte-for-byte untouched and still builds.
+- **This is the gate's first quality evidence.** Standard mode's behaviour is
+  not a defect — it is what writing directly into a workspace means — and the
+  evaluation asserts it explicitly so the wave is measured against the real
+  alternative rather than an imagined one.
+- **The cost profile inverts in failure, which changes the guidance.** Three
+  verification rounds is the price of success; a failing candidate
+  short-circuits at the first failed command, taking two seconds against the
+  success case's seventeen. The wave is expensive when work succeeds and cheap
+  when it fails, so its expected value rises with the chance the change is
+  wrong — a measured basis for when to reach for it.
+- **A blocked node also stopped being a mystery.** Its reason read
+  `command failed: exit status 1` — an exit code, not an explanation, saying
+  neither that the candidate's own verification rejected the work nor which
+  check did, though the graph held both. The raw child error was overwriting
+  the diagnosis instead of supplementing it. Four distinguishable cases are now
+  separated, and a check that passed is never named, so nobody is sent to the
+  wrong command.
+
+### 2026-08-04 — Orchestrated Goal will never be the default mode
+
+- **Decided, and it is a product decision rather than a measurement outcome.**
+  Standard model-directed execution remains what runs unless a person asks for
+  something else. That does not depend on how the mode comparison turns out.
+- **It settles what graduation can mean.** Not "becomes what runs by default",
+  only "leaves experimental status as a supported optional mode". The mode does
+  not have to beat Standard on average to earn that, because nobody is handed
+  it by default — it has to be genuinely better for an identifiable class of
+  work, and you have to be able to tell when you are in that class.
+- **It adds a requirement rather than only removing one.** Graduation now
+  requires documented, evidence-backed guidance on when to reach for the mode
+  and when not to, and every case that guidance names must be one the
+  evaluation matrix measured. A mode that cannot say what it is for is not
+  ready to be offered, even optionally.
+- **The hazard is named in the strategy rather than left implicit.** Relaxing a
+  bar while evidence is coming in badly is how gates get quietly rewritten to
+  match whatever was built. What keeps it honest is that the decision was made
+  independently of the measurements, and that it narrows the gate as much as it
+  widens it.
+- **The two sub-features may graduate separately.** Read fan-out buys overlap
+  for tokens; the writer wave buys a review boundary and pays in verification
+  passes. Forcing one verdict would hide whichever is doing worse.
+
+### 2026-08-04 — OG-5G measures the isolated-writer wave
+
+- **The largest hole in the comparison matrix is now measured.** Read fan-out
+  overlaps provider calls; the writer wave creates a Git worktree per node, runs
+  the repository's detected verification set inside each one, and runs it again
+  over the combined workspace after integration. That is where the cost is.
+- **Against Standard mode doing the same two package changes:** the wave halves
+  the implementation critical path (2.40s to 1.27s), costs +8% tokens, and runs
+  three verification rounds against one.
+- **The token premium is not the story; the verification multiplier is.** Read
+  fan-out cost +110% tokens. The writer wave costs +8% — and triples the
+  verification work. On this fixture that is seconds; on a repository whose
+  suite takes ten minutes it is thirty against ten, and the multiplier is
+  structural: one round per candidate tree plus one combined, however slow the
+  suite.
+- **Rounds are counted rather than commands, on purpose.** Each of the wave's
+  rounds runs the full detected set because the runtime detected it, while a
+  Standard-mode round holds whatever the model chose. Comparing 9 commands
+  against 1 would measure the model's taste; comparing 3 rounds against 1
+  measures the structure.
+- **The two modes do not finish in the same place, and the comparison refuses
+  to pretend otherwise.** Standard ends with the work in your repository. The
+  wave ends at `awaiting_review` with the parent byte-for-byte untouched, and
+  reaching the same end state takes two explicit integrations and a combined
+  verification you have to ask for. That is the design working, but omitting it
+  would make the cost comparison meaningless, so both end states are measured.
+- **What the trade actually is:** about half the implementation critical path
+  and a workspace that cannot be touched without review, in exchange for triple
+  verification and a completion that is not one. Whether that is worth it
+  depends on your suite's runtime and what the review boundary is worth to you.
+
+### 2026-08-04 — OG-5F builds the mode comparison harness
+
+- **The cost/benefit clauses need numbers, and the old comparison produced
+  none.** It compared total process wall clock, which also contains fixture
+  setup, Git, and whatever else the machine was doing — noise unrelated to the
+  scheduling question and large enough to invert the result. It had already
+  produced one spurious failure.
+- **Critical path replaces wall clock.** The harness measures the union of the
+  windows in which a simulated investigation was actually running, rather than
+  their sum or the whole process. Serial modes pay every window; a wave that
+  truly overlaps pays them once. A loaded machine inflates every mode equally,
+  so the comparison holds — verified by running it twice while two other test
+  packages ran alongside, the condition the original flake appeared under.
+- **Each mode now carries its price beside its benefit** — critical path, total
+  simulated work, overlap achieved, input and output tokens, and provider
+  iterations — printed as a table with percentage deltas. A clause asking
+  whether an improvement justifies an overhead cannot be answered by an
+  assertion that merely held, so the numbers are the output and the assertions
+  only guard the shape.
+- **The first result, for two independent-read scenarios:** the read wave halves
+  the critical path and costs about 2.1x the tokens, and a serial graph pays
+  that same token premium for no time benefit at all.
+- **It does not close the clauses, and says so.** The measurement is of
+  simulated latency against a scripted client, so it captures scheduling
+  overlap rather than real-world speed. Only the independent-read family is
+  covered; cross-layer implementation, ambiguous diagnosis, migrations,
+  same-file serial work, and the isolated-writer wave — where the real cost
+  sits — remain unmeasured.
+
+### 2026-08-03 — OG-5E stops done from counting a check the workspace outgrew
+
+- **An earlier node's passing suite can stop describing your repository, and
+  the graph was still counting it.** A node's gate is evaluated against the
+  state it completed in — the only state it can be evaluated against — and
+  nothing re-runs it afterwards. So node 1 implements feature A and passes
+  `go test ./featureA`; node 2 then changes code and passes only
+  `go test ./featureB`; and the graph reports that all required nodes passed
+  their acceptance gates while feature A may be broken.
+- **Re-verifying is not the fix.** Staling every finished node on each mutation
+  would stop a multi-node plan converging at all, and the graph does not run
+  commands itself — it observes the ones the model runs. It also cannot tell a
+  repository-wide check from a narrow one without interpreting command lines,
+  which is exactly the judgement it declines to fake everywhere else.
+- **So it says what it knows and nothing more.** A completed graph now names
+  the passing checks whose workspace token is not the final one, in its reason,
+  in `/orchestrate status`, and in the completion answer. Whether those checks
+  still pass is stated as not established either way, because it is not.
+- **The answer carries it because the model will not.** The closing summary is
+  written from inside the final node, where an earlier node's suite is not
+  something the model re-ran or is likely to bring up.
+- **A clean plan gains no qualification.** A node whose check did run against
+  the final state is not named, and a plan with nothing behind reads exactly as
+  it did before — a warning attached to every completion is one nobody reads.
+
+### 2026-08-03 — OG-5D stops a revision from deleting its way to success
+
+- **The model could delete a node it could not finish and be told the plan
+  passed.** A graph revision rebuilds the node set from the proposed plan, so a
+  node the proposal omits simply disappears. With one node done and one node
+  ready, a revision containing only the first left a graph that settled on
+  done, reporting that all required nodes passed their acceptance gates —
+  which about a deleted node is false. Revision is one of the model's two graph
+  tools, so this was reachable without any user action.
+- **Dropping nodes stays legal.** Requirements genuinely turn out unnecessary
+  and replanning is what revisions are for; refusing would make legitimate
+  scope changes impossible. What must not happen is the terminal state claiming
+  the removed node passed.
+- **The removal is now recorded and the completion says so.** A retired node
+  keeps its identity, the state it was in when it went, the revision's reason,
+  and when — and done reports that the approved plan was reduced first and
+  names what left with it. Removing work that already finished is not a
+  retirement: its evidence stands.
+- **Who says it mattered.** The closing message on a completed graph is the
+  model's own text, and a model that just proposed dropping a node is the last
+  narrator to rely on for mentioning it, so the runtime appends its own
+  account. Dropping the last unfinished node settles the graph immediately, and
+  that path ended on a terminal guard that was discarding the reason entirely;
+  both paths now carry it. `/orchestrate status` lists retirements in the one
+  place they can be seen at all, since the graph no longer holds those nodes.
+
+### 2026-08-03 — OG-5C writes down the adversarial publication corpus
+
+- **Publication is where "no silent overwrite" actually bites**, because it is
+  the one operation that puts bytes you did not write into your own workspace.
+  The graduation gate has asked for that property since the program started;
+  nothing had enumerated the ways it could fail.
+- **This audit found the mechanism sound and the evidence missing** — the
+  opposite of the previous slice, and worth saying plainly rather than dressing
+  up as a fix. Three cases were already covered: parent drift reaching a
+  conflict, the post-approval recheck that closes the approval-time race, and a
+  disjoint three-way reconcile that keeps your own edit.
+- **Five were not, and now are.** A symlink standing in for the target file. A
+  symlinked directory component, which the file check structurally cannot catch
+  because nothing exists at the target yet. Both sides independently creating
+  the same path, where any automatic answer destroys one of two authored files
+  and one of them is yours. The parent deleting a file the candidate modified,
+  where republishing would silently undo a deliberate deletion. And publishing
+  the same candidate twice, which must change nothing the second time.
+- **Each asserts the reason rather than just a failure.** A refusal for an
+  unrelated cause would hide exactly the duplicate or overwrite being looked
+  for. The two escape cases also assert that a canary file outside the
+  workspace is byte-identical afterwards.
+- **One corpus covers four routes.** Every apply path — operator,
+  primary-agent reviewed, model tool, and the Orchestrated Goal's own — funnels
+  through the same helper, so a single refusal holds for all of them. That
+  sharing is what makes the corpus cheap, and the previous slice is why it is
+  written down rather than trusted.
+
+### 2026-08-03 — OG-5B closes a permission bypass at the integration boundary
+
+- **A rule that stopped a write was not stopping the same bytes arriving by
+  another route.** Collomia's write tools resolve a target path through the
+  workspace guard, which follows symlinks. Delegate integration named its
+  targets by joining the workspace string as configured. On any workspace
+  reached through a symlink — on macOS that is everything under /tmp and /var,
+  and generally any symlinked checkout — those are two different absolute
+  paths for the same file, so a `deny` rule written in the resolved form the
+  configuration documents matched `write_file` and did not match integration.
+  Publishing a delegate's candidate was a way around a rule that had already
+  been obeyed. Both paths now resolve through the same guard, borrowed from
+  the tools rather than reimplemented, so they cannot drift apart again.
+- **The bug was found by testing a claim rather than by writing a feature.**
+  The graduation gate says permission decisions must be equivalent to the same
+  actions in Standard mode; nothing had checked it. Auditing that one clause
+  produced a real defect rather than a confirmation, which is the argument for
+  working through the remaining clauses the same way.
+- **What equivalence means is now stated instead of assumed.** It is asserted
+  at the parent-workspace boundary. A candidate worktree is not your
+  repository — it is a quarantined copy at a different path whose bytes cannot
+  reach your files except through integration — and a rule you wrote for your
+  repository does not follow a scratch directory around the filesystem. What
+  must hold is that your rule governs every byte that actually lands in your
+  workspace, in either mode, and that it is the same rule that says so.
+- **One evaluation runs the identical rule through both modes**, asserts the
+  rule discriminates rather than blanket-refusing, checks the graph refusal is
+  a permission denial carrying the user's own reason, and confirms the refused
+  candidate is still retained for review. Removing the fix makes it fail with
+  the denied path published into the parent.
+
+### 2026-08-03 — OG-5A restart fidelity and unresolved parent publications
+
+- **The slice started by measuring the thing it was going to build, and the
+  measurement changed the slice.** OG-5's first bullet was extending exact
+  restoration to multi-worker scheduler order, claims, and aggregate bounds. A
+  probe that interrupted a two-worker read wave, round-tripped the snapshot
+  through JSON, and recovered it found that already true: the same nodes are
+  reselected in the same order, no interrupted attempt is ever resumed in
+  place, and the spent envelope carries across untouched. It is now pinned by
+  a test instead of being reimplemented. The part worth stating plainly is
+  that a restart is *charged* for the starts it re-spends — starts that reset
+  on restore would turn an unstable session into an unbounded one, which is
+  not the budget anybody approved.
+- **The same probe found the real gap, and it was a safety one.** Recovery
+  returns immediately on a terminal graph, and `awaiting_review` and
+  `awaiting_verification` are terminal — so a session that stopped partway
+  through publishing a candidate into your workspace recovered nothing. The
+  durable record existed: OG-4B writes a checkpoint before the first byte
+  moves, so a publication that never recorded an outcome is precisely the
+  evidence that the workspace may hold some of a candidate's files and not
+  others. Nothing consulted it beyond a startup warning.
+- **Every later step is a claim about the combined workspace**, so none of
+  them may be made about one the runtime has already written down as unknown.
+  Integrating a second candidate, running combined verification, and recording
+  a waiver now all refuse while an interrupted publication is unresolved,
+  naming the checkpoint, the plan node it belonged to, and both ways out.
+- **Resolving it needed a second answer, not just a warning.** `pending` never
+  resolves itself, and the only exit was `/restore integration <id>`, which
+  undoes the publication. `/restore integration <id> keep` records that you
+  looked and are keeping the workspace as it stands, and changes no bytes. The
+  runtime cannot end the ambiguity by inspection — a file matching its recorded
+  prior bytes may never have been written, or may have been written and edited
+  back — so only a person can, and both of their answers have to be sayable.
+
+### 2026-08-03 — OG-4 closes; an orchestrated goal runs end to end
+
+- **OG-4 met its exit gate**, recorded clause by clause against the tests and
+  commands that proved each rather than asserted from code inspection. An
+  Orchestrated Goal now runs the whole way: proposal, approval, a verified
+  isolated-writer wave, explicit user integration under a recoverable
+  checkpoint, combined-workspace verification, and a completed graph.
+- **One clause had no test, and it was the one about refusal.** Publication is
+  the single graph action that changes your files, so a denial has to leave
+  nothing behind. A new evaluation denies `integrate_delegate` outright and
+  proves the workspace is byte-identical, *no checkpoint was recorded* — a
+  durable record of a publication that never happened would itself be a false
+  claim — and the node still holds its verified candidate for review.
+- **Two of OG-4's six deliverable bullets were not delivered literally, and
+  both are written down rather than dropped.** Hunk-level application was
+  *superseded* for graph candidates by whole-candidate publication, because the
+  unit a child verified is its entire tree. Candidate ranking is *deferred*
+  into OG-5's graduation review.
+- **Why ranking was deferred rather than built.** It presupposes competing
+  candidates for one node, which the runtime cannot produce: the wave selects
+  nodes with pairwise-disjoint scopes, so two writers has always meant two
+  different nodes, never two attempts at one. Building it means a second
+  concurrency model at multiplied per-node cost — in a mode that has already
+  exhausted its envelope on single-candidate work. Its value is also capped by
+  our own authority model: a score never grants permission, so a recommendation
+  may rank only deterministic facts, which rarely separate two working
+  implementations. Whether that trade is worth making is exactly what OG-5's
+  Standard-versus-Orchestrated comparison exists to answer with evidence.
+- **OG-5 — Reproducible recovery and graduation** is now the active milestone,
+  and it should be decomposed before it is started. The recovery work belongs
+  first: the campaigns and the mode comparison both measure a system whose
+  restart semantics ought to be settled.
+
+### 2026-08-03 — OG-4D combined-workspace verification and node acceptance
+
+- **An integrated node now completes, but only on evidence about the workspace
+  its changes actually live in.** `/orchestrate verify` runs the repository's
+  own detected checks against the merged parent through ordinary `run_command`
+  permission, requires every one to pass against a workspace that did not move
+  while they ran, and then accepts every integrated node. A child's pass is
+  never sufficient and never substituted — which is the last clause of OG-4's
+  exit gate.
+- **A failing merge leaves the node unfinished**, which is the case the
+  separate `integrated` state exists for. The evaluation proves it with the
+  failure a child worktree structurally cannot see: a candidate that applies
+  cleanly, passes its own suite, and sits beside a package it never touched
+  that is now broken.
+- **`/orchestrate waive <reason>` completes a node on your written judgement**
+  where no meaningful automated check applies. It needs a specific reason, and
+  it is labelled a user-authored waiver rather than verification in the node's
+  reason, the evidence status, and the command output. It completes a node
+  exactly as verification does, so the only thing keeping the two
+  distinguishable is that the record says which one happened.
+- **Two defects the evaluations caught before the docs did.** Accepting nodes
+  left the graph outcome stuck at `awaiting_verification`, because outcome
+  reduction returns early on an already-terminal graph — the acceptance now
+  clears the outcome it is resolving. And the graph compared the submitted
+  workspace token against the one recorded at integration, which would have
+  frozen the workspace: any edit made after integrating left every node
+  permanently unfinishable. Whether evidence describes the workspace *now* is a
+  filesystem question, and the graph never touches the filesystem; the
+  application observes it before and after the checks and submits a settled
+  token.
+
+### 2026-08-03 — OG-4C graph-owned candidate integration
+
+- **The first time the runtime writes a candidate into your own workspace.**
+  `/orchestrate integrate <node-id>` publishes one node's verified candidate
+  under OG-4B's checkpoint and ordinary integration permission. It is reachable
+  only by a person: it is not a tool, so the model cannot call it, and no
+  autonomy mode reaches it, because this is the point where unreviewed work
+  becomes your files.
+- **A candidate goes whole or not at all.** Hunk-level selection is right for
+  an ordinary delegate, where you are the only judge, but the unit a graph
+  child verified is its entire tree — publishing a subset would put bytes in
+  your workspace that no verification ever covered. A conflict in any file
+  refuses the whole integration for the same reason: applying the part that
+  still fits produces a workspace that is neither what the child verified nor
+  what you had.
+- **The node does not become done, and that is the point.** It moves to a new
+  `integrated` state, and the graph to a new `awaiting_verification` outcome,
+  saying plainly that the combined result is unverified. The child's pass was
+  against its own isolated tree and says nothing about the parent it has just
+  been merged into; treating one as the other is exactly what OG-4's exit gate
+  forbids. Nothing in the runtime can mark an integrated node done — that gap
+  is deliberate and is the next increment's contract.
+- **Publication stales every previously accepted node**, because the workspace
+  those nodes were judged against no longer exists. That is the same treatment
+  an edit made outside Collomia receives.
+- **It is undoable.** The node's reason names the durable checkpoint that can
+  restore the state from before, and a failure at any point leaves the graph
+  untouched, so the node stays awaiting review rather than claiming a state the
+  workspace is not in.
+
+### 2026-08-03 — OG-4B recoverable pre-integration checkpoint
+
+- **Publication writes into your workspace, and the only record of what it
+  replaced lived in memory.** The in-process rollback is sound while the
+  process exists, but a process that stopped between the first file and the
+  last left a workspace that was neither the parent it had been nor the
+  candidate it was becoming — and nothing on disk could say which files had
+  already moved or what they had held. `/restore`'s change tracking is
+  in-memory and does not survive a resume, so it could not answer either.
+- **A durable checkpoint is now written and flushed before the first byte
+  moves**, recording each target path's prior content, mode, and whether it
+  existed at all; an absent file and an empty one restore differently. The
+  outcome is recorded afterwards as applied, or as reverted when the
+  in-process rollback ran. The evidence of an interruption is the absence of a
+  recorded outcome rather than an inference from file contents — a file
+  matching its prior bytes may never have been written, or may have been
+  written and edited back, and only the record can tell those apart.
+- **Recovery reports and never guesses.** An unresolved checkpoint surfaces at
+  startup and through `/restore integration`, and restores the recorded prior
+  state only when a person asks. It deliberately cannot re-publish: finishing a
+  half-applied integration would repeat a mutation whose effect is unknown,
+  which is the replay this program refuses everywhere else.
+- **Oversized prior content is named, not dropped or refused.** Past the
+  retention bound the path is still recorded and marked unrestorable. Refusing
+  the integration would trade a working capability for a guarantee, and
+  omitting the file silently would leave a change nobody knows about.
+- **It lands where writes already happen.** The checkpoint protects the
+  delegate publication path that mutates the parent today, so it is proven
+  against a real mutation rather than built ahead of one; graph-owned
+  publication will reuse it. The test that pins the write-ahead ordering makes
+  the atomic replacement fail while reads still succeed, and asserts a record
+  exists at all — a checkpoint written after the mutations would leave a failed
+  integration with no durable trace.
+
+### 2026-08-03 — OG-4A no unaccounted publication of a graph candidate
+
+- **A graph candidate could be published into the parent workspace, and the
+  graph would not know.** A graph writer is an ordinary delegate to the Team,
+  and the delegate integration path had no idea the graph existed, so
+  `/agents apply` on a retained candidate wrote its hunks into the parent and
+  succeeded. The node stayed `awaiting_review` still saying reviewed
+  integration was required, the graph's recorded evidence and workspace token
+  described a parent that no longer existed, and no combined-workspace
+  verification ran at all. This was reproduced against a real graph before
+  anything was changed, and the new evaluation was confirmed to fail without
+  the fix.
+- **It also contradicted what the product claimed.** The capability matrix and
+  the user documentation both said no candidate is selected or integrated —
+  true of what the runtime does automatically, false of what a user could reach
+  in two commands. Closing the path restored the claim rather than weakening
+  it, which is why this is a defect in the code and not in the documentation.
+- **Candidates are now marked graph-owned** from dispatch, through the durable
+  delegate record, and across a resumed session, with `graph_node` additive in
+  the event schema. Publication is refused at the single funnel every apply
+  path runs through — operator, primary-agent reviewed, and model tool — so no
+  surface stays open. The model's route mattered as much as the human's: the
+  primary agent holds no authority to publish a node's candidate either.
+- **Review is deliberately still allowed.** The retained worktree exists to be
+  looked at, and OG-3B5's whole argument was that a person decides against
+  contents rather than against a path. The TUI refuses before opening the hunk
+  selection UI rather than after the user has finished choosing.
+- What this does not do is publish anything. Graph-owned integration with a
+  recoverable checkpoint and combined-workspace verification is the rest of
+  OG-4; for now the honest state is that no path publishes a candidate at all.
+
+### 2026-08-03 — OG-3C writer-wave product evaluation, and OG-3 closes
+
+- **The evaluation matrix had no isolated-writer case at all.** Every OG-3
+  guarantee was proven by focused agent, graph, and application tests, while
+  the matrix covering OG-1 and OG-2 stopped before the writer wave existed.
+  Signing off OG-3 on that basis would have made it the first milestone
+  accepted to a lower standard than its predecessors, and the strategy's own
+  handoff protocol forbids marking a milestone complete from code inspection
+  alone. This was a real gap, not paperwork.
+- **Three product evaluations now drive a complete runtime** — real delegate
+  permission, real Git worktrees, and the application's own child verification
+  running the fixture repository's actual `go test` inside each candidate tree.
+  The focused tests stub that verifier out, which is exactly why the evaluation
+  is worth having: a stubbed step is where the difference between what the
+  tests assert and what the product does would hide.
+- **They cover** a verified two-writer disjoint wave reaching `awaiting_review`
+  and reporting a finished run naming the review step; a wave in which one
+  writer fails while its sibling's verified candidate survives; and the
+  operator's whole recovery path from retained tree through reconcile, refused
+  unconfirmed discard, confirmed discard, and release.
+- **Each asserts the parent repository is byte-for-byte unchanged**, comparing
+  HEAD, porcelain status including untracked files, and the full file list.
+  That comparison is itself verified to notice both a new untracked file and
+  edited tracked content, so the central exit-gate assertion cannot pass
+  vacuously. Asserting on whole state rather than on the files a writer
+  happened to create is the point: the gate is that *nothing* changed, and a
+  check written around the expected change cannot see an unexpected one.
+- **OG-3 — Isolated writer candidates is complete**, with all three exit-gate
+  clauses recorded against the tests and commands that proved them.
+  **OG-4 — Reviewed integration** is now the active milestone, and it is the
+  first in which the runtime writes to the parent workspace at all.
+
+### 2026-08-03 — OG-3B6 adversarial campaign
+
+- **Three gates on the writer path had real code and no test at all**: hook
+  refusal of a wave, parent drift between the durable claim and dispatch, and
+  the fate of a writer node beyond the wave's starts bound. Each now has an
+  application-level test proving it fails closed, which is the remaining half
+  of OG-3's exit gate.
+- **Hook refusal is exercised through a real configured hook**, not a stub,
+  because the thing being gated is a user's own script. The refusal never
+  becomes an automatic retry, but an explicit user retry is allowed — the hook
+  is external policy a person may have just changed, so a new attempt consults
+  it again rather than assuming either answer. That is what separates it from
+  an interrupted action, which stays unsafe however often it is asked.
+- **Verification spanning a changing tree is rejected**, and it turns out the
+  team layer already discards evidence bound to a superseded state, so the
+  graph's mixed-token check behind it is defence in depth rather than the only
+  barrier. Worth knowing which one is actually load-bearing.
+- **A contract item was withdrawn rather than faked.** "Complete the
+  provider-failure campaign beyond the single-wave case" is not implementable:
+  `defaultMaxWriterStarts` and `defaultMaxWriterConcurrency` are both 2, so two
+  starts *is* one wave and a second wave cannot occur. Writing a test that
+  appeared to cover it would have made the exit gate a claim about the fixture.
+  What the item can usefully mean was covered instead — every writer failing
+  rather than one, and the node beyond the starts bound.
+- **The writer starts bound classifies as `budget_exhausted`, not as a
+  failure**, which the campaign confirmed rather than assumed. That is the
+  right answer under OG-3B4's principle: running out of writer slots is not
+  wrongdoing, so the graph stops for a decision and stays extendable.
+- Also covered: scopes differing only in case are serialized, exercising the
+  deliberate `Overlap`/`Violations` asymmetry from OG-3A.8, and a wave in which
+  every writer fails ends honestly with the parent workspace untouched.
+
+### 2026-08-03 — OG-3B5 retained-worktree reconciliation
+
+- **OG-3B1 made every retained worktree attributable, and then nothing ever
+  looked at one again.** Naming a path is not knowing whether it is still
+  there. These trees live under the system temp directory, so between sessions
+  the operating system may have swept one, a person may have removed one, or it
+  may be sitting there full of unreviewed work — and `/orchestrate status`
+  printed the remembered path identically in all three cases. Every decision a
+  person can make about a candidate depends on which case it is.
+- **`/orchestrate reconcile` observes each tree and records a typed
+  disposition** durably on the attempt: `present`, `empty`, `missing`,
+  `orphaned`, `base_unreachable`, or `discarded`. No disposition means never
+  observed, which is the honest state for every graph written before this
+  slice. Observation is read-only: it removes nothing, reuses nothing, and
+  reopens no attempt.
+- **`/orchestrate discard <node-id>` removes a tree the user no longer wants,
+  and is deliberately hard to reach.** It is not a tool, so the model cannot
+  call it, and no autonomy mode covers it — what it deletes is unreviewed work
+  only a person can judge worthless. It refuses a tree nobody has reconciled,
+  requires the command repeated with `confirm` when the tree still holds
+  changes, and refuses outright a directory Git no longer registers, because
+  removing that would be a recursive delete of a path read out of a durable
+  record rather than a Git operation. Removal is recorded in the audit ledger,
+  and the node and attempt keep the identity of what was removed.
+- **Archiving a terminal graph now waits for the observation.** Archiving ends
+  the session's pointer to a real directory, and the graph is the only thing
+  that knows it exists, so releasing it first would recreate exactly the orphan
+  OG-3B1 removed. The gate asks for the observation, not for the tree to be
+  gone: a reconciled tree full of changes archives fine.
+- **Symlink resolution turned out to be load-bearing.** The system temp
+  directory is itself a symlink on macOS, so Git's spelling of a worktree path
+  and the graph's never match literally; without resolving them every retained
+  tree reports `orphaned`. A test pins it.
+- **What did not change:** nothing reuses, selects, or integrates a candidate.
+  That is OG-4, and the exact scheduler-state recovery this feeds is OG-5. This
+  slice decides only what is *there*.
+
+### 2026-08-03 — OG-3B4 user-owned execution envelope
+
+- **The strategy said configuration could not widen the whole-graph maximum.
+  That was the wrong rule, and it is now changed.** A resource bound is not a
+  safety property: exceeding one means the job is bigger than expected, not
+  that the work is unsafe. Every bound is a speed bump — it stops the graph,
+  keeps every accepted node and retained candidate, and hands the decision to a
+  person. Making one terminal for the *graph* rather than for the *turn* meant
+  a miscalibrated ceiling cost the user everything already completed, which is
+  the opposite of conservative.
+- **The four bounds are now configuration with the current values as
+  defaults:** `options.orchestration_max_iterations` (96),
+  `orchestration_max_tokens` (1,000,000), `orchestration_max_cost_usd` (5), and
+  `orchestration_max_active_wall_seconds` (1800). Zero or omitted keeps the
+  default. Validation refuses only implausible values — 10,000 iterations,
+  100,000,000 tokens, $1,000, 24 hours — because those are integrity bounds
+  rather than policy.
+- **`/orchestrate extend` is no longer capped at two grants.** A person
+  deciding to continue is the entire control; a fixed number of decisions they
+  are allowed to make has no principle behind it. Each grant adds one envelope
+  of the size the graph was configured with, recorded in the snapshot, so a
+  session set up for a larger envelope extends by that larger amount rather
+  than by a build constant.
+- **Snapshot validation changed with it.** It previously rejected any stored
+  limit wider than the build default, which would now reject a legitimately
+  configured graph. It rejects implausible values instead and separately checks
+  that the recorded single-envelope grant is consistent with the stored
+  maximum, so a hand-edited snapshot still cannot manufacture allowance.
+- **What did not change:** repository text, skills, hooks, and the model still
+  cannot widen the envelope, because none of them is the user. Permission,
+  verification, scope, and publication are safety gates rather than resource
+  bounds and remain closed to this kind of tuning.
+
+### 2026-08-03 — OG-3B3 budget-accounting correction
+
+- **A session died on the token ceiling while every other bound had room.**
+  `kanban10` finished node 1, was midway through node 2, and stopped at 998,806
+  of 1,000,000 tokens — with estimated cost at $1.50 of $5, iterations at 49 of
+  96, and active wall at 11 minutes of 30. One bound fired, and it was counting
+  the wrong thing.
+- **The ceiling charged cache reads at full weight.** Of 937,617 input tokens,
+  681,717 were served from the provider cache. An agentic node resends its
+  whole active prompt every iteration, so charging re-read context makes the
+  envelope a function of context length times iteration count: it grows with
+  the square of a node's tool calls while new content grows linearly. The
+  envelope now charges `input − cached + output`. The same session bills
+  317,089 — 32% of the envelope. A provider that reports no cache counters
+  charges everything, exactly as before.
+- **Compaction was spiralling.** The same session compacted six times in its
+  final two minutes. Compaction under budget pressure triggers at a fraction of
+  the *remaining* allowance, so the threshold falls as the allowance falls,
+  and each summary is itself an accounted provider request — re-summarizing a
+  context already reduced to a summary, and spending the remainder doing it.
+  Compaction now records the size it achieved and requires real growth beyond
+  that floor before paying for another, in Standard mode as well.
+- **Exhaustion cost the whole graph.** Accepted nodes and retained candidates
+  survived in the snapshot but could not be continued, so the only way forward
+  was a new goal that redid the finished work. `/orchestrate extend` grants one
+  more fixed envelope, at most twice, and the exhaustion message now names it.
+- **The grant is a user decision and only a user decision.** The model,
+  repository text, hooks, skills, and the model cannot widen the ceiling by any
+  route. The extension count is persisted and validated on restore, so a
+  hand-edited snapshot cannot claim allowance nobody gave it. It is deliberately not a resume: every
+  attempt the exhaustion ended stays immutable, each unfinished node starts a
+  new attempt, and a node that already spent its attempt bound stays blocked
+  rather than being made ready by adding tokens.
+
+### 2026-08-03 — OG-3B2 verification-composition correction
+
+- **A real session lost a completed node to the shape of its shell command.**
+  `kanban9` built a FastAPI/SQLite backend, wrote eleven tests, ran them, and
+  watched them pass — then blocked four iterations later reporting that
+  "potentially mutating work has no successful recognized verification". The
+  suite had run against an unchanged workspace token and was recorded only as
+  an ordinary tool result.
+- **The cause was the prefix, not the check.** The command was
+  `export UV_CACHE_DIR="$(pwd)/.uv-cache" && uv run pytest -q`, and the
+  repository's own `AGENT.md` told the model to redirect package caches into
+  the project folder because the sandbox denies writes elsewhere. Following the
+  project's instructions is what made every verification command ineligible.
+- **The rule now matches the property it protects.** The gate exists so that an
+  observed zero status proves the verifier ran and exited zero. `A && B` has
+  that property whatever `A` is: the shell reports `B`'s status when `A`
+  succeeded and `A`'s non-zero status otherwise. The old rule rejected
+  `A && verifier` for the same reason it rejects `verifier && echo ok`.
+  Recognition now splits on `&&`, requires the final segment to be a
+  recognized verifier, and refuses everything that can decouple status from it:
+  `||`, `;`, pipelines, backgrounding, redirection, and a verifier that is not
+  last. The special-case workspace `cd` wrapper is subsumed. Preparation such
+  as `mkdir -p .cache && go test ./...`, `source .venv/bin/activate && pytest`,
+  or `npm ci && npm test` now qualifies.
+- **Two refusals that were one message are now distinct.** A leading segment
+  that relocates the verifier is still refused — the result would describe a
+  tree other than the one whose state token the evidence is bound to — and says
+  so rather than reporting a masking risk. A final segment assembled by command
+  substitution is refused because the recognizer classifies commands by their
+  literal words.
+- **A refused command names the direct form wherever the verifier sits.** The
+  correction previously inspected only the leading segment, so the failing
+  session received no notice at all and had no way to learn which part of a
+  command it had watched pass was unacceptable.
+- **A node that stalls after refused checks names them in its blocker**, with
+  the exact command to run directly. The operator previously read that no
+  verification existed immediately beneath a passing test suite. This
+  diagnostic is in-memory and attempt-scoped: it informs a message, never a
+  gate decision, and nothing persisted changed.
+
+### 2026-08-03 — OG-3B1 retained-worktree accountability closure
+
+- **OG-3B's exit gate asks that every candidate remain attributable to its plan
+  node and attempt. The successful path satisfied that; three ways of ending a
+  wave did not.** A cancelled wave, a wave whose usage accounting failed, and a
+  process boundary mid-flight each left real `collomia/…` worktrees on disk
+  that the graph could no longer name. OG-3A.8 had already fixed the fourth —
+  aggregate budget exhaustion — which is what made the shape of the remaining
+  three recognizable.
+- **A cancelled wave now records what it left behind.** Cancellation is written
+  first, so the graph states the real reason rather than reducing to a blocked
+  outcome, and the retained facts follow. `FinishWriter` treats a cancelled
+  graph the way it already treated an exhausted budget: identity is recorded,
+  scheduling state stays terminal, and only the attempt states a terminal
+  transition itself produced are accepted, so a late result can add identity
+  but never revive a finished wave.
+- **Identity is recorded before accounting.** A graph that cannot say where a
+  retained tree is cannot honour its promise to retain it, and that should not
+  depend on whether a child's usage counters were well formed.
+- **An isolated worktree is bound to its attempt durably at creation, before
+  the child runs.** Recording identity after a child returns can only describe
+  trees whose children returned — which excludes exactly the interrupted-writer
+  case where an operator most needs the path. Recovery after a process boundary
+  now names the exact orphaned worktree and branch instead of describing
+  something to go find. Deciding what may be reused or discarded is still OG-5
+  reconciliation work; this is the association half of it.
+- **`/orchestrate status` names every retained tree**, on live and saved graphs
+  alike, and marks one whose contents the runtime never examined as
+  unreconciled rather than omitting it or implying verification. Review
+  previously required guessing node identifiers. The model-facing render is
+  deliberately unchanged: the runtime holds no selection or integration
+  authority in OG-3, so naming candidates to the model would advertise work it
+  is not permitted to do.
+- **The writer wave has adversarial application-level coverage for the first
+  time**, driving the real controller, permission, worktree, and verification
+  paths: cancellation mid-wave, delegate-permission refusal before any worktree
+  exists, child verification failure, an out-of-scope write, and a provider
+  failure in one of two concurrent writers that must not discard the verified
+  sibling. Attempt `worktree`/`branch` are additive within graph schema 1.
+
+### 2026-08-03 — OG-3A.8 review-readiness corrections from an implementation audit
+
+- **A full review of the shipped Orchestrated Goal implementation, rather than
+  another trial, drove this slice.** The audit read the strategy against the
+  code and found that the evidence gate was narrower than the design language
+  implied, that two acceptance decisions were made by matching English strings,
+  and that a successful candidate wave was reported to the operator as a
+  failure. Nothing here widens authority; every change either lets honest work
+  finish or removes a way the runtime could be wrong about its own state.
+- **The verification recognizer no longer decides which languages the mode
+  works in.** A mutating primary node cannot complete without recognized
+  verification, so an ecosystem missing from the recognizer was an ecosystem in
+  which every honest change blocked, with no waiver available before OG-4. The
+  recognizer now unwraps environment managers recursively (`uv`, `poetry`,
+  `pipenv`, `pdm`, `hatch`, `rye`, `pixi`, `conda`/`mamba`/`micromamba` with an
+  environment selector, `bundle exec`, `npx`) and recognizes R, Ruby, Elixir,
+  PHP, Swift, CMake/`ctest`, Deno, Haskell, Bazel, `just`/`task`, `tox`/`nox`,
+  and Java build tools alongside the original Go, Rust, Node, and Python forms.
+  Detection gained the matching markers and now reports the runner a Python
+  repository actually uses, so a Poetry or tox project is not told to run a
+  bare `pytest` that cannot work there. Breadth is bounded: a wrapper qualifies
+  only when what it wraps is itself a recognized check, and each new ecosystem
+  contributes its test entry point alone so candidate verification suites stay
+  short.
+- **`git diff --check` is no longer accepted as verification.** A whitespace
+  linter passes on nearly any tree, so accepting it let a mutating node close
+  its verification gate without checking the change it had just made. That was
+  the one recognized command that proved nothing about the work.
+- **Completion gaps are typed state instead of prose.** The remediation lease
+  previously renewed by matching sentence fragments against text the runtime
+  had rendered for the model, so rewording one message could silently strand a
+  productive attempt — the failure class OG-3A.2 through OG-3A.5 each had to
+  correct. Gaps are now `no_tool_evidence`, `no_state_token`, `no_op_write`,
+  and `no_fresh_verification`, persisted additively; the sentence is derived
+  from the kind, and pre-typing snapshots recover their kinds once at restore.
+  A legacy sentence this build cannot recognize clears the gap rather than
+  leaving an unenforceable one. Read-node groundedness likewise now uses a
+  machine-counted successful-tool total from the worker instead of counting
+  `": completed —"` occurrences in its rendered evidence lines.
+- **A verified candidate wave is reported as success.** Nodes holding retained
+  candidates enter the new `awaiting_review` state and reduce to an
+  `awaiting_review` graph outcome, so the writer path working is no longer
+  indistinguishable from it failing. The turn ends with an answer naming the
+  review step instead of a `goal blocked` error, retry refuses with a reason
+  that names the candidate, and budget exhaustion no longer overwrites a
+  retained candidate's node. The state is additive to graph schema 1 and to the
+  internal-only `goal.graph.update` event; the public `run.result` outcome
+  enumeration is unchanged.
+- **A wave that crosses the aggregate budget keeps its candidates.** Usage was
+  previously recorded for the whole wave before any result was interpreted, so
+  a crossing terminated the graph before a single `WriterCandidate` was
+  attached — leaving real `collomia/…` worktrees on disk with nothing in the
+  graph pointing at them. Candidate facts are now durable before the aggregate
+  limit is enforced, and an over-budget wave still records where each worktree
+  is. No further child verification runs after the ceiling.
+- **Automatic writers can no longer commit or branch.** Rebuilding the child
+  registry for a worktree restored every builtin, including `git_commit` and
+  `git_branch`, leaving an explicit non-goal enforced only by prompt text — and
+  in `workspace` or `autopilot` mode those are write-risk actions that need no
+  prompt. A commit there would also move the ref the retained candidate's diff
+  is measured against. They are now removed from the registry and refused
+  again at availability, the same two-layer treatment the graph meta-tools get.
+- **Durable graph state is bounded.** Every transition rewrites the complete
+  snapshot into the session log, so an attempt that retained every tool result
+  made persistence cost grow with the square of a node's tool calls — precisely
+  on the long nodes that reach that point. Attempts now retain at most forty
+  ordinary tool results, never pruning verification or node-result evidence,
+  and record how many were dropped; the complete transcript remains in the
+  durable session log.
+- **A node boundary no longer discards the user's steering.** The zero-provider
+  handoff replaced the entire active context, including guidance the user had
+  been told applies to the remaining task. Mid-graph steering is now retained
+  and reattached after each accepted node, bounded to the steering queue's own
+  depth.
+- **`internal/writescope` has direct tests, and its two comparisons now err in
+  opposite directions on purpose.** The package deciding writer disjointness
+  and scope violations previously had no test of its own. `Overlap` still folds
+  case, because over-detecting a collision only costs parallelism, while
+  `Violations` is now case-exact, because on a case-sensitive filesystem
+  folding `src/` into `SRC/` would silently accept an undeclared write.
+- **Verification:** `go build ./...`, `go vet ./...`, `gofmt -l internal`,
+  `go test -count=1 ./...`, and `go test -race -count=1 ./internal/goalgraph
+  ./internal/agent ./internal/writescope` pass. New coverage: ecosystem
+  recognition and wrapper rejection, Python runner detection, typed-gap
+  renewal and legacy recovery, budget-crossing candidate retention, legacy
+  blocked-candidate restore, evidence pruning under a long attempt, graph-writer
+  tool denial, steering retention across a node boundary, and the writescope
+  table tests.
+
+### 2026-08-03 — OG-3A.7 proposal-state authority and escape paths corrected
+
+- **The third successful Kanban6 wave exposed a proposal-state mismatch, not
+  an execution failure.** The earlier application and SQLite waves completed.
+  For the drag-and-drop wave, the model used ordinary plan semantics during
+  read-only proposal design: it inspected the frontend, marked that
+  investigation node `done` with evidence, and left the implementation node
+  pending. Approval then rejected the otherwise valid topology with `proposal
+  step 1 must be pending`, leaving the session correctly read-only but without
+  the intuitive transition the user expected.
+- **Model-authored plan progress no longer becomes runtime graph truth.** The
+  approval path already rebuilt accepted plans with every status pending and
+  evidence empty, but an earlier validator contradicted that boundary by
+  rejecting non-pending annotations first. That rejection is removed. A
+  `done` or `in_progress` proposal step can describe what the planning model
+  believes, but approval imports only topology, execution class, dependencies,
+  scopes, and acceptance criteria; the runtime starts every node fresh and
+  unproven.
+- **Proposal design avoids repeating its own inspection.** The proposal prompt
+  now tells the model that investigation used to formulate the graph is
+  grounding, not a completed graph node. It should include a pending
+  `read_only` node only when a fresh post-approval investigation is a real
+  dependency.
+- **Both escape paths are explicit and tested.** `/orchestrate cancel` still
+  cancels an unapproved proposal. `/plan off` now means “cancel this proposal
+  and restore execution mode” instead of refusing and pointing elsewhere; its
+  completion description says so while a proposal is active. Neither path
+  approves or executes the saved plan, and ordinary permission boundaries are
+  unchanged.
+- **Regression evidence** recreates a `done` read-only proposal node followed
+  by an `in_progress` primary node, proves approval normalizes both to pending
+  with no evidence or attempts, and exercises both TUI cancellation paths.
+
+### 2026-08-03 — OG-3A.6 multi-wave lifecycle and node-boundary efficiency corrected
+
+- **The first successful end-to-end trial exposed two lifecycle and context
+  defects on its follow-up wave.** A completed graph remained attached and
+  refused a new `/orchestrate <goal>`; cancelling it was a terminal no-op, so
+  starting the SQLite wave required leaving Collomia. In that second wave,
+  runtime node 1 consumed 47 provider responses, 854,663 input tokens, 39,710
+  output tokens, and 57 successful tools. The model implemented work assigned
+  to all five nodes and passed 25 tests while the runtime still correctly
+  showed only node 1 accepted. Starting node 2 then failed aggregate admission:
+  the next approximately 9,683-token prompt could not fit the remaining
+  5,011-token allowance. Total graph usage was 56 responses and 994,989 tokens.
+- **Terminal graphs now yield without destroying history.** Starting a new
+  `/orchestrate <goal>` automatically appends a durable tombstone for an
+  attached or saved terminal graph, detaches its controls, and enters a fresh
+  proposal in the same session. `/orchestrate cancel` on an already-terminal
+  graph performs the same explicit archive action. Every earlier graph
+  snapshot, transcript message, and evidence record remains in the append-only
+  session log; only the pointer identifying the graph eligible for resume is
+  cleared. A nonterminal saved or attached graph still requires resume or
+  cancellation and cannot be displaced silently.
+- **Accepted nodes now have a hard context boundary.** A passing verifier tells
+  the model to return a tool-free completion proposal and forbids later-node
+  work until runtime selection. The pinned graph repeats that instruction.
+  Once the runtime accepts a nonterminal node, it replaces the active model
+  context with a small runtime-authored handoff before starting the next
+  provider request. The pinned graph retains bounded accepted dependency
+  summaries needed by downstream nodes. This handoff costs no provider call, preserves the full
+  durable transcript, and prevents the next node from repeatedly paying for
+  the previous node's tool loop.
+- **Graph and inspection overhead are smaller by construction.** Proposal
+  guidance now prefers one to three coherent nodes for a scoped change and
+  four to six only for broad work, batches related operations, and requires an
+  immediate tool-free proposal after final verification. `list_files` and
+  `search_files` omit VCS metadata, dependency trees, build output, caches, and
+  virtual environments while retaining hidden source files.
+- **Regression evidence** covers terminal attached and saved graphs beginning
+  another wave, explicit terminal cancel/archive, append-only graph tombstones,
+  zero-provider node-boundary handoff with the prior tool transcript absent
+  from the next request, explicit verifier/node-boundary receipts, scaled
+  proposal guidance, and generated-tree filtering.
+
+### 2026-08-02 — OG-3A.5 repair progress and verifier bootstrap corrected
+
+- **Kanban5 exposed an overcorrection at the exact blocking boundary.** The
+  all-primary six-node graph was schedulable, and node 1 did useful work:
+  FastAPI/Uvicorn dependencies installed, the app imported, Uvicorn reached
+  startup, and machine HTTP checks returned 200 for `/` and `/health`. At 26
+  total graph iterations and 291,940 tokens, the runtime required its generic
+  conventional verification gate. The correctly formed pytest command then
+  returned exit 5 because no tests existed, but the four-cycle lease blocked
+  before the model could react to that new diagnostic.
+- **Repair evidence now renews remediation without admitting churn.** A novel
+  recognized verification failure retains its bounded output and advances the
+  gap watermark. A real Git workspace mutation—such as adding the missing
+  focused test—also advances it. A passing current verifier still closes the
+  gate. Repeating identical failure output through the same or differently
+  spelled command does not renew anything, nor do unrelated reads or rejected
+  wrappers.
+- **New projects establish verification before depending on it.** The proposal
+  prompt now requires each mutating primary node to name a direct build, lint,
+  or test command and requires the first mutating node to create a focused
+  smoke test when no applicable test surface exists. The completion notice
+  gives the same repair instruction after “no tests collected.”
+- **Regression evidence** reproduces the exact boundary: three non-progress
+  responses followed by a novel failed verifier, a workspace repair, a passing
+  verifier, and truthful completion. A companion test proves repeated
+  identical verifier failures still block after the bounded window.
+- **Saved blocked graphs have a one-step retry path.** Persisted graphs remain
+  inert after reopening a conversation, but `/orchestrate retry <node-id>` is
+  itself an explicit activation decision and now safely reattaches that saved
+  blocker before opening the fresh bounded attempt. `/orchestrate resume`
+  remains available for ordinary nonterminal continuation.
+
+### 2026-08-02 — OG-3A.4 completion gaps and executable graph shape corrected
+
+- **The fourth clean-project trial found a gate loop, not useful durable
+  progress.** The scaffold node used 54 provider responses and 900,582 tokens,
+  including 22 pytest-bearing commands, while trying superficial variants of
+  already passing verification. The common
+  `cd <workspace> && UV_CACHE_DIR=.uv-cache uv run pytest 2>&1` form was not
+  recognized, so novel-looking command results repeatedly renewed the broad
+  progress lease even though the same verification gap remained open.
+- **Completion remediation is now tied to the unmet gate.** The runtime
+  persists the exact completion-gap fingerprint and its last gate-changing
+  iteration. Once open, a four-provider-cycle lease renews only when evidence
+  can change that gap; unrelated reads, different commands, and repeated
+  passing output cannot extend it. Exhaustion ends `blocked` with the exact
+  gap instead of spending the aggregate budget.
+- **Safe verification wrappers qualify without weakening exit-status
+  integrity.** An exact redundant `cd` to the current workspace (or `.`) plus
+  `&&`, and a final literal `2>&1`, are canonicalized before classification.
+  Other directories, pipes, semicolons, `||`, and status-masking shell forms
+  remain ineligible. The command tool also states that it already starts in
+  the workspace and asks for direct verification.
+- **Impossible retained-candidate graphs fail before execution.** The trial's
+  primary scaffold necessarily dirtied the parent, after which a dependent
+  `isolated_write` node could neither inherit those uncommitted bytes nor
+  unlock its own dependents because OG-3A stops candidates for review. The
+  proposal/revision validator now defaults end-to-end changes to `primary` and
+  permits `isolated_write` only in candidate-only graphs whose writers are
+  terminal leaves. Candidate approval preflights the stable Git base, names
+  dirty paths, preserves the proposal after failure, and succeeds once the
+  base is corrected.
+- **Regression evidence** covers exact workspace/redirection wrappers,
+  continued rejection of masking forms, a repeated-gap loop with superficially
+  novel evidence, candidate-only topology rules, recoverable dirty-base
+  approval, scheduler diagnostics, snapshot validation, and the existing
+  aggregate/recovery/permission controls.
+
+### 2026-08-02 — OG-3A.3 progress-aware control and workspace evidence corrected
+
+- **The third realistic trial was productive when its local counter stopped.**
+  One primary node reached 24 provider responses after scaffolding the
+  application, repairing dependency/import failures, passing five tests,
+  completing a live health check, and producing fresh recognized pytest
+  evidence on its final action. Durable aggregate accounting was only 53 of
+  96 iterations and 713,278 of 1,000,000 tokens. The runtime denied the one
+  subsequent response needed to propose completion because 24 was still a
+  lifetime attempt counter.
+- **The primary bound is now a no-progress lease.** In Orchestrated Goal,
+  `max_iterations` measures consecutive provider cycles without novel durable
+  successful tool evidence. New evidence or a resolved recoverable failure
+  renews the lease in the same immutable attempt; equivalent repeated evidence
+  does not. Standard turns retain their total iteration ceiling, and the fixed
+  96-iteration/token/conditional-cost/active-wall graph envelope remains the
+  hard outer bound.
+- **Potential effects no longer masquerade as repository changes.** The
+  runtime still advances and durably persists a conservative write-ahead
+  generation before potentially mutating or external work, so interrupted
+  effects remain non-replayable. After a completed action, an unchanged
+  machine-observed workspace token preserves the attempt's observed mutation
+  generation. Starting/stopping a server or performing a smoke request no
+  longer invalidates passing tests unless repository state actually changed;
+  a changed or unavailable state token still requires fresh proof.
+- **Verification feedback and graph shape are more efficient.** Passing direct
+  verification returns an explicit state-bound receipt to the model. Direct
+  Python module forms such as `.venv/bin/python -m pytest` and `uv run python
+  -m pytest` are recognized. Proposal guidance prefers four to six substantive
+  outcome nodes, coalesces serial same-scope work, and treats twelve as the
+  maximum rather than the target.
+- **Focused regression evidence** covers productive attempts exceeding their
+  configured lease, equivalent-evidence exhaustion, unchanged external effects
+  preserving proof, real workspace changes staling proof, Python command
+  variants, positive receipts, proposal granularity, snapshot validation, and
+  the pre-existing recovery/aggregate controls.
+
+### 2026-08-02 — OG-3A.2 primary-loop budget and evidence diagnostics corrected
+
+- **The second realistic trial exposed a control-loop composition bug.** The
+  primary lane used eight iterations in a recoverable first attempt and
+  sixteen in its replacement, then exhausted the ordinary 24-iteration turn
+  counter even though durable graph accounting showed only 31 of 96 aggregate
+  iterations and 396,331 of 1,000,000 tokens. The count was provider/model
+  response cycles, not tool calls; the same 24 responses contained 33 tool
+  calls.
+- **Primary bounds now follow immutable attempt boundaries.** Standard mode
+  still applies `max_iterations` to one turn. Orchestrated Goal applies it to
+  one primary node attempt and renews the same bounded slice only after the
+  runtime accepts an attempt or starts a recorded retry. The fixed aggregate
+  graph iteration, token, conditional-cost, and active-wall limits remain the
+  cross-attempt outer envelope.
+- **Rejected verification is actionable.** The trial repeatedly passed pytest
+  through `2>&1; echo "EXIT_CODE=$?"`; this correctly could not become evidence
+  because the shell tail can mask pytest's failure, but the model received
+  only a generic later gap. A verification-like rejected command now explains
+  the status-masking risk and supplies the safe direct form. Direct commands
+  with leading environment assignments or a virtual-environment executable
+  path are recognized.
+- **Hidden tools are now an enforced boundary.** The graph omitted
+  `update_plan`, but a model-emitted remembered call still reached its JSON
+  decoder and produced the reported unmarshal error. Provider definition
+  filtering and pre-decode execution admission now share one decision; a
+  graph-hidden call is blocked without executing and without recording a false
+  work-node failure.
+- **Focused regression coverage** proves hidden tools cannot be assessed or
+  executed, two primary nodes can each consume their bounded iteration slice,
+  a one-attempt ceiling still terminates truthfully, direct Python verification
+  variants qualify, and success-masked verification returns an exact
+  correction.
+
+### 2026-08-02 — OG-3A.1 aggregate-budget usability corrected
+
+- **A realistic run exposed a calibration failure, not an accounting defect.**
+  An eleven-node application proposal used 67,149 input/output tokens across
+  nine calls. Seven primary execution calls used another 119,977, leaving
+  4,874 of the original 192,000-token envelope while the next request required
+  an estimated 17,793-token prompt. Every one of the 187,126 recorded tokens
+  matched provider usage exactly, but the graph exhausted before reaching an
+  isolated writer.
+- **New graphs have a usable but still fixed envelope.** The token ceiling is
+  now 1,000,000. The 96 provider-iteration, conditionally enforced $5
+  estimated-cost, and 30-minute active-wall ceilings remain unchanged, and
+  tighter provider/profile/worker bounds still win. Configuration,
+  repository content, hooks, skills, and model output cannot widen the limit.
+- **Compaction now understands cumulative work.** A newly approved graph
+  compacts proposal history once before its first node. Later it compacts when
+  one estimated prompt reaches one-eighth of the remaining graph allowance,
+  even if the prompt is far below 80% of the provider context window. The
+  summary request remains recorded primary-lane usage, while the complete
+  transcript remains durable.
+- **The two token concepts are visible together.** Proposal status shows the
+  exact work that approval will seed and its remaining allowance. `/context`
+  and the Session tab label the current prompt as a per-request value and show
+  cumulative Orchestrated Goal consumption separately.
+- **Stored authority does not grow during upgrade.** A graph created with the
+  earlier 192,000-token ceiling restores with that exact ceiling. Only a newly
+  approved graph receives 1,000,000 tokens; snapshots above this build's hard
+  maximum remain invalid.
+- **Focused regression coverage** proves approval-boundary accounting,
+  cumulative-pressure compaction below the context-window trigger, proposal
+  and active budget presentation, the new default, and conservative restore
+  of the earlier ceiling.
+- **Verification:** `go test -count=1 ./...`, `go test -race -count=1 ./...`,
+  `go vet ./...`, `go build ./...`, and `git diff --check` pass on the combined
+  OG-3A and OG-3A.1 worktree, including native macOS sandbox and loopback
+  coverage.
+
+### 2026-08-02 — OG-3A verified isolated-writer candidate wave completed
+
+- **The first automatic writer stops before publication.** An approved plan
+  may declare `execution: isolated_write` only with explicit narrow
+  repository-relative `write_paths`. The graph selects at most two ready,
+  pairwise-disjoint writers in stable order and binds the complete wave to one
+  clean parent state token and exact Git commit.
+- **Existing authority is reused.** The wave obtains the ordinary `delegate`
+  write permission and hooks, then uses the existing shared scheduler,
+  non-recursive child runtime, exact-base `collomia/…` worktrees, inherited-or-
+  tighter child permissions, declared-scope result checks, and bounded
+  accounting. Approval of the graph or scope does not approve either dispatch
+  or a child command.
+- **Child completion is machine-observed.** The application redetects standard
+  verification commands inside each retained worktree and sends every command
+  through the ordinary `run_command` permission/hook path. Passing results are
+  bound to one child-state token; parent drift, base drift, missing commands,
+  failed/stale verification, or an out-of-scope file makes the result
+  ineligible.
+- **The durable handoff is inspectable and intentionally incomplete.** A valid
+  result stores bounded node/attempt/worker/worktree/branch/base, changed-file,
+  scope, command, and state-token facts as a `candidate` attempt. The node and
+  graph stop `blocked` with a reviewed-integration reason. No dependent node
+  unlocks and no candidate is selected, applied, committed, merged, pushed, or
+  published.
+- **Recovery does not replay writers.** A process boundary with a running
+  isolated writer records an interrupted-action blocker. Safe retry refuses
+  it, because the retained worktree may already contain a mutation even though
+  the parent workspace is unchanged.
+- **Compatibility remains additive and conservative.** `write_paths`,
+  `isolated_write`, the fixed two-start writer envelope, automatic-writer
+  accounting, stable-base identity, and bounded candidate facts remain
+  internal additive schema-1 state. Older graphs normalize to no writer nodes;
+  a new writer cannot appear unless a newly proposed graph explicitly contains
+  one and the user approves it.
+- **OG-3 remains open.** Focused graph, plan, agent, and application tests prove
+  stable/disjoint selection, dirty-base refusal, stale/scope rejection, no
+  parent mutation, candidate verification/retention, accounting, approval
+  conversion, and non-replay recovery. OG-3B retains the broader cancellation,
+  provider-failure, corrupted-state, drift, and operator-inspection campaign
+  before OG-3 can be marked complete.
+- **Verification:** `go test -count=1 ./...`, `go test -race -count=1 ./...`,
+  `go vet ./...`, `go build ./...`, and `git diff --check` pass on the completed
+  slice, including the native macOS sandbox and loopback-listener tests.
+
+### 2026-08-02 — OG-2B2b2 aggregate enforcement and comparison completed
+
+- **The graph now owns a whole-run envelope.** Durable schema-1 state stores
+  fixed experimental ceilings of 96 provider iterations, 192,000 input/output
+  tokens, $5 estimated cost when all token-bearing work has configured
+  pricing, and 30 minutes of active execution after approval. Project
+  configuration, instructions, skills, hooks, persisted content, and model
+  output cannot widen them; tighter primary/profile/read limits still win.
+- **Admission and observation both enforce it.** Reaching an exact bound
+  prevents another provider or scheduler admission; a response that crosses a
+  bound records its usage and ends `budget_exhausted`. Automatic read claims
+  receive a durable share of the remaining token, iteration, priced-cost, and
+  active-wall allowance. A completed parallel wave retains every sibling's
+  already-spent usage even when the first recorded result crosses a bound.
+- **Active time has conservative recovery semantics.** A reached pause,
+  terminal transition, and process boundary freeze the clock. Saved state is
+  inert, and only explicit resume starts it again, so user review, pause, and
+  downtime do not consume the post-approval active execution allowance.
+- **Missing pricing remains an explicit limitation, not fake enforcement.** If
+  any token-bearing contribution is unpriced, cost remains unavailable and the
+  runtime relies on its always-enforceable token, iteration, and active-wall
+  ceilings instead of claiming it proved a dollar total.
+- **The comparative conclusion is narrow and favorable where intended.**
+  Credential-free decomposable-fact and cross-layer source/test scenarios run
+  through Standard, primary-only graph, and two-worker graph paths. All produce
+  the same grounded answer. With equal substantive investigation latency, the
+  two independent workers share one expensive critical-path wave and complete
+  faster, while six provider iterations and higher tokens remain visible.
+  Primary-only trivial work starts no worker, and dependency-serial reads never
+  overlap. This supports retaining bounded read fan-out, not making it default
+  or claiming it is universally cheaper.
+- **No event surface was added without a consumer.** Aggregate state remains in
+  the durable graph snapshot and TUI status. `goal.graph.update` remains the
+  same internal transition payload; the headless/event compatibility decision
+  is deferred until a real headless activation design needs it.
+- **Verification:** focused envelope, recovery, controller, application, and
+  comparison evaluations pass. Full test/race/vet/build and documentation
+  checks passed before handoff.
+
+### 2026-08-02 — OG-2B2b1 durable aggregate accounting completed
+
+- **The comparison inputs are now runtime-owned.** Graph schema 1 stores
+  separate primary and automatic-read provider iterations, input/output
+  tokens, cost availability, estimated cost, and the start of the explicit
+  proposal turn. The proposal is part of the primary lane, so Orchestrated
+  Goal cannot look cheaper by hiding its design call.
+- **Failures and retries remain visible work.** Every completed primary or
+  child provider request contributes one iteration even when a failure reports
+  no tokens. Active primary and read attempts retain their own counters while
+  the graph keeps the aggregate.
+- **Status distinguishes facts from missing price data.** `/orchestrate status`
+  shows total, proposal-plus-primary, and automatic-read work with elapsed
+  time. Cost appears only when every token-bearing contribution had configured
+  pricing; otherwise the status says `cost unavailable` rather than `$0`.
+- **Compatibility does not invent history.** The accounting object and attempt
+  iteration/cost-estimate fields are additive schema-1 data. A pre-accounting
+  snapshot reconstructs only token/cost facts already present on immutable
+  attempts and leaves unavailable proposal/iteration history at zero.
+- **The product path proves the split.** State and agent tests cover durable
+  accumulation, provider failures, retries, per-attempt attribution,
+  unavailable pricing, elapsed time, corruption rejection, and legacy restore.
+  Credential-free evaluations prove an explicit two-call proposal is retained
+  and a two-worker investigation plus primary synthesis records exactly four
+  read iterations and two primary iterations. Full test/race/vet/build and
+  documentation checks passed.
+- **Instrumentation is not a favorable verdict.** OG-2B2b2 still owns
+  whole-graph aggregate enforcement, Standard/primary-only/fan-out comparative
+  scenarios, the usefulness decision, and the event/headless compatibility
+  decision.
+
+### 2026-08-02 — OG-2B2a cooperative pause and safe retry completed
+
+- **Pause is a durable scheduling request, not pretend process suspension.**
+  `/orchestrate pause` is admitted while a turn is running, prevents new graph
+  scheduling, lets the current provider/tool/read iteration finish, and then
+  records the safe boundary. The TUI distinguishes `pausing` from `paused`,
+  and `/orchestrate cancel` remains the immediate whole-graph stop.
+- **Resume preserves runtime truth.** An attached paused graph clears only its
+  pause state, retaining the active attempt, evidence, and bounds. A graph
+  restored after a process/session boundary remains inert until the user
+  explicitly runs `/orchestrate resume`; conservative interrupted-action
+  recovery still applies.
+- **Retry is narrow and history-preserving.** `/orchestrate retry <node-id>`
+  accepts only a blocked node with attempt budget remaining and no unresolved
+  non-replayable action. It preserves the blocked attempt and evidence, clears
+  the graph's blocked outcome, and lets ordinary dependency readiness create a
+  fresh attempt. Exhausted attempts and ambiguous interrupted mutations are
+  rejected.
+- **Node cancellation is intentionally absent.** Every current graph node is
+  required, so cancelling a node would only alias whole-graph cancellation.
+  Per-node cancellation stays deferred until optional branch semantics make it
+  truthful.
+- **Compatibility remains additive and internal.** Pause request/reached/reason
+  fields stay in graph schema 1, and `pause_requested`, `paused`, `resumed`,
+  and `retry_requested` use the existing internal-only `goal.graph.update`
+  lifecycle contract. Standard mode, project opt-in boundaries, permissions,
+  and the automatic-read envelope are unchanged.
+- **The control path is exercised end to end.** Graph, agent, app, and TUI
+  tests cover boundary arrival, active-attempt preservation, attached and
+  restored resume, safe retry, unsafe/exhausted rejection, event states, busy
+  command admission, and status presentation. Full test/race/vet/build and
+  documentation checks passed.
+
+### 2026-08-02 — Evidence-gated durable execution contract documented
+
+- **The phrase names an implemented architectural boundary.** Orchestrated
+  Goal is now described consistently as Collomia's experimental
+  evidence-gated durable execution mode: the model proposes graph intent and
+  interprets results, while the runtime owns readiness, attempts, evidence
+  freshness, recovery treatment, and terminal state.
+- **The evidence contract states what each proof prevents.** Automatic reads
+  require a successful tool result and a matching state token when claimed;
+  mutations require recognized successful verification against the current
+  Git token and mutation generation. Model prose never substitutes for either
+  record, and later workspace drift invalidates evidence conservatively.
+- **Current guarantees are separated from later milestones.** Durable graph
+  state, explicit inert resume, fresh-attempt recomputation of replay-safe
+  reads, and non-replay of ambiguous mutations have shipped. Automatic
+  isolated writers, reviewed integration, pause/node controls, and exact
+  multi-worker scheduler recovery remain OG-2B2 through OG-5 work.
+
+### 2026-08-02 — OG-2B1 runtime-selected read fan-out completed
+
+- **The first automatic actor remains a read-only optimization.** A graph-owned
+  execution class now claims at most two independently
+  ready, explicitly approved read nodes in stable order. The primary workspace
+  write lane remains serial, and primary-only or dependency-serial graphs do
+  not gain a child merely because Orchestrated Goal was selected.
+- **Existing delegate safety is reused, not bypassed.** Automatic workers use
+  the same planning-mode registry, inherited-or-tighter permissions,
+  non-recursive topology, bounded evidence inbox, audit identity, cancellation,
+  and provider limits as manual read delegation.
+- **Completion is evidence- and freshness-gated.** A worker result needs a
+  bounded summary, successful tool evidence, and the same Git workspace token
+  as its durable claim. The graph stores worker identity, attempt usage, a
+  `delegate_read` evidence record, and the reason it delegated; child prose
+  alone cannot mark a node done.
+- **The aggregate envelope is fixed and persisted.** The experimental
+  controller allows two live reads, eight starts, 64,000 aggregate read tokens,
+  and fifteen minutes of read wall time. Each child is additionally capped at
+  five minutes and eight iterations, and every node retains the existing
+  two-attempt bound. Scheduler, provider, profile, cancellation, and permission
+  limits can only make those bounds tighter.
+- **Compatibility fails toward serial execution.** The additive plan/node
+  `execution`, graph read envelope, and attempt worker/usage fields stay in
+  schema 1. Snapshots written before fan-out restore omitted execution as
+  `primary` and cannot gain automatic children from an upgrade.
+- **The product path was exercised, not inferred.** One credential-free
+  evaluation proves two governed workers overlap and unlock the dependent
+  primary only after both grounded results arrive; another cancels both
+  workers and proves the graph ends `cancelled`. Unit coverage proves stable
+  claims, serial fallback, bounds, freshness retry, meta-tool isolation, and
+  legacy restore. Full test/race/vet/build and documentation checks passed.
+- **OG-2B is not complete yet.** OG-2B1 owns the runtime fan-out kernel and its
+  authority/bound tests. OG-2B2 retains pause/node controls and the comparative
+  quality, elapsed-time, and cost evidence required by the milestone exit gate.
+
+### 2026-08-01 — OG-2A explicit primary-only preview completed
+
+- **The user surface and the autonomy increase are separate increments.**
+  OG-2A exposes the completed OG-1 primary controller through an explicit TUI
+  proposal/approval/status/cancel/resume flow. OG-2B remains responsible for
+  the first automatic read-only fan-out after the operator contract is proven.
+- **A saved plan or graph is not consent.** `/orchestrate <goal>` must produce a
+  new pending proposal with concrete acceptance criteria, and only
+  `/orchestrate approve` may activate it for the current session. Explicit
+  `/orchestrate resume` is required after a process/session boundary.
+- **The preview remains primary-only.** It adds no automatic delegates,
+  publication authority, configuration switch, headless flag, repository
+  opt-in, verification waiver, or recursive orchestration.
+- **Runtime truth is visible and session-safe.** The TUI carries an
+  experimental goal badge, live graph nodes in the Session/context-rail views,
+  and bounded whole-graph or per-node inspection. Active graphs cannot switch
+  or rewind sessions, terminal graphs reject unrelated prompts until `/new`,
+  and proposal consent cannot cross a rewind boundary.
+- **The exit gate was executed.** Focused app, controller, TUI, planning, and
+  credential-free product-evaluation tests cover the proposal-to-terminal
+  path and its negative authority cases. `go test -count=1 ./...`,
+  `go test -race -count=1 ./...`, `go vet ./...`, and `go build ./...` passed.
+  OG-2B bounded read-only fan-out is now unblocked but has not started.
+
+### 2026-08-01 — OG-1 runtime-owned primary graph controller completed
+
+- **Execution truth moved into a bounded state machine.** A separate
+  `internal/goalgraph` package owns at most twelve required logical nodes,
+  stable dependency-order readiness, immutable attempt IDs, typed failures,
+  machine evidence, two retries/revisions, conservative staleness, and the
+  terminal `done`, `blocked`, `cancelled`, or `budget_exhausted` outcome. The
+  model can propose an optimistic-concurrency revision or exact blocker but
+  cannot replace attempts, evidence, permissions, or runtime state with prose.
+- **Primary execution stayed on the existing authority path.** OG-1 schedules
+  only the primary agent, filters whole-plan/delegate tools, and uses the same
+  registry, permission manager, hooks, sandbox, audit identity, and usage/
+  cancellation limits as Standard mode. Controller meta tools change only
+  graph scheduling and remain available under restrictive profile tool lists;
+  no automatic actor, CLI flag, slash command, configuration field, or
+  repository-controlled opt-in was added.
+- **Completion is state- and mutation-bound.** Git-backed tokens cover HEAD,
+  binary index/worktree diffs, and non-ignored untracked paths, modes, and
+  bytes. A successful structured write that leaves the combined token unchanged
+  is not work, and any potential mutation requires a recognized passing
+  command recorded after it against the current token and mutation generation.
+  Read-only graphs remain usable outside Git; write-bearing ones block there.
+- **Recovery cannot guess.** Full schema-1 graph snapshots are appended to the
+  session. A non-replayable action is fsynced as pending before execution; a
+  crash after that boundary restores an explicit reconciliation blocker rather
+  than repeating the action. Interrupted reads can use a fresh attempt. Graph
+  sessions cannot switch, reset, or rewind beneath the controller.
+- **Visibility and compatibility are explicit.** Bounded
+  `goal.graph.update` events project into Activity and headless progress and are
+  validated by the embedded schema/replay contract. The schema-v1 addition is
+  internal-only: Standard streams remain unchanged, older strict replay rejects
+  an internal graph trace, and OG-2 must revisit event versioning before real
+  automation users can opt in.
+- **The exit gate was run, not inferred.** Credential-free product evaluations
+  drive a real dependency-ordered read/repair/test, recover from a failed read,
+  and prove a denied write never starts. App/session tests restore an ambiguous
+  action as blocked; unit tests cover stable selection, provider/tool retry,
+  revision/invalidation, no-op/unverified writes, persistence failure before
+  mutation, cancellation, budgets, corrupt state, and read/mutation recovery.
+  `go test -count=1 ./...`, `go test -race -count=1 ./...`, `go vet ./...`, and
+  `go build ./...` passed. OG-2 is unblocked but not started.
+
+### 2026-08-01 — OG-1 implementation wave started
+
+- **The next agentic wave is primary-only.** Work began on a durable runtime
+  graph and immutable attempt ledger, deterministic dependency-ready selection,
+  state-bound evidence, bounded repair/replanning, conservative invalidation,
+  and mutation-safe resume. It adds no automatic actors and exposes no
+  `/orchestrate` or CLI mode.
+- **Durability is part of the controller rather than an afterthought.** A
+  potentially mutating graph action must be recorded and flushed before it is
+  executed, so an interrupted action resumes as an explicit reconciliation
+  blocker instead of being repeated because its last result record was lost.
+- **The user-facing experiment remains OG-2.** OG-1 will be exercised through
+  programmatic offline product evaluations, with Standard mode held unchanged,
+  before per-session opt-in, graph approval, or read-only fan-out is exposed.
+
+### 2026-08-01 — Orchestrated Goal strategy recorded
+
+- **This records a decision, not a shipped capability.** Phase 6 plan-graph
+  execution will proceed as an explicit experimental program named
+  Orchestrated Goal. Standard evidence-gated execution stays the default, and
+  `/plan` remains a separate read-only surface.
+- **The runtime will own execution truth.** The approved design separates the
+  user/model-visible logical plan from durable node attempts, readiness,
+  evidence identity, freshness, budgets, cancellation, recovery, and terminal
+  acceptance. Model-authored prose, a child pass, a candidate score, or plan
+  approval cannot grant permission or substitute for combined-parent
+  verification.
+- **The delivery order is intentionally conservative.** First prove
+  dependency-ready primary-only execution and bounded replanning; then expose
+  opt-in read-only fan-out; then isolated writer candidates; then reviewed
+  integration with fresh combined-parent verification; finally prove
+  mutation-safe recovery and decide whether the mode graduates.
+- **The strategy is a cross-agent handoff.** The complete authority model,
+  state design, non-goals, milestones `OG-0` through `OG-5`, exit gates,
+  evaluations, current handoff, and update protocol live in
+  [`ORCHESTRATION_STRATEGY.md`](ORCHESTRATION_STRATEGY.md). `OG-0` is complete;
+  implementation begins with `OG-1`, and no graph execution is claimed yet.
+
+### 2026-08-01 — Evidence-gated goal completion
+
+- **A final-sounding sentence is no longer a completion signal.** In primary
+  execution mode, a tool-free response is checked against the plan active in this turn,
+  terminal-step evidence/reasons, tracked writes newer than recognized
+  verification, and unresolved tool failures. Informational turns without
+  those signals still finish normally; planning mode can still return pending
+  execution steps, and a terminal plan from an older turn remains history
+  unless updated.
+  Delegated work keeps its isolated-worktree review and parent-verification
+  contract; the goal-owning primary agent is the controller boundary in this
+  first slice.
+- **The plan now has completion semantics rather than only display shape.** New
+  plan writes require non-empty goals/steps, known acyclic dependencies,
+  dependency-ready active/done steps, evidence for done steps, and reasons for
+  blocked/skipped steps. Completion assessment also covers restored older plans
+  that predate those validators.
+- **Verification freshness is runtime state.** Every successful tracked write
+  invalidates earlier verification in the turn. A later successful direct
+  conventional build/lint/test command restores it; compound/success-masked
+  shell commands do not. `verification_note` records the exceptional case
+  where no meaningful automated check applies and is labelled model-authored,
+  not machine evidence.
+- **Recovery is required but bounded.** A failed tool must be followed by a
+  successful tool path or an explicitly blocked plan step. The controller
+  injects at most two deterministic continuation notices, each charged to the
+  existing iteration/token/cost limits, before ending blocked. The ordinary
+  iteration ceiling is now a budget-exhausted outcome.
+- **Automation can distinguish process status from goal status.** Schema-v1
+  `run.result.status` remains `ok`/`error`/`cancelled`; the additive `outcome`
+  field reports `done`/`blocked`/`cancelled`/`budget_exhausted`. Replay validates
+  their pairing and remains compatible with older traces that omit `outcome`.
+
+### 2026-08-01 — Launch to a verified session
+
+- **A fresh installation is now honestly unconfigured.** `config.Defaults()`
+  and `collo init --global` no longer name Ollama, localhost, qwen, or any other
+  provider/model combination that has not been observed. Settings without a
+  provider remain loadable for setup and diagnostics; a session request is the
+  boundary that requires one.
+- **Interactive startup now completes the setup journey.** Running `collo` with
+  no configured provider enters the existing probe/discover/two-request verify
+  flow and, after the verified configuration is written, continues directly
+  into the session. Cancellation writes nothing. Headless commands never
+  prompt and instead return a configuration-class error pointing to
+  `collo setup`.
+- **Setup is a reusable provider configuration surface.** The interface is
+  labelled “provider setup,” configured providers appear as actions for model
+  changes and re-verification, and `collo setup --provider <name>` remains the
+  direct shortcut. Adding a provider still cannot silently steal the default.
+- **The immediate Linux session does not lose the key just verified.** Where no
+  OS credential store exists, a manually entered key is passed directly into
+  only the runtime opened after setup. It is not serialized and is not placed
+  in the process environment; the recorded environment variable remains the
+  contract for later sessions.
+- **Diagnostics and documentation now agree with the runtime.** `collo doctor`
+  reports a provider-free configuration, and installation, feature, capability,
+  and provider documentation no longer describe the old Ollama/qwen assumption
+  as an installed default.
 
 ### 2026-07-31 — Phase 4 first-run setup, and verification that actually verifies
 

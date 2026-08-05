@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/logging"
 	mcpclient "github.com/robert-mcdermott/collomia/internal/mcp"
@@ -47,10 +49,13 @@ type Runtime struct {
 	Attachments *session.AttachmentManager
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
-	Team        *agent.Team
-	Processes   *tools.ProcessManager
-	Warnings    []error
-	Hooks       *hooks.Runner
+	// GoalGraph is non-nil for an internal evaluation or an explicitly
+	// approved/resumed TUI preview. Persisted state alone never sets it.
+	GoalGraph *goalgraph.Graph
+	Team      *agent.Team
+	Processes *tools.ProcessManager
+	Warnings  []error
+	Hooks     *hooks.Runner
 	// Steering carries guidance typed while the primary agent is mid-turn.
 	// It lives on the runtime rather than in the TUI because the agent is
 	// constructed here and every surface — TUI, browser terminal, a future
@@ -62,8 +67,65 @@ type Runtime struct {
 	// Audit is the primary agent's ledger. Delegated agents hold their own
 	// handles on the same workspace file, which is why completeness is
 	// latched separately in auditHealth rather than read from this one.
-	Audit       *audit.Ledger
-	auditHealth *auditHealth
+	Audit                 *audit.Ledger
+	auditHealth           *auditHealth
+	goalStateToken        func(context.Context) (string, error)
+	orchestrationMu       sync.Mutex
+	orchestrationProposal *orchestrationProposal
+}
+
+type orchestrationProposal struct {
+	Goal             string
+	BaseRevision     uint64
+	Started          time.Time
+	BaseUsage        provider.Usage
+	BaseIterations   int
+	PreviousPlanMode bool
+}
+
+type goalAccountingSeed struct {
+	Started time.Time
+	Primary goalgraph.WorkUsage
+}
+
+func providerUsageDelta(current, baseline provider.Usage) provider.Usage {
+	delta := provider.Usage{
+		InputTokens:      max(0, current.InputTokens-baseline.InputTokens),
+		OutputTokens:     max(0, current.OutputTokens-baseline.OutputTokens),
+		CachedTokens:     max(0, current.CachedTokens-baseline.CachedTokens),
+		CacheWriteTokens: max(0, current.CacheWriteTokens-baseline.CacheWriteTokens),
+		ReasoningTokens:  max(0, current.ReasoningTokens-baseline.ReasoningTokens),
+		CostUSD:          max(0, current.CostUSD-baseline.CostUSD),
+		CostEstimated:    current.CostEstimated,
+	}
+	if delta.InputTokens+delta.OutputTokens > 0 || delta.CostUSD > 0 {
+		delta.CostAvailable = current.CostAvailable
+	}
+	return delta
+}
+
+// OrchestratedGoalTokenBudget reports the cumulative graph allowance beside
+// the per-request context window without activating saved state. During a
+// proposal, it reports the exact work that approval would seed into the graph.
+func (r *Runtime) OrchestratedGoalTokenBudget() (phase string, used, limit int, ok bool) {
+	if r == nil || r.Agent == nil {
+		return "", 0, 0, false
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		status := r.GoalGraph.BudgetStatus(time.Now())
+		phase = "active"
+		if outcome, _ := r.GoalGraph.Outcome(); outcome != "" {
+			phase = string(outcome)
+		}
+		return phase, status.Usage.InputTokens + status.Usage.OutputTokens, status.Limits.MaxTokens, true
+	}
+	if r.orchestrationProposal == nil {
+		return "", 0, 0, false
+	}
+	usage := providerUsageDelta(r.Agent.Usage(), r.orchestrationProposal.BaseUsage)
+	return "proposal", usage.InputTokens + usage.OutputTokens, orchestrationEnvelope(r.Config).MaxAggregateTokens, true
 }
 
 // auditHealth latches every reason the audit record for this session might be
@@ -159,7 +221,12 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 
 type Options struct {
 	Workspace, Provider, Model, Agent, Autonomy string
-	Plan, Debug, Ephemeral                      bool
+	// ProviderCredential carries a credential verified during automatic setup
+	// into the session opened immediately afterwards. It is never persisted and
+	// avoids putting the value in the process environment on platforms without
+	// an OS credential store.
+	ProviderCredential     string
+	Plan, Debug, Ephemeral bool
 	// Resume loads an existing session ID; Continue resumes the most
 	// recently updated session. Otherwise a new session is created.
 	Resume   string
@@ -168,9 +235,22 @@ type Options struct {
 	// Asker lets the agent pause and ask the user a typed question. When
 	// nil (headless), the ask_user tool is not registered.
 	Asker func(ctx context.Context, question string, options []string) (string, error)
+	// OrchestratedGoal opts this runtime into the internal graph controller
+	// using an already-approved logical plan. It remains an
+	// evaluation/embedder seam; the user preview activates only through
+	// an explicit runtime method called by the TUI.
+	// Supplying it while resuming a graph-bearing session restores the durable
+	// graph instead of creating a new one.
+	OrchestratedGoal *plan.Plan
 }
 
 func New(ctx context.Context, opts Options) (*Runtime, error) {
+	if opts.OrchestratedGoal != nil && opts.Plan {
+		return nil, fmt.Errorf("orchestrated goal execution cannot run in read-only planning mode")
+	}
+	if opts.OrchestratedGoal != nil && opts.Ephemeral {
+		return nil, fmt.Errorf("orchestrated goal execution requires durable session persistence")
+	}
 	workspace, err := filepath.Abs(opts.Workspace)
 	if err != nil {
 		return nil, err
@@ -196,6 +276,10 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	providerName, p, model, err := cfg.Selected(opts.Provider, opts.Model)
 	if err != nil {
 		return nil, err
+	}
+	if opts.ProviderCredential != "" {
+		p.APIKey = opts.ProviderCredential
+		cfg.Providers[providerName] = p
 	}
 	if opts.Model == "" && profile.Model != "" {
 		model = profile.Model
@@ -331,6 +415,17 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if sess != nil {
 		attachBoard(board, sess)
 	}
+	goalStateToken := func(tokenCtx context.Context) (string, error) {
+		return goalgraph.WorkspaceStateToken(tokenCtx, workspace)
+	}
+	goal, err := attachGoalGraph(ctx, opts.OrchestratedGoal, board, sess, goalStateToken, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrated goal: %w", err)
+	}
+	if goal != nil {
+		registry.Add(goalgraph.RevisionTool{Graph: goal})
+		registry.Add(goalgraph.BlockTool{Graph: goal})
+	}
 	artifacts := session.NewArtifactManager()
 	artifacts.Use(sess)
 	attachments := session.NewAttachmentManager()
@@ -363,7 +458,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if profile.MaxIterations > 0 {
 		maxIterations = profile.MaxIterations
 	}
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, PinnedContext: func() string {
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
 			return ""
@@ -400,9 +495,19 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime = &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health}
+	runtime = &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
+	agentRuntime.SetGoalWriterVerifier(func(verifyCtx context.Context, id string) ([]agent.DelegateVerification, error) {
+		return runtime.VerifyDelegateSuite(verifyCtx, id, nil)
+	})
 	runtime.alignChangeTurns()
+	// An integration that never recorded an outcome is the one workspace state
+	// nothing else can explain, so it is surfaced at startup rather than
+	// waiting for the user to wonder why a file looks half-changed.
+	if pending := runtime.InterruptedIntegrations(); len(pending) > 0 {
+		runtime.Warnings = append(runtime.Warnings, fmt.Errorf("%d integration(s) were interrupted before recording an outcome; run /restore integration to inspect, undo, or keep them", len(pending)))
+	}
 	runtime.addReviewedIntegrationTools()
+	runtime.logGoalGraphUpdates()
 	return runtime, nil
 }
 
@@ -421,6 +526,42 @@ func (r *Runtime) alignChangeTurns() {
 		turns = r.Session.Meta.Turns
 	}
 	r.Changes.SetCompletedTurns(turns)
+}
+
+// OrchestratedProposalPrompt begins the read-only design half of the explicit
+// preview. The model can investigate and propose intent, but only the later
+// user command can convert that plan into runtime execution state.
+func OrchestratedProposalPrompt(goal string) string {
+	return fmt.Sprintf(`Create a proposed Orchestrated Goal graph for this outcome:
+
+%s
+
+Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Proposal-phase inspection is grounding, not an already-completed graph node: do not add a node merely to repeat investigation you just performed. Include a pending read_only node only when fresh bounded investigation must run after approval as an explicit dependency. Use the smallest coherent graph: prefer 1–3 substantive outcome nodes for a scoped change and 4–6 only for a broad goal. Use more only when a distinct dependency, permission, write-scope, isolation, or recovery boundary requires it; 12 steps is a hard maximum, not a target. Coalesce serial changes that touch the same scope and share one verification surface instead of creating a node for every file, layer, or command. Within a node, batch independent reads and related edits when the available tools support it. Do not begin future-node work: after a node's final successful verifier, return a tool-free completion proposal immediately so the runtime can advance the graph. Every proposed execution step should be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary, read_only, or isolated_write. At approval the runtime initializes every node pending regardless of model-authored plan status; proposal prose and evidence never become runtime completion. For every primary node that can change files, include a direct build, lint, or test command that can verify that node after its last mutation. If the project has no applicable test surface yet, the first mutating node must create a focused smoke test so the detected verifier has real work to run; a server-start or model-authored success claim alone cannot satisfy the runtime evidence gate. Use read_only only for bounded repository investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Default to primary for end-to-end build and change goals. Use isolated_write only when the user explicitly requests terminal retained candidates for manual review: each needs an explicit narrow write_paths contract disjoint from sibling writers, the candidate-only graph may include read_only prerequisites but no primary nodes, and every isolated_write node must be a terminal leaf. Never make later work depend on isolated_write because the current preview does not select or integrate candidates or let them unlock dependents. One bounded wave of at most two eligible nodes may create independently verified worktree candidates from one clean Git base and then stop for review. Use primary for parent-workspace changes, final integration, combined verification, ambiguity, overlapping scopes, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected read/write fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
+}
+
+// OrchestratedExecutionPrompt is submitted only after the user explicitly
+// approves the visible proposal. The attached runtime graph, not this prose,
+// owns readiness, attempts, evidence, and terminal completion.
+func OrchestratedExecutionPrompt(goal string) string {
+	return fmt.Sprintf("The user explicitly approved the visible Orchestrated Goal proposal for this session. Execute the runtime-owned graph now and pursue this outcome: %s", strings.TrimSpace(goal))
+}
+
+// OrchestratedResumePrompt is conversational context only. Resume authority
+// comes from the explicit runtime transition that clears the durable pause.
+func OrchestratedResumePrompt(goal string) string {
+	return fmt.Sprintf("The user explicitly resumed the paused Orchestrated Goal. Continue the existing runtime-owned graph from its preserved attempts and evidence, pursuing this outcome: %s", strings.TrimSpace(goal))
+}
+
+// OrchestratedRetryPrompt tells the primary agent why a terminal blocker was
+// reopened without allowing prose to rewrite the preserved blocked attempt.
+func OrchestratedRetryPrompt(goal string, nodeID int) string {
+	return fmt.Sprintf("The user explicitly requested one safe bounded retry of Orchestrated Goal node %d. Continue the runtime-owned graph from its preserved attempts and evidence, pursuing this outcome: %s", nodeID, strings.TrimSpace(goal))
+}
+
+// OrchestratedExtendPrompt tells the primary agent that a person granted more
+// allowance. The completed work stands; only the envelope changed.
+func OrchestratedExtendPrompt(goal string) string {
+	return fmt.Sprintf("The user explicitly granted the Orchestrated Goal another bounded execution envelope after the previous one was exhausted. Accepted nodes and their evidence stand; each unfinished node resumes in a new attempt, so reread whatever workspace state that attempt needs rather than assuming the earlier context. Continue the runtime-owned graph toward this outcome: %s", strings.TrimSpace(goal))
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -628,6 +769,750 @@ func attachBoard(board *plan.Board, sess *session.Session) {
 	board.Clear()
 }
 
+// attachGoalGraph creates or restores the OG-1 runtime-owned graph. Requiring
+// an explicit approved plan here is the activation boundary: persisted data,
+// project configuration, and model output cannot turn Standard mode into
+// orchestrated execution on their own.
+func attachGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, stateToken func(context.Context) (string, error), cfg appconfig.Config) (*goalgraph.Graph, error) {
+	if approved == nil {
+		return nil, nil
+	}
+	if sess == nil {
+		return nil, errors.New("durable session persistence is unavailable")
+	}
+	if len(sess.GoalGraphRaw) > 0 {
+		return restoreGoalGraph(ctx, sess, stateToken)
+	}
+	return createGoalGraph(ctx, approved, board, sess, nil, cfg)
+}
+
+func goalGraphPersister(sess *session.Session) goalgraph.PersistFunc {
+	return func(_ context.Context, snapshot goalgraph.Snapshot, durable bool) error {
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			return err
+		}
+		return sess.AppendGoalGraph(data, durable)
+	}
+}
+
+func restoreGoalGraph(ctx context.Context, sess *session.Session, stateToken func(context.Context) (string, error)) (*goalgraph.Graph, error) {
+	if sess == nil || len(sess.GoalGraphRaw) == 0 {
+		return nil, errors.New("this session has no saved orchestrated goal graph")
+	}
+	var snapshot goalgraph.Snapshot
+	if err := json.Unmarshal(sess.GoalGraphRaw, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode saved graph: %w", err)
+	}
+	graph, err := goalgraph.Restore(snapshot, goalgraph.Options{Persist: goalGraphPersister(sess)})
+	if err != nil {
+		return nil, fmt.Errorf("restore saved graph: %w", err)
+	}
+	token := ""
+	if stateToken != nil {
+		token, _ = stateToken(ctx)
+	}
+	if err := graph.Recover(ctx, token); err != nil {
+		return nil, fmt.Errorf("recover saved graph: %w", err)
+	}
+	return graph, nil
+}
+
+// orchestrationEnvelope resolves the configured whole-graph execution
+// envelope. Every field is optional; an omitted one keeps its default.
+func orchestrationEnvelope(cfg appconfig.Config) goalgraph.Limits {
+	return goalgraph.LimitsWithEnvelope(
+		cfg.Options.OrchestrationMaxIterations,
+		cfg.Options.OrchestrationMaxTokens,
+		cfg.Options.OrchestrationMaxCostUSD,
+		cfg.Options.OrchestrationMaxActiveWallSeconds,
+	)
+}
+
+func createGoalGraph(ctx context.Context, approved *plan.Plan, board *plan.Board, sess *session.Session, accounting *goalAccountingSeed, cfg appconfig.Config) (*goalgraph.Graph, error) {
+	if approved == nil {
+		return nil, errors.New("approved logical plan is unavailable")
+	}
+	if sess == nil {
+		return nil, errors.New("durable session persistence is unavailable")
+	}
+	if len(sess.GoalGraphRaw) > 0 {
+		return nil, errors.New("this session already contains a goal graph; use /orchestrate resume or start /new")
+	}
+
+	fresh := *approved
+	fresh.Steps = append([]plan.Step(nil), approved.Steps...)
+	for i := range fresh.Steps {
+		fresh.Steps[i].DependsOn = append([]int(nil), approved.Steps[i].DependsOn...)
+		fresh.Steps[i].Acceptance = append([]string(nil), approved.Steps[i].Acceptance...)
+		fresh.Steps[i].WritePaths = append([]string(nil), approved.Steps[i].WritePaths...)
+		// An approved logical plan seeds execution; model-authored progress from
+		// a caller is never imported as runtime evidence.
+		fresh.Steps[i].Status = "pending"
+		fresh.Steps[i].Evidence = ""
+	}
+	fresh.VerificationNote = ""
+	if err := board.Set(fresh); err != nil {
+		return nil, fmt.Errorf("approved plan: %w", err)
+	}
+	_, logicalRevision := board.Snapshot()
+	spec := goalgraph.Spec{Goal: fresh.Goal, Nodes: make([]goalgraph.NodeSpec, 0, len(fresh.Steps))}
+	for _, step := range fresh.Steps {
+		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution), WritePaths: append([]string(nil), step.WritePaths...)})
+	}
+	envelope := orchestrationEnvelope(cfg)
+	opts := goalgraph.Options{
+		Persist:                goalGraphPersister(sess),
+		MaxAggregateIterations: envelope.MaxAggregateIterations,
+		MaxAggregateTokens:     envelope.MaxAggregateTokens,
+		MaxAggregateCostUSD:    envelope.MaxAggregateCostUSD,
+		MaxActiveWallSeconds:   envelope.MaxActiveWallSeconds,
+	}
+	if accounting != nil {
+		opts.AccountingStarted = accounting.Started
+		opts.InitialPrimary = accounting.Primary
+	}
+	graph, err := goalgraph.New(spec, logicalRevision, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.Persist(ctx, true); err != nil {
+		return nil, err
+	}
+	return graph, nil
+}
+
+// BeginOrchestratedProposal records a process-local consent boundary and
+// returns the read-only prompt used to build a fresh visible proposal. Neither
+// a persisted plan nor repository-controlled content can create this marker.
+func (r *Runtime) BeginOrchestratedProposal(goal string) (string, error) {
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return "", errors.New("usage: /orchestrate <goal>")
+	}
+	if r == nil || r.Agent == nil || r.Plan == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	if r.Session == nil {
+		return "", errors.New("Orchestrated Goal requires durable session persistence")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome == "" {
+			return "", errors.New("an Orchestrated Goal graph is already attached; inspect or cancel it first")
+		}
+		if err := r.archiveTerminalGoalGraphLocked(); err != nil {
+			return "", err
+		}
+	}
+	if len(r.Session.GoalGraphRaw) > 0 {
+		if err := r.archiveSavedTerminalGoalGraphLocked(); err != nil {
+			return "", err
+		}
+	}
+	_, revision := r.Plan.Snapshot()
+	previousPlanMode := r.Agent.Plan()
+	if r.orchestrationProposal != nil {
+		previousPlanMode = r.orchestrationProposal.PreviousPlanMode
+	}
+	r.orchestrationProposal = &orchestrationProposal{
+		Goal: goal, BaseRevision: revision, Started: time.Now().UTC(),
+		BaseUsage: r.Agent.Usage(), BaseIterations: r.Agent.ProviderIterations(), PreviousPlanMode: previousPlanMode,
+	}
+	r.Agent.SetPlan(true)
+	return OrchestratedProposalPrompt(goal), nil
+}
+
+func orchestratedSpec(p *plan.Plan) (goalgraph.Spec, error) {
+	if p == nil {
+		return goalgraph.Spec{}, errors.New("the proposal did not create a structured plan")
+	}
+	if err := plan.Validate(*p); err != nil {
+		return goalgraph.Spec{}, fmt.Errorf("proposal plan is invalid: %w", err)
+	}
+	spec := goalgraph.Spec{Goal: strings.TrimSpace(p.Goal), Nodes: make([]goalgraph.NodeSpec, 0, len(p.Steps))}
+	for _, step := range p.Steps {
+		if len(step.Acceptance) == 0 {
+			return goalgraph.Spec{}, fmt.Errorf("proposal step %d (%s) needs at least one concrete acceptance criterion", step.ID, step.Title)
+		}
+		spec.Nodes = append(spec.Nodes, goalgraph.NodeSpec{ID: step.ID, Title: step.Title, DependsOn: append([]int(nil), step.DependsOn...), Acceptance: append([]string(nil), step.Acceptance...), Execution: goalgraph.Execution(step.Execution), WritePaths: append([]string(nil), step.WritePaths...)})
+	}
+	if err := goalgraph.ValidateExecutableSpec(spec); err != nil {
+		return goalgraph.Spec{}, fmt.Errorf("proposal graph is invalid: %w", err)
+	}
+	return spec, nil
+}
+
+// ApproveOrchestratedGoal converts only the fresh proposal created after
+// BeginOrchestratedProposal into durable runtime state. The returned prompt is
+// submitted by the TUI to begin execution after this method succeeds.
+func (r *Runtime) ApproveOrchestratedGoal(ctx context.Context) (string, string, error) {
+	if r == nil || r.Agent == nil || r.Plan == nil {
+		return "", "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		return "", "", errors.New("an Orchestrated Goal graph is already attached")
+	}
+	proposal := r.orchestrationProposal
+	if proposal == nil {
+		return "", "", errors.New("no new Orchestrated Goal proposal is awaiting approval; use /orchestrate <goal>")
+	}
+	current, revision := r.Plan.Snapshot()
+	if revision <= proposal.BaseRevision {
+		return "", "", errors.New("the proposal turn did not create a new structured plan; refine the proposal before approving it")
+	}
+	spec, err := orchestratedSpec(current)
+	if err != nil {
+		return "", "", err
+	}
+	if goalgraph.HasIsolatedWriters(spec) {
+		base, baseErr := r.Agent.GoalWriterBase(ctx)
+		if baseErr != nil {
+			return "", "", fmt.Errorf("proposal cannot start isolated candidates: %w", baseErr)
+		}
+		if baseErr := goalgraph.ValidateWriterBase(base); baseErr != nil {
+			return "", "", fmt.Errorf("proposal cannot start isolated candidates: %w", baseErr)
+		}
+	}
+	usage := providerUsageDelta(r.Agent.Usage(), proposal.BaseUsage)
+	iterations := max(0, r.Agent.ProviderIterations()-proposal.BaseIterations)
+	graph, err := createGoalGraph(ctx, current, r.Plan, r.Session, &goalAccountingSeed{
+		Started: proposal.Started,
+		Primary: goalgraph.WorkUsage{
+			Iterations: iterations, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+			CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated,
+		},
+	}, r.Config)
+	if err != nil {
+		return "", "", err
+	}
+	if err := r.Agent.SetGoalGraph(graph); err != nil {
+		return "", "", err
+	}
+	r.Agent.RequestGoalBoundaryCompaction()
+	r.Registry.Add(goalgraph.RevisionTool{Graph: graph})
+	r.Registry.Add(goalgraph.BlockTool{Graph: graph})
+	r.GoalGraph = graph
+	r.orchestrationProposal = nil
+	r.logGoalGraphUpdates()
+	status, _ := graph.Inspect(0)
+	return candidateWaveNotice(spec) + status, OrchestratedExecutionPrompt(graph.Snapshot().Goal), nil
+}
+
+// candidateWaveNotice warns, at the moment a person approves, that this graph
+// will finish without changing their workspace.
+//
+// It exists because the candidate wave's end state is the single thing users
+// read wrongly: a wave stops at `awaiting_review` having produced verified work
+// and touched nothing, which looks like failure unless you know publication is
+// a separate act you perform. That is worth saying whatever the sub-feature's
+// graduation status — the notice would earn its place even if the wave were
+// fully supported — and it happens also to mark the one path that is still
+// experimental. Approval is the right moment: it is the last point before
+// worktrees are created, and it is where the node shapes are already on screen.
+func candidateWaveNotice(spec goalgraph.Spec) string {
+	if !goalgraph.HasIsolatedWriters(spec) {
+		return ""
+	}
+	return "This graph produces reviewed candidates. It will run its writers in separate Git worktrees and stop at awaiting_review with your workspace byte-for-byte unchanged — that is the design, not a failure. Nothing reaches your files until you publish a candidate yourself with /orchestrate integrate <node-id>, and the combined result is verified after that.\n\n" +
+		"The candidate wave is the one part of Orchestrated Goal still marked experimental. It suits a change you would rather not have land in your repository if it turns out wrong, and suits work whose steps touch the same files badly.\n\n"
+}
+
+// ResumeOrchestratedGoal requires a fresh user action even when the session
+// already carries a durable graph. It returns runnable=false for a recovered
+// terminal graph so the caller can show its exact blocker/outcome without
+// starting another provider turn.
+func (r *Runtime) ResumeOrchestratedGoal(ctx context.Context) (status, prompt string, runnable bool, err error) {
+	if r == nil || r.Agent == nil {
+		return "", "", false, errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		requested, _, _ := r.GoalGraph.PauseState()
+		if !requested {
+			return "", "", false, errors.New("the attached Orchestrated Goal graph is not paused")
+		}
+		if err := r.GoalGraph.Resume(ctx); err != nil {
+			return "", "", false, err
+		}
+		r.logGoalGraphUpdates()
+		status, _ = r.GoalGraph.Inspect(0)
+		return status, OrchestratedResumePrompt(r.GoalGraph.Snapshot().Goal), true, nil
+	}
+	graph, err := restoreGoalGraph(ctx, r.Session, r.goalStateToken)
+	if err != nil {
+		return "", "", false, err
+	}
+	if requested, _, _ := graph.PauseState(); requested {
+		if err := graph.Resume(ctx); err != nil {
+			return "", "", false, err
+		}
+	} else if outcome, _ := graph.Outcome(); outcome == "" {
+		if err := graph.Activate(ctx); err != nil {
+			return "", "", false, err
+		}
+	}
+	if err := r.Agent.SetGoalGraph(graph); err != nil {
+		return "", "", false, err
+	}
+	r.Registry.Add(goalgraph.RevisionTool{Graph: graph})
+	r.Registry.Add(goalgraph.BlockTool{Graph: graph})
+	r.GoalGraph = graph
+	r.orchestrationProposal = nil
+	r.logGoalGraphUpdates()
+	status, _ = graph.Inspect(0)
+	outcome, _ := graph.Outcome()
+	return status, OrchestratedResumePrompt(graph.Snapshot().Goal), outcome == "", nil
+}
+
+// PauseOrchestratedGoal requests a cooperative durable pause. It never
+// suspends an OS process or cancels the current iteration; the agent records
+// the reached boundary before another provider/scheduler iteration starts.
+func (r *Runtime) PauseOrchestratedGoal(ctx context.Context) (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph == nil {
+		return "", errors.New("there is no attached Orchestrated Goal graph to pause")
+	}
+	if err := r.GoalGraph.RequestPause(ctx, "paused explicitly by the user"); err != nil {
+		return "", err
+	}
+	r.logGoalGraphUpdates()
+	return r.GoalGraph.Inspect(0)
+}
+
+// RetryOrchestratedNode reopens only a runtime-approved safe blocker. The
+// graph rejects exhausted attempts and ambiguous interrupted mutations.
+func (r *Runtime) RetryOrchestratedNode(ctx context.Context, nodeID int) (status, prompt string, runnable bool, err error) {
+	if r == nil || r.Agent == nil {
+		return "", "", false, errors.New("runtime is unavailable")
+	}
+	if nodeID <= 0 {
+		return "", "", false, errors.New("orchestrated goal node id must be a positive integer")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	graph := r.GoalGraph
+	restored := false
+	if graph == nil {
+		if r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+			return "", "", false, errors.New("there is no attached or saved Orchestrated Goal graph to retry")
+		}
+		graph, err = restoreGoalGraph(ctx, r.Session, r.goalStateToken)
+		if err != nil {
+			return "", "", false, err
+		}
+		restored = true
+	}
+	if err := graph.RetryNode(ctx, nodeID, "retry requested explicitly by the user"); err != nil {
+		return "", "", false, err
+	}
+	if restored {
+		if err := r.Agent.SetGoalGraph(graph); err != nil {
+			return "", "", false, err
+		}
+		r.Registry.Add(goalgraph.RevisionTool{Graph: graph})
+		r.Registry.Add(goalgraph.BlockTool{Graph: graph})
+		r.GoalGraph = graph
+		r.orchestrationProposal = nil
+	}
+	r.logGoalGraphUpdates()
+	status, _ = graph.Inspect(nodeID)
+	requested, _, _ := graph.PauseState()
+	return status, OrchestratedRetryPrompt(graph.Snapshot().Goal, nodeID), !requested, nil
+}
+
+// ExtendOrchestratedGoal grants an exhausted graph one more envelope, sized
+// from the one it was configured with. It is a user decision and nothing else
+// can reach it: repository text, hooks, skills, and the model cannot grant or
+// widen an envelope, and only the user's own configuration sets its size.
+// Unfinished nodes start new attempts, so nothing interrupted is replayed.
+func (r *Runtime) ExtendOrchestratedGoal(ctx context.Context) (status, prompt string, runnable bool, err error) {
+	if r == nil || r.Agent == nil {
+		return "", "", false, errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	graph := r.GoalGraph
+	restored := false
+	if graph == nil {
+		if r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+			return "", "", false, errors.New("there is no attached or saved Orchestrated Goal graph to extend")
+		}
+		graph, err = restoreGoalGraph(ctx, r.Session, r.goalStateToken)
+		if err != nil {
+			return "", "", false, err
+		}
+		restored = true
+	}
+	if err := graph.ExtendBudget(ctx, "budget extended explicitly by the user"); err != nil {
+		return "", "", false, err
+	}
+	if restored {
+		if err := r.Agent.SetGoalGraph(graph); err != nil {
+			return "", "", false, err
+		}
+		r.Registry.Add(goalgraph.RevisionTool{Graph: graph})
+		r.Registry.Add(goalgraph.BlockTool{Graph: graph})
+		r.GoalGraph = graph
+		r.orchestrationProposal = nil
+	}
+	if err := graph.Activate(ctx); err != nil {
+		return "", "", false, err
+	}
+	r.logGoalGraphUpdates()
+	status, _ = graph.Inspect(0)
+	requested, _, _ := graph.PauseState()
+	return status, OrchestratedExtendPrompt(graph.Snapshot().Goal), !requested, nil
+}
+
+// ReconcileOrchestratedWorktrees observes every retained isolated-writer
+// worktree and records what is actually on disk. It is read-only: it removes
+// nothing, reuses nothing, and reopens no attempt. Its whole purpose is to
+// replace a remembered path with a current answer, because every decision a
+// person can make about a retained candidate depends on which case it is in.
+//
+// It works on a terminal graph on purpose. Awaiting review, cancelled, and
+// budget exhausted are exactly the outcomes that leave directories behind.
+func (r *Runtime) ReconcileOrchestratedWorktrees(ctx context.Context) (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	graph, err := r.reconcilableGoalGraphLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	trees := graph.RetainedWorktrees()
+	if len(trees) == 0 {
+		return "No isolated-writer worktrees are retained by this Orchestrated Goal graph.", nil
+	}
+	observations := r.Agent.ObserveRetainedWorktrees(ctx, trees)
+	if err := graph.RecordWorktreeDispositions(ctx, observations); err != nil {
+		return "", err
+	}
+	r.logGoalGraphUpdates()
+	return graph.Inspect(0)
+}
+
+// DiscardOrchestratedWorktree removes the retained trees of one node because a
+// person asked for it. Nothing else can reach it: it is not a tool, so the
+// model cannot call it, and it is not covered by an autonomy mode, because
+// what it deletes is unreviewed work that only a person can judge worthless.
+//
+// A tree that still holds changes needs `confirmed`, which the command surface
+// obtains by making the user repeat the request after being shown the count.
+func (r *Runtime) DiscardOrchestratedWorktree(ctx context.Context, nodeID int, confirmed bool) (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	if nodeID <= 0 {
+		return "", errors.New("orchestrated goal node id must be a positive integer")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	graph, err := r.reconcilableGoalGraphLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	var targets []goalgraph.RetainedWorktree
+	for _, tree := range graph.RetainedWorktrees() {
+		if tree.NodeID == nodeID {
+			targets = append(targets, tree)
+		}
+	}
+	if len(targets) == 0 {
+		return "", fmt.Errorf("node %d has no retained isolated-writer worktree", nodeID)
+	}
+	for _, tree := range targets {
+		if tree.Disposition == "" {
+			return "", fmt.Errorf("node %d has a worktree that has never been observed; run /orchestrate reconcile first so this decision is made against its contents", nodeID)
+		}
+		if tree.Disposition == goalgraph.DispositionPresent && !confirmed {
+			return "", fmt.Errorf("node %d still holds unreviewed changes at %s (%s); repeat as /orchestrate discard %d confirm to remove it permanently", nodeID, tree.Worktree, tree.Detail, nodeID)
+		}
+	}
+	var removed []goalgraph.WorktreeObservation
+	var failures []string
+	for _, tree := range targets {
+		if err := r.Agent.DiscardRetainedWorktree(ctx, tree); err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		removed = append(removed, goalgraph.WorktreeObservation{
+			AttemptID:   tree.AttemptID,
+			Disposition: goalgraph.DispositionDiscarded,
+			Detail:      "removed on explicit user request; the node and attempt keep the record of what was there",
+		})
+	}
+	// Record what actually went before reporting what did not. A discard that
+	// half succeeded must not leave the graph claiming either outcome for both.
+	if err := graph.RecordWorktreeDispositions(ctx, removed); err != nil {
+		return "", err
+	}
+	r.logGoalGraphUpdates()
+	if len(failures) > 0 {
+		return "", fmt.Errorf("discard node %d: %s", nodeID, strings.Join(failures, "; "))
+	}
+	return graph.Inspect(0)
+}
+
+// reconcilableGoalGraphLocked returns the graph whose retained trees are in
+// question, attached or merely saved. It deliberately does not attach a
+// restored graph to the session: observing directories is not resuming work.
+// The caller must hold orchestrationMu.
+func (r *Runtime) reconcilableGoalGraphLocked(ctx context.Context) (*goalgraph.Graph, error) {
+	if r.GoalGraph != nil {
+		return r.GoalGraph, nil
+	}
+	if r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+		return nil, errors.New("there is no attached or saved Orchestrated Goal graph whose worktrees could be reconciled")
+	}
+	return restoreGoalGraph(ctx, r.Session, r.goalStateToken)
+}
+
+// CancelOrchestratedGoal cancels either the unapproved process-local proposal
+// or the durable active graph. It does not undo completed actions.
+func (r *Runtime) CancelOrchestratedGoal(ctx context.Context) (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome != "" {
+			if err := r.archiveTerminalGoalGraphLocked(); err != nil {
+				return "", err
+			}
+			return "Terminal Orchestrated Goal archived. Its transcript and evidence remain in the session log; this session is ready for /orchestrate <goal>.", nil
+		}
+		if err := r.GoalGraph.Cancel(ctx, "cancelled explicitly by the user"); err != nil {
+			return "", err
+		}
+		r.logGoalGraphUpdates()
+		status, _ := r.GoalGraph.Inspect(0)
+		return status, nil
+	}
+	if r.orchestrationProposal != nil {
+		previousPlanMode := r.orchestrationProposal.PreviousPlanMode
+		r.orchestrationProposal = nil
+		r.Agent.SetPlan(previousPlanMode)
+		return "Orchestrated Goal proposal cancelled. The structured plan remains available in /tasks, but it cannot be approved without starting a new proposal.", nil
+	}
+	return "", errors.New("there is no active Orchestrated Goal proposal or graph")
+}
+
+func (r *Runtime) archiveSavedTerminalGoalGraphLocked() error {
+	if r == nil || r.Session == nil || len(r.Session.GoalGraphRaw) == 0 {
+		return nil
+	}
+	var snapshot goalgraph.Snapshot
+	if err := json.Unmarshal(r.Session.GoalGraphRaw, &snapshot); err != nil {
+		return fmt.Errorf("decode saved graph: %w", err)
+	}
+	graph, err := goalgraph.Restore(snapshot, goalgraph.Options{})
+	if err != nil {
+		return fmt.Errorf("inspect saved graph: %w", err)
+	}
+	if outcome, _ := graph.Outcome(); outcome == "" {
+		return errors.New("this session has a saved active Orchestrated Goal graph; use /orchestrate resume or /new")
+	}
+	if err := unreconciledArchiveError(graph); err != nil {
+		return err
+	}
+	return r.archiveTerminalGoalGraphLocked()
+}
+
+// unreconciledArchiveError refuses to release a graph that is still the only
+// record of a directory nobody has looked at. Archiving is not destructive to
+// the transcript, but it does stop the session advertising the graph, and a
+// retained worktree whose pointer is no longer reachable is precisely the
+// orphan this milestone exists to prevent. Observing is cheap and does not
+// commit the user to anything, so this asks for the observation, not for the
+// tree to be gone: a reconciled tree full of changes archives fine.
+func unreconciledArchiveError(graph *goalgraph.Graph) error {
+	if graph == nil {
+		return nil
+	}
+	pending := graph.UnreconciledWorktrees()
+	if len(pending) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(pending))
+	for _, tree := range pending {
+		paths = append(paths, fmt.Sprintf("node %d at %s", tree.NodeID, tree.Worktree))
+	}
+	return fmt.Errorf("this graph still points at %d retained worktree(s) nobody has looked at (%s); run /orchestrate reconcile first, then archive", len(pending), strings.Join(paths, "; "))
+}
+
+// archiveTerminalGoalGraphLocked releases a terminal graph as the session's
+// current graph while retaining every prior snapshot and transcript record.
+// The caller must hold orchestrationMu.
+func (r *Runtime) archiveTerminalGoalGraphLocked() error {
+	if r == nil || r.Session == nil {
+		return errors.New("Orchestrated Goal requires durable session persistence")
+	}
+	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome == "" {
+			return errors.New("cannot archive an active Orchestrated Goal graph")
+		}
+		if err := unreconciledArchiveError(r.GoalGraph); err != nil {
+			return err
+		}
+	}
+	if err := r.Session.ClearGoalGraph(true); err != nil {
+		return fmt.Errorf("archive terminal Orchestrated Goal: %w", err)
+	}
+	if r.Agent != nil {
+		if err := r.Agent.SetGoalGraph(nil); err != nil {
+			return err
+		}
+		r.Agent.SetPlan(false)
+	}
+	if r.Registry != nil {
+		r.Registry.Remove(goalgraph.ReviseToolName)
+		r.Registry.Remove(goalgraph.BlockToolName)
+	}
+	r.GoalGraph = nil
+	r.orchestrationProposal = nil
+	return nil
+}
+
+// OrchestratedGoalStatus exposes process-local proposal state or durable graph
+// truth without activating a saved graph. A saved snapshot is inspected as
+// data; `/orchestrate resume` remains the only user activation after restart.
+func (r *Runtime) OrchestratedGoalStatus(nodeID int) (string, error) {
+	if r == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		return r.GoalGraph.Inspect(nodeID)
+	}
+	if r.orchestrationProposal != nil {
+		if nodeID != 0 {
+			return "", errors.New("node attempts do not exist until the proposal is approved")
+		}
+		current, revision := r.Plan.Snapshot()
+		fresh := revision > r.orchestrationProposal.BaseRevision
+		limits := orchestrationEnvelope(r.Config)
+		var b strings.Builder
+		b.WriteString("Experimental Orchestrated Goal proposal\n")
+		fmt.Fprintf(&b, "Requested outcome: %s\n", r.orchestrationProposal.Goal)
+		fmt.Fprintf(&b, "Proposal state: %s\n", map[bool]string{true: "awaiting explicit approval", false: "waiting for a new structured plan"}[fresh])
+		fmt.Fprintf(&b, "Bounds: %d nodes · %d attempts/node · %d revisions\n", limits.MaxNodes, limits.MaxAttemptsPerNode, limits.MaxRevisions)
+		fmt.Fprintf(&b, "Automatic reads: at most %d concurrent · %d starts · %d tokens · %ds wall bound\n", limits.MaxReadConcurrency, limits.MaxReadStarts, limits.MaxReadTokens, limits.MaxReadWallSeconds)
+		fmt.Fprintf(&b, "Automatic isolated writers: one candidate wave · at most %d concurrent · %d starts\n", limits.MaxWriterConcurrency, limits.MaxWriterStarts)
+		fmt.Fprintf(&b, "Aggregate envelope after approval: %d provider iterations · %d tokens · $%.2f when pricing is complete · %ds active wall\n", limits.MaxAggregateIterations, limits.MaxAggregateTokens, limits.MaxAggregateCostUSD, limits.MaxActiveWallSeconds)
+		proposalUsage := providerUsageDelta(r.Agent.Usage(), r.orchestrationProposal.BaseUsage)
+		proposalIterations := max(0, r.Agent.ProviderIterations()-r.orchestrationProposal.BaseIterations)
+		proposalTokens := proposalUsage.InputTokens + proposalUsage.OutputTokens
+		fmt.Fprintf(&b, "Proposal work to seed at approval: %d provider iterations · %d/%d tokens · %d remain before approval-boundary compaction\n", proposalIterations, proposalTokens, limits.MaxAggregateTokens, max(0, limits.MaxAggregateTokens-proposalTokens))
+		b.WriteString("Execution: end-to-end graphs use one serial primary lane; independently ready approved read_only nodes may use at most two automatic readers. An explicitly candidate-only graph may instead use one bounded wave of terminal disjoint isolated_write nodes.\n")
+		b.WriteString("Write scope: parent-workspace writes remain primary-only; retained candidates require explicit narrow scopes, a clean approval-time Git base, and ordinary dispatch/command permissions, and cannot unlock dependents.\n")
+		b.WriteString("Authority: approval grants no tool, path, network, publication, or budget authority.\n")
+		b.WriteString("Completion: every changed workspace state needs fresh machine-observed verification.\n")
+		if current != nil {
+			b.WriteString("\n" + current.Render())
+		}
+		if _, err := orchestratedSpec(current); err != nil {
+			fmt.Fprintf(&b, "\nNot yet approvable: %s\n", err)
+		} else if fresh {
+			b.WriteString("\nReview the graph above, then run /orchestrate approve once to execute it.\n")
+		}
+		return b.String(), nil
+	}
+	if r.Session != nil && len(r.Session.GoalGraphRaw) > 0 {
+		var snapshot goalgraph.Snapshot
+		if err := json.Unmarshal(r.Session.GoalGraphRaw, &snapshot); err != nil {
+			return "", fmt.Errorf("decode saved graph: %w", err)
+		}
+		graph, err := goalgraph.Restore(snapshot, goalgraph.Options{})
+		if err != nil {
+			return "", fmt.Errorf("inspect saved graph: %w", err)
+		}
+		status, err := graph.Inspect(nodeID)
+		if err != nil {
+			return "", err
+		}
+		return status + "\n\nSaved graph is inert. Run /orchestrate resume to explicitly reattach it.", nil
+	}
+	return "Orchestrated Goal is off. Use /orchestrate <goal> to create a read-only proposal; Standard mode remains the default.", nil
+}
+
+// OrchestratedGoalPhase is a compact presentation hint. It never activates or
+// restores state and is safe for persistent TUI badges.
+func (r *Runtime) OrchestratedGoalPhase() string {
+	if r == nil {
+		return ""
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome != "" {
+			return string(outcome)
+		}
+		if requested, reached, _ := r.GoalGraph.PauseState(); requested {
+			if reached {
+				return "paused"
+			}
+			return "pausing"
+		}
+		return "running"
+	}
+	if r.orchestrationProposal != nil {
+		return "proposal"
+	}
+	return ""
+}
+
+func (r *Runtime) detachGoalGraph() {
+	if r == nil {
+		return
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	previousPlanMode := false
+	if r.orchestrationProposal != nil {
+		previousPlanMode = r.orchestrationProposal.PreviousPlanMode
+	}
+	if r.Agent != nil {
+		_ = r.Agent.SetGoalGraph(nil)
+		r.Agent.SetPlan(previousPlanMode)
+	}
+	if r.Registry != nil {
+		r.Registry.Remove(goalgraph.ReviseToolName)
+		r.Registry.Remove(goalgraph.BlockToolName)
+	}
+	r.GoalGraph = nil
+	r.orchestrationProposal = nil
+}
+
+func (r *Runtime) logGoalGraphUpdates() {
+	if r == nil || r.GoalGraph == nil {
+		return
+	}
+	for _, update := range r.GoalGraph.DrainUpdates() {
+		e := event.New(event.KindGoalGraphUpdate)
+		e.Time = update.Time
+		e.GoalGraph = &event.GoalGraphStatus{
+			ID: update.GraphID, Generation: update.Generation, NodeID: update.NodeID,
+			AttemptID: update.AttemptID, State: update.State, Reason: update.Reason,
+			Ready: append([]int(nil), update.Ready...), Outcome: string(update.Outcome),
+		}
+		r.LogEvent(e)
+	}
+}
+
 // attachTeam binds process-local delegated-agent observability to the active
 // durable session. Stored queued/running states are restored as interrupted by
 // Team.Restore and are never submitted back to the scheduler.
@@ -667,6 +1552,11 @@ func attachTeam(team *agent.Team, sess *session.Session) {
 // conversation, plan, and persistence hooks all move over. The previous
 // session file is closed; nothing about it is lost.
 func (r *Runtime) SwitchSession(id string) error {
+	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome == "" {
+			return fmt.Errorf("switching sessions while an Orchestrated Goal is active is not supported; cancel it first")
+		}
+	}
 	if r.Sessions == nil {
 		return fmt.Errorf("session persistence is unavailable")
 	}
@@ -674,6 +1564,7 @@ func (r *Runtime) SwitchSession(id string) error {
 	if err != nil {
 		return err
 	}
+	r.detachGoalGraph()
 	if r.Session != nil {
 		r.Session.Close()
 	}
@@ -697,6 +1588,11 @@ func (r *Runtime) SwitchSession(id string) error {
 
 // NewSession starts a fresh session, leaving the previous one saved.
 func (r *Runtime) NewSession() error {
+	if r.GoalGraph != nil {
+		if outcome, _ := r.GoalGraph.Outcome(); outcome == "" {
+			return fmt.Errorf("starting a new session while an Orchestrated Goal is active is not supported; cancel it first")
+		}
+	}
 	if r.Sessions == nil {
 		return fmt.Errorf("session persistence is unavailable")
 	}
@@ -705,6 +1601,7 @@ func (r *Runtime) NewSession() error {
 	if err != nil {
 		return err
 	}
+	r.detachGoalGraph()
 	if r.Session != nil {
 		r.Session.Close()
 	}
@@ -727,6 +1624,9 @@ func (r *Runtime) NewSession() error {
 // RewindSession creates and switches to a non-destructive branch ending at a
 // completed turn. The source session and workspace remain unchanged.
 func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error) {
+	if phase := r.OrchestratedGoalPhase(); phase != "" {
+		return "", "", fmt.Errorf("rewinding during an Orchestrated Goal %s is not supported; cancel a proposal, or start /new after a graph reaches a terminal state", phase)
+	}
 	if r.Sessions == nil || r.Session == nil {
 		return "", "", fmt.Errorf("session persistence is unavailable")
 	}

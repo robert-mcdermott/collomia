@@ -19,6 +19,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -737,4 +738,273 @@ func runGitOutputTest(t *testing.T, workspace string, args ...string) []byte {
 		t.Fatalf("git %v: %v", args, err)
 	}
 	return out
+}
+
+// A graph-owned candidate is reviewable and unpublishable through this path.
+// The model-facing tool matters as much as the operator one: the primary agent
+// holds no authority to publish a node's candidate either, and a refusal that
+// only covered the human surface would leave the model's route open.
+func TestGraphOwnedCandidateIsReviewableButNotPublishableHere(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	fixture.runtime.Team.Enqueue(agent.DelegateStart{ID: "g1", Name: "goal-write-1", Task: "extend alpha", Write: true, GraphNode: true})
+	fixture.runtime.Team.FinishDetailed("g1", "extended alpha", []string{"verified"}, []string{"sample.txt"}, fixture.worktree, fixture.branch, fixture.base, provider.Usage{}, nil)
+	data, err := os.ReadFile(fixture.delegatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.delegatedFile, []byte(strings.Replace(string(data), "line B", "line B from the graph writer", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parentBefore, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reviewing is allowed: the retained worktree exists to be looked at.
+	preview, err := fixture.runtime.PrepareDelegateIntegration(t.Context(), "g1")
+	if err != nil {
+		t.Fatalf("reviewing a graph candidate was refused: %v", err)
+	}
+	if !preview.GraphOwned || len(preview.Files) != 1 {
+		t.Fatalf("preview=%+v, want one graph-owned file", preview)
+	}
+	selections := []DelegateIntegrationSelection{{Path: "sample.txt", Keep: []bool{true}}}
+
+	for _, publish := range []struct {
+		name string
+		run  func() error
+	}{
+		{"operator apply", func() error {
+			_, err := fixture.runtime.ApplyDelegateIntegration(t.Context(), "g1", selections)
+			return err
+		}},
+		{"reviewed apply", func() error {
+			_, err := fixture.runtime.ApplyReviewedDelegateIntegration(t.Context(), "g1", preview.ReviewToken, selections)
+			return err
+		}},
+		{"reviewed action", func() error {
+			_, err := fixture.runtime.PrepareReviewedDelegateIntegrationAction(t.Context(), "g1", preview.ReviewToken, selections)
+			return err
+		}},
+	} {
+		err := publish.run()
+		if err == nil {
+			t.Fatalf("%s published a graph-owned candidate", publish.name)
+		}
+		if !strings.Contains(err.Error(), "Orchestrated Goal candidate") {
+			t.Fatalf("%s refusal does not explain itself: %v", publish.name, err)
+		}
+	}
+	parentAfter, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(parentBefore, parentAfter) {
+		t.Fatal("a refused publication changed the parent workspace")
+	}
+
+	// An ordinary delegate on the same worktree is unaffected, so the refusal
+	// is about graph ownership rather than about this repository state.
+	if _, err := fixture.runtime.PrepareDelegateIntegration(t.Context(), "d1"); err != nil {
+		t.Fatalf("an ordinary delegate was caught by the graph refusal: %v", err)
+	}
+}
+
+// checkpointFixture gives the integration fixture a durable session, which is
+// what makes the pre-integration checkpoint reachable at all.
+func checkpointSession(t *testing.T, fixture integrationFixture) *session.Session {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	store, err := session.Open(fixture.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.New("fixture", "scripted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The session holds its record file open. Windows refuses to unlink an open
+	// file, so leaving it to the garbage collector makes TempDir's cleanup fail
+	// the test on that platform for a reason unrelated to what it asserts.
+	t.Cleanup(sess.Close)
+	fixture.runtime.Session = sess
+	return sess
+}
+
+// The record has to exist before the first byte moves, because the case it is
+// for is the process stopping partway. A checkpoint written afterwards would
+// describe only integrations that completed — exactly the ones that need no
+// recovery.
+func TestIntegrationRecordsPriorStateBeforePublishingAndMarksTheOutcome(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	sess := checkpointSession(t, fixture)
+	data, err := os.ReadFile(fixture.delegatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.delegatedFile, []byte(strings.Replace(string(data), "line B", "line B from child", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parentBefore, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fixture.runtime.ApplyDelegateIntegration(t.Context(), "d1", []DelegateIntegrationSelection{{Path: "sample.txt", Keep: []bool{true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if pending := sess.PendingIntegrationCheckpoints(); len(pending) != 0 {
+		t.Fatalf("a completed integration left a pending checkpoint: %+v", pending)
+	}
+	recorded := sess.AllIntegrationCheckpoints()
+	if len(recorded) != 1 {
+		t.Fatalf("recorded checkpoints=%+v, want exactly one", recorded)
+	}
+	applied := recorded[0]
+	if applied.State != session.IntegrationApplied || applied.Delegate != "d1" {
+		t.Fatalf("checkpoint=%+v, want an applied record for d1", applied)
+	}
+	if len(applied.Files) != 1 || applied.Files[0].Path != "sample.txt" || !applied.Files[0].Existed {
+		t.Fatalf("checkpoint files=%+v", applied.Files)
+	}
+	// The retained bytes are the parent's prior content, which is the only
+	// thing that can put the workspace back.
+	if applied.Files[0].Before == nil || *applied.Files[0].Before != string(parentBefore) {
+		t.Fatal("the checkpoint did not retain the exact prior parent content")
+	}
+	if !applied.Restorable() {
+		t.Fatal("a small text file was not recorded as restorable")
+	}
+}
+
+// An interrupted integration is the one workspace state nothing else can
+// explain. The runtime reports it, refuses to guess, and restores only when a
+// person asks.
+func TestInterruptedIntegrationIsReportedAndRestoredOnlyOnRequest(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	sess := checkpointSession(t, fixture)
+	parentBefore, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := string(parentBefore)
+
+	// Simulate a process that recorded the checkpoint, published the bytes, and
+	// stopped before recording the outcome.
+	checkpoint := session.NewIntegrationCheckpoint("checkpoint-interrupted", "d1", fixture.workspace, 0,
+		[]session.IntegrationFile{{Path: "sample.txt", Existed: true, Before: &prior, Mode: 0o644}}, time.Now())
+	if err := sess.AppendIntegrationCheckpoint(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.parentFile, []byte("half published\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pending := fixture.runtime.InterruptedIntegrations()
+	if len(pending) != 1 || pending[0].ID != "checkpoint-interrupted" {
+		t.Fatalf("interrupted integrations=%+v", pending)
+	}
+	summary := fixture.runtime.DescribeInterruptedIntegrations()
+	if !strings.Contains(summary, "never recorded an outcome") || !strings.Contains(summary, "sample.txt") {
+		t.Fatalf("summary does not explain the state:\n%s", summary)
+	}
+	// Nothing has been restored merely by looking.
+	if current, _ := os.ReadFile(fixture.parentFile); string(current) != "half published\n" {
+		t.Fatal("reporting an interrupted integration changed the workspace")
+	}
+
+	restored, err := fixture.runtime.RestoreIntegrationCheckpoint(t.Context(), "checkpoint-interrupted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0] != "sample.txt" {
+		t.Fatalf("restored=%v", restored)
+	}
+	current, err := os.ReadFile(fixture.parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(current) != prior {
+		t.Fatalf("restore did not return the exact prior bytes:\n%q", current)
+	}
+	// A restored checkpoint is resolved and cannot be applied twice.
+	if len(fixture.runtime.InterruptedIntegrations()) != 0 {
+		t.Fatal("a restored checkpoint is still reported as interrupted")
+	}
+	if _, err := fixture.runtime.RestoreIntegrationCheckpoint(t.Context(), "checkpoint-interrupted"); err == nil {
+		t.Fatal("a resolved checkpoint was restored a second time")
+	}
+}
+
+// Prior content past the retention bound is dropped, but the path is still
+// named. Saying "this file changed and I cannot put it back" is far more
+// useful than either refusing the integration or writing an unbounded record.
+func TestOversizedPriorContentIsNamedRatherThanRetainedOrRefused(t *testing.T) {
+	huge := strings.Repeat("x", (1<<20)+1)
+	small := "small\n"
+	checkpoint := session.NewIntegrationCheckpoint("checkpoint-big", "d1", "/workspace", 3,
+		[]session.IntegrationFile{
+			{Path: "big.bin", Existed: true, Before: &huge},
+			{Path: "small.txt", Existed: true, Before: &small},
+		}, time.Now())
+	if checkpoint.Restorable() {
+		t.Fatal("a checkpoint that dropped content claims it can restore everything")
+	}
+	if checkpoint.Files[0].Before != nil || checkpoint.Files[0].Restorable {
+		t.Fatalf("oversized file retained content: %+v", checkpoint.Files[0])
+	}
+	if checkpoint.Files[0].Bytes != len(huge) {
+		t.Fatalf("oversized file lost its recorded size: %+v", checkpoint.Files[0])
+	}
+	if checkpoint.Files[1].Before == nil || !checkpoint.Files[1].Restorable {
+		t.Fatalf("a small sibling was dropped too: %+v", checkpoint.Files[1])
+	}
+	if !strings.Contains(checkpoint.Detail, "big.bin") {
+		t.Fatalf("detail does not name what cannot be restored: %q", checkpoint.Detail)
+	}
+	if checkpoint.GraphNode != 3 {
+		t.Fatalf("graph node attribution lost: %+v", checkpoint)
+	}
+}
+
+// The rollback path must resolve the record too. A pending checkpoint left
+// behind by an integration that actually undid itself would send a later
+// recovery hunting for a half-published workspace that does not exist.
+func TestRolledBackIntegrationResolvesItsCheckpoint(t *testing.T) {
+	fixture := newIntegrationFixture(t, nil)
+	sess := checkpointSession(t, fixture)
+	data, err := os.ReadFile(fixture.delegatedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.delegatedFile, []byte(strings.Replace(string(data), "line B", "line B from child", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Reads must keep working so the freshness re-read inside publication
+	// succeeds and the checkpoint is written; only the atomic replacement,
+	// which creates a temporary file beside the target, must fail. A
+	// read-only workspace directory does exactly that.
+	if err := os.Chmod(fixture.workspace, 0o555); err != nil {
+		t.Skip("cannot make the workspace read-only on this platform")
+	}
+	t.Cleanup(func() { _ = os.Chmod(fixture.workspace, 0o755) })
+	_, err = fixture.runtime.ApplyDelegateIntegration(t.Context(), "d1", []DelegateIntegrationSelection{{Path: "sample.txt", Keep: []bool{true}}})
+	if err == nil {
+		t.Skip("the fixture could not make publication fail on this platform")
+	}
+	// The record must exist at all, which is what pins the write-ahead
+	// ordering: a checkpoint written after the mutations would leave a failed
+	// integration with no durable trace whatsoever.
+	recorded := sess.AllIntegrationCheckpoints()
+	if len(recorded) != 1 {
+		t.Fatalf("a failed integration recorded %d checkpoints, want exactly one", len(recorded))
+	}
+	if recorded[0].State != session.IntegrationReverted {
+		t.Fatalf("checkpoint state=%q, want reverted", recorded[0].State)
+	}
+	if !strings.Contains(recorded[0].Detail, "rolled back") {
+		t.Fatalf("the reverted checkpoint does not say why: %q", recorded[0].Detail)
+	}
 }

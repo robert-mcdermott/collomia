@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -206,9 +207,34 @@ func TestRunResultEmitterProducesOneTerminalVerdict(t *testing.T) {
 	if decodeErr := json.Unmarshal([]byte(lines[0]), &final); decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	if final.Kind != event.KindRunResult || final.Result == nil || final.Result.Status != "error" ||
+	if final.Kind != event.KindRunResult || final.Result == nil || final.Result.Status != "error" || final.Result.Outcome != "blocked" ||
 		final.FailureID == "" || final.Result.Failure == nil || final.Result.Failure.ID != final.FailureID || final.Result.Failure.Kind != event.FailureUsage || !final.Result.Partial || !final.Result.Ephemeral || !final.Result.Refused || final.Result.SessionID != "" {
 		t.Fatalf("final=%+v", final)
+	}
+}
+
+func TestRunResultEmitterDistinguishesGoalOutcomes(t *testing.T) {
+	tests := []struct {
+		name, outcome, status string
+		err                   error
+	}{
+		{name: "done", outcome: "done", status: "ok"},
+		{name: "blocked", outcome: "blocked", status: "error", err: agent.ErrGoalBlocked},
+		{name: "budget", outcome: "budget_exhausted", status: "error", err: agent.ErrIterationBudgetExceeded},
+		{name: "cancelled", outcome: "cancelled", status: "cancelled", err: context.Canceled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out strings.Builder
+			emitRunResult(event.NewJSONLWriter(&out), nil, options{}, "", false, false, test.err, time.Now())
+			var final event.Event
+			if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &final); err != nil {
+				t.Fatal(err)
+			}
+			if final.Result == nil || final.Result.Status != test.status || final.Result.Outcome != test.outcome {
+				t.Fatalf("result=%+v", final.Result)
+			}
+		})
 	}
 }
 
@@ -217,11 +243,25 @@ func TestRunObservationTracksPartialTextAndRefusal(t *testing.T) {
 	textEvent := event.New(event.KindTextDelta)
 	textEvent.Text = "partial answer"
 	observation.Observe(textEvent)
+	graphEvent := event.New(event.KindGoalGraphUpdate)
+	graphEvent.GoalGraph = &event.GoalGraphStatus{ID: "graph-1", Generation: 1, State: "running"}
+	observation.Observe(graphEvent)
 	permissionEvent := event.New(event.KindPermissionDecision)
 	permissionEvent.Permission = &event.Permission{Allowed: false}
 	observation.Observe(permissionEvent)
 	answer, refused, progressed := observation.Snapshot()
 	if answer != "partial answer" || !refused || !progressed {
+		t.Fatalf("observation answer=%q refused=%t progressed=%t", answer, refused, progressed)
+	}
+}
+
+func TestRunObservationTracksGoalGraphProgress(t *testing.T) {
+	var observation runObservation
+	graphEvent := event.New(event.KindGoalGraphUpdate)
+	graphEvent.GoalGraph = &event.GoalGraphStatus{ID: "graph-1", Generation: 1, State: "running"}
+	observation.Observe(graphEvent)
+	answer, refused, progressed := observation.Snapshot()
+	if answer != "" || refused || !progressed {
 		t.Fatalf("observation answer=%q refused=%t progressed=%t", answer, refused, progressed)
 	}
 }
@@ -399,6 +439,51 @@ func TestGlobalInitWritesHomeDirectoryConfiguration(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"schema_version": 1`) {
 		t.Fatalf("unexpected starter at %s: %s", path, data)
+	}
+	if strings.Contains(string(data), `"ollama"`) || strings.Contains(string(data), `"qwen3-coder"`) || strings.Contains(string(data), `"providers"`) {
+		t.Fatalf("global init must not invent an unverified provider: %s", data)
+	}
+}
+
+func TestInteractiveStartupOffersSetupOnlyForACleanUnconfiguredState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	needed, err := interactiveProviderSetupNeeded(options{cwd: workspace})
+	if err != nil || !needed {
+		t.Fatalf("fresh install needed=%v err=%v", needed, err)
+	}
+
+	needed, err = interactiveProviderSetupNeeded(options{cwd: workspace, provider: "explicit"})
+	if err != nil || needed {
+		t.Fatalf("explicit override needed=%v err=%v", needed, err)
+	}
+
+	configDir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configured := `{"default_provider":"local","providers":{"local":{"type":"openai-compatible","base_url":"http://127.0.0.1:8000/v1","model":"m"}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(configured), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	needed, err = interactiveProviderSetupNeeded(options{cwd: workspace})
+	if err != nil || needed {
+		t.Fatalf("configured install needed=%v err=%v", needed, err)
+	}
+}
+
+func TestHeadlessStartupNeverPromptsForAnUnconfiguredProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	err := run([]string{"run", "--cwd", t.TempDir(), "hello"})
+	if err == nil || !strings.Contains(err.Error(), "collo setup") {
+		t.Fatalf("unconfigured headless error=%v", err)
+	}
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("unconfigured headless exit=%d, want configuration/usage exit %d", got, exitUsage)
 	}
 }
 

@@ -23,6 +23,7 @@
         "permission.decision",
         "file.change",
         "plan.update",
+        "goal.graph.update",
         "delegate.update",
         "usage",
         "context.compaction",
@@ -39,6 +40,7 @@
     "file": { "$ref": "#/$defs/fileChange" },
     "usage": { "$ref": "#/$defs/usage" },
     "tool_call": { "$ref": "#/$defs/toolCallDelta" },
+    "goal_graph": { "$ref": "#/$defs/goalGraphStatus" },
     "delegate": { "$ref": "#/$defs/delegateStatus" },
     "result": { "$ref": "#/$defs/runResult" },
     "provider": { "$ref": "#/$defs/providerFailure" },
@@ -69,6 +71,10 @@
     {
       "if": { "properties": { "kind": { "const": "usage" } }, "required": ["kind"] },
       "then": { "required": ["usage"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "goal.graph.update" } }, "required": ["kind"] },
+      "then": { "required": ["goal_graph"] }
     },
     {
       "if": { "properties": { "kind": { "const": "delegate.update" } }, "required": ["kind"] },
@@ -108,6 +114,21 @@
         "retryable": { "type": "boolean" },
         "retry_after_ms": { "type": "integer", "minimum": 0 },
         "request_id": { "type": "string" }
+      }
+    },
+    "goalGraphStatus": {
+      "type": "object",
+      "required": ["id", "generation", "state"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "node_id": { "type": "integer" },
+        "attempt_id": { "type": "string" },
+        "state": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string" },
+        "ready": { "type": "array", "items": { "type": "integer" } },
+        "outcome": { "enum": ["done", "blocked", "cancelled", "budget_exhausted", "awaiting_review"] }
       }
     },
     "tool": {
@@ -171,6 +192,7 @@
         "provider": { "type": "string" },
         "model": { "type": "string" },
         "write": { "type": "boolean" },
+        "graph_node": { "type": "boolean" },
         "write_scopes": { "type": "array", "maxItems": 64, "items": { "type": "string" } },
         "scope_violations": { "type": "array", "items": { "type": "string" } },
         "plan_step": { "type": "integer", "minimum": 0 },
@@ -238,6 +260,7 @@
       "additionalProperties": true,
       "properties": {
         "status": { "enum": ["ok", "error", "cancelled"] },
+        "outcome": { "enum": ["done", "blocked", "cancelled", "budget_exhausted"] },
         "answer": { "type": "string" },
         "error": { "type": "string" },
         "failure": { "$ref": "#/$defs/failure" },

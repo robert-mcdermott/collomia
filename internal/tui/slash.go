@@ -127,6 +127,10 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if usage.CostAvailable {
 			cost = fmt.Sprintf("\nEstimated cost: $%.6f (from user-configured pricing)", usage.CostUSD)
 		}
+		graphBudget := ""
+		if phase, used, limit, ok := m.runtime.OrchestratedGoalTokenBudget(); ok {
+			graphBudget = fmt.Sprintf("\nOrchestrated Goal cumulative budget (%s): %d/%d tokens used across all provider calls; %d remain", phase, used, limit, max(0, limit-used))
+		}
 		sessionID := ""
 		if m.runtime.Session != nil {
 			sessionID = "\nSession: " + m.runtime.Session.Meta.ID
@@ -145,7 +149,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
 		}
 		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
-		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input / %d output%s tokens%s%s\nEstimated current prompt: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, usage.OutputTokens, reasoning, cacheLine, cost, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
+		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input / %d output%s tokens%s%s%s\nEstimated current prompt for one request: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, usage.OutputTokens, reasoning, cacheLine, cost, graphBudget, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
 		if len(args) > 0 {
@@ -156,12 +160,201 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 				enabled = false
 			}
 		}
+		phase := m.runtime.OrchestratedGoalPhase()
+		if phase == "proposal" && !enabled {
+			status, err := m.runtime.CancelOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			// `/plan off` is an explicit request for execution mode even when
+			// the proposal began from an already-enabled ordinary plan mode.
+			m.runtime.Agent.SetPlan(false)
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal proposal cancelled · execution mode restored", status)
+			break
+		}
+		if phase != "" && phase != "proposal" {
+			m.addError(fmt.Errorf("planning mode is separate from an attached Orchestrated Goal; inspect or cancel the graph instead"))
+			break
+		}
 		m.runtime.Agent.SetPlan(enabled)
 		if enabled {
 			m.addSystem("Planning mode enabled. Only read-only discovery tools are exposed.")
 		} else {
 			m.addSystem("Planning mode disabled. Execution tools are available subject to permissions.")
 		}
+	case "/orchestrate":
+		if len(args) == 0 || strings.EqualFold(args[0], "status") {
+			nodeID := 0
+			if len(args) > 0 {
+				if len(args) > 2 {
+					m.addError(fmt.Errorf("usage: /orchestrate status [node-id]"))
+					break
+				}
+				if len(args) == 2 {
+					var err error
+					nodeID, err = strconv.Atoi(args[1])
+					if err != nil || nodeID <= 0 {
+						m.addError(fmt.Errorf("orchestrated goal node id must be a positive integer"))
+						break
+					}
+				}
+			}
+			status, err := m.runtime.OrchestratedGoalStatus(nodeID)
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.addPanel("Orchestrated Goal · experimental", status)
+			}
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "approve") {
+			status, prompt, err := m.runtime.ApproveOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal approved · experimental", status)
+			return false, m.startTurn(prompt)
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "pause") {
+			status, err := m.runtime.PauseOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal pause requested · experimental", status)
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "resume") {
+			status, prompt, runnable, err := m.runtime.ResumeOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal resumed · experimental", status)
+			if runnable {
+				return false, m.startTurn(prompt)
+			}
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "extend") {
+			status, prompt, runnable, err := m.runtime.ExtendOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal budget extended · experimental", status)
+			if runnable {
+				return false, m.startTurn(prompt)
+			}
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "verify") {
+			status, err := m.runtime.VerifyOrchestratedIntegration(context.Background(), nil)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal combined verification · experimental", status)
+			break
+		}
+		if len(args) >= 2 && strings.EqualFold(args[0], "waive") {
+			status, err := m.runtime.WaiveOrchestratedVerification(context.Background(), strings.Join(args[1:], " "))
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal verification waived by the user · experimental", status)
+			break
+		}
+		if len(args) == 2 && strings.EqualFold(args[0], "integrate") {
+			nodeID, convErr := strconv.Atoi(args[1])
+			if convErr != nil || nodeID <= 0 {
+				m.addError(fmt.Errorf("usage: /orchestrate integrate <node-id>"))
+				break
+			}
+			status, err := m.runtime.IntegrateOrchestratedCandidate(context.Background(), nodeID)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal candidate integrated · combined result unverified · experimental", status)
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "reconcile") {
+			status, err := m.runtime.ReconcileOrchestratedWorktrees(context.Background())
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal worktrees reconciled · experimental", status)
+			break
+		}
+		if len(args) >= 2 && len(args) <= 3 && strings.EqualFold(args[0], "discard") {
+			nodeID, convErr := strconv.Atoi(args[1])
+			confirmed := len(args) == 3 && strings.EqualFold(args[2], "confirm")
+			if convErr != nil || nodeID <= 0 || len(args) == 3 && !confirmed {
+				m.addError(fmt.Errorf("usage: /orchestrate discard <node-id> [confirm]"))
+				break
+			}
+			status, err := m.runtime.DiscardOrchestratedWorktree(context.Background(), nodeID, confirmed)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal worktree discarded · experimental", status)
+			break
+		}
+		if len(args) == 2 && strings.EqualFold(args[0], "retry") {
+			nodeID, convErr := strconv.Atoi(args[1])
+			if convErr != nil || nodeID <= 0 {
+				m.addError(fmt.Errorf("usage: /orchestrate retry <node-id>"))
+				break
+			}
+			status, prompt, runnable, err := m.runtime.RetryOrchestratedNode(context.Background(), nodeID)
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addPanel("Orchestrated Goal node retry · experimental", status)
+			if runnable {
+				return false, m.startTurn(prompt)
+			}
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(args[0], "cancel") {
+			if m.busy && m.cancel != nil {
+				m.cancel()
+			}
+			status, err := m.runtime.CancelOrchestratedGoal(context.Background())
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.reloadActivities()
+				m.addPanel("Orchestrated Goal cancelled · experimental", status)
+			}
+			break
+		}
+		goal := strings.TrimSpace(strings.Join(args, " "))
+		prompt, err := m.runtime.BeginOrchestratedProposal(goal)
+		if err != nil {
+			m.addError(err)
+			break
+		}
+		m.addSystem("Experimental Orchestrated Goal proposal started in read-only planning mode. Review the resulting graph with /orchestrate status; nothing executes until /orchestrate approve.")
+		return false, m.startTurn(prompt)
 	case "/autonomy":
 		if len(args) == 0 {
 			m.addSystem("Autonomy mode: " + m.runtime.Permissions.Mode() + " (ask, workspace, autopilot)")
@@ -328,6 +521,15 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
 	case "/tasks":
+		if m.runtime.GoalGraph != nil {
+			status, err := m.runtime.OrchestratedGoalStatus(0)
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.addPanel("Orchestrated Goal · experimental", status)
+			}
+			break
+		}
 		m.addPanel("Task plan", m.runtime.Plan.Current().Render())
 	case "/ps":
 		if len(args) == 2 && args[0] == "stop" {
@@ -384,8 +586,34 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			m.openRestorePicker()
 			break
 		}
+		if len(args) == 1 && strings.EqualFold(args[0], "integration") {
+			summary := m.runtime.DescribeInterruptedIntegrations()
+			if summary == "" {
+				m.addSystem("No integration was interrupted in this workspace.")
+				break
+			}
+			m.addPanel("Interrupted integrations", summary)
+			break
+		}
+		if len(args) == 3 && strings.EqualFold(args[0], "integration") && strings.EqualFold(args[2], "keep") {
+			if err := m.runtime.AcceptIntegrationCheckpoint(args[1]); err != nil {
+				m.addError(err)
+				break
+			}
+			m.addSystem(fmt.Sprintf("Kept the workspace as the interrupted publication left it and recorded %s as accepted. No file was changed.", args[1]))
+			break
+		}
+		if len(args) == 2 && strings.EqualFold(args[0], "integration") {
+			restored, err := m.runtime.RestoreIntegrationCheckpoint(context.Background(), args[1])
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.addSystem(fmt.Sprintf("Restored %d file(s) to the state recorded before the interrupted publication: %s", len(restored), strings.Join(restored, ", ")))
+			break
+		}
 		if len(args) != 1 {
-			m.addError(fmt.Errorf("usage: /restore [completed-turn-number]"))
+			m.addError(fmt.Errorf("usage: /restore [completed-turn-number | integration [checkpoint-id [keep]]]"))
 			break
 		}
 		turn, err := strconv.Atoi(args[0])
@@ -454,6 +682,8 @@ func busySlashAllowed(line string) bool {
 	switch strings.ToLower(fields[0]) {
 	case "/help", "/status", "/context", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
+	case "/orchestrate":
+		return len(fields) == 1 || (len(fields) == 2 && (strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "pause") || strings.EqualFold(fields[1], "cancel"))) || (len(fields) == 3 && strings.EqualFold(fields[1], "status"))
 	case "/config":
 		// Both forms only read local state, so neither belongs behind the
 		// running-turn gate.

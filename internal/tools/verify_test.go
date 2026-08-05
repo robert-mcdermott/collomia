@@ -116,7 +116,7 @@ func TestDetectVerificationNoProjectFilesFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "No known project files") {
+	if !strings.Contains(out, "No known project markers") {
 		t.Fatalf("expected no-project-files message: %s", out)
 	}
 }

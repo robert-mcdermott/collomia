@@ -767,6 +767,195 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
+## Evidence-gated durable goal-graph boundary (experimental OG-1–OG-3A.8)
+
+Orchestrated Goal is evidence-gated durable execution: the model proposes
+logical work and interprets results, while the runtime owns operational graph
+truth and accepts completion only through fresh, typed machine-observed
+evidence. It exposes the runtime controller only through a TUI action the
+user takes for one session. `/orchestrate <goal>` enters read-only proposal
+mode; it does not execute. `/orchestrate approve` accepts only a newly written
+pending plan whose every node has a concrete acceptance criterion. A graph
+approval is scheduling state, never authority. Primary work still uses the
+primary agent's existing tool registry, permission decision, lifecycle hooks,
+sandbox, audit identity, token/cost/iteration bounds, and cancellation path.
+Whole-plan replacement and model-directed delegate tools are hidden while this
+controller runs. Its two graph-control tools can only propose a bounded acyclic
+logical revision or record an exact blocker; they cannot grant a tool, path,
+host, publication, credential, or budget permission.
+
+Proposal plan status and evidence remain on the model side of that boundary.
+Approval imports topology, execution class, scopes, dependencies, and
+acceptance criteria, but initializes every runtime node pending with no attempt
+or imported proof. A proposal-time `done` claim can neither complete a node nor
+block approval before this normalization. Cancelling the proposal grants no
+execution authority: `/orchestrate cancel` restores the previous mode, while
+an explicit `/plan off` cancels it and restores ordinary execution mode under
+the unchanged permission and sandbox controls.
+
+The primary `max_iterations` setting is a consecutive no-progress lease in
+this mode, not an authority grant or a renewable whole-graph budget. Novel
+successful tool evidence or resolution of a recoverable failure renews it;
+equivalent repetition does not, and the aggregate ceilings below still bound
+it. Those ceilings are the user's own configuration and a person may grant an
+exhausted graph another envelope; nothing else can, and no ceiling is an
+authority grant. Once completion assessment records an exact gap, a narrower four-cycle
+lease renews for an actual workspace repair, a novel machine-observed
+verification failure, or evidence that closes the gate. Identical failures,
+superficially novel commands, and unrelated results cannot turn a fixed blocker
+into renewable progress. Exhaustion blocks rather than weakening the gate or spending the
+whole aggregate envelope. Potentially mutating or external actions still advance a durable global
+write-ahead generation before execution so an interrupted effect stays
+ambiguous and non-replayable. After a completed action, evidence freshness is
+bound separately to its machine-observed Git workspace token. An unchanged
+token preserves earlier verification; a changed or unavailable token requires
+fresh proof. This distinction grants no new network, process, or write access.
+
+An approved step may declare `execution: read_only`. Only independently
+dependency-ready nodes with that class are eligible for automatic assignment,
+in stable plan order, with at most two live workers. Omitted or `primary` work
+remains in the serial primary lane, as does every parent-workspace write. The
+workers reuse the governed delegated-agent path in planning mode: inherited-
+or-tighter permissions, distinct audit/task identity, no write worktree, no
+commands, no shared-plan mutation, no recursive delegation, and no graph-
+control tools. Both graph meta-tools are removed from the cloned registry and
+blocked again at call execution, so fabricating a hidden call grants nothing.
+A fixed persisted envelope limits automatic reads to eight starts, 64,000
+tokens, fifteen minutes total wall time, five minutes per attempt, two attempts
+per node, and eight child iterations; existing scheduler, provider, profile,
+permission, and cancellation limits may be tighter.
+
+An approved node may instead declare `execution: isolated_write`, but only in
+an explicitly candidate-only graph, with explicit normalized `write_paths`
+narrower than `"*"`. Candidate graphs may have `read_only` prerequisites but
+no primary nodes, every isolated writer must be a terminal leaf, and no later
+node may depend on it; proposal approval and bounded revisions reject other
+topologies because this slice cannot select or integrate retained work. The
+runtime
+selects at most two dependency-ready nodes in stable order and excludes any
+scope that overlaps an earlier claim, including nested and case-folded
+matches. Every selected writer in this bounded candidate wave starts from the
+same twice-observed clean parent state and exact Git commit. Approval performs
+that stable-base check before durable graph creation and names observed dirty
+paths while retaining the proposal for correction. Worktree creation
+names that commit explicitly, so a later `HEAD` cannot silently change the
+base; parent-token or base drift makes the result ineligible.
+
+Graph approval and a write scope are not permission. Before dispatch, the
+runtime obtains the ordinary `delegate` write decision and runs the normal
+permission/lifecycle hooks. Children use the existing non-recursive isolated
+worktree runtime, inherited-or-tighter permissions, shared scheduler, audit
+identity, declared-scope checks, and model-work bounds. After a child stops,
+the application redetects standard verification commands inside its retained
+worktree. Each command independently passes through the ordinary
+`run_command` permission and hook path. A model-authored “tests passed” claim,
+a result tied to an earlier child token, an incomplete suite, a scope
+violation, or a changed parent cannot create an eligible candidate.
+
+Even a fully verified child does not complete its logical node. The graph
+stores bounded candidate identity, changed-file, scope, verification-command,
+and child-state-token facts, marks the node `awaiting_review` with a
+reviewed-integration reason, leaves dependents closed, and retains the
+worktree. Awaiting review is a successful stop, distinct from a blocker, and it
+still grants nothing: the graph never chooses a candidate or applies, commits,
+merges, pushes, or publishes its bytes. Those candidate facts are made durable
+before the aggregate budget is enforced, so a wave that exhausts the ceiling
+still records where each retained worktree is instead of leaving orphans the
+runtime cannot name. Automatic writers additionally cannot reach `git_commit`
+or `git_branch` — removed from the cloned registry and refused again at call
+availability — because a commit inside a retained worktree is an automatic
+publication step this mode holds no authority for and would move the ref the
+candidate's diff is measured against. A
+process boundary while a writer is running is treated as an ambiguous
+mutation of the retained worktree and is not replayed or admitted through safe
+retry. Broader orphaned-worktree reconciliation remains OG-3B/OG-5 work.
+
+Graph execution truth is separate from the model-authored plan and full
+transcript. The session stores a versioned, structurally validated snapshot
+containing immutable attempts, typed failures, typed unmet acceptance gates,
+evidence identity, mutation generation, and terminal outcome. Acceptance state
+is typed rather than parsed back out of the sentences the runtime rendered for
+the model, and each attempt retains a bounded number of ordinary tool results —
+never pruning verification or node-result evidence — while recording how many
+it dropped; the complete transcript remains in the append-only session log. A model's tool-free response only proposes
+completion. The runtime requires a successful bounded result, rejects
+unresolved permission/hook/tool/provider failures, and allows at most two
+completion interventions, two attempts per node, two logical revisions, and
+twelve nodes. Every required node must be accepted; one material blocker ends
+the goal rather than spending more authority on independent work that cannot
+make the whole outcome complete.
+
+The current-node boundary is runtime-pinned, not merely conversational advice.
+A successful recognized verifier returns a receipt instructing the model to
+make a tool-free completion proposal and not begin later-node work. After a
+non-final node is accepted, the active provider context is replaced with a
+deterministic runtime handoff before the next request. This handoff makes no
+provider call and carries the accepted-node notice plus the authoritative
+pinned graph, including bounded accepted dependency summaries needed by later
+nodes; prior tool-loop messages remain in the append-only session but
+are no longer repeatedly resent as authority for the next node.
+
+Automatic read completion has its own evidence gate. A non-empty bounded child
+summary is not enough: the worker must have at least one machine-counted
+successful tool result, and when its durable claim had a Git workspace token
+the result must carry the same token. Worker identity, usage, scheduler reason, and
+`delegate_read` evidence are retained in the graph. A full read wave finishes
+before the primary lane advances. Cancellation stops the graph as `cancelled`;
+it is not recast as a provider failure or blocker.
+
+Potentially mutating tools cross a durable write-ahead transition before they
+execute. If that flush fails, the tool never starts. An interrupted read-only
+attempt can be recomputed under a fresh attempt ID, but an action that may have
+written or caused an external effect becomes a reconciliation blocker on
+resume and is never repeated automatically. Active graph runs cannot switch,
+rewind, or replace their session. A terminal graph still rejects unrelated
+ordinary prompts before a provider call, but a fresh `/orchestrate <goal>`
+durably tombstones it as the resumable graph and starts a new proposal in the
+same session. Cancel on an already-terminal graph performs the same archive
+transition. Earlier snapshots, transcript, and evidence remain append-only;
+nonterminal graphs cannot be displaced this way.
+
+Primary writes fail closed outside a Git-backed workspace. The combined-state
+token covers repository root and HEAD, index and worktree binary diffs, and
+the path, mode, and contents of non-ignored untracked regular files, within a
+fixed time/size bound. A structured write that leaves this token unchanged is
+not accepted as work. Any potential mutation advances a separate generation,
+and `done` after one requires a recognized successful verification result
+bound to the current token and generation. External drift stales accepted
+nodes conservatively. Ignored generated output is excluded from the token; it
+still advances the in-process mutation generation when Collomia ran the action,
+but an out-of-process change only to ignored data is intentionally outside the
+claim. A model-authored verification note is not a waiver.
+
+The only activation surface is the `/orchestrate` TUI command family. There is
+no configuration or headless flag, and project instructions, skills, hooks,
+model output, an ordinary persisted plan, and saved graph bytes cannot activate
+it. A saved graph is inspectable but inert until `/orchestrate resume`; recovery
+then retains OG-1's non-replay rule. Pre-fan-out schema-1 snapshots restore an
+omitted execution class as serial `primary`, so upgrading cannot cause a saved
+graph to gain automatic actors. A cooperative pause request is durable, starts
+no new graph work, and is reached only after the current provider/tool/read
+iteration completes; cancel remains the immediate stop. Resume clears only
+pause state. A retry is accepted only for a blocked node with remaining budget
+and no unresolved non-replayable action or ambiguous mutation, and it preserves
+the blocked attempt as history. Provider iterations, input/output tokens,
+price availability, estimated cost, and elapsed time are durable runtime facts
+split between proposal-plus-primary, automatic-read, and automatic-writer
+lanes; they grant no
+permission and never substitute for completion evidence. Fixed runtime-owned
+aggregate ceilings limit new graphs to 96 provider iterations, 1,000,000 tokens,
+$5 estimated cost when pricing is complete, and 30 minutes of active
+post-approval execution. Project/config/model content cannot widen them, and
+restored graphs retain their stored ceiling. Approval-boundary and later
+budget-pressure compactions are ordinary accounted provider requests. The
+accepted-node runtime handoff is instead a zero-provider deterministic
+compaction marker;
+unpriced work remains bounded by tokens, iterations, and active wall rather
+than receiving a fictitious dollar verdict. Active time stops at a reached
+pause or process boundary and restarts only after explicit resume.
+Optional-branch/node cancellation, automatic candidate integration, and
+headless activation remain unimplemented.
+
 ## Delegated-agent boundary
 
 Delegated agents use the same security boundary as the parent and can only be
@@ -848,7 +1037,14 @@ permission or write content.
 The review token binds worktree/branch/base identity, exact parent and child
 bytes and modes, the composed result, and conflict state. The user selects
 text hunks in a floating review; normal `integrate_delegate` permission rules
-still apply. The entire comparison is recomputed after interactive approval
+still apply, and they apply to the same resolved path the write tools would
+have been judged against. That last point was a real bypass until 2026-08-03:
+integration named its targets by joining the configured workspace string while
+the write tools resolve through the workspace path guard, which follows
+symlinks, so on any workspace reached through a symlink a path `deny` rule
+that correctly stopped `write_file` did not match at integration. Publishing a
+delegate's candidate was a way around a rule that had already been obeyed.
+Both paths now resolve through the same guard. The entire comparison is recomputed after interactive approval
 to close the approval-time race. Rooted atomic replacement/removal, multi-file
 rollback, and the ordinary change tracker then publish only selected clean
 content. The child worktree and branch are retained. Collomia never creates a

@@ -16,16 +16,17 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/setup"
 )
 
-// The setup wizard is a separate Bubble Tea program from the session model,
+// Provider setup is a separate Bubble Tea program from the session model,
 // not a mode inside it. The session model assumes a runtime, a provider, and a
-// session store — the three things the wizard exists because the user does not
-// have yet. It shares this package for the theme, the wordmark, and the panel
-// vocabulary, so it looks like Collomia rather than like a generic form.
+// session store. Setup may be creating those prerequisites or changing an
+// existing provider; either way it shares this package for the theme, the
+// wordmark, and the panel vocabulary, so it looks like Collomia rather than
+// like a generic form.
 
 // osGetenv is indirected so tests can present a controlled environment.
 var osGetenv = os.Getenv
 
-// SetupOptions configures one wizard run.
+// SetupOptions configures one provider-setup run.
 type SetupOptions struct {
 	// ConfigPath is the file that will be written.
 	ConfigPath string
@@ -41,9 +42,13 @@ type SetupOptions struct {
 	// is the point, since re-verifying is the same operation as verifying and a
 	// second implementation of it would be a second thing to keep correct.
 	Reconfigure string
+	// ContinueToSession changes the completion copy for the automatic startup
+	// path. The same setup flow is used by `collo setup`, but that command closes
+	// after writing while startup proceeds directly into the session TUI.
+	ContinueToSession bool
 }
 
-// SetupOutcome reports what a completed wizard did, so the caller can print a
+// SetupOutcome reports what a completed setup run did, so the caller can print a
 // closing line outside the alternate screen.
 type SetupOutcome struct {
 	Wrote      bool
@@ -69,12 +74,13 @@ const (
 
 // setupChoice is one selectable line on the provider screen.
 type setupChoice struct {
-	label    string
-	detail   string
-	disabled bool
-	local    *setup.Probe
-	hosted   *setup.Hosted
-	manual   *setup.Manual
+	label      string
+	detail     string
+	disabled   bool
+	configured string
+	local      *setup.Probe
+	hosted     *setup.Hosted
+	manual     *setup.Manual
 }
 
 type setupModel struct {
@@ -129,7 +135,7 @@ type verifiedMsg struct {
 type wroteMsg struct{ err error }
 type awsIdentityMsg struct{ identity setup.AWSIdentity }
 
-// RunSetup runs the interactive first-run wizard and reports what it wrote.
+// RunSetup runs interactive provider setup and reports what it wrote.
 func RunSetup(ctx context.Context, opts SetupOptions) (SetupOutcome, error) {
 	theme := resolveTheme(opts.ThemeName)
 	m := setupModel{
@@ -466,6 +472,21 @@ func (m setupModel) onSelect() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch {
+		case choice.configured != "":
+			// Selecting a configured provider from the ordinary list is the same
+			// operation as `collo setup --provider NAME`; the flag remains useful
+			// for jumping directly to it, but it is no longer required knowledge.
+			m.opts.Reconfigure = choice.configured
+			p, name, ok := m.reconfigureTarget()
+			if !ok {
+				return m, nil
+			}
+			m.name, m.provider = name, p
+			m.credPlan, m.envVar = setup.CredentialKeep, p.APIKeyEnv
+			m.catalog = nil
+			m.form = setupForm{}
+			m.stage = stageScanning
+			return m, tea.Batch(m.spin.Tick, m.discoverCmd(m.name, m.provider))
 		case choice.local != nil:
 			m.name = choice.local.Candidate.Key
 			m.provider = appconfig.Provider{Type: choice.local.Candidate.Type, BaseURL: choice.local.Candidate.BaseURL}
@@ -619,9 +640,17 @@ func (m setupModel) disabledAt(index int) bool {
 // below a hosted API the user has no key for is a list that makes the easy
 // path look unavailable.
 func (m setupModel) buildChoices() []setupChoice {
-	choices := make([]setupChoice, 0, len(m.probes)+8)
+	choices := make([]setupChoice, 0, len(m.probes)+len(m.opts.Existing.Providers)+8)
+	for _, name := range m.opts.Existing.Providers {
+		choices = append(choices, setupChoice{
+			label: name, detail: "configured: " + m.opts.Existing.Describes(name) + " · change model or re-verify settings", configured: name,
+		})
+	}
 	for i := range m.probes {
 		probe := m.probes[i]
+		if m.opts.Existing.Has(probe.Candidate.Key) {
+			continue
+		}
 		if probe.State == setup.ProbeReady && len(probe.Models) > 0 {
 			choices = append(choices, setupChoice{
 				label: probe.Candidate.Name, detail: m.withExisting(probe.Candidate.Key, probe.Detail()), local: &m.probes[i],
@@ -629,6 +658,9 @@ func (m setupModel) buildChoices() []setupChoice {
 		}
 	}
 	for _, hosted := range setup.HostedCandidates() {
+		if m.opts.Existing.Has(hosted.Key) {
+			continue
+		}
 		entry := hosted
 		detail := "needs an API key"
 		if _, variable, ok := hosted.EnvKey(); ok {
@@ -637,11 +669,17 @@ func (m setupModel) buildChoices() []setupChoice {
 		choices = append(choices, setupChoice{label: hosted.Name, detail: m.withExisting(hosted.Key, detail), hosted: &entry})
 	}
 	for _, manual := range setup.ManualCandidates() {
+		if manual.Key != "custom" && m.opts.Existing.Has(manual.Key) {
+			continue
+		}
 		entry := manual
 		choices = append(choices, setupChoice{label: manual.Name, detail: m.withExisting(manual.Key, manual.Summary), manual: &entry})
 	}
 	for i := range m.probes {
 		probe := m.probes[i]
+		if m.opts.Existing.Has(probe.Candidate.Key) {
+			continue
+		}
 		if probe.State != setup.ProbeReady || len(probe.Models) == 0 {
 			choices = append(choices, setupChoice{
 				label: probe.Candidate.Name, detail: probe.Detail(), disabled: true,

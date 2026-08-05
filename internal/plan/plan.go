@@ -14,27 +14,59 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/tools"
+	"github.com/robert-mcdermott/collomia/internal/writescope"
 )
 
 type Step struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	Status    string `json:"status"` // pending, in_progress, done, blocked, skipped
-	DependsOn []int  `json:"depends_on,omitempty"`
+	ID         int      `json:"id"`
+	Title      string   `json:"title"`
+	Status     string   `json:"status"` // pending, in_progress, done, blocked, skipped
+	DependsOn  []int    `json:"depends_on,omitempty"`
+	Acceptance []string `json:"acceptance,omitempty"`
+	// Execution is optional logical intent for Orchestrated Goal. Empty and
+	// "primary" keep work in the serial primary lane; "read_only" permits the
+	// runtime to assign a dependency-ready node to a bounded read-only worker;
+	// "isolated_write" permits a retained worktree candidate only when
+	// WritePaths declares narrow repository-relative scope. Ordinary plans do
+	// not interpret these fields as scheduling authority.
+	Execution  string   `json:"execution,omitempty"`
+	WritePaths []string `json:"write_paths,omitempty"`
 	// Evidence records how completion was verified (test run, file, output).
 	Evidence string `json:"evidence,omitempty"`
 }
 
 type Plan struct {
-	Goal    string    `json:"goal"`
-	Steps   []Step    `json:"steps"`
-	Updated time.Time `json:"updated"`
+	Goal  string `json:"goal"`
+	Steps []Step `json:"steps"`
+	// VerificationNote is a model-authored explanation for the exceptional
+	// case where automated verification does not apply. It is not
+	// machine-observed evidence and never substitutes for a command that could
+	// meaningfully verify changed files.
+	VerificationNote string    `json:"verification_note,omitempty"`
+	Updated          time.Time `json:"updated"`
+}
+
+type CompletionState string
+
+const (
+	CompletionReady      CompletionState = "ready"
+	CompletionIncomplete CompletionState = "incomplete"
+	CompletionBlocked    CompletionState = "blocked"
+)
+
+// Completion is a deterministic assessment of whether a plan can truthfully
+// finish. Issues are suitable for a model-visible controller notice; they are
+// derived only from structured state, never from parsing an answer.
+type Completion struct {
+	State  CompletionState
+	Issues []string
 }
 
 // Board is the shared, concurrency-safe holder for the current plan.
 type Board struct {
-	mu      sync.Mutex
-	current *Plan
+	mu       sync.Mutex
+	current  *Plan
+	revision uint64
 	// OnUpdate observes every plan change, for session persistence.
 	OnUpdate func(Plan)
 }
@@ -42,14 +74,27 @@ type Board struct {
 func NewBoard() *Board { return &Board{} }
 
 func (b *Board) Current() *Plan {
+	current, _ := b.Snapshot()
+	return current
+}
+
+// Snapshot returns one consistent plan and revision. The revision changes on
+// every Set, Restore, or Clear, letting a turn distinguish a newly maintained
+// plan from a completed plan retained only as session history.
+func (b *Board) Snapshot() (*Plan, uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.current == nil {
-		return nil
+		return nil, b.revision
 	}
 	clone := *b.current
 	clone.Steps = append([]Step(nil), b.current.Steps...)
-	return &clone
+	for i := range clone.Steps {
+		clone.Steps[i].DependsOn = append([]int(nil), b.current.Steps[i].DependsOn...)
+		clone.Steps[i].Acceptance = append([]string(nil), b.current.Steps[i].Acceptance...)
+		clone.Steps[i].WritePaths = append([]string(nil), b.current.Steps[i].WritePaths...)
+	}
+	return &clone, b.revision
 }
 
 // Clear drops the current plan without notifying observers; used when
@@ -57,6 +102,7 @@ func (b *Board) Current() *Plan {
 func (b *Board) Clear() {
 	b.mu.Lock()
 	b.current = nil
+	b.revision++
 	b.mu.Unlock()
 }
 
@@ -65,41 +111,185 @@ func (b *Board) Clear() {
 func (b *Board) Restore(p Plan) {
 	b.mu.Lock()
 	b.current = &p
+	b.revision++
 	b.mu.Unlock()
 }
 
-func (b *Board) Set(p Plan) error {
+// Validate checks the complete plan contract without mutating a board. It is
+// shared by new plan writes and completion assessment of restored legacy data.
+func Validate(p Plan) error {
+	if strings.TrimSpace(p.Goal) == "" {
+		return fmt.Errorf("goal must not be empty")
+	}
+	if len(p.Steps) == 0 {
+		return fmt.Errorf("plan must include at least one step")
+	}
 	seen := map[int]bool{}
 	for i, step := range p.Steps {
 		if step.ID == 0 {
 			return fmt.Errorf("steps[%d] needs a non-zero id", i)
 		}
+		if strings.TrimSpace(step.Title) == "" {
+			return fmt.Errorf("steps[%d] needs a non-empty title", i)
+		}
 		if seen[step.ID] {
 			return fmt.Errorf("duplicate step id %d", step.ID)
 		}
 		seen[step.ID] = true
+		for criterionIndex, criterion := range step.Acceptance {
+			if strings.TrimSpace(criterion) == "" {
+				return fmt.Errorf("steps[%d].acceptance[%d] must not be empty", i, criterionIndex)
+			}
+		}
+		switch step.Execution {
+		case "", "primary", "read_only":
+			if _, err := writescope.Normalize(step.WritePaths, false); err != nil {
+				return fmt.Errorf("steps[%d]: %w", i, err)
+			}
+		case "isolated_write":
+			if len(step.WritePaths) == 0 {
+				return fmt.Errorf("steps[%d].write_paths must declare explicit scope for isolated_write", i)
+			}
+			normalized, err := writescope.Normalize(step.WritePaths, true)
+			if err != nil {
+				return fmt.Errorf("steps[%d]: %w", i, err)
+			}
+			if len(normalized) == 1 && normalized[0] == writescope.Workspace {
+				return fmt.Errorf("steps[%d].write_paths must be narrower than the whole workspace for isolated_write", i)
+			}
+		default:
+			return fmt.Errorf("steps[%d].execution must be primary, read_only, or isolated_write", i)
+		}
 		switch step.Status {
 		case "pending", "in_progress", "done", "blocked", "skipped":
 		default:
 			return fmt.Errorf("steps[%d] has invalid status %q", i, step.Status)
 		}
+		if (step.Status == "done" || step.Status == "blocked" || step.Status == "skipped") && strings.TrimSpace(step.Evidence) == "" {
+			return fmt.Errorf("steps[%d] with status %q needs evidence or a reason", i, step.Status)
+		}
 	}
 	for i, step := range p.Steps {
+		dependencies := map[int]bool{}
 		for _, dep := range step.DependsOn {
 			if !seen[dep] {
 				return fmt.Errorf("steps[%d] depends on unknown step %d", i, dep)
 			}
+			if dep == step.ID {
+				return fmt.Errorf("steps[%d] cannot depend on itself", i)
+			}
+			if dependencies[dep] {
+				return fmt.Errorf("steps[%d] repeats dependency %d", i, dep)
+			}
+			dependencies[dep] = true
 		}
+	}
+	if cycle := dependencyCycle(p.Steps); len(cycle) > 0 {
+		return fmt.Errorf("plan dependencies contain a cycle through step %d", cycle[0])
+	}
+	states := make(map[int]string, len(p.Steps))
+	for _, step := range p.Steps {
+		states[step.ID] = step.Status
+	}
+	for i, step := range p.Steps {
+		if step.Status != "in_progress" && step.Status != "done" {
+			continue
+		}
+		for _, dep := range step.DependsOn {
+			if states[dep] != "done" && states[dep] != "skipped" {
+				return fmt.Errorf("steps[%d] is %q but dependency %d is %q", i, step.Status, dep, states[dep])
+			}
+		}
+	}
+	return nil
+}
+
+func (b *Board) Set(p Plan) error {
+	if err := Validate(p); err != nil {
+		return err
 	}
 	p.Updated = time.Now().UTC()
 	b.mu.Lock()
 	b.current = &p
+	b.revision++
 	notify := b.OnUpdate
 	b.mu.Unlock()
 	if notify != nil {
 		notify(p)
 	}
 	return nil
+}
+
+func dependencyCycle(steps []Step) []int {
+	edges := make(map[int][]int, len(steps))
+	for _, step := range steps {
+		edges[step.ID] = append([]int(nil), step.DependsOn...)
+	}
+	visiting := map[int]bool{}
+	visited := map[int]bool{}
+	var visit func(int) []int
+	visit = func(id int) []int {
+		if visiting[id] {
+			return []int{id}
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, dependency := range edges[id] {
+			if cycle := visit(dependency); len(cycle) > 0 {
+				return cycle
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		return nil
+	}
+	for _, step := range steps {
+		if cycle := visit(step.ID); len(cycle) > 0 {
+			return cycle
+		}
+	}
+	return nil
+}
+
+// AssessCompletion interprets status and evidence without changing the plan.
+// Set rejects these gaps for new plans, while this method also protects
+// restored plans written by older Collomia versions.
+func (p *Plan) AssessCompletion() Completion {
+	if p == nil {
+		return Completion{State: CompletionReady}
+	}
+	if err := Validate(*p); err != nil {
+		return Completion{State: CompletionIncomplete, Issues: []string{"active plan is invalid: " + err.Error()}}
+	}
+	var issues []string
+	blocked := false
+	for _, step := range p.Steps {
+		switch step.Status {
+		case "pending", "in_progress":
+			issues = append(issues, fmt.Sprintf("plan step %d (%s) is %s", step.ID, step.Title, step.Status))
+		case "done", "skipped":
+			if strings.TrimSpace(step.Evidence) == "" {
+				issues = append(issues, fmt.Sprintf("plan step %d (%s) is %s without evidence or a reason", step.ID, step.Title, step.Status))
+			}
+		case "blocked":
+			if strings.TrimSpace(step.Evidence) == "" {
+				issues = append(issues, fmt.Sprintf("plan step %d (%s) is blocked without a reason", step.ID, step.Title))
+			} else {
+				blocked = true
+			}
+		default:
+			issues = append(issues, fmt.Sprintf("plan step %d (%s) has unknown status %q", step.ID, step.Title, step.Status))
+		}
+	}
+	if len(issues) > 0 {
+		return Completion{State: CompletionIncomplete, Issues: issues}
+	}
+	if blocked {
+		return Completion{State: CompletionBlocked}
+	}
+	return Completion{State: CompletionReady}
 }
 
 // Render formats the plan for the TUI and tool results.
@@ -119,10 +309,22 @@ func (p *Plan) Render() string {
 			}
 			fmt.Fprintf(&b, " (after %s)", strings.Join(deps, ","))
 		}
+		if step.Execution != "" && step.Execution != "primary" {
+			fmt.Fprintf(&b, " · execution: %s", step.Execution)
+		}
+		if len(step.WritePaths) > 0 {
+			fmt.Fprintf(&b, " · write paths: %s", strings.Join(step.WritePaths, ", "))
+		}
 		if step.Evidence != "" {
 			fmt.Fprintf(&b, " — %s", step.Evidence)
 		}
 		b.WriteString("\n")
+		for _, criterion := range step.Acceptance {
+			fmt.Fprintf(&b, "    acceptance: %s\n", criterion)
+		}
+	}
+	if p.VerificationNote != "" {
+		fmt.Fprintf(&b, "Verification not applicable: %s\n", p.VerificationNote)
 	}
 	return b.String()
 }
@@ -130,11 +332,10 @@ func (p *Plan) Render() string {
 // Tool returns the update_plan tool bound to a board. Updating the plan is
 // read-risk: it changes agent state, never the repository.
 func Tool(board *Board) tools.Tool {
-	return tools.Function{
+	tool := tools.Function{
 		Def: provider.ToolDefinition{
 			Name:        "update_plan",
-			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, and evidence for completed steps (e.g. the test command that proved it). Keep it current as work progresses; it is shown to the user.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"},"steps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","done","blocked","skipped"]},"depends_on":{"type":"array","items":{"type":"integer"}},"evidence":{"type":"string"}},"required":["id","title","status"],"additionalProperties":false}}},"required":["goal","steps"],"additionalProperties":false}`),
+			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only|isolated_write), optional write_paths, and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded readers or isolated_write nodes with explicit narrow write_paths to retained worktree candidates. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
 		},
 		Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"},
 		Run: func(_ context.Context, raw json.RawMessage) (string, error) {
@@ -148,4 +349,35 @@ func Tool(board *Board) tools.Tool {
 			return "Plan updated:\n" + board.Current().Render(), nil
 		},
 	}
+	tool.Def.InputSchema = isolatedWriterPlanSchema
+	return tool
 }
+
+var isolatedWriterPlanSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "goal": {"type": "string", "minLength": 1},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"},
+          "title": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]},
+          "depends_on": {"type": "array", "items": {"type": "integer"}},
+          "acceptance": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+          "execution": {"type": "string", "enum": ["primary", "read_only", "isolated_write"], "description": "logical execution intent; isolated_write requires explicit narrow write_paths and produces only a retained candidate after explicit Orchestrated Goal approval"},
+          "write_paths": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1024}, "description": "repository-relative files or directory prefixes ending in /; allowed only with execution=isolated_write"},
+          "evidence": {"type": "string"}
+        },
+        "required": ["id", "title", "status"],
+        "additionalProperties": false
+      }
+    },
+    "verification_note": {"type": "string", "description": "specific reason automated verification does not apply after changed files; not machine-observed evidence"}
+  },
+  "required": ["goal", "steps"],
+  "additionalProperties": false
+}`)

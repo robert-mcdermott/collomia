@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-07-31
+**Status updated:** 2026-08-02
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -68,12 +68,12 @@ also shipped:
   draft releases.
 
 Collomia is suitable for beta use with the documented limits. It should not
-claim 1.0 or fully safe unattended execution until the remaining P0 security
-and reliability gates are complete. Those now live entirely in Phase 8 —
-independent review, sustained adversarial campaigns, and the reliability
-campaigns — since the last P0 outside it was reclassified on the evidence that
-the enforced all-or-nothing network boundary it was meant to add already
-existed on all three platforms. The audit ledger those campaigns and that
+claim fully safe unattended execution, which no amount of gating delivers. The
+P0 security and reliability gates that lived in Phase 8 are now complete: the
+reliability campaigns shipped, and the independent review was conducted on
+2026-08-04 and passed. The last P0 outside Phase 8 was earlier reclassified on
+the evidence that the enforced all-or-nothing network boundary it was meant to
+add already existed on all three platforms. The audit ledger those campaigns and that
 review read from is now itself complete, attributable, bounded, and
 inspectable, and pseudo-terminal execution reaches all three platforms. An
 earlier wave closed the last known asymmetry in the risk classifier: the safety
@@ -97,7 +97,24 @@ is strict JSON and structurally cannot carry the comments the reference is made
 of, so the documentation had nowhere to be at the moment it was needed. It now
 reaches the editor as a generated schema.
 
-The most recent wave took the reliability P0 by running the failures rather
+The latest wave closed the gap between installation and a verified session.
+A fresh process no longer asserts that Ollama and qwen are present: interactive
+startup enters reusable provider setup when no provider is configured, then
+continues directly into the session after the selected endpoint, model, and
+tool-calling path have been proved. The same flow remains available later for
+adding or changing providers, while headless use receives an actionable
+configuration failure instead of a prompt or a dead localhost request.
+
+The wave after it closed the first goal-completion gap. A tool-free model
+response is no longer accepted merely because it contains the language of
+completion: execution mode compares it with the active structured plan,
+terminal-step evidence and reasons, tracked writes since recognized
+verification, and unresolved tool failures. It can deterministically continue
+the model twice, then ends with a goal-level done, blocked, cancelled, or
+budget-exhausted outcome instead of looping without bound. Planning mode and
+unrelated informational turns retain ordinary completion.
+
+The reliability wave before it took the P0 by running the failures rather
 than reasoning about them, and each one was a defect rather than a
 confirmation: terminal loss orphaned every background process, the session was
 never flushed to stable storage at all, and the first exhaustion harness passed
@@ -111,9 +128,159 @@ commit destroys nothing. `git_commit` declares the files entering the commit, so
 `protect_credentials` can act on them; both write tools are classified by the
 same code that classifies the equivalent command string.
 
-No wave is currently active. See
-[Recommended next sequence](#recommended-next-sequence) for what the dependency
-order argues for next.
+The completed OG-2 program gave Orchestrated Goal a fixed
+runtime-owned whole-graph envelope of 96 provider iterations, now calibrated
+to 1,000,000 tokens,
+a $5 estimated-cost ceiling when pricing is complete, and 30 minutes of active
+post-approval execution. Reached pauses and inert restart time do not consume
+that active allowance. Credential-free comparisons retain bounded two-worker
+fan-out for substantive independent read investigations: decomposable and
+cross-layer scenarios produced the same grounded answer with lower controlled
+elapsed time than Standard and primary-only graph runs, while their extra
+model work remained visible. Trivial primary work launches no worker and
+dependency-serial reads do not overlap. **OG-3A — One verified isolated-writer
+candidate wave** adds explicitly
+scoped pairwise-disjoint writers on a clean stable Git base, retained child
+worktrees, and fresh child verification while stopping before parent
+integration. Seven trial-driven follow-ups then calibrated the cumulative
+token envelope and corrected the primary execution loop: `max_iterations` is
+now a consecutive no-progress lease inside one immutable graph attempt rather
+than an accidental lifetime cutoff, unchanged repository state no longer
+makes valid verification stale merely because a process or network action ran,
+verification-like shell compounds receive an exact reason and direct-command
+correction, and graph-hidden tools are enforced before argument decoding.
+An exact open completion gap now has its own four-cycle lease that renews only
+when evidence can change that gate, redundant exact-workspace `cd ... &&` and
+final `2>&1` verification wrappers are recognized without accepting status-
+masking shell composition, and unschedulable isolated-writer graphs are
+rejected before approval. End-to-end change graphs default to `primary`;
+`isolated_write` remains a clean-base, candidate-only terminal preview until
+reviewed integration exists.
+The latest correction distinguishes repair progress from churn: a novel
+machine-observed verification failure and an actual repository mutation renew
+the short completion-gap window so the agent can add or fix a focused test,
+while repeating the same failure does not. Proposal guidance now requires the
+first mutating node to establish a focused test when the repository has no
+applicable verification surface yet. The sixth correction makes terminal
+graphs yield to a new wave in the same session and creates a zero-provider,
+runtime-authored context handoff after every accepted node, preventing one
+node's transcript and work from silently consuming the next node's budget.
+The seventh correction keeps proposal progress on the model side of the
+authority boundary: approval always initializes runtime nodes pending, and
+both `/orchestrate cancel` and `/plan off` provide visible recovery from an
+unapproved read-only proposal.
+Standard evidence-gated execution remains the default.
+**OG-3 — Isolated writer candidates is complete** as of 2026-08-03: OG-3B5
+made every retained worktree observable and disposable by the user, OG-3B6
+completed the adversarial campaign, and OG-3C added the product evaluations
+that proved the exit gate. **OG-4 — Reviewed integration** is now the active
+milestone through 2026-08-03, when it met its exit gate and closed. Its four
+increments shipped: a graph candidate could be
+published into the parent workspace through `/agents apply` while the graph
+still reported that reviewed integration was required, and that path is now
+closed; every publication into the parent now records durably what it replaced
+before the first byte moves, so an interrupted one can be inspected and undone;
+and a verified candidate can now be published into the workspace on an explicit
+request and completed only when the repository's own checks pass against the
+combined result — or when you record an explicit written waiver.
+**OG-5 — Reproducible recovery and graduation** is complete as of 2026-08-04,
+and with it the whole Orchestrated Goal program. Its recovery increment
+shipped — a restart reproduces a multi-worker schedule exactly, and no
+integration, verification, or waiver proceeds while an earlier publication into
+the workspace never recorded an outcome, which you resolve by putting the prior
+bytes back or by recording that you are keeping what was published. Its
+comparison increment measured both modes across the whole scenario list, and
+its guidance increment wrote down which work the mode is for.
+
+**All nine graduation clauses are met.** The last one closed on 2026-08-04 when
+an independent security assessment was conducted and passed; its contents are
+confidential and are not reproduced here. Nothing is outstanding on evidence.
+The ratified order governs from here: read fan-out graduates first, with the
+isolated-writer wave trailing it. Both product judgements that remained are now
+settled: the capability matrix carries two rows, approving a graph with
+isolated_write nodes announces that it will change nothing until you publish,
+and "trailing" means an audit pass over the writer path that stops finding
+things which change what a user gets. Two passes have run. The first found one
+wording defect; the second found that a graph which had integrated a candidate
+could not be reopened at all — the snapshot validator never learned the
+`integrated` and `waived` evidence statuses, so resume and archive rejected it
+as structurally false. That is decisively past the bar, so the wave stays
+experimental. See the
+[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) for the contract,
+the clause-by-clause verdict, and the reasoning behind that ordering.
+
+## Completed wave — evidence-gated goal completion
+
+**Goal:** accept a final answer only when the runtime's structured evidence
+supports done or explicitly supports blocked, without weakening any existing
+limit or turning a confused model into an unbounded loop.
+
+- [x] Replace the unconditional “no tool calls means done” branch in primary
+  execution mode with a deterministic controller. An active plan with pending or
+  in-progress work causes a continuation notice rather than immediate
+  completion; a terminal historical plan does not poison unrelated later
+  turns, and read-only planning mode can still succeed by producing pending
+  implementation steps.
+- [x] Make terminal plan state meaningful. New plans require a non-empty goal
+  and steps, known acyclic non-duplicated dependencies, dependency-ready active
+  or done steps, evidence for `done`, and reasons for `blocked`/`skipped`.
+  Restored older plans are assessed at completion even if they predate those
+  write-time checks.
+- [x] Make successful tracked writes stale the turn's verification evidence.
+  A later successful direct conventional build/lint/test command clears the
+  gate; shell compounds and success masking such as `go test ./... || true`
+  never count. Where no meaningful automated check exists, the plan can record
+  a specific `verification_note`, explicitly labelled model-authored rather
+  than machine-observed.
+- [x] Retain failed tools as unresolved evidence. The agent must use another
+  tool to retry or take an alternative, or update the relevant step to blocked
+  with an exact reason before a tool-free answer can terminate truthfully.
+- [x] Bound controller intervention at two and spend every continuation from
+  the existing iteration, token, and cost budgets. Cancellation, permission,
+  persistence, and provider failures keep their existing boundaries; the
+  ordinary iteration ceiling is now classified as budget exhaustion rather
+  than an undifferentiated runtime stop.
+- [x] Preserve the schema-v1 `ok`/`error`/`cancelled` process-status contract
+  and add an optional `run.result.outcome` carrying `done`, `blocked`,
+  `cancelled`, or `budget_exhausted`. Replay validates the pairing and accepts
+  older schema-v1 traces that omit the additive field.
+
+**What it is not.** This controller does not parse prose to decide whether a
+claim sounds convincing, execute plan nodes automatically, or infer every
+side effect of a shell/MCP/external tool. The stale-write gate covers
+Collomia's tracked write actions, and verification recognition deliberately
+accepts a conservative direct-command vocabulary. Those limits keep the first
+slice deterministic and make automatic replanning and dependency-ready node
+selection the next agentic work rather than hiding them inside heuristics.
+Delegated agents remain governed by their isolated-worktree review and parent
+verification flow; this slice gates the primary agent that owns the goal and
+shared plan.
+
+## Completed wave — launch to a verified session
+
+**Goal:** make the first successful prompt the continuation of setup, not the
+first time Collomia discovers whether its assumed provider exists.
+
+- [x] Remove the synthetic Ollama/qwen provider from `config.Defaults()` and
+  the generated global starter. An empty provider map is a valid settings state
+  but not a session-ready state; stale provider/model selections remain invalid.
+- [x] Have interactive startup recognize only that clean unconfigured state,
+  enter provider setup, and continue into the session after a successful write.
+  Cancellation writes nothing and does not create a partial runtime.
+- [x] Keep headless behavior non-interactive. `collo run`, `review`, and
+  `verify` return a configuration-class error that points to `collo setup`
+  rather than assuming localhost or attempting to prompt.
+- [x] Make provider setup visibly reusable: remove the “first-run” label, list
+  already configured providers as actions, preserve the direct
+  `--provider <name>` shortcut, and keep the existing verify-before-write and
+  default-selection confirmation contracts.
+- [x] Carry a credential entered on a platform without an OS credential store
+  into only the immediately opened session. It is neither serialized nor left
+  in the process environment; later sessions still use the explicitly recorded
+  environment-variable contract.
+- [x] Make `collo doctor` report the provider-free state and update installation,
+  setup, feature, and capability documentation so none describes Ollama or a
+  particular model as an installed default.
 
 ## Completed wave — the failures nobody had run
 
@@ -198,9 +365,9 @@ closed. Nothing configurable changed.
 **What it is not.** Not a claim that a power cut is free: an interrupted turn
 may still be lost back to the previous boundary, and that is stated rather than
 implied. The exhaustion suite covers the durable writers, not every path that
-touches a file. And the reliability P0 is not finished — an independent security
-assessment and the sustained adversarial campaigns remain, and those are the
-items that actually gate 1.0.
+touches a file. The independent security assessment that gated 1.0 alongside
+this work was conducted on 2026-08-04 and passed; sustaining the adversarial
+suite continues as practice.
 
 ## Completed wave — the commit that says what is in it
 
@@ -1339,8 +1506,14 @@ claiming enforcement the policy layer does not provide.
   host-based). Both conflict with the Windows backend's no-administrator,
   inbox-API-only commitment, so this stays deliberately unbuilt rather than
   half-built.
-- [ ] **P0 — Independent review:** sustain the adversarial suite and obtain an
-  independent security assessment before 1.0.
+- [x] **P0 — Independent review:** an independent security assessment was
+  conducted and cleared this gate on 2026-08-04. Its contents — findings,
+  scores, and any comparison it draws — are confidential and are deliberately
+  not reproduced, summarised, or quoted anywhere in this repository; the
+  omission is intentional rather than an oversight. What the record needs is
+  that the review happened, was performed by someone other than this project,
+  and passed. Sustaining the adversarial suite continues as ongoing practice
+  rather than as an open gate.
 
 ### Phase 2 — Sessions and context
 
@@ -1399,11 +1572,10 @@ claiming enforcement the policy layer does not provide.
   back. Environment variables keep precedence and remain fully supported;
   Linux has no backend by design, so headless hosts use `api_key_env`. MCP
   server credentials are covered separately by Phase 5's OAuth item.
-- [ ] **P1 — First-run setup and provider discovery:** make the configuration
-  correct *before* it is written, by proving it with a real request — and take
-  Azure deployment/project discovery and routing, tested sovereign presets, and
-  clearer resolved AWS identity/model-access diagnostics as part of the same
-  work rather than beside it.
+- [ ] **P1 — Provider discovery beyond verified setup:** enumerate Azure
+  deployments/projects and Bedrock models, add tested sovereign presets, and
+  deepen model-access diagnostics. The provider-configuration and startup
+  portions of the former combined item have shipped.
 
   **`collo setup` has shipped**, covering local runtimes, hosted families, and
   form-configured Azure and Bedrock end to end: concurrent probing, catalog
@@ -1421,7 +1593,7 @@ claiming enforcement the policy layer does not provide.
   is a current dependency. Foundry already gets model selection free, since its
   OpenAI v1 route publishes a catalog. Tested sovereign presets also remain.
 
-  **Reclassified from P2, and merged with the former "Setup wizard" entry.**
+  **Originally reclassified from P2 and merged with the former setup entry.**
   The two were one item seen from opposite sides: the wizard's Azure branch
   *is* deployment discovery, and its Bedrock branch *is* the model-access
   diagnostic, so kept separate the Azure probe gets written twice. The parts
@@ -1429,25 +1601,17 @@ claiming enforcement the policy layer does not provide.
   `ProviderAvailability` that already distinguishes *unverified* from
   *unavailable*, credential precedence, `credstore`, starter generation, and
   `config validate --strict` as the final gate — so this is assembly and one
-  honest failure path rather than new machinery. It is P1 because the first
-  item in the recommended next sequence is real beta feedback, and the current
-  first-run path is: read the README, hand-write JSONC, set a credential, run
-  `doctor`, and guess which of those four steps was wrong.
+  honest failure path rather than new machinery. It remains P1 because real
+  cloud enumeration removes deployment/model guesses the current form-based
+  configuration cannot make on the user's behalf.
 
-  **Nothing currently dials.** `collo init` writes a static starter file with
-  `ollama`/`qwen3-coder`/`127.0.0.1:11434` as literal values, and
-  `config.Defaults()` returns the same assumption for a machine that has never
-  been configured at all — so an install with no Ollama on it is, as far as the
-  configuration layer is concerned, correctly configured. `collo doctor` is
-  thorough about everything visible from the configuration and the
-  environment — which credential source won, the Entra scope and tenant,
-  whether Bedrock resolved bearer or SigV4 — and makes **no network request**,
-  so its best possible answer is `ok`. A dead port, a revoked key, a model the
-  endpoint does not have, an Azure model name written where a deployment name
-  belongs, a Bedrock region without model access, and a wrong `context` all
-  survive every existing check and surface identically: the interface opens,
-  the user types, and *then* it fails. That is the state in which someone
-  stops rather than reports.
+  **The verified path now dials before it writes.** `config.Defaults()` and
+  `collo init --global` name no provider; interactive startup enters the same
+  reusable setup flow when the provider map is empty, and headless startup
+  fails with an actionable configuration error. The remaining gap here is not
+  verification but cloud enumeration: Azure and Bedrock still require the user
+  to name deployment/project, region, and model fields before verification can
+  prove them.
 
   - Probe, discover, then verify, in that order. Probe the default ports of the
     local runtimes already supported (Ollama 11434, LM Studio 1234, vLLM 8000),
@@ -1499,7 +1663,7 @@ claiming enforcement the policy layer does not provide.
     behavior quietly becomes two. `collo setup` is re-runnable, since adding a
     second provider is the next thing that happens after the first works.
 
-  **Behavior change:** `config.Defaults()` stops naming a provider it has never
+  **Shipped behavior change:** `config.Defaults()` stops naming a provider it has never
   contacted. An installation with no configuration reports that no provider is
   configured and points at `collo setup`, rather than asserting Ollama on
   localhost and failing at the first prompt. Anyone actually running Ollama on
@@ -1552,14 +1716,405 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 6 — Multi-agent orchestration
 
+The approved product and architecture contract for the remaining Phase 6 work
+is [Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md), Collomia's experimental
+**evidence-gated durable execution** mode. It is the canonical cross-session
+handoff for the model/runtime authority boundary, evidence contract, recovery
+guarantees, milestone order, non-goals, evaluation, and graduation. The
+roadmap remains the source of priority and completion status.
+
 - [x] **P0 — Finish agent definitions:** reasoning controls, monetary budgets,
   visibility, and named primary profiles.
 - [x] **P0 — Conservative conflict handling:** serialize known overlapping
   assignments and offer explicit three-way reconciliation without silently
   overwriting parent or sibling work.
-- [ ] **P1 — Plan graph execution:** assign dependency-ready nodes, propagate
-  verified evidence, invalidate stale repository assumptions, and re-plan on
-  failure. Keep this opt-in until cancellation and review behavior are proven.
+- [ ] **P1 — Plan graph execution:** deliver evidence-gated durable execution
+  by assigning dependency-ready nodes, propagating machine-observed evidence,
+  invalidating stale repository assumptions, and re-planning on failure. Keep
+  this opt-in until cancellation and review behavior are proven.
+  Deliver it through the strategy's ordered milestones rather than as one
+  large autonomy jump:
+  - [x] **OG-0 — Strategy and continuity:** record the durable charter,
+    cross-agent handoff, milestone order, and safety/graduation contract.
+  - [x] **OG-1 — Runtime-owned primary graph controller:** add the durable
+    node/attempt state machine, dependency-ready primary execution, bounded
+    replanning, conservative invalidation, and combined-workspace completion
+    gates without adding automatic actors. *(Completed 2026-08-01 through an
+    internal programmatic evaluation path; no user-facing mode.)*
+  - [x] **OG-2 — Experimental Orchestrated Goal:** require explicit
+    per-session opt-in and graph approval; add bounded automatic read-only
+    fan-out while keeping one serial primary write lane.
+    - [x] **OG-2A — Explicit primary-only preview:** add a TUI-only fresh
+      proposal, concrete acceptance criteria, one-time approval,
+      status/cancel/explicit-resume controls, visible experimental graph state,
+      and inert persisted state without automatic actors. *(Completed
+      2026-08-01.)*
+    - [x] **OG-2B — Bounded read-only fan-out:** automatically schedule at
+      most two useful dependency-ready read-only delegates while retaining one
+      serial primary write lane and the OG-2A consent/authority boundary.
+      - [x] **OG-2B1 — Runtime-selected read fan-out kernel:** add explicit
+        approved `read_only` nodes, stable dependency-ready claims, at most two
+        automatic read workers, bounded evidence/usage ingestion, and no
+        unnecessary child for primary-only or serial graphs. *(Completed
+        2026-08-02.)*
+      - [x] **OG-2B2 — Controls and comparative evidence:** complete operator
+        control, aggregate presentation, and proof of a useful quality or
+        elapsed-time gain over Standard and primary-only execution before
+        completing OG-2B.
+        - [x] **OG-2B2a — Cooperative pause and safe retry:** durably pause at
+          a scheduling boundary, explicitly resume without discarding an
+          in-process attempt, and retry only an eligible blocked node while
+          rejecting ambiguous mutation replay. Keep whole-graph cancellation
+          immediate and defer node cancellation until optional branches exist.
+          *(Completed 2026-08-02.)*
+        - [x] **OG-2B2b — Aggregate presentation and comparative evidence:**
+          make primary-plus-worker work visible and bounded, compare suitable
+          and unsuitable workloads, and finish the event/automation decision
+          before any headless activation surface.
+          - [x] **OG-2B2b1 — Durable aggregate accounting and presentation:**
+            count the explicit proposal, primary work, automatic reads, and
+            failed provider iterations exactly once; persist per-lane
+            input/output tokens and honest price availability; and show total
+            elapsed work in graph status. *(Completed 2026-08-02.)*
+          - [x] **OG-2B2b2 — Aggregate bounds and comparative evidence:**
+            enforce a whole-graph token/cost/iteration/active-wall envelope,
+            run the comparative scenario matrix, and retain fan-out only if
+            quality or elapsed-time evidence justifies its added work.
+            *(Completed 2026-08-02.)*
+  - [x] **OG-3 — Isolated writer candidates:** dispatch only ready,
+    disjoint-scope writers on a stable base; require child verification and
+    stop at reviewable candidates. *(Exit gate met 2026-08-03.)*
+    - [x] **OG-3A — One verified isolated-writer candidate wave:** add
+      explicit narrow `isolated_write` scopes, claim at most two pairwise-
+      disjoint writers from one clean stable commit, reuse ordinary delegate
+      permission/hooks and isolated worktrees, require fresh detected child
+      verification, retain candidates, and stop before selection or parent
+      integration. Interrupted writers are blocked and never replayed.
+      *(Completed 2026-08-02.)*
+    - [x] **OG-3A.1 — Aggregate-budget usability correction:** recalibrate
+      new graphs from the initial 192,000-token experimental ceiling to a
+      fixed 1,000,000-token ceiling, preserve the stored ceiling on older
+      graphs, compact once at approval and proactively under cumulative-budget
+      pressure, and show per-request context beside whole-graph consumption.
+      *(Completed 2026-08-02.)*
+    - [x] **OG-3A.2 — Primary-loop budget and evidence diagnostics:** renew
+      the configured primary iteration slice only when the runtime starts a
+      new immutable node attempt, retain the fixed 96-iteration graph
+      envelope as the outer bound, explain rejected verification-like shell
+      commands with a safe direct form, and enforce graph-hidden tools before
+      their arguments can reach an implementation. *(Completed 2026-08-02.)*
+    - [x] **OG-3A.3 — Progress-aware primary control and workspace evidence:**
+      reinterpret the configured primary slice as a durable consecutive
+      no-progress lease that renews on novel machine evidence; retain 96
+      aggregate iterations as the hard graph bound; distinguish conservative
+      write-ahead mutation history from observed repository-state changes;
+      return positive verification receipts; recognize direct Python module
+      verification; and prefer coherent 4–6-node proposals rather than
+      spending graph overhead on file-by-file serial nodes. *(Completed
+      2026-08-02.)*
+    - [x] **OG-3A.4 — Completion-gap and schedulability correction:** bind
+      post-proposal remediation to the exact unmet gate rather than novel-
+      looking output; recognize only safe redundant workspace/status wrappers
+      around verification; default end-to-end graphs to the primary lane;
+      reject mixed or dependency-producing retained-candidate topologies; and
+      preflight candidate-only graphs against a clean stable Git base with
+      actionable dirty-path diagnostics. *(Completed 2026-08-02.)*
+    - [x] **OG-3A.5 — Repair-progress and verifier-bootstrap correction:**
+      preserve a bounded remediation window after a novel verification
+      failure or a real workspace repair, refuse renewal for identical failed
+      output, retain full failed-verifier evidence, and require proposals to
+      establish a focused smoke test before a mutating node relies on a test
+      runner with no collected tests; allow an explicit safe retry to reattach
+      its saved blocked graph without a separate resume step. *(Completed
+      2026-08-02.)*
+    - [x] **OG-3A.6 — Multi-wave lifecycle and node-boundary efficiency:**
+      let a new `/orchestrate <goal>` archive a terminal attached or saved
+      graph without leaving the session, make cancel on an already-terminal
+      graph explicitly release it, retain prior graph snapshots and evidence
+      in the append-only log, scale proposals to 1–3 nodes for scoped changes,
+      stop models at the current node's verification boundary, replace the
+      accepted node's active transcript with a zero-provider runtime handoff,
+      and exclude generated/dependency/cache trees from ordinary file
+      discovery. *(Completed 2026-08-03.)*
+    - [x] **OG-3A.7 — Proposal-state authority and escape paths:** treat
+      proposal-time status/evidence as model-authored annotations rather than
+      runtime completion, normalize every approved node to pending with no
+      imported evidence, discourage graph nodes that only repeat inspection
+      already performed during proposal design, retain direct
+      `/orchestrate cancel`, and make `/plan off` explicitly cancel an
+      unapproved proposal and restore execution mode. *(Completed 2026-08-03.)*
+    - [x] **OG-3A.8 — Review-readiness corrections:** recognize the
+      conventional verifiers of the ecosystems the mode actually meets
+      (environment-manager wrappers, R, Ruby, Elixir, PHP, Swift, CMake, Deno,
+      Haskell, Bazel, task runners, tox/nox, Java) and the runner a Python
+      project really uses; stop accepting `git diff --check` as proof of a
+      change; make completion gaps and read-node groundedness typed runtime
+      state rather than matched prose; report a verified candidate wave as
+      `awaiting_review` instead of a blocker; retain candidate worktree
+      identity when a wave crosses the aggregate budget; withhold
+      `git_commit`/`git_branch` from automatic writers structurally; bound
+      retained per-attempt evidence so durable snapshots stop growing
+      quadratically; keep mid-graph steering across the node handoff; and give
+      `internal/writescope` direct tests with opposite-direction
+      overlap/violation rules. *(Completed 2026-08-03.)*
+    - [ ] **OG-3B — Adversarial and recovery closure:** finish cancellation,
+      provider-failure, scope/drift, retained-worktree, restore, and operator-
+      inspection campaigns; resolve any candidate-state/recovery gaps before
+      declaring OG-3 complete.
+      - [x] **OG-3B1 — Retained-worktree accountability closure:** make every
+        directory the runtime causes Git to create attributable to a plan node
+        and attempt however the wave ends — record what a cancelled wave left
+        on disk, record identity before usage accounting rather than after,
+        and bind an isolated worktree to its attempt durably at creation so
+        recovery after a process boundary names the exact orphaned path and
+        branch instead of describing something to go find; list every retained
+        tree in `/orchestrate status` for live and saved graphs, marking an
+        unexamined one as unreconciled; and add adversarial application-level
+        coverage for cancellation, delegate-permission refusal, child
+        verification failure, out-of-scope writes, and a provider failure that
+        must not discard a verified sibling. *(Completed 2026-08-03.)*
+      - [x] **OG-3B2 — Verification-composition correction:** accept a check
+        whose exit status the shell provably reports — an `&&` chain ending in
+        a recognized verifier, so preparation such as a sandbox-required cache
+        redirect or a virtualenv activation no longer makes verification
+        impossible — while continuing to refuse `||`, `;`, pipelines,
+        backgrounding, redirection, a verifier that is not last, a final
+        command assembled by substitution, and a leading segment that
+        relocates the verifier out of the workspace the evidence is bound to;
+        name the direct command wherever the verifier sits in a refused
+        composition; and make a node that stalls after refused checks report
+        them in its blocker. *(Completed 2026-08-03.)*
+      - [x] **OG-3B3 — Budget-accounting correction:** charge the aggregate
+        token envelope for new work rather than for prompt tokens the provider
+        served from cache, so a long node's re-sent context no longer exhausts
+        the ceiling while cost, iterations, and wall clock all have headroom;
+        stop compaction from spiralling by requiring real context growth since
+        the last one before paying for another; and make exhaustion cost a
+        decision instead of the graph by letting a person grant up to two more
+        bounded envelopes with `/orchestrate extend`, persisted and validated
+        so nothing but an explicit user action can widen the ceiling.
+        *(Completed 2026-08-03.)*
+      - [x] **OG-3B4 — User-owned execution envelope:** make the four
+        whole-graph bounds configuration with the current values as defaults
+        (`options.orchestration_max_iterations`, `_max_tokens`,
+        `_max_cost_usd`, `_max_active_wall_seconds`), refusing only implausible
+        values; stop capping how many times a person may grant another
+        envelope, and size each grant from the graph's own configured envelope;
+        and record in the strategy that a resource bound is a speed bump
+        requiring human interaction rather than a wall that discards completed
+        work — repository text, skills, hooks, and the model still cannot widen
+        it, and the permission, verification, scope, and publication gates are
+        unaffected. *(Completed 2026-08-03.)*
+      - [x] **OG-3B5 — Retained-worktree reconciliation:** observe each
+        retained worktree and record a typed disposition durably
+        (`present`, `empty`, `missing`, `orphaned`, `base_unreachable`,
+        `discarded`) through `/orchestrate reconcile`; add `/orchestrate
+        discard <node-id> [confirm]`, reachable only by the user, refusing an
+        unreconciled tree, requiring confirmation for one holding changes, and
+        refusing outright a directory Git no longer registers; and refuse to
+        archive a graph that is still the only record of an unobserved tree.
+        *(Completed 2026-08-03.)*
+      - [x] **OG-3B6 — Adversarial campaign:** prove the dispatch and
+        acceptance gates fail closed through application-level paths — hook
+        refusal, post-claim parent drift, verification spanning a changing
+        tree, case-folded sibling scopes, every writer in a wave failing, and
+        a writer beyond the wave's starts bound, which stops the graph as
+        `budget_exhausted` rather than as a failure. *(Completed 2026-08-03.)*
+      - [x] **OG-3C — Writer-wave product evaluation and OG-3 sign-off:** add
+        the isolated-writer wave's missing evaluation-matrix cases on a full
+        runtime with real worktrees and the application's own child
+        verification, each asserting the parent repository is byte-for-byte
+        unchanged, and record the exit-gate evidence that closes OG-3.
+        *(Completed 2026-08-03.)*
+  - [x] **OG-4 — Reviewed integration:** add recoverable publication,
+    conservative candidate synthesis, and fresh combined-parent verification
+    before a logical node can finish. *(Exit gate met 2026-08-03; candidate
+    ranking deferred into OG-5.)*
+    - [x] **OG-4A — No unaccounted publication of a graph candidate:** mark a
+      candidate graph-owned from dispatch through the durable delegate record
+      and a resumed session, and refuse publication at the single funnel every
+      apply path shares — operator, primary-agent reviewed, and model tool —
+      while keeping review available. Closes a path that changed the parent
+      workspace while the node still reported that reviewed integration was
+      required. *(Completed 2026-08-03.)*
+    - [x] **OG-4B — Recoverable pre-integration checkpoint:** append and flush
+      a durable record of every target path's prior content, mode, and
+      existence before publication changes the first byte, mark the outcome
+      applied or reverted afterwards, report an unresolved checkpoint at
+      startup and through `/restore integration`, and restore the recorded
+      prior state only on explicit request — never re-publishing, because
+      completing a half-finished integration would repeat a mutation whose
+      effect is unknown. Retained content is bounded, and a path past the
+      bound is named as unrestorable rather than dropped.
+      *(Completed 2026-08-03.)*
+    - [x] **OG-4C — Graph-owned candidate integration:** publish one node's
+      whole verified candidate into the parent workspace through an explicit
+      user-only `/orchestrate integrate <node-id>`, under the OG-4B checkpoint
+      and ordinary integration permission. A candidate goes whole or not at
+      all, since the child verified its entire tree; a conflict in any file
+      refuses the whole integration. The node moves to a new `integrated`
+      state and the graph to `awaiting_verification` — never `done`, because a
+      child's pass says nothing about the parent it was merged into — and every
+      previously accepted node is staled. *(Completed 2026-08-03.)*
+    - [x] **OG-4D — Combined-workspace verification and node acceptance:** run
+      the repository's detected checks against the merged parent through
+      ordinary `run_command` permission with `/orchestrate verify`, require
+      every one to pass against a workspace that did not move while they ran,
+      and only then complete the integrated nodes. A failure leaves the node
+      integrated and unfinished. `/orchestrate waive <reason>` accepts a node
+      on a person's written judgement where no automated check applies, and is
+      labelled a user-authored waiver rather than verification everywhere it
+      appears. *(Completed 2026-08-03.)*
+    - [x] **OG-4 closure:** record the four exit-gate clauses against the tests
+      and commands that proved each, close the last untested clause with an
+      integration-denial evaluation, and write down the two deliverable bullets
+      not delivered literally — hunk-level application superseded by
+      whole-candidate publication, and candidate ranking deferred into OG-5's
+      graduation review. *(Completed 2026-08-03.)*
+  - [x] **OG-5 — Reproducible recovery and graduation:** *(Complete
+    2026-08-04. Twelve slices delivered the recovery work, audited every
+    auditable graduation clause, completed the mode comparison, and produced
+    the required guidance. **The graduation review's verdict: all nine clauses
+    met.** The review as first conducted found eight met and clause 9 half met;
+    its security half closed the same day when an independent assessment was
+    conducted and passed, whose contents are confidential and are not
+    reproduced here. The graduation order is ratified rather than
+    merely recommended — read fan-out first once that clears, with the
+    isolated-writer wave trailing it — and was confirmed after being raised as
+    an open question, since every clause passes for both and shipping them
+    together was defensible. The reason for the order is where this milestone's
+    defects were found: nearly every one across six audit slices was in the
+    writer or publication path, which is also the path that writes into a
+    user's own repository.)* *(Decided 2026-08-04:
+    Orchestrated Goal will never be the default mode. It is an optional mode
+    for specific work, so graduation can only mean leaving experimental status
+    as a supported option — which adds a requirement it never had, namely
+    documented evidence-backed guidance on when to use it, and allows read
+    fan-out and the isolated-writer wave to graduate separately.)* restore scheduler
+    state without replaying mutations, finish adversarial/performance
+    evaluations, and make an evidence-based graduation decision.
+    - [x] **OG-5A — restart fidelity and unresolved parent publications:**
+      pin multi-worker scheduler restoration as exact — same nodes, same
+      order, no attempt resumed in place, and the spent envelope carried
+      across so a restart is charged for the starts it re-spends — and stop
+      every step that reasons about the combined parent workspace while an
+      earlier publication into it never recorded an outcome, with
+      `/restore integration <id> keep` added as the resolution that keeps
+      what was published instead of undoing it. *(Completed 2026-08-03.)*
+    - [x] **OG-5B — permission-decision equivalence at the parent-workspace
+      boundary:** close the graduation gate's permission clause, and with it a
+      real bypass the test found — a path `deny` rule that correctly stopped
+      `write_file` did not match at integration on any workspace reached
+      through a symlink, so publishing a delegate's candidate got around it.
+      Both paths now resolve targets through the same guard, and one
+      evaluation runs the identical rule through Standard and Orchestrated
+      mode. *(Completed 2026-08-03.)*
+    - [x] **OG-5C — the adversarial publication corpus:** record the
+      publication half of the graduation gate's no-silent-overwrite,
+      no-duplicated-mutation clause. Three cases were already covered; five
+      were not — a symlink standing in for the target file, a symlinked
+      directory component, both sides creating the same path, the parent
+      deleting a file the candidate modified, and publishing the same
+      candidate twice. Each now asserts its refusal reason, and the escape
+      cases assert a canary outside the workspace is untouched.
+      *(Completed 2026-08-03.)*
+    - [x] **OG-5D — a retired node is never reported as one that passed:**
+      close the false-completion path a graph revision opened. A revision
+      rebuilds the node set from the proposed spec, so a node the model omits
+      disappears — and a graph it could not finish reached `done` claiming
+      every required node passed its gates. Dropping nodes stays legal, but
+      the removal is now a typed durable record, `done` says the approved plan
+      was reduced and names what left, and both the completion answer and the
+      terminal guard carry it. *(Completed 2026-08-03.)*
+    - [x] **OG-5E — a check bound to a superseded workspace is named, not
+      counted:** close the other half of the false-completion clause. A node's
+      gate is evaluated against the state it completed in and nothing re-runs
+      it, so a later node with a narrower check can break an earlier node's
+      work while the graph reports that every required node passed. Neither
+      re-verifying nor staling finished nodes is right, so `done` now names the
+      passing checks whose workspace is no longer current — in the reason,
+      `/orchestrate status`, and the completion answer — while a plan with
+      nothing behind gains no qualification. *(Completed 2026-08-03.)*
+    - [x] **OG-5F — the mode comparison harness:** replace a flaky
+      total-wall-clock comparison with critical-path measurement — the union of
+      the windows in which work was actually running — so a loaded machine
+      slows every mode without inverting the result. Each mode now yields a
+      record carrying tokens and provider iterations beside the time, printed
+      as a table with deltas, because a clause about whether a benefit
+      justifies an overhead needs numbers rather than an assertion that held.
+      Read fan-out halves the critical path for roughly 2.1x the tokens, and a
+      serial graph pays that premium for no time benefit at all. **This does
+      not close the cost/benefit clauses.** *(Completed 2026-08-04.)*
+    - [x] **OG-5G — the isolated-writer wave measured:** close the matrix's
+      largest hole. Against Standard mode doing the same two package changes,
+      the wave halves the implementation critical path for +8% tokens — but
+      runs the repository's detected verification set three times instead of
+      once, and leaves nothing in the user's repository until two explicit
+      integrations and a combined verification. The verification multiplier is
+      structural and scales with the suite's real time, which makes it the cost
+      that matters rather than tokens. Rounds are counted rather than commands
+      because commands measure the model's taste and rounds measure the
+      structure. **Clauses 5 and 6 remain open.** *(Completed 2026-08-04.)*
+    - [x] **OG-5H — failure containment measured, and a blocked node made
+      legible:** every comparison before this measured a success against a
+      success, which is the case the writer wave is least suited to winning.
+      The same non-compiling change breaks the user's repository in Standard
+      mode and never touches it in the wave — the gate's first quality
+      evidence. The cost profile also inverts: a failing candidate
+      short-circuits at the first failed command (2s against the success
+      case's 17s), so the wave is expensive when work succeeds and cheap when
+      it fails, and its expected value rises with the chance the change is
+      wrong. The slice also found and fixed a clause 7 defect: a blocked node
+      read `command failed: exit status 1`, an exit code rather than an
+      explanation, because the raw child error overwrote the diagnosis the
+      graph already held. *(Completed 2026-08-04.)*
+    - [x] **OG-5I — the negative case, and a partial plan that called itself
+      finished:** measure where the wave loses, since guidance that only says
+      "use it" is not guidance. Two nodes declaring the same write scope can
+      never run together, so the wave's one benefit is unavailable by
+      construction while every cost is paid: it started one writer of two and
+      needs a full review cycle per node for work Standard mode does in one
+      pass. The evaluation also found a worse problem than the cost — the stop
+      reported "Orchestrated Goal finished", named only the candidate it
+      produced, and offered `/orchestrate cancel`, which would have discarded
+      an approved node that never ran and was never mentioned. The graph now
+      reports what it never started and says those nodes are waiting on the
+      review rather than blocked. A reporting correction came with it:
+      percentage deltas are suppressed between modes that completed different
+      amounts of work. *(Completed 2026-08-04.)*
+    - [x] **OG-5J — cancellation compared:** put a test behind one of the few
+      measures the strategy states as an absolute — duplicate or
+      post-cancellation actions must remain zero — and measure what pressing
+      Ctrl-C actually costs in each mode. Both modes make zero provider calls
+      after cancellation, asserted for Standard mode too, since a cancellation
+      that leaks one further action means nothing in either. Standard mode
+      leaves its half-finished change in the repository; the wave leaves the
+      repository untouched and both in-flight candidates retained and
+      attributable. A writer cancelled before changing anything correctly
+      retains no worktree, since an empty directory is not evidence. **No
+      defect found.** *(Completed 2026-08-04.)*
+    - [x] **OG-5K — parent drift compared:** the last comparison, and the one
+      where the modes differ structurally. Standard mode has one workspace, so
+      an edit made mid-run is simply the state the agent works in, silently
+      overwritten or built upon with no record. The wave pins each candidate to
+      its base, detects the edit, and blocks the node while keeping the
+      worktree — but described a survivor as a loss. The reason offered
+      "parent workspace **or** candidate Git base changed" when the runtime
+      knows which, and never said the finished, passing candidate was still on
+      disk. It now names what moved, where the candidate is retained, and that
+      nothing is lost. **This completes the comparison list.**
+      *(Completed 2026-08-04.)*
+    - [x] **OG-5L — the when-to-use-it guidance:** close the deliverable the
+      never-default decision added. Deciding the mode will never be the default
+      replaced "is it better on average" with "when is it better, and can a
+      person tell" — and the second question needs an answer where a user will
+      meet it. The user guide now says which work the mode is for and which it
+      is not, each case citing the evaluation that produced it. The condition
+      is enforced rather than intended: a test extracts every citation and
+      fails if one no longer resolves, requires the section to exist under its
+      known heading, and requires the "when not to" half to cite evidence too,
+      because guidance that only says when to use a mode is marketing.
+      *(Completed 2026-08-04.)*
 - [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
   verification and comparison surface with explicit combined-parent
   verification and safe ranking criteria.
@@ -1661,10 +2216,12 @@ claiming enforcement the policy layer does not provide.
   filesystem through `internal/reliability`. Cancellation stress went from five
   iterations to twenty.
 
-  **What remains under this heading is confidence built by others, not code.**
-  The suite proves the failures it reproduces; an independent assessment and
-  the sustained adversarial campaigns above are what actually close the 1.0
-  gate, and neither is something this project can perform on itself. See the
+  **What remained under this heading was confidence built by others, not code
+  — and it has now been built.** The suite proves the failures it reproduces;
+  the independent assessment that actually closes the 1.0 gate was conducted on
+  2026-08-04 and passed, which is the one thing this project could never
+  perform on itself. Its contents are confidential and are not reproduced here.
+  Sustaining the adversarial suite continues as practice. See the
   [completed wave](#completed-wave--the-failures-nobody-had-run) for what
   running the failures found that reasoning about them had not.
 - [x] **P0 — A trustworthy audit ledger:** every entry names the session and
@@ -1746,70 +2303,86 @@ claiming enforcement the policy layer does not provide.
 
 ## Recommended next sequence
 
-Several waves in a row were P1 or P2 while the items that actually gate 1.0 did
-not move. The audit ledger — the cheapest of the remaining P0s, and the one an
-independent assessment starts from — has been taken; Windows ConPTY closed the
-last platform-parity gap; and the publication wave closed the finding that
-assessment would most likely have opened with. The rest, in order:
+The setup journey, first completion controller, OG-1 runtime-owned primary
+graph, the complete OG-2 experimental read-only orchestration program, and
+OG-3A's first verified isolated-writer candidate wave, its seven trial-driven
+controller corrections, OG-3A.8's audit-driven review-readiness corrections, and
+OG-3B1–B6's retained-worktree accountability closure, verification-composition
+correction, budget-accounting correction, user-owned execution envelope,
+retained-worktree reconciliation, and adversarial campaign, and OG-3C's product
+evaluations and exit-gate sign-off are now complete. OG-3 is closed.
+Together, the graph milestones are the shipped experimental foundation for
+evidence-gated durable execution. The
+[Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
+contract and explicitly separates current evidence/recovery guarantees from
+future graduation claims. The next orchestration slice is **the second OG-5
+increment**. An Orchestrated Goal now runs end to end and survives a restart:
+OG-5A pinned multi-worker scheduler restoration as exact and closed the case
+where an interrupted publication left the parent workspace in a state no
+later step could honestly reason about. What is left is measurement rather
+than mechanism — the security, reliability, compatibility, and performance
+campaigns, the Standard-versus-Orchestrated comparison, and the graduation
+decision. OG-5B started that measurement by auditing the graduation gate's
+permission clause and found a real bypass rather than confirming a property,
+which is the argument for working through the remaining clauses the same way.
+OG-5C then took the adversarial-corpus clause and found the opposite — the
+mechanism sound, the evidence missing — which is reported as such rather than
+dressed up as a fix. OG-5D then took the false-completion clause and found the
+sharpest defect of the three: the model could delete a node it could not finish
+and be told the plan had passed. OG-5E closed the same clause's other half,
+where an earlier node's passing suite silently stopped describing the
+workspace. OG-5F then built the apparatus the cost/benefit clauses need and
+produced its first data points: halving the critical path on independent reads
+costs roughly 2.1x the tokens, and a serial graph pays that premium for no time
+benefit at all. OG-5G then measured the writer wave, where the token premium
+turns out not to be the story: it halves the implementation critical path for
++8% tokens while running the verification set three times instead of once, and
+finishes with nothing in the repository until the user integrates. OG-5H then
+measured the failure case and found the argument the success cases could not
+make: the same broken change wrecks the workspace in Standard mode and never
+reaches it in the wave, and the wave's cost profile inverts when work fails. OG-5I then measured the
+other side — same-scope nodes, where the wave pays everything and overlaps
+nothing — and found a partial plan describing itself as finished while
+offering to discard the half that never ran. OG-5J then compared cancellation
+and found the mechanism already sound: zero post-cancellation actions in both
+modes, with the wave leaving the repository untouched and its in-flight work
+retained. OG-5K then completed the list with parent drift, where the wave
+detects what Standard mode structurally cannot — and where a verified candidate
+sitting safely on disk was being described as though it had been thrown away. OG-5L then wrote the guidance those comparisons existed to
+support, and made its citations enforceable so a documented case cannot outlive
+the measurement behind it.
 
-1. Close the distance to a first successful session, because the beta feedback
-   this list has opened with for several waves is blocked on it rather than on
-   anyone's willingness. Three segments of the path from *hears about Collomia*
-   to *has a working session* are unbuilt, and all three were already on this
-   roadmap as deferred items: **getting the binary** (Phase 8 package
-   managers — no Homebrew, Scoop, or Winget; `curl | sh` and `irm | iex` are
-   the only routes), **trusting it** (Phase 8 native release signing — unsigned
-   on macOS and Windows, provenance-attested only), and **configuring a
-   provider** (Phase 4 first-run setup — `collo init` writes a static starter
-   file, `config.Defaults()` asserts a provider it has never contacted, and
-   `collo doctor` makes no network request, so nothing between installation and
-   the first prompt ever dials the endpoint being configured). Add
-   `collo feedback` beside them so that what comes back is cheap to send.
-
-   Native signing is the one segment with an external dependency —
-   certificates cost money and need CI secrets — so it is a decision to take
-   rather than work to schedule, and the other three do not wait on it. Every
-   wave since v0.1.7 has added depth to a product that is still meaningfully
-   hard to start using; this is the same asymmetry the publication wave fixed,
-   in a different place. A control nobody leaves on and a product nobody can
-   easily install fail for the same reason.
-   The first sustained beta report has now arrived, from the one person using
-   Collomia daily, and it did not name a missing capability: it named the
-   configuration file. Extensive documentation has to be read — or handed to an
-   AI to read — before a provider block can be written, and `max_tokens` and
-   `context_window` in particular had to be corrected by hand because the
-   defaults were too small for the models actually in use. That is a concrete,
-   already-diagnosed defect rather than a preference. **That slice has now
-   shipped**, which leaves the three original segments — getting the binary,
-   trusting it, configuring a provider — with the third substantially closed and
-   the first two untouched. **Both halves of the configuration complaint have
-   now shipped** — discovered token limits, then a generated editor schema and
-   an effective-configuration view — so the third segment is closed as far as
-   the reported evidence goes, and what is left of Phase 7's
-   configuration-surface item is an interactive posture editor nobody has asked
-   for. Package managers are the next segment worth taking: Homebrew and Scoop
-   need no signed binary, the release workflow already produces everything their
-   manifests would reference, and `curl | sh` remains the only route to a first
-   install.
-2. Gather further beta feedback on named primary profiles, cost estimates,
-   verified delegated results, scoped scheduling, three-way review, and the
-   new postures — including scoped egress, whose allowlist ergonomics are best
-   judged against real toolchains rather than predicted. This is the stated
-   prerequisite for item 3 and has not happened yet.
-3. Add opt-in plan-graph execution using verified results, write scopes,
-   dependency readiness, and stale-state invalidation, then explicit
-   combined-parent verification and conservative result-ranking criteria
-   without turning a score into permission. `collo audit --actor` is now the
-   surface that can say what each agent in such a graph was permitted to do.
+1. Gather real-session evidence from the Standard completion gate: how often
+   each rule intervenes, which verification commands are still missed by the
+   recognizer after OG-3A.8's ecosystem breadth and OG-3B2's composition rule,
+   and whether two interventions is the right bound. Keep this local and
+   inspectable rather than adding telemetry by default.
+2. Continue **OG-4 — reviewed integration and combined verification**. OG-4A
+   closed the one path that could publish a graph candidate without the graph
+   knowing, OG-4B made every publication into the parent recoverable by
+   recording what it replaced before the first byte moves, and OG-4C published
+   the first graph candidate into the workspace under that checkpoint, and
+   OG-4D completes an integrated node only on checks that pass against the
+   combined workspace, or on an explicit user-authored waiver. **OG-4 met its
+   exit gate and closed on 2026-08-03.** Candidate ranking is deferred into
+   OG-5's graduation review rather than built: it presupposes competing
+   candidates for one node, which the runtime cannot produce, and a
+   recommendation may rank only deterministic facts because a score never
+   grants permission.
+3. Then take OG-4 and OG-5: verified/recoverable combined-parent integration
+   and durable graph recovery. A score, child test, or plan approval never
+   grants permission. `collo audit --actor` remains the surface that can say
+   what each participant was permitted to do.
 4. Continue Phase 8 security campaigns in parallel with every feature wave,
    and take the performance budgets while the prompt-cache wave's measurement
    harness is still warm. **The reliability half has now shipped** — terminal
    loss, power-loss durability, filesystem exhaustion, and a cancellation gate
    raised from five iterations to twenty — so what is left under Phase 8's P0s
-   is the part no amount of self-testing closes: sustained adversarial
-   campaigns and an independent security assessment. That is now the only P0
-   between here and 1.0, and it is a decision to commission rather than work to
-   schedule.
+   was the part no amount of self-testing closes: an independent security
+   assessment. **That was conducted on 2026-08-04 and passed**, closing the
+   last P0 between here and 1.0. Its contents are confidential and are not
+   reproduced here. Sustaining the adversarial suite continues as ongoing
+   practice rather than as an open gate.
 
 Two small decisions can ride along with whichever wave ships next rather than
 becoming waves of their own:

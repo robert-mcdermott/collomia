@@ -11,10 +11,13 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/robert-mcdermott/collomia/internal/agent"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
+	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -28,18 +31,200 @@ type scriptedClient struct {
 	requests []provider.Request
 }
 
+func TestOrchestratedProposalPromptPrefersCoherentGraphNodes(t *testing.T) {
+	prompt := OrchestratedProposalPrompt("build a small application")
+	for _, want := range []string{"Proposal-phase inspection is grounding, not an already-completed graph node", "prefer 1–3 substantive outcome nodes for a scoped change", "4–6 only for a broad goal", "12 steps is a hard maximum, not a target", "Coalesce serial changes that touch the same scope", "Do not begin future-node work", "return a tool-free completion proposal immediately", "runtime initializes every node pending regardless of model-authored plan status", "Default to primary for end-to-end build and change goals", "every isolated_write node must be a terminal leaf", "first mutating node must create a focused smoke test"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("proposal prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestTerminalOrchestratedGoalAllowsAnotherWaveInSameSession(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.GoalGraph.Cancel(t.Context(), "first wave complete for fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.Session.GoalGraphRaw) == 0 {
+		t.Fatal("terminal fixture graph was not persisted")
+	}
+
+	prompt, err := runtime.BeginOrchestratedProposal("second wave")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph != nil || len(runtime.Session.GoalGraphRaw) != 0 || runtime.OrchestratedGoalPhase() != "proposal" || !runtime.Agent.Plan() {
+		t.Fatalf("terminal graph did not yield to a new proposal: graph=%v raw=%d phase=%q plan=%t", runtime.GoalGraph, len(runtime.Session.GoalGraphRaw), runtime.OrchestratedGoalPhase(), runtime.Agent.Plan())
+	}
+	if !strings.Contains(prompt, "second wave") {
+		t.Fatalf("new proposal prompt=%q", prompt)
+	}
+}
+
+func TestCancelOnTerminalOrchestratedGoalArchivesItForAnotherWave(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := runtime.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := runtime.CancelOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph != nil || len(runtime.Session.GoalGraphRaw) != 0 || !strings.Contains(status, "ready for /orchestrate <goal>") {
+		t.Fatalf("terminal cancel did not archive graph: graph=%v raw=%d status=%q", runtime.GoalGraph, len(runtime.Session.GoalGraphRaw), status)
+	}
+}
+
+func TestSavedTerminalOrchestratedGoalAllowsAnotherWaveWithoutResume(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	restored, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if _, err := restored.BeginOrchestratedProposal("second wave"); err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Session.GoalGraphRaw) != 0 || restored.OrchestratedGoalPhase() != "proposal" {
+		t.Fatalf("saved terminal graph was not archived: raw=%d phase=%q", len(restored.Session.GoalGraphRaw), restored.OrchestratedGoalPhase())
+	}
+}
+
+// retainedWorktreeGraph is a terminal graph that still points at a directory,
+// which is the state every reconciliation decision is made from.
+func retainedWorktreeGraph(t *testing.T, worktree string) *goalgraph.Graph {
+	t.Helper()
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "produce a candidate", Nodes: []goalgraph.NodeSpec{
+		{ID: 1, Title: "change docs", Execution: goalgraph.ExecutionIsolatedWrite, WritePaths: []string{"docs/"}, Acceptance: []string{"docs checks pass"}},
+	}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := goalgraph.WriterBase{WorkspaceToken: "parent-state", Commit: "abcdef", Clean: true}
+	claims, err := graph.StartReadyWriters(t.Context(), base, 1)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("writer claims=%+v err=%v", claims, err)
+	}
+	if err := graph.Cancel(t.Context(), "cancelled for fixture"); err != nil {
+		t.Fatal(err)
+	}
+	_ = graph.FinishWriter(t.Context(), goalgraph.WriterResult{
+		AttemptID: claims[0].Attempt.ID, WorkerID: "writer-1", Status: "cancelled",
+		WritePaths: claims[0].WritePaths, ChangedFiles: []string{"docs/guide.md"},
+		Worktree: worktree, Branch: "collomia/writer-1",
+		BaseCommit: base.Commit, ParentWorkspaceToken: base.WorkspaceToken,
+	})
+	return graph
+}
+
+// Archiving stops the session advertising the graph, and the graph is the only
+// thing that knows a real directory exists. Releasing it before anyone has
+// looked would recreate exactly the orphan this milestone removes — so the
+// gate asks for the observation, not for the tree to be gone.
+func TestArchiveRefusesToReleaseTheOnlyRecordOfAnUnexaminedWorktree(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	graph := retainedWorktreeGraph(t, "/tmp/retained-candidate")
+	runtime.GoalGraph = graph
+
+	_, err = runtime.CancelOrchestratedGoal(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "/orchestrate reconcile") {
+		t.Fatalf("archive error=%v, want a refusal naming reconcile", err)
+	}
+	if runtime.GoalGraph == nil {
+		t.Fatal("a refused archive released the graph anyway")
+	}
+
+	// Observing is the whole requirement. A tree that is still full of changes
+	// archives fine once a person has been shown that it is.
+	if err := graph.RecordWorktreeDispositions(t.Context(), []goalgraph.WorktreeObservation{{
+		AttemptID: graph.Snapshot().Attempts[0].ID, Disposition: goalgraph.DispositionPresent, Detail: "1 changed file(s) still in the tree",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.CancelOrchestratedGoal(t.Context()); err != nil {
+		t.Fatalf("archive after reconciliation failed: %v", err)
+	}
+	if runtime.GoalGraph != nil {
+		t.Fatal("archive left the graph attached")
+	}
+}
+
+// Removing unreviewed work is irreversible, so the destructive case is not
+// reachable by typing the ordinary command once.
+func TestDiscardRequiresConfirmationForAWorktreeThatStillHoldsChanges(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	graph := retainedWorktreeGraph(t, "/tmp/retained-candidate")
+	runtime.GoalGraph = graph
+
+	if _, err := runtime.DiscardOrchestratedWorktree(t.Context(), 1, false); err == nil || !strings.Contains(err.Error(), "reconcile") {
+		t.Fatalf("discard before reconciliation error=%v, want a refusal naming reconcile", err)
+	}
+	if err := graph.RecordWorktreeDispositions(t.Context(), []goalgraph.WorktreeObservation{{
+		AttemptID: graph.Snapshot().Attempts[0].ID, Disposition: goalgraph.DispositionPresent, Detail: "1 changed file(s) still in the tree",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.DiscardOrchestratedWorktree(t.Context(), 1, false)
+	if err == nil || !strings.Contains(err.Error(), "confirm") {
+		t.Fatalf("discard of a tree holding changes error=%v, want a demand for confirmation", err)
+	}
+	if !strings.Contains(err.Error(), "1 changed file(s)") {
+		t.Fatalf("the refusal does not say what would be lost: %v", err)
+	}
+	if _, err := runtime.DiscardOrchestratedWorktree(t.Context(), 2, true); err == nil || !strings.Contains(err.Error(), "no retained") {
+		t.Fatalf("discard of a node without a worktree error=%v", err)
+	}
+}
+
 // isolateGlobalFiles points per-user state at a scratch home so tests never
 // read or write the real ~/.collomia. It returns that home.
-func isolateGlobalFiles(t *testing.T) string {
+// isolateGlobalFiles takes testing.TB rather than *testing.T so benchmarks can
+// use it too. A benchmark that isolates HOME but writes no configuration is
+// asking for a runtime the product no longer builds: a provider stopped being a
+// built-in default, so an unconfigured home is now a setup prompt rather than a
+// working Ollama assumption.
+func isolateGlobalFiles(t testing.TB) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	writeGlobalConfig(t, home, `{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}}}`)
 	return home
 }
 
 // writeGlobalConfig installs a user-layer configuration in the isolated home.
-func writeGlobalConfig(t *testing.T, home, configJSON string) {
+func writeGlobalConfig(t testing.TB, home, configJSON string) {
 	t.Helper()
 	dir := filepath.Join(home, ".collomia")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -76,6 +261,410 @@ func TestEphemeralRuntimeSkipsDurableSessionButKeepsAuditInfrastructure(t *testi
 	}
 }
 
+func TestOrchestratedGoalRejectsEphemeralExecution(t *testing.T) {
+	isolateGlobalFiles(t)
+	approved := &plan.Plan{Goal: "change safely", Steps: []plan.Step{{ID: 1, Title: "change source"}}}
+	if _, err := New(t.Context(), Options{Workspace: t.TempDir(), Ephemeral: true, OrchestratedGoal: approved}); err == nil || !strings.Contains(err.Error(), "durable session") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestExplicitOrchestratedGoalPreviewRequiresFreshApprovedProposal(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	stale := plan.Plan{Goal: "old task", Steps: []plan.Step{{ID: 1, Title: "old step", Status: "pending", Acceptance: []string{"old result exists"}}}}
+	if err := runtime.Plan.Set(stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "no new") {
+		t.Fatalf("restored/ordinary plan was accepted without opt-in: %v", err)
+	}
+
+	prompt, err := runtime.BeginOrchestratedProposal("repair the service and verify it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.Agent.Plan() || !strings.Contains(prompt, "read-only planning mode") {
+		t.Fatalf("proposal did not enter an explicit read-only design phase: plan=%t prompt=%q", runtime.Agent.Plan(), prompt)
+	}
+	if _, _, err := runtime.RewindSession(0); err == nil || !strings.Contains(err.Error(), "proposal") {
+		t.Fatalf("proposal consent marker was allowed to cross a rewind boundary: %v", err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "did not create a new") {
+		t.Fatalf("stale pre-proposal plan was accepted: %v", err)
+	}
+
+	missingAcceptance := plan.Plan{Goal: "repair the service", Steps: []plan.Step{{ID: 1, Title: "repair", Status: "pending"}}}
+	if err := runtime.Plan.Set(missingAcceptance); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "acceptance criterion") {
+		t.Fatalf("proposal without acceptance criteria was accepted: %v", err)
+	}
+
+	approved := plan.Plan{Goal: "repair the service", Steps: []plan.Step{
+		{ID: 1, Title: "inspect failure", Status: "pending", Acceptance: []string{"the failure cause is grounded in repository evidence"}},
+		{ID: 2, Title: "repair and verify", Status: "pending", DependsOn: []int{1}, Acceptance: []string{"the repository test suite passes after the repair"}},
+	}}
+	if err := runtime.Plan.Set(approved); err != nil {
+		t.Fatal(err)
+	}
+	proposalStatus, err := runtime.OrchestratedGoalStatus(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(proposalStatus, "Proposal work to seed at approval:") || !strings.Contains(proposalStatus, "0/1000000 tokens") {
+		t.Fatalf("proposal status did not distinguish cumulative budget:\n%s", proposalStatus)
+	}
+	if phase, used, limit, ok := runtime.OrchestratedGoalTokenBudget(); !ok || phase != "proposal" || used != 0 || limit != 1_000_000 {
+		t.Fatalf("proposal token budget phase=%q used=%d limit=%d ok=%t", phase, used, limit, ok)
+	}
+	status, executionPrompt, err := runtime.ApproveOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph == nil || runtime.Agent.Plan() {
+		t.Fatalf("approval did not attach execution graph and leave planning mode: graph=%v plan=%t", runtime.GoalGraph, runtime.Agent.Plan())
+	}
+	for _, want := range []string{"Experimental Orchestrated Goal", "one serial primary lane", "Aggregate envelope:", "0/96 provider iterations", "0/1000000 charged tokens", "acceptance: the repository test suite passes"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("approved status missing %q:\n%s", want, status)
+		}
+	}
+	if phase, used, limit, ok := runtime.OrchestratedGoalTokenBudget(); !ok || phase != "active" || used != 0 || limit != 1_000_000 {
+		t.Fatalf("active token budget phase=%q used=%d limit=%d ok=%t", phase, used, limit, ok)
+	}
+	if !strings.Contains(executionPrompt, "explicitly approved") {
+		t.Fatalf("execution prompt=%q", executionPrompt)
+	}
+	if _, ok := runtime.Registry.Get(goalgraph.ReviseToolName); !ok {
+		t.Fatal("approved preview did not expose bounded graph revision control")
+	}
+	if err := runtime.NewSession(); err == nil || !strings.Contains(err.Error(), "active") {
+		t.Fatalf("active graph allowed a session reset: %v", err)
+	}
+}
+
+func TestOrchestratedSpecPreservesScopedIsolatedWriterIntent(t *testing.T) {
+	proposal := &plan.Plan{Goal: "update independent docs", Steps: []plan.Step{
+		{ID: 1, Title: "write user guide", Status: "pending", Execution: "isolated_write", WritePaths: []string{"docs/USER_GUIDE.md"}, Acceptance: []string{"guide check passes"}},
+		{ID: 2, Title: "write security guide", Status: "pending", Execution: "isolated_write", WritePaths: []string{"docs/SECURITY.md"}, Acceptance: []string{"security check passes"}},
+	}}
+	spec, err := orchestratedSpec(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Nodes[0].Execution != goalgraph.ExecutionIsolatedWrite || len(spec.Nodes[0].WritePaths) != 1 || spec.Nodes[0].WritePaths[0] != "docs/USER_GUIDE.md" {
+		t.Fatalf("spec=%+v", spec)
+	}
+	proposal.Steps[0].WritePaths[0] = "mutated"
+	if spec.Nodes[0].WritePaths[0] != "docs/USER_GUIDE.md" {
+		t.Fatal("orchestrated spec aliased the mutable plan write scope")
+	}
+}
+
+func TestOrchestratedApprovalNormalizesModelAuthoredProposalProgress(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.BeginOrchestratedProposal("improve the interface"); err != nil {
+		t.Fatal(err)
+	}
+	proposal := plan.Plan{Goal: "improve the interface", Steps: []plan.Step{
+		{ID: 1, Title: "inspect current interface", Status: "done", Execution: "read_only", Acceptance: []string{"current behavior is grounded"}, Evidence: "proposal-phase files were inspected"},
+		{ID: 2, Title: "implement and verify", Status: "in_progress", DependsOn: []int{1}, Acceptance: []string{"the interaction test passes"}},
+	}}
+	if err := runtime.Plan.Set(proposal); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err != nil {
+		t.Fatalf("model-authored proposal progress should not become runtime state or block approval: %v", err)
+	}
+	normalized, _ := runtime.Plan.Snapshot()
+	for _, step := range normalized.Steps {
+		if step.Status != "pending" || step.Evidence != "" {
+			t.Fatalf("approved step imported model progress as runtime truth: %+v", step)
+		}
+	}
+	snapshot := runtime.GoalGraph.Snapshot()
+	if len(snapshot.Attempts) != 0 || snapshot.Outcome != "" {
+		t.Fatalf("approved graph imported proposal execution state: %+v", snapshot)
+	}
+}
+
+func TestOrchestratedSpecRejectsImpossibleEndToEndWriterGraph(t *testing.T) {
+	proposal := &plan.Plan{Goal: "build a Kanban application", Steps: []plan.Step{
+		{ID: 1, Title: "scaffold", Status: "pending", Execution: "primary", Acceptance: []string{"dependencies import"}},
+		{ID: 2, Title: "implement backend", Status: "pending", Execution: "isolated_write", WritePaths: []string{"app/"}, DependsOn: []int{1}, Acceptance: []string{"API tests pass"}},
+		{ID: 3, Title: "integrate", Status: "pending", Execution: "primary", DependsOn: []int{2}, Acceptance: []string{"end-to-end test passes"}},
+	}}
+	if _, err := orchestratedSpec(proposal); err == nil || !strings.Contains(err.Error(), "use primary nodes for an end-to-end goal") {
+		t.Fatalf("impossible proposal error=%v", err)
+	}
+}
+
+func TestOrchestratedApprovalPreflightsDirtyCandidateBase(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	runGitTest(t, workspace, "init")
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, workspace, "add", "README.md")
+	runGitTest(t, workspace, "commit", "-m", "base")
+	runtime, err := New(t.Context(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.BeginOrchestratedProposal("produce a docs candidate for review"); err != nil {
+		t.Fatal(err)
+	}
+	proposal := plan.Plan{Goal: "produce a docs candidate", Steps: []plan.Step{{ID: 1, Title: "write docs candidate", Status: "pending", Execution: "isolated_write", WritePaths: []string{"docs/"}, Acceptance: []string{"docs check passes"}}}}
+	if err := runtime.Plan.Set(proposal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "dirty.txt"), []byte("not committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err == nil || !strings.Contains(err.Error(), "dirty (1 paths: dirty.txt)") {
+		t.Fatalf("dirty candidate approval error=%v", err)
+	}
+	if runtime.GoalGraph != nil || runtime.OrchestratedGoalPhase() != "proposal" {
+		t.Fatalf("failed preflight consumed proposal: graph=%v phase=%q", runtime.GoalGraph, runtime.OrchestratedGoalPhase())
+	}
+	if err := os.Remove(filepath.Join(workspace, "dirty.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runtime.ApproveOrchestratedGoal(t.Context()); err != nil {
+		t.Fatalf("clean candidate approval failed after correction: %v", err)
+	}
+}
+
+func TestCancelOrchestratedProposalRestoresPreviousPlanMode(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	for _, previous := range []bool{false, true} {
+		runtime.Agent.SetPlan(previous)
+		if _, err := runtime.BeginOrchestratedProposal("inspect without executing"); err != nil {
+			t.Fatal(err)
+		}
+		if !runtime.Agent.Plan() {
+			t.Fatal("proposal did not force read-only planning mode")
+		}
+		status, err := runtime.CancelOrchestratedGoal(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.Agent.Plan() != previous || runtime.OrchestratedGoalPhase() != "" {
+			t.Fatalf("cancel did not restore plan mode %t: plan=%t phase=%q", previous, runtime.Agent.Plan(), runtime.OrchestratedGoalPhase())
+		}
+		if !strings.Contains(status, "cannot be approved") {
+			t.Fatalf("cancel status=%q", status)
+		}
+	}
+}
+
+func TestSavedOrchestratedGoalRemainsInertUntilExplicitResume(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	first, err := New(t.Context(), Options{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.BeginOrchestratedProposal("inspect the repository"); err != nil {
+		t.Fatal(err)
+	}
+	approved := plan.Plan{Goal: "inspect the repository", Steps: []plan.Step{{ID: 1, Title: "inspect", Status: "pending", Acceptance: []string{"repository facts are reported with file evidence"}}}}
+	if err := first.Plan.Set(approved); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := first.ApproveOrchestratedGoal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	resumed, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if resumed.GoalGraph != nil {
+		t.Fatal("saved graph activated without an explicit resume action")
+	}
+	status, err := resumed.OrchestratedGoalStatus(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "Saved graph is inert") {
+		t.Fatalf("saved status=%q", status)
+	}
+	status, prompt, runnable, err := resumed.ResumeOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.GoalGraph == nil || !runnable || prompt == "" || !strings.Contains(status, "inspect the repository") {
+		t.Fatalf("explicit resume did not reattach runnable graph: graph=%v runnable=%t prompt=%q status=%q", resumed.GoalGraph, runnable, prompt, status)
+	}
+}
+
+func TestSavedBlockedGoalCanBeExplicitlyRetriedWithoutSeparateResume(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	approved := &plan.Plan{Goal: "repair safely", Steps: []plan.Step{{ID: 1, Title: "repair", Acceptance: []string{"repository evidence is recorded"}}}}
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := first.GoalGraph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.GoalGraph.BlockActive(t.Context(), attempt.ID, "bounded remediation stopped"); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	restored, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.GoalGraph != nil {
+		t.Fatal("saved blocked graph activated without an explicit user action")
+	}
+	status, prompt, runnable, err := restored.RetryOrchestratedNode(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.GoalGraph == nil || !runnable || prompt == "" || !strings.Contains(status, "repair · ready") {
+		t.Fatalf("direct saved retry graph=%v runnable=%t prompt=%q status=%q", restored.GoalGraph, runnable, prompt, status)
+	}
+	snapshot := restored.GoalGraph.Snapshot()
+	if snapshot.Outcome != "" || len(snapshot.Attempts) != 1 || snapshot.Attempts[0].State != goalgraph.AttemptBlocked || snapshot.Nodes[0].State != goalgraph.NodeReady {
+		t.Fatalf("direct saved retry did not preserve the blocker and reopen the node: %+v", snapshot)
+	}
+}
+
+func TestOrchestratedGoalPauseResumeAndSafeRetryControls(t *testing.T) {
+	isolateGlobalFiles(t)
+	approved := &plan.Plan{Goal: "inspect safely", Steps: []plan.Step{{ID: 1, Title: "inspect", Acceptance: []string{"repository evidence is recorded"}}}}
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	status, err := runtime.PauseOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.OrchestratedGoalPhase() != "paused" || !strings.Contains(status, "Scheduling: paused") {
+		t.Fatalf("phase=%q status=%q", runtime.OrchestratedGoalPhase(), status)
+	}
+	status, prompt, runnable, err := runtime.ResumeOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runnable || runtime.OrchestratedGoalPhase() != "running" || !strings.Contains(prompt, "explicitly resumed") || !strings.Contains(status, "Scheduling: active") {
+		t.Fatalf("runnable=%t phase=%q prompt=%q status=%q", runnable, runtime.OrchestratedGoalPhase(), prompt, status)
+	}
+
+	_, attempt, err := runtime.GoalGraph.StartNext(t.Context(), "state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.GoalGraph.RecordFailure(t.Context(), attempt.ID, goalgraph.Failure{Kind: goalgraph.FailurePermission, Tool: "read_file", Risk: "read", Detail: "permission denied"}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := runtime.GoalGraph.ProposeCompletion(t.Context(), "blocked", "state")
+	if err != nil || decision.Kind != goalgraph.DecisionBlocked {
+		t.Fatalf("decision=%+v err=%v", decision, err)
+	}
+	status, prompt, runnable, err = runtime.RetryOrchestratedNode(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runnable || runtime.OrchestratedGoalPhase() != "running" || !strings.Contains(prompt, "safe bounded retry") || !strings.Contains(status, "attempt 1 · blocked") {
+		t.Fatalf("runnable=%t phase=%q prompt=%q status=%q", runnable, runtime.OrchestratedGoalPhase(), prompt, status)
+	}
+	_, second, err := runtime.GoalGraph.StartNext(t.Context(), "state")
+	if err != nil || second.Number != 2 {
+		t.Fatalf("second attempt=%+v err=%v", second, err)
+	}
+}
+
+func TestSavedPausedGoalRemainsInertAndExplicitResumeClearsPause(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	approved := &plan.Plan{Goal: "inspect safely", Steps: []plan.Step{{ID: 1, Title: "inspect", Acceptance: []string{"repository evidence is recorded"}}}}
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.PauseOrchestratedGoal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+
+	restored, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.GoalGraph != nil {
+		t.Fatal("paused saved graph activated without explicit resume")
+	}
+	status, err := restored.OrchestratedGoalStatus(0)
+	if err != nil || !strings.Contains(status, "Scheduling: paused") || !strings.Contains(status, "Saved graph is inert") {
+		t.Fatalf("saved paused status=%q err=%v", status, err)
+	}
+	status, _, runnable, err := restored.ResumeOrchestratedGoal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runnable || restored.OrchestratedGoalPhase() != "running" || !strings.Contains(status, "Scheduling: active") {
+		t.Fatalf("runnable=%t phase=%q status=%q", runnable, restored.OrchestratedGoalPhase(), status)
+	}
+}
+
+func TestRuntimeAcceptsVerifiedTransientCredentialWithoutPersistingIt(t *testing.T) {
+	home := isolateGlobalFiles(t)
+	writeGlobalConfig(t, home, `{"default_provider":"hosted","providers":{"hosted":{"type":"openai","base_url":"https://api.example.invalid/v1","api_key_env":"HOSTED_API_KEY","model":"m"}}}`)
+	t.Setenv("HOSTED_API_KEY", "")
+	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true, ProviderCredential: "verified-on-setup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if got := runtime.Config.Providers["hosted"].APIKey; got != "verified-on-setup" {
+		t.Fatalf("runtime credential=%q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".collomia", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "verified-on-setup") {
+		t.Fatal("transient setup credential was persisted")
+	}
+}
+
 func TestRuntimeCloseCancelsActiveDelegates(t *testing.T) {
 	isolateGlobalFiles(t)
 	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
@@ -98,7 +687,7 @@ func TestRuntimeCloseWaitsForBackgroundProcesses(t *testing.T) {
 	// sandboxed background process would pull the platform backend (AppContainer
 	// profiles and temp-directory ACL grants on Windows) into a lifecycle test.
 	// Containment and its teardown are covered by internal/sandbox.
-	writeGlobalConfig(t, home, `{"permissions":{"sandbox":"off"}}`)
+	writeGlobalConfig(t, home, `{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}},"permissions":{"sandbox":"off"}}`)
 	runtime, err := New(context.Background(), Options{Workspace: t.TempDir(), Ephemeral: true})
 	if err != nil {
 		t.Fatal(err)
@@ -130,9 +719,9 @@ func TestRuntimeCloseWaitsForBackgroundProcesses(t *testing.T) {
 }
 
 func BenchmarkRuntimeStartup(b *testing.B) {
-	home := b.TempDir()
-	b.Setenv("HOME", home)
-	b.Setenv("USERPROFILE", home)
+	// Startup reads a user-layer configuration, so measuring it without one
+	// measured a path that now fails outright rather than a faster one.
+	isolateGlobalFiles(b)
 	workspace := b.TempDir()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -400,6 +989,64 @@ func TestSessionResumeAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestOrchestratedGoalRestoresAmbiguousMutationAsBlocker(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	approved := &plan.Plan{Goal: "change safely", Steps: []plan.Step{{ID: 1, Title: "change source"}}}
+	first, err := New(t.Context(), Options{Workspace: workspace, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GoalGraph == nil || first.Session == nil {
+		t.Fatal("internal orchestrated runtime did not create a durable graph")
+	}
+	_, attempt, err := first.GoalGraph.StartNext(t.Context(), "workspace-before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.GoalGraph.BeginTool(t.Context(), attempt.ID, goalgraph.ToolAction{
+		Tool: "write_file", Risk: string(tools.RiskWrite), Summary: "change source",
+		PotentialMutation: true, NonReplayable: true,
+	}, "workspace-before"); err != nil {
+		t.Fatal(err)
+	}
+	id := first.Session.Meta.ID
+	first.Close()
+	standard, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if standard.GoalGraph != nil {
+		t.Fatal("persisted graph data activated orchestration without the programmatic option")
+	}
+	if _, exists := standard.Registry.Get(goalgraph.ReviseToolName); exists {
+		t.Fatal("standard resume exposed internal graph-control tools")
+	}
+	standard.Close()
+
+	resumed, err := New(t.Context(), Options{Workspace: workspace, Resume: id, OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if outcome, reason := resumed.GoalGraph.Outcome(); outcome != goalgraph.OutcomeBlocked || !strings.Contains(reason, "may have taken effect") {
+		t.Fatalf("outcome=%q reason=%q", outcome, reason)
+	}
+	restored := resumed.GoalGraph.Snapshot()
+	if len(restored.Attempts) != 1 || restored.Attempts[0].State != goalgraph.AttemptInterrupted {
+		t.Fatalf("restored attempts=%+v", restored.Attempts)
+	}
+	if len(resumed.Session.GoalGraphRaw) == 0 {
+		t.Fatal("recovered graph was not persisted back to the session")
+	}
+	if err := resumed.NewSession(); err != nil {
+		t.Fatalf("terminal graph should allow an explicit fresh session: %v", err)
+	}
+	if resumed.GoalGraph != nil {
+		t.Fatal("new session retained the prior terminal graph")
+	}
+}
+
 // TestAskUserToolPausesForAnswer verifies the user-question primitive: the
 // run pauses for a typed answer and continues without corrupting the turn.
 func TestAskUserToolPausesForAnswer(t *testing.T) {
@@ -556,5 +1203,136 @@ func TestNewRedactorIncludesAzureEnvironmentCredentials(t *testing.T) {
 	got := redactor.Redact("client=azure-client-secret-value certificate=azure-certificate-password")
 	if strings.Contains(got, "azure-client-secret-value") || strings.Contains(got, "azure-certificate-password") {
 		t.Fatalf("Azure environment credential was not redacted: %q", got)
+	}
+}
+
+// The execution envelope is configuration with defaults, not a build constant.
+// A user who wants a longer job should be able to have one without editing
+// Collomia, and each later grant should be that same larger envelope.
+func TestConfiguredOrchestrationEnvelopeReachesTheGraph(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if limits := orchestrationEnvelope(runtime.Config); limits.MaxAggregateTokens != goalgraph.DefaultLimits().MaxAggregateTokens {
+		t.Fatalf("omitted configuration did not use the default envelope: %+v", limits)
+	}
+	runtime.Config.Options.OrchestrationMaxTokens = 8_000_000
+	runtime.Config.Options.OrchestrationMaxIterations = 400
+	runtime.Config.Options.OrchestrationMaxActiveWallSeconds = 7200
+	runtime.Config.Options.OrchestrationMaxCostUSD = 40
+	limits := orchestrationEnvelope(runtime.Config)
+	if limits.MaxAggregateTokens != 8_000_000 || limits.MaxAggregateIterations != 400 || limits.MaxActiveWallSeconds != 7200 || limits.MaxAggregateCostUSD != 40 {
+		t.Fatalf("configured envelope was not honoured: %+v", limits)
+	}
+
+	approved := &plan.Plan{Goal: "long job", Steps: []plan.Step{{ID: 1, Title: "implement", Acceptance: []string{"tests pass"}}}}
+	graph, err := createGoalGraph(t.Context(), approved, runtime.Plan, runtime.Session, nil, runtime.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := graph.Snapshot().AggregateBudget
+	if budget.MaxTokens != 8_000_000 || budget.MaxIterations != 400 {
+		t.Fatalf("graph did not receive the configured envelope: %+v", budget)
+	}
+	if budget.Grant.Tokens != 8_000_000 {
+		t.Fatalf("a later user grant would not add the configured envelope: %+v", budget.Grant)
+	}
+}
+
+// Every remaining Orchestrated Goal step reasons about the combined parent
+// workspace: integrating a second candidate diffs against it, combined
+// verification runs the repository's checks against it, and a waiver is a
+// person's statement about it. When an earlier publication stopped without
+// recording an outcome, the runtime has already written down that the
+// workspace may hold some of a candidate's files and not others — so none of
+// those three claims can honestly be made until a person ends the ambiguity.
+func TestInterruptedPublicationStopsEveryCombinedWorkspaceStep(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{
+		Workspace:        t.TempDir(),
+		OrchestratedGoal: &plan.Plan{Goal: "first wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	runtime.GoalGraph = retainedWorktreeGraph(t, "/tmp/retained-candidate")
+
+	const marker = "never recorded an outcome"
+	steps := map[string]func() error{
+		"integrate": func() error {
+			_, err := runtime.IntegrateOrchestratedCandidate(t.Context(), 1)
+			return err
+		},
+		"verify": func() error {
+			_, err := runtime.VerifyOrchestratedIntegration(t.Context(), nil)
+			return err
+		},
+		"waive": func() error {
+			_, err := runtime.WaiveOrchestratedVerification(t.Context(), "the repository has no automated checks")
+			return err
+		},
+	}
+
+	// Each step already refuses for its own ordinary reason. Pinning that here
+	// is what makes the refusal below evidence of the gate rather than of the
+	// fixture being incomplete.
+	for name, step := range steps {
+		if err := step(); err == nil || strings.Contains(err.Error(), marker) {
+			t.Fatalf("%s before any interruption: err=%v", name, err)
+		}
+	}
+
+	// A process that recorded the checkpoint, started publishing, and stopped.
+	// The workspace path has to come from the runtime rather than the temp
+	// directory it was built from: the runtime canonicalises it, and a
+	// checkpoint recorded against the uncanonical spelling belongs, as far as
+	// the filter is concerned, to a different workspace.
+	prior := "before publication\n"
+	checkpoint := session.NewIntegrationCheckpoint("checkpoint-interrupted", "writer-1", runtime.Workspace, 1,
+		[]session.IntegrationFile{{Path: "docs/guide.md", Existed: true, Before: &prior, Mode: 0o644}}, time.Now())
+	if err := runtime.Session.AppendIntegrationCheckpoint(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, step := range steps {
+		err := step()
+		if err == nil || !strings.Contains(err.Error(), marker) {
+			t.Fatalf("%s during an unresolved interruption: err=%v", name, err)
+		}
+		// The refusal has to be actionable: which record, which plan node, and
+		// both ways out. A refusal that only says no leaves the user stuck.
+		if !strings.Contains(err.Error(), "checkpoint-interrupted") || !strings.Contains(err.Error(), "node 1") {
+			t.Fatalf("%s refusal does not name the record: %v", name, err)
+		}
+		if !strings.Contains(err.Error(), "/restore integration <id> keep") {
+			t.Fatalf("%s refusal does not offer both resolutions: %v", name, err)
+		}
+	}
+
+	// Accepting is the resolution that changes no bytes. It is recorded as the
+	// user's decision, and it is the only thing that lets the milestone
+	// continue without undoing what was published.
+	if err := runtime.AcceptIntegrationCheckpoint("checkpoint-interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if pending := runtime.InterruptedIntegrations(); len(pending) != 0 {
+		t.Fatalf("an accepted checkpoint is still reported as interrupted: %+v", pending)
+	}
+	resolved, ok := runtime.Session.IntegrationCheckpointByID("checkpoint-interrupted")
+	if !ok || resolved.State != session.IntegrationAccepted {
+		t.Fatalf("resolved checkpoint=%+v, want an accepted record", resolved)
+	}
+	if err := runtime.AcceptIntegrationCheckpoint("checkpoint-interrupted"); err == nil {
+		t.Fatal("a resolved checkpoint was accepted a second time")
+	}
+
+	for name, step := range steps {
+		if err := step(); err == nil || strings.Contains(err.Error(), marker) {
+			t.Fatalf("%s after acceptance: err=%v", name, err)
+		}
 	}
 }

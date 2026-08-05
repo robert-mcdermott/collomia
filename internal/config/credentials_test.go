@@ -108,7 +108,7 @@ func TestCredentialResolutionOrder(t *testing.T) {
 			if _, ok := test.env["TEST_KEY"]; !ok {
 				t.Setenv("TEST_KEY", "")
 			}
-			workspace := writeProviderConfig(t, `{"providers":{"p":`+test.provider+`}}`)
+			workspace := writeProviderConfig(t, `{"default_provider":"p","default_model":"m","providers":{"p":`+test.provider+`}}`)
 			stubStore(t, test.stored)
 
 			cfg, err := Load(workspace)
@@ -141,7 +141,7 @@ func TestImplicitCredentialEnvIsDeclaredForBedrock(t *testing.T) {
 // The credential source describes the environment, so it must never be written
 // back into a configuration file.
 func TestCredentialSourceIsNotSerialized(t *testing.T) {
-	workspace := writeProviderConfig(t, `{"providers":{"p":{"type":"openai","base_url":"https://api.example.com/v1","model":"m","api_key":"literal"}}}`)
+	workspace := writeProviderConfig(t, `{"default_provider":"p","providers":{"p":{"type":"openai","base_url":"https://api.example.com/v1","model":"m","api_key":"literal"}}}`)
 	stubStore(t, nil)
 	cfg, err := Load(workspace)
 	if err != nil {

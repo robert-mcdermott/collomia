@@ -21,6 +21,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/redact"
+	"github.com/robert-mcdermott/collomia/internal/setup"
 	"github.com/robert-mcdermott/collomia/internal/shutdown"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
@@ -188,7 +189,7 @@ func run(args []string) error {
 		fmt.Println("Review every setting with `collo config reference`.")
 		fmt.Println("Validate changes with `collo config validate --strict`.")
 		if opts.global {
-			fmt.Println("Set provider API keys through the environment; the starter includes Ollama and OpenRouter examples.")
+			fmt.Println("No provider is assumed or written by init; run `collo setup` to discover and verify one, or add an explicit provider for scripted use.")
 			fmt.Println("Agent commands default to sandbox=auto with command networking and broad reads enabled; run `collo doctor` and add only the cache/dependency roots your tools need.")
 		} else {
 			fmt.Println("After reviewing project settings, run `collo trust` to enable them.")
@@ -263,8 +264,29 @@ func run(args []string) error {
 	if opts.command == "run" {
 		return runNonInteractive(ctx, opts)
 	}
+	needsSetup, err := interactiveProviderSetupNeeded(opts)
+	if err != nil {
+		return classifyCommandError(err)
+	}
+	var setupCredential string
+	if needsSetup {
+		outcome, setupErr := runProviderSetup(ctx, opts, true)
+		if setupErr != nil {
+			return classifyCommandError(setupErr)
+		}
+		if !outcome.Wrote {
+			fmt.Println("Setup cancelled; nothing was written.")
+			return nil
+		}
+		if outcome.Result.Credential == setup.CredentialManual {
+			// Linux deliberately has no encrypted-file fallback. Carry the key
+			// only into the session being opened now; the configuration still
+			// records the environment variable the user must export next time.
+			setupCredential = outcome.Result.Secret
+		}
+	}
 	broker := tui.NewApprovalBroker()
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
+	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, ProviderCredential: setupCredential, Agent: opts.agent, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
 		return broker.Ask(ctx, tui.Question{Text: question, Options: options})
 	}})
 	if err != nil {
@@ -346,7 +368,7 @@ func (o *runObservation) Observe(e event.Event) {
 	case event.KindTextDelta:
 		o.streamedAnswer.WriteString(e.Text)
 		o.progressed = true
-	case event.KindReasoningDelta, event.KindToolCallDelta, event.KindToolStart, event.KindToolOutput, event.KindToolResult:
+	case event.KindReasoningDelta, event.KindToolCallDelta, event.KindToolStart, event.KindToolOutput, event.KindToolResult, event.KindGoalGraphUpdate:
 		o.progressed = true
 	case event.KindPermissionDecision:
 		o.progressed = true
@@ -456,7 +478,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 }
 
 func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options, answer string, refused, progressed bool, runErr error, started time.Time) {
-	result := event.RunResult{Status: "ok", Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds(), Version: version.Version, Commit: version.Commit}
+	result := event.RunResult{Status: "ok", Outcome: string(agent.GoalOutcomeFor(runErr)), Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds(), Version: version.Version, Commit: version.Commit}
 	var usage *event.Usage
 	if runtime != nil {
 		result.ChangedFiles = runtime.Changes.Changed()
@@ -514,7 +536,7 @@ func failureFor(err error) event.Failure {
 	if errors.Is(err, permission.ErrDenied) {
 		return event.Failure{ID: id, Kind: event.FailurePermission}
 	}
-	if errors.Is(err, agent.ErrTokenBudgetExceeded) || errors.Is(err, agent.ErrCostBudgetExceeded) {
+	if errors.Is(err, agent.ErrTokenBudgetExceeded) || errors.Is(err, agent.ErrCostBudgetExceeded) || errors.Is(err, agent.ErrIterationBudgetExceeded) {
 		return event.Failure{ID: id, Kind: event.FailureUsage}
 	}
 	var validation appconfig.ValidationError

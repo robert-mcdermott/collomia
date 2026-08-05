@@ -74,6 +74,7 @@ Current one-shot runs emit these events when applicable:
 | `tool.output` | `tool` | Live bounded tool output. |
 | `tool.result` | `tool` | Completed tool result and error flag. |
 | `permission.decision` | `permission` | Allow/deny decision, source, matched rule, and resources. |
+| `goal.graph.update` | `goal_graph` | Bounded runtime-owned graph transition: graph/generation identity, optional node/attempt, state, reason, ready node IDs, and terminal outcome. The experimental TUI flow reports automatic-read selection as `delegated_read` and cooperative controls as `pause_requested`, `paused`, `resumed`, or `retry_requested`. Emitted by internal evaluations and the explicit TUI-only Orchestrated Goal preview; Standard/headless runs do not emit it. |
 | `usage` | `usage` | Provider-reported input/output/cached/cache-write/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. `input_tokens` counts the whole prompt including cached tokens; see [final result](#final-result). |
 | `context.compaction` | `text` | Context was compacted. |
 | `warning` | `text` | Non-fatal runtime/provider warning. |
@@ -81,10 +82,22 @@ Current one-shot runs emit these events when applicable:
 | `run.result` | `result`, optional `usage`, optional `failure_id` | Exactly one terminal verdict. |
 
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
-`plan.update`, and `delegate.update` for consumers sharing the runtime event
-model. `delegate.update` carries the latest bounded child status used by
-durable interactive sessions; one-shot JSONL runs do not currently promise it.
+`plan.update`, `goal.graph.update`, and `delegate.update` for consumers sharing
+the runtime event model. `goal.graph.update` is emitted by the explicit
+TUI-only `/orchestrate` experiment and internal evaluations; there is no
+headless or configuration switch for it. `delegate.update` carries the latest
+bounded manual or graph-selected child status used by durable interactive sessions; one-shot
+JSONL runs do not currently promise either internal lifecycle kind.
 Do not assume every reserved kind appears in every current CLI stream.
+
+OG-2 aggregate accounting and enforcement are internal graph-snapshot and TUI
+status contracts, not new schema-v1 event contracts. The existing
+`goal.graph.update` payload remains a bounded transition notification and does
+not include aggregate or per-lane usage/budget fields. The completed
+OG-2B2b2 decision is to add no event kind or optional payload without a
+headless activation design and a concrete automation consumer. A future
+headless mode must revisit compatibility explicitly; current internal status
+presentation does not justify expanding the public wire contract.
 
 When present, its `delegate` object includes stable identity/profile/provider,
 `plan_step`, lifecycle state/current action, bounded `recent_output`, steering
@@ -138,6 +151,7 @@ readability):
   "kind": "run.result",
   "result": {
     "status": "ok",
+    "outcome": "done",
     "answer": "...",
     "session_id": "20260721-120000-a1b2c3",
     "changed_files": ["main.go"],
@@ -159,6 +173,7 @@ readability):
 | Field | Meaning |
 |---|---|
 | `status` | Stable schema-v1 status: `ok`, `error`, or `cancelled`. |
+| `outcome` | Additive goal-level state: `done`, `blocked`, `cancelled`, or `budget_exhausted`. New Collomia runs always emit it; old schema-v1 traces may omit it. |
 | `answer` | Final answer, or provider-streamed partial text when a failed stream produced some. |
 | `error` | Human-readable failure message. Do not parse it for control flow. |
 | `failure` | Stable structured failure classification for non-`ok` results. |
@@ -168,6 +183,13 @@ readability):
 | `session_id` | Durable session ID. Omitted for ephemeral or pre-session startup failures. |
 | `changed_files` | Workspace files changed through Collomia's tracked write tools. |
 | `duration_ms` | Wall-clock duration measured by the headless runner. |
+
+`status` remains the process contract used by existing schema-v1 consumers:
+`done` pairs with `ok`, `cancelled` with `cancelled`, and both `blocked` and
+`budget_exhausted` pair with `error`. Use `outcome` to distinguish a goal that
+could not prove completion from one stopped by its configured iteration,
+token, or cost ceiling. Unexpected provider/runtime failures also report
+`blocked` at the goal level while `failure.kind` preserves the specific cause.
 
 `usage` fields:
 
@@ -388,8 +410,8 @@ the build, at the publish step, in a scheduled run nobody is watching.
 
 Configuration resolves through `$HOME`, and cron starts with a minimal
 environment. A job whose `HOME` is not what the author assumed silently gets
-built-in defaults — which now means prompting, which headless turns into a hard
-failure. Set it explicitly, as the [cron example](#cron-scheduled-repository-maintenance-report)
+a provider-free configuration, which headless startup reports as a hard
+configuration failure pointing to `collo setup`. Set it explicitly, as the [cron example](#cron-scheduled-repository-maintenance-report)
 below does, and confirm the resolved layers with:
 
 ```sh

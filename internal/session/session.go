@@ -48,7 +48,7 @@ const RecordSchemaVersion = 1
 // Record is one line of the session log. Type selects the payload.
 type Record struct {
 	SchemaVersion int               `json:"schema_version,omitempty"`
-	Type          string            `json:"type"` // meta, message, event, compaction, plan
+	Type          string            `json:"type"` // meta, message, event, compaction, plan, goal_graph
 	Time          time.Time         `json:"time"`
 	Meta          *Meta             `json:"meta,omitempty"`
 	Message       *provider.Message `json:"message,omitempty"`
@@ -57,6 +57,13 @@ type Record struct {
 	// summary message replaces.
 	Replaced int             `json:"replaced,omitempty"`
 	Plan     json.RawMessage `json:"plan,omitempty"`
+	// GoalGraph is the latest complete versioned runtime graph snapshot. It is
+	// opaque to the session package; goalgraph validates its own schema.
+	GoalGraph json.RawMessage `json:"goal_graph,omitempty"`
+	// IntegrationCheckpoint is the write-ahead record of one publication into
+	// the parent workspace, appended before the first byte changes and again
+	// with its outcome.
+	IntegrationCheckpoint json.RawMessage `json:"integration_checkpoint,omitempty"`
 }
 
 type Store struct {
@@ -594,10 +601,17 @@ type Session struct {
 	active []provider.Message
 	// PlanRaw is the latest persisted structured plan, if any.
 	PlanRaw json.RawMessage
+	// GoalGraphRaw is the latest persisted runtime-owned graph snapshot, if
+	// this session used the internal OG-1 path or explicit OG-2A TUI preview.
+	GoalGraphRaw json.RawMessage
 	// delegates retains the latest parent-inbox snapshot for each delegated
 	// task. Stored updates are inert data and are never scheduled during load.
 	delegates     map[string]event.DelegateStatus
 	delegateOrder []string
+	// checkpoints retains the write-ahead record of every integration this
+	// session started, keyed by id and ordered by first appearance.
+	checkpoints     map[string]IntegrationCheckpoint
+	checkpointOrder []string
 	// recentEvents is a bounded in-memory projection source for operator UIs.
 	// The append-only JSONL remains the complete durable event history.
 	recentEvents []event.Event
@@ -647,6 +661,13 @@ func (sess *Session) replay(record Record) {
 		}
 	case "plan":
 		sess.PlanRaw = record.Plan
+	case "goal_graph":
+		sess.GoalGraphRaw = record.GoalGraph
+	case "integration_checkpoint":
+		var checkpoint IntegrationCheckpoint
+		if json.Unmarshal(record.IntegrationCheckpoint, &checkpoint) == nil {
+			sess.applyIntegrationCheckpointLocked(checkpoint)
+		}
 	case "event":
 		if record.Event != nil {
 			sess.retainEvent(*record.Event)
@@ -706,6 +727,30 @@ func (sess *Session) AppendPlan(data json.RawMessage) {
 	sess.PlanRaw = data
 	sess.mu.Unlock()
 	_ = sess.append(Record{Type: "plan", Plan: data})
+}
+
+// AppendGoalGraph persists one complete graph snapshot. When durable is true,
+// the record is flushed before returning; graph-controlled mutating actions
+// use that write-ahead boundary to make recovery non-replaying.
+func (sess *Session) AppendGoalGraph(data json.RawMessage, durable bool) error {
+	data = append(json.RawMessage(nil), data...)
+	sess.mu.Lock()
+	sess.GoalGraphRaw = data
+	sess.mu.Unlock()
+	if err := sess.append(Record{Type: "goal_graph", GoalGraph: data}); err != nil {
+		return err
+	}
+	if durable {
+		return sess.Sync()
+	}
+	return nil
+}
+
+// ClearGoalGraph appends a tombstone for the session's current graph. Earlier
+// snapshots remain in the append-only transcript for audit and recovery, but
+// the session no longer advertises one of them as the graph to resume.
+func (sess *Session) ClearGoalGraph(durable bool) error {
+	return sess.AppendGoalGraph(nil, durable)
 }
 
 // markInterrupted appends synthetic tool results for tool calls that never

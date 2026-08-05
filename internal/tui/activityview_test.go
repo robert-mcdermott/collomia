@@ -118,9 +118,7 @@ func TestReducedMotionIsOptionalAndKeepsControls(t *testing.T) {
 }
 
 func BenchmarkActivityView500Items(b *testing.B) {
-	home := b.TempDir()
-	b.Setenv("HOME", home)
-	b.Setenv("USERPROFILE", home)
+	configureTestProvider(b)
 	runtime, err := app.New(context.Background(), app.Options{Workspace: b.TempDir()})
 	if err != nil {
 		b.Fatal(err)

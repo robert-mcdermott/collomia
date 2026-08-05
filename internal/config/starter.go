@@ -17,7 +17,8 @@ func ReferencePath(configPath string) string {
 // WriteStarter writes a scope-appropriate active configuration. Project
 // starters only tighten the permission mode so other settings continue to
 // inherit user and built-in defaults. Global starters expose commonly edited
-// safe permission and runtime defaults alongside provider examples.
+// safe permission and runtime defaults, but deliberately name no provider: a
+// static file cannot establish which endpoint, credential, or model works.
 func WriteStarter(path string, global bool) error {
 	type starterPermissions struct {
 		Mode                             string   `json:"mode"`
@@ -52,20 +53,6 @@ func WriteStarter(path string, global bool) error {
 
 	cfg := starterConfig{Schema: SchemaReference, SchemaVersion: CurrentSchemaVersion}
 	if global {
-		cfg.DefaultProvider = "ollama"
-		cfg.DefaultModel = "qwen3-coder"
-		cfg.Providers = map[string]Provider{
-			"ollama": {
-				Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1",
-				Model: "qwen3-coder", Context: 32768, MaxTokens: 8192,
-				ConnectTimeoutSeconds: 10, RequestTimeoutSeconds: 1800, StreamIdleTimeoutSeconds: 300,
-			},
-			"openrouter": {
-				Type: "openai", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "OR_API_KEY",
-				Model: "z-ai/glm-5.2", MaxTokens: 128000, Context: 500000,
-				ConnectTimeoutSeconds: 10, RequestTimeoutSeconds: 1800, StreamIdleTimeoutSeconds: 300,
-			},
-		}
 		inactive := false
 		commandNetwork := true
 		broadReads := true
@@ -519,6 +506,17 @@ const configReferenceJSONC = `
     // accepted hunks. A child pass never grants permission or proves the
     // combined parent workspace. Nothing commits, merges, or pushes.
     "agent_integration": "manual",
+    // The Orchestrated Goal execution envelope. Each bound is a speed bump,
+    // not a wall: reaching one stops the graph, keeps every accepted node and
+    // retained candidate, and asks you — /orchestrate extend grants another
+    // envelope of the same size and continues. Zero uses the built-in default.
+    // Tokens count new input plus output; prompt tokens served from the
+    // provider cache are reported but not charged. Cost is enforced only when
+    // the provider has complete pricing.
+    "orchestration_max_iterations": 96,
+    "orchestration_max_tokens": 1000000,
+    "orchestration_max_cost_usd": 5,
+    "orchestration_max_active_wall_seconds": 1800,
     "disabled_tools": [],
     "transcript_directory": "/path/to/transcripts",
     "theme": "collomia",

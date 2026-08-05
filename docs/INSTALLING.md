@@ -238,15 +238,20 @@ After installation:
 
 ```sh
 collo --version
-collo setup
+collo
 ```
 
-`collo setup` is the recommended way to configure a provider. It finds the local
-model runtimes that are actually running, notices provider API keys the
-environment already exports, lets you choose a model from the endpoint's own
-catalog, and proves the choice with two real requests before writing anything.
-If it cannot verify the configuration it writes nothing and says which of the
-endpoint, the credential, or the model is at fault.
+When no provider is configured, interactive startup opens provider setup. It
+finds the local model runtimes that are actually running, notices provider API
+keys the environment already exports, lets you choose a model from the
+endpoint's own catalog, and proves the choice with two real requests before
+writing anything. If it cannot verify the configuration it writes nothing and
+says which of the endpoint, credential, or model is at fault. After a successful
+write, pressing Enter continues directly into the session.
+
+Run `collo setup` at any later time to add a provider or reconfigure one you
+already have. The setup screen lists configured providers as actions; the
+`--provider <name>` option remains a shortcut for jumping directly to one.
 
 To write a configuration file by hand instead — or to get the annotated
 reference alongside it — use `collo init` and check the result:
@@ -256,10 +261,10 @@ collo init --global --with-reference
 collo doctor
 ```
 
-`collo init` writes a *static* starter file that assumes a local Ollama on port
-11434; it does not detect anything. `collo doctor` will then tell you whether
-that assumption holds. `collo setup` exists because that loop — write, check,
-guess which of the steps was wrong — is the part worth removing.
+`collo init` writes a *static*, provider-free settings file and an editor schema;
+it does not detect or assume an endpoint or model. For unattended use, add an
+explicit provider from the generated reference, provide its credential through
+the environment, and run `collo config validate --strict` before starting.
 
 Remove only the executable to uninstall while retaining user state. Delete
 `~/.collomia` (macOS/Linux) or `%USERPROFILE%\.collomia` (Windows) separately

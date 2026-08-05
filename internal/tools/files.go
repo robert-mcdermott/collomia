@@ -93,7 +93,7 @@ func (t ReadFileTool) Execute(_ context.Context, raw json.RawMessage) (string, e
 type ListFilesTool struct{ Guard *PathGuard }
 
 func (t ListFilesTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "list_files", Description: "List a directory tree without invoking a shell. Hidden files are included; .git and Collomia session data are skipped.", InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string"},"max_depth":{"type":"integer","minimum":1,"maximum":8}},"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "list_files", Description: "List a directory tree without invoking a shell. Hidden source files are included; VCS metadata, dependency trees, build output, caches, virtual environments, and Collomia session data are skipped.", InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string"},"max_depth":{"type":"integer","minimum":1,"maximum":8}},"additionalProperties":false}`)}
 }
 func (t ListFilesTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -130,7 +130,7 @@ func (t ListFilesTool) Execute(_ context.Context, raw json.RawMessage) (string, 
 			return nil
 		}
 		depth := len(strings.Split(rel, string(filepath.Separator)))
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == "sessions" && filepath.Base(filepath.Dir(p)) == ".collomia") {
+		if d.IsDir() && (skipGeneratedTree(d.Name()) || d.Name() == "sessions" && filepath.Base(filepath.Dir(p)) == ".collomia") {
 			return filepath.SkipDir
 		}
 		if depth > a.MaxDepth {
@@ -159,7 +159,7 @@ func (t ListFilesTool) Execute(_ context.Context, raw json.RawMessage) (string, 
 type SearchFilesTool struct{ Guard *PathGuard }
 
 func (t SearchFilesTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "search_files", Description: "Search text files using a Go regular expression. Returns matching file paths, line numbers, and text without invoking a platform-specific grep command.", InputSchema: schema(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"file_glob":{"type":"string","description":"Optional filepath glob such as *.go"},"max_results":{"type":"integer","minimum":1,"maximum":1000}},"required":["pattern"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "search_files", Description: "Search source text using a Go regular expression. Returns matching file paths, line numbers, and text without invoking grep; skips VCS metadata, dependencies, build output, caches, and virtual environments.", InputSchema: schema(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"file_glob":{"type":"string","description":"Optional filepath glob such as *.go"},"max_results":{"type":"integer","minimum":1,"maximum":1000}},"required":["pattern"],"additionalProperties":false}`)}
 }
 func (t SearchFilesTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -203,7 +203,7 @@ func (t SearchFilesTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 		default:
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor" {
+			if skipGeneratedTree(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -252,6 +252,15 @@ func (t SearchFilesTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 		return "(no matches)", nil
 	}
 	return strings.Join(matches, "\n"), nil
+}
+
+func skipGeneratedTree(name string) bool {
+	switch name {
+	case ".git", ".venv", "venv", ".uv-cache", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", "node_modules", "vendor", "dist", "build", "target":
+		return true
+	default:
+		return false
+	}
 }
 
 type WriteFileTool struct {

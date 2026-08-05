@@ -1,14 +1,11 @@
-// Package setup turns an unconfigured Collomia installation into a verified
-// one.
+// Package setup configures and reconfigures verified Collomia providers.
 //
 // Its whole contract is one sentence: nothing is written until a real request
 // to the endpoint being configured has succeeded. Everything else here exists
-// to serve that. `collo init` writes a static file, `config.Defaults()`
-// returns an assumption, and `collo doctor` inspects configuration and
-// environment without making a network request — so before this package, the
-// first thing that ever dialed a provider was the user's first prompt, and a
-// dead port, a revoked key, a model the endpoint does not have, and a wrong
-// context window all failed identically and late.
+// to serve that. `collo init` writes a static file and `collo doctor` inspects
+// configuration and environment without making a network request. Setup is
+// therefore the point that turns either a fresh installation or a changed
+// provider into something a session can rely on.
 //
 // The UI lives in internal/tui. Everything in this package is offline-testable
 // against httptest servers and holds no terminal state.

@@ -17,6 +17,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/failureid"
+	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/hooks"
 	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/plan"
@@ -66,23 +67,45 @@ type Agent struct {
 	projectInstructions string
 	messages            []provider.Message
 	usage               provider.Usage
+	providerIterations  int
 	cacheGaps           *cacheGapStats
 	lastInputTokens     int
-	usageWatermark      int
-	maxIterations       int
-	maxToolOutput       int
-	tokenBudget         int
-	costBudgetUSD       float64
-	disabled            map[string]bool
-	allowedTools        map[string]bool
-	allowedSkills       map[string]bool
-	profileName         string
-	profileInstructions string
-	planMode            bool
-	subagent            bool
-	onMessage           func(provider.Message)
-	onCompaction        func(summary provider.Message, replaced int)
-	pinnedContext       func() string
+	// lastCompactionEstimate is the context size compaction last achieved. It
+	// bounds how often paying for another summary can be worthwhile.
+	lastCompactionEstimate int
+	usageWatermark         int
+	maxIterations          int
+	maxToolOutput          int
+	tokenBudget            int
+	costBudgetUSD          float64
+	disabled               map[string]bool
+	allowedTools           map[string]bool
+	allowedSkills          map[string]bool
+	profileName            string
+	profileInstructions    string
+	planMode               bool
+	subagent               bool
+	onMessage              func(provider.Message)
+	onCompaction           func(summary provider.Message, replaced int)
+	pinnedContext          func() string
+	completionPlan         *plan.Board
+	goalGraph              *goalgraph.Graph
+	graphWorker            bool
+	// goalSteering retains the user's mid-graph guidance so a node-boundary
+	// handoff cannot silently discard an instruction they were told applies to
+	// the remaining task.
+	goalSteering        []provider.Message
+	goalBoundaryCompact bool
+	goalStateToken      func(context.Context) (string, error)
+	delegateConfig      appconfig.Config
+	delegateApprover    permission.Approver
+	delegateTeam        *Team
+	delegateBoard       *plan.Board
+	delegateScheduler   *Scheduler
+	goalWriterVerifier  func(context.Context, string) ([]DelegateVerification, error)
+	// refusedVerification counts, per attempt, the checks the runtime read as
+	// verification but could not accept, so a stalled node can name them.
+	refusedVerification map[string]refusedVerification
 	artifacts           *session.ArtifactManager
 	attachments         *session.AttachmentManager
 	lifecycle           *hooks.Runner
@@ -120,6 +143,22 @@ type Options struct {
 	// PinnedContext returns authoritative session state that must survive
 	// compaction, such as the current structured plan.
 	PinnedContext func() string
+	// CompletionPlan supplies the structured plan to the deterministic
+	// completion controller. Nil preserves the legacy ungated loop for
+	// specialized embedders; the application runtime always provides its board.
+	CompletionPlan *plan.Board
+	// GoalGraph enables the runtime-owned primary execution controller. OG-1
+	// evaluations provide it at construction; the OG-2A TUI preview may attach
+	// one explicitly between turns after proposal approval.
+	GoalGraph *goalgraph.Graph
+	// GraphWorker marks a delegate the runtime dispatched for an Orchestrated
+	// Goal node. It withholds the tools an automatic worker must never reach,
+	// independently of which registry the child was built from.
+	GraphWorker bool
+	// GoalStateToken returns the current combined-workspace token. A nil
+	// function makes write-bearing graph nodes fail closed while allowing
+	// read-only graph evaluation.
+	GoalStateToken func(context.Context) (string, error)
 	// Artifacts retains bounded oversized tool results for on-demand reads.
 	Artifacts *session.ArtifactManager
 	// Attachments resolves session-local image references immediately before
@@ -161,7 +200,7 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 // attachLedger is the single site that gives a permission manager its audit
@@ -257,6 +296,19 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			return "", fmt.Errorf("unsupported prompt content type %q", part.Type)
 		}
 	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph != nil {
+		if outcome, reason := graph.Outcome(); outcome != "" {
+			return "", goalGraphTerminalError(outcome, reason)
+		}
+		if remaining := graph.BudgetStatus(time.Now()).RemainingActiveWall; remaining > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, remaining)
+			defer cancel()
+		}
+	}
 	send := func(e event.Event) {
 		if emit != nil {
 			emit(e)
@@ -281,11 +333,23 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	if err := a.checkPersistence(); err != nil {
 		return "", reportError(send, err)
 	}
-	for iteration := 1; iteration <= a.maxIterations; iteration++ {
+	a.mu.RLock()
+	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode)
+	a.mu.RUnlock()
+	// Ordinary turns have one model-iteration envelope. An Orchestrated Goal
+	// instead applies that same bound to each primary attempt while the graph's
+	// smaller aggregate envelope remains the cross-node/cross-worker ceiling.
+	// This lets an accepted node hand a fresh bounded slice to its successor
+	// without turning max_iterations into an accidental whole-graph limit.
+	for iteration := 1; ; iteration++ {
+		if !a.graphEnabled() && iteration > a.maxIterations {
+			break
+		}
 		if err := a.checkPersistence(); err != nil {
 			return "", reportError(send, err)
 		}
 		if a.shouldCompact() {
+			a.clearGoalBoundaryCompaction()
 			if _, err := a.compact(ctx, "", send); err != nil {
 				reportError(send, fmt.Errorf("automatic compaction failed: %w", err))
 			}
@@ -295,11 +359,45 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 		select {
 		case <-ctx.Done():
+			if budgetErr := a.aggregateBudgetError(send); budgetErr != nil {
+				return "", reportError(send, budgetErr)
+			}
+			a.cancelGoalGraph(ctx.Err().Error(), send)
 			err := reportError(send, ctx.Err())
 			return "", err
 		default:
 		}
 		a.applySteering()
+		if a.graphEnabled() {
+			if graphErr := a.ensureGoalAttempt(ctx, send); graphErr != nil {
+				if errors.Is(graphErr, goalgraph.ErrGraphPaused) {
+					a.endTurn(ctx, send, iteration, GoalPaused)
+					return "Orchestrated Goal paused at a safe scheduling boundary. Use /orchestrate resume to continue.", nil
+				}
+				// A verified candidate wave is a successful stop. Reporting it as a
+				// turn error would make the feature working look like the feature
+				// failing.
+				if errors.Is(graphErr, ErrGoalAwaitingReview) {
+					a.endTurn(ctx, send, iteration, GoalAwaitingReview)
+					return goalAwaitingReviewAnswer(graphErr, a.goalGraph), nil
+				}
+				graphErr = reportError(send, graphErr)
+				a.endTurn(ctx, send, iteration, GoalOutcomeFor(graphErr))
+				return "", graphErr
+			}
+			if node, attempt, exhausted := a.goalCompletionGapBudget(); exhausted {
+				blockedErr := reportError(send, a.blockStalledGoalCompletion(ctx, node, attempt, send))
+				a.endTurn(ctx, send, iteration-1, GoalBlocked)
+				return "", blockedErr
+			}
+			if node, attempt, exhausted := a.goalAttemptNoProgressBudget(); exhausted {
+				reason := fmt.Sprintf("goal graph node %d attempt %d made no novel durable progress for %d provider iterations", node.ID, attempt.Number, a.maxIterations)
+				a.exhaustGoalGraph(reason, send)
+				budgetErr := reportError(send, fmt.Errorf("%w: no novel durable progress for %d iterations in node %d attempt %d", ErrIterationBudgetExceeded, a.maxIterations, node.ID, attempt.Number))
+				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
+				return "", budgetErr
+			}
+		}
 		a.mu.RLock()
 		messages := append([]provider.Message(nil), a.messages...)
 		client := a.client
@@ -335,6 +433,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		defs := a.toolDefinitions(plan)
 		requestMaxTokens, budgetErr := a.nextRequestMaxTokens()
 		if budgetErr != nil {
+			a.exhaustGoalGraph(budgetErr.Error(), send)
 			budgetErr = reportError(send, budgetErr)
 			return "", budgetErr
 		}
@@ -355,6 +454,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		// how long the model then took to answer it.
 		a.cacheGapStatsOrInit().observeRequest()
 		var streamedUsage atomic.Bool
+		a.beginProviderIteration()
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" {
 				e := event.New(event.KindTextDelta)
@@ -384,11 +484,47 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				send(e)
 			}
 		})
+		response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
+		if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {
+			a.emitGoalUpdates(send)
+			return response.Content, reportError(send, graphErr)
+		}
 		if err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				if budgetErr := a.aggregateBudgetError(send); budgetErr != nil {
+					return response.Content, reportError(send, budgetErr)
+				}
+				cancelErr := err
+				if ctx.Err() != nil {
+					cancelErr = ctx.Err()
+				}
+				a.cancelGoalGraph(cancelErr.Error(), send)
+				cancelErr = reportError(send, cancelErr)
+				return "", cancelErr
+			}
+			if a.graphEnabled() {
+				decision, graphErr := a.recordProviderFailure(ctx, err, send)
+				if graphErr != nil {
+					return "", reportError(send, graphErr)
+				}
+				if decision.Kind == goalgraph.DecisionRetry {
+					if strings.TrimSpace(decision.Notice) != "" {
+						warning := event.New(event.KindWarning)
+						warning.Text = decision.Notice
+						send(warning)
+						a.appendMessage(provider.Message{Role: "user", Content: decision.Notice})
+					}
+					continue
+				}
+				if decision.Kind == goalgraph.DecisionBlocked {
+					blocked := fmt.Errorf("%w: %s", ErrGoalBlocked, decision.Reason)
+					a.endTurn(ctx, send, iteration, GoalBlocked)
+					return "", reportError(send, blocked)
+				}
+			}
 			err = reportError(send, err)
 			return "", err
 		}
-		response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 		a.mu.Lock()
 		a.usage.InputTokens += response.Usage.InputTokens
 		a.usage.OutputTokens += response.Usage.OutputTokens
@@ -421,38 +557,155 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		}
 		if budget > 0 && usage.InputTokens+usage.OutputTokens > budget {
 			err := fmt.Errorf("%w: provider reported %d tokens after a limit of %d", ErrTokenBudgetExceeded, usage.InputTokens+usage.OutputTokens, budget)
+			a.exhaustGoalGraph(err.Error(), send)
 			err = reportError(send, err)
 			return response.Content, err
 		}
 		if costBudget > 0 {
 			if !response.Usage.CostAvailable {
 				err := fmt.Errorf("%w: provider did not return usable token accounting for configured pricing", ErrCostBudgetExceeded)
+				a.exhaustGoalGraph(err.Error(), send)
 				return response.Content, reportError(send, err)
 			}
 			if usage.CostUSD > costBudget {
 				err := fmt.Errorf("%w: estimated spend $%.6f exceeded $%.6f", ErrCostBudgetExceeded, usage.CostUSD, costBudget)
+				a.exhaustGoalGraph(err.Error(), send)
 				return response.Content, reportError(send, err)
 			}
 		}
 		if len(response.ToolCalls) == 0 {
-			send(event.New(event.KindTurnEnd))
-			a.lifecycle.Fire(ctx, hooks.Payload{Event: "stop", Workspace: a.workspace, Subject: "stop", Detail: map[string]any{"iterations": iteration}})
-			return response.Content, nil
+			if a.graphEnabled() {
+				decision, graphErr := a.assessGoalCompletion(ctx, response.Content, send)
+				if graphErr != nil {
+					graphErr = reportError(send, graphErr)
+					return response.Content, graphErr
+				}
+				switch decision.Kind {
+				case goalgraph.DecisionDone:
+					a.endTurn(ctx, send, iteration, GoalDone)
+					return goalDoneAnswer(response.Content, a.goalGraph), nil
+				case goalgraph.DecisionBlocked:
+					blocked := reportError(send, fmt.Errorf("%w: %s", ErrGoalBlocked, decision.Reason))
+					a.endTurn(ctx, send, iteration, GoalBlocked)
+					return response.Content, blocked
+				case goalgraph.DecisionContinue, goalgraph.DecisionAccepted, goalgraph.DecisionRetry:
+					// Accepted and retryable decisions close the current attempt. An
+					// instruction to continue the same attempt remains bounded by its
+					// progress lease and the whole-graph envelope.
+					if decision.Kind == goalgraph.DecisionContinue {
+						if node, attempt, exhausted := a.goalCompletionGapBudget(); exhausted {
+							blockedErr := reportError(send, a.blockStalledGoalCompletion(ctx, node, attempt, send))
+							a.endTurn(ctx, send, iteration, GoalBlocked)
+							return response.Content, blockedErr
+						}
+						if node, attempt, exhausted := a.goalAttemptNoProgressBudget(); exhausted {
+							reason := fmt.Sprintf("goal graph node %d attempt %d made no novel durable progress for %d provider iterations", node.ID, attempt.Number, a.maxIterations)
+							a.exhaustGoalGraph(reason, send)
+							budgetErr := reportError(send, fmt.Errorf("%w: no novel durable progress for %d iterations in node %d attempt %d; graph work remains", ErrIterationBudgetExceeded, a.maxIterations, node.ID, attempt.Number))
+							a.endTurn(ctx, send, iteration, GoalBudgetExhausted)
+							return response.Content, budgetErr
+						}
+					}
+					if decision.Kind == goalgraph.DecisionAccepted || decision.Kind == goalgraph.DecisionRetry {
+						if graphErr := a.ensureGoalAttempt(ctx, send); graphErr != nil {
+							if errors.Is(graphErr, goalgraph.ErrGraphPaused) {
+								a.endTurn(ctx, send, iteration, GoalPaused)
+								return "Orchestrated Goal paused at a safe scheduling boundary. Use /orchestrate resume to continue.", nil
+							}
+							if errors.Is(graphErr, ErrGoalAwaitingReview) {
+								a.endTurn(ctx, send, iteration, GoalAwaitingReview)
+								return goalAwaitingReviewAnswer(graphErr, a.goalGraph), nil
+							}
+							graphErr = reportError(send, graphErr)
+							return response.Content, graphErr
+						}
+						if decision.Kind == goalgraph.DecisionAccepted {
+							if err := a.compactAcceptedGoalNode(ctx, decision.Notice, send); err != nil {
+								return response.Content, reportError(send, err)
+							}
+							continue
+						}
+					}
+					if strings.TrimSpace(decision.Notice) != "" {
+						if decision.Kind != goalgraph.DecisionAccepted {
+							warning := event.New(event.KindWarning)
+							warning.Text = decision.Notice
+							send(warning)
+						}
+						a.appendMessage(provider.Message{Role: "user", Content: decision.Notice})
+						if err := a.checkPersistence(); err != nil {
+							return response.Content, reportError(send, err)
+						}
+					}
+					continue
+				default:
+					return response.Content, reportError(send, errors.New("goal graph returned an unknown completion decision"))
+				}
+			}
+			decision := completion.assess()
+			switch {
+			case decision.done:
+				a.endTurn(ctx, send, iteration, GoalDone)
+				return response.Content, nil
+			case decision.blocked:
+				blocked := reportError(send, fmt.Errorf("%w: %s", ErrGoalBlocked, decision.reason))
+				a.endTurn(ctx, send, iteration, GoalBlocked)
+				return response.Content, blocked
+			case iteration >= a.maxIterations:
+				budgetErr := reportError(send, fmt.Errorf("%w after %d iterations; completion evidence is still missing", ErrIterationBudgetExceeded, a.maxIterations))
+				a.endTurn(ctx, send, iteration, GoalBudgetExhausted)
+				return response.Content, budgetErr
+			default:
+				warning := event.New(event.KindWarning)
+				warning.Text = decision.notice
+				send(warning)
+				a.appendMessage(provider.Message{Role: "user", Content: decision.notice})
+				if err := a.checkPersistence(); err != nil {
+					return response.Content, reportError(send, err)
+				}
+				continue
+			}
 		}
 		for _, call := range response.ToolCalls {
 			if err := a.checkPersistence(); err != nil {
 				return response.Content, reportError(send, err)
 			}
-			result, fatalErr := a.executeTool(ctx, call, plan, send)
+			result, observation, fatalErr := a.executeTool(ctx, call, plan, send)
 			if fatalErr != nil {
+				if errors.Is(fatalErr, context.Canceled) || ctx.Err() != nil {
+					if budgetErr := a.aggregateBudgetError(send); budgetErr != nil {
+						return response.Content, reportError(send, budgetErr)
+					}
+					cancelErr := fatalErr
+					if ctx.Err() != nil {
+						cancelErr = ctx.Err()
+					}
+					a.cancelGoalGraph(cancelErr.Error(), send)
+					fatalErr = cancelErr
+				}
 				return response.Content, reportError(send, fatalErr)
 			}
 			a.appendMessage(provider.Message{Role: "tool", ToolCallID: call.ID, Content: result.Content, Parts: result.Parts})
+			if a.graphEnabled() {
+				if observation.Failed {
+					if graphErr := a.recordGoalFailure(ctx, observation, send); graphErr != nil {
+						return response.Content, reportError(send, graphErr)
+					}
+				}
+			} else {
+				completion.observe(observation)
+			}
 		}
 	}
-	err = fmt.Errorf("agent stopped after %d iterations", a.maxIterations)
+	err = fmt.Errorf("%w after %d iterations", ErrIterationBudgetExceeded, a.maxIterations)
+	a.exhaustGoalGraph(err.Error(), send)
 	err = reportError(send, err)
 	return "", err
+}
+
+func (a *Agent) endTurn(ctx context.Context, send Emit, iteration int, outcome GoalOutcome) {
+	send(event.New(event.KindTurnEnd))
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "stop", Workspace: a.workspace, Subject: "stop", Detail: map[string]any{"iterations": iteration, "outcome": string(outcome)}})
 }
 
 // applySteering installs queued parent guidance as an explicit conversational
@@ -478,7 +731,20 @@ func (a *Agent) applySteering() {
 		if guidance == "" {
 			continue
 		}
-		a.appendMessage(provider.Message{Role: "user", Content: source + " steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance})
+		message := provider.Message{Role: "user", Content: source + " steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance}
+		a.appendMessage(message)
+		// Under a graph, the next accepted node replaces the whole active
+		// context. Guidance the user was told applies to the remaining task has
+		// to survive that boundary, so it is retained separately and bounded to
+		// the same depth the steering queue itself allows.
+		a.mu.Lock()
+		if a.goalGraph != nil {
+			a.goalSteering = append(a.goalSteering, message)
+			if len(a.goalSteering) > maxPendingSteering {
+				a.goalSteering = a.goalSteering[len(a.goalSteering)-maxPendingSteering:]
+			}
+		}
+		a.mu.Unlock()
 	}
 }
 
@@ -558,35 +824,53 @@ func reportError(send Emit, err error) error {
 	return err
 }
 
-func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, error) {
+func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
+	observation := toolObservation{Name: call.Name}
+	if hasItem && !a.toolAvailable(item, plan) {
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		graphOwnedUnavailable := a.graphEnabled() && graphOwnedTool(call.Name)
+		if !graphOwnedUnavailable {
+			observation.FailureDetail = "tool is not available to this agent"
+			return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, observation, nil
+		}
+		observation.FailureDetail = "tool is not available in the current mode"
+		// Whole-plan mutation and model-directed delegation are deliberately
+		// hidden after graph approval. A remembered/fabricated call must not
+		// reach the implementation, but it is a controller-protocol mistake,
+		// not evidence that the active work node failed.
+		observation.IgnoreGraphFailure = true
+		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available in the current mode. Use the runtime-owned goal graph controls and ordinary tools exposed for this request."}, observation, nil
+	}
 	a.mu.RLock()
-	disabled := a.disabled[call.Name]
-	if len(a.allowedTools) > 0 && !a.allowedTools[call.Name] {
-		disabled = true
-	}
 	allowedSkills := a.allowedSkills
-	if identity, ok := item.(tools.PermissionIdentity); hasItem && ok {
-		disabled = disabled || a.disabled[identity.PermissionToolName()]
-	}
 	a.mu.RUnlock()
-	if disabled || (a.subagent && parentOnlyTool(call.Name)) {
-		return tools.Result{Content: "Tool blocked: " + call.Name + " is not available to this agent."}, nil
-	}
 	if call.Name == "load_skill" && len(allowedSkills) > 0 {
 		var input struct {
 			Name string `json:"name"`
 		}
 		if json.Unmarshal(call.Arguments, &input) == nil && !allowedSkills[input.Name] {
-			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, nil
+			observation.Failed = true
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = "skill is not available to the active agent profile"
+			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, observation, nil
 		}
 	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
-		return tools.Result{Content: "Tool error: " + err.Error()}, nil
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = err.Error()
+		observation.Retryable = true
+		return tools.Result{Content: "Tool error: " + err.Error()}, observation, nil
 	}
+	observation.Action = action
 	if plan && action.Risk != tools.RiskRead {
-		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, nil
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = "planning mode is read-only"
+		return tools.Result{Content: "Tool blocked: planning mode is read-only. Switch planning mode off before making changes."}, observation, nil
 	}
 	permissionTool := call.Name
 	hookTool := call.Name
@@ -606,39 +890,62 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	decided.Permission = &event.Permission{Tool: permissionTool, Summary: action.Summary, Risk: string(action.Risk), Source: grant.Source, Rule: grant.Rule, Allowed: err == nil}
 	send(decided)
 	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
-		return tools.Result{}, persistenceErr
+		return tools.Result{}, observation, persistenceErr
 	}
 	allowed := err == nil
 	a.lifecycle.Fire(ctx, hooks.Payload{Event: "permission_decision", Workspace: a.workspace, Subject: permissionTool, Tool: permissionTool, Summary: action.Summary, Allowed: &allowed, Detail: map[string]any{"risk": string(action.Risk), "source": grant.Source, "rule": grant.Rule}})
 	if err != nil {
-		return tools.Result{Content: "Tool denied: " + err.Error()}, nil
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailurePermission
+		observation.FailureDetail = err.Error()
+		return tools.Result{Content: "Tool denied: " + err.Error()}, observation, nil
 	}
 	if hookErr := a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Args: call.Arguments, Paths: action.Paths}); hookErr != nil {
 		if observer, ok := item.(tools.ExecutionObserver); hasItem && ok {
 			observer.ObserveExecution(call.Arguments, hookErr)
 		}
-		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, nil
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureHook
+		observation.FailureDetail = hookErr.Error()
+		return tools.Result{Content: "Tool blocked by hook: " + hookErr.Error()}, observation, nil
 	}
 	args := call.Arguments
 	if grant.ContentOverride != nil {
 		var overridden error
 		args, overridden = withOverriddenContent(call.Name, args, *grant.ContentOverride)
 		if overridden != nil {
-			return tools.Result{Content: "Tool error: " + overridden.Error()}, nil
+			observation.Failed = true
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = overridden.Error()
+			observation.Retryable = true
+			return tools.Result{Content: "Tool error: " + overridden.Error()}, observation, nil
 		}
+	}
+	graphStarted, graphErr := a.beginGoalTool(ctx, call.Name, action, send)
+	if graphErr != nil {
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureStateUnavailable
+		observation.FailureDetail = graphErr.Error()
+		observation.GraphRecorded = graphStarted
+		if errors.Is(graphErr, goalgraph.ErrWorkspaceState) {
+			return tools.Result{Content: "Tool blocked by goal graph: " + graphErr.Error()}, observation, nil
+		}
+		return tools.Result{}, observation, graphErr
 	}
 	start := event.New(event.KindToolStart)
 	start.Tool = &event.Tool{Name: call.Name, Summary: action.Summary}
 	send(start)
 	if persistenceErr := a.checkPersistence(); persistenceErr != nil {
-		return tools.Result{}, persistenceErr
+		return tools.Result{}, observation, persistenceErr
 	}
 	onOutput := func(chunk string) {
 		e := event.New(event.KindToolOutput)
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
 	}
+	observation.Started = time.Now().UTC()
 	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
+	observation.Finished = time.Now().UTC()
 	a.permissions.RecordOutcome(permissionTool, action, err)
 	if len(result.Content) > a.maxToolOutput {
 		original := result.Content
@@ -663,11 +970,31 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	}
 	result.Parts = a.retainToolParts(call.Name, result.Parts, send)
 	if err != nil {
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = err.Error()
+		observation.Retryable = true
 		if result.Content != "" {
 			result.Content += "\n"
 		}
 		result.Content += "Tool error: " + err.Error()
 	}
+	if call.Name == "run_command" {
+		assessment := assessVerificationCommand(action.Command, a.workspace)
+		observation.Verification = assessment.Recognized
+		if err == nil && assessment.VerificationLike && !assessment.Recognized {
+			notice := "Collomia verification evidence was not recorded: " + assessment.Reason
+			if assessment.Suggestion != "" {
+				notice += " Run the verification directly so its own exit status is preserved: " + assessment.Suggestion
+			}
+			a.recordRefusedVerification(assessment.Suggestion)
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += notice
+		}
+	}
+	observation.ResultSummary = result.Content
 	done := event.New(event.KindToolResult)
 	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil}
 	send(done)
@@ -676,10 +1003,27 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		endPayload.Error = err.Error()
 	}
 	a.lifecycle.Fire(ctx, endPayload)
+	if graphStarted {
+		observation.GraphRecorded = true
+		if graphErr := a.finishGoalTool(ctx, observation, send); graphErr != nil {
+			return result, observation, graphErr
+		}
+		if !observation.Failed && observation.Name == "run_command" && observation.Verification {
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += "Collomia verification evidence: recorded against the post-command workspace state. It remains current unless a later tool changes that state.\n\nNode boundary: this proof belongs to the current runtime-selected node. If its acceptance criteria are satisfied, your next response must be tool-free so the runtime can accept it. Do not start another node until the runtime selects it. If they are not satisfied, continue only the current node."
+		}
+	} else if a.graphEnabled() && goalgraph.MetaTool(call.Name) {
+		// The graph-control tool performs its own validated transition. Drain
+		// those updates without treating the meta operation as node evidence.
+		a.emitGoalUpdates(send)
+		observation.GraphRecorded = err == nil
+	}
 	if err == nil && action.Risk == tools.RiskWrite && len(action.Paths) > 0 {
 		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
 	}
-	return result, nil
+	return result, observation, nil
 }
 
 func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, send Emit) []provider.ContentPart {
@@ -720,23 +1064,71 @@ func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, s
 }
 
 func (a *Agent) toolDefinitions(plan bool) []provider.ToolDefinition {
-	return a.registry.Definitions(func(tool tools.Tool) bool {
-		name := tool.Definition().Name
-		disabled := a.disabled[name]
-		if len(a.allowedTools) > 0 && !a.allowedTools[name] {
-			disabled = true
-		}
-		if identity, ok := tool.(tools.PermissionIdentity); ok {
-			disabled = disabled || a.disabled[identity.PermissionToolName()]
-		}
-		if disabled || (a.subagent && parentOnlyTool(name)) {
+	return a.registry.Definitions(func(tool tools.Tool) bool { return a.toolAvailable(tool, plan) })
+}
+
+// toolAvailable is shared by provider-definition construction and execution.
+// Hiding a tool from the model is guidance; enforcing the same decision again
+// before argument decoding is the actual authority boundary.
+func (a *Agent) toolAvailable(tool tools.Tool, plan bool) bool {
+	name := tool.Definition().Name
+	a.mu.RLock()
+	graphEnabled := a.goalGraph != nil
+	disabled := a.disabled[name]
+	if len(a.allowedTools) > 0 && !a.allowedTools[name] {
+		disabled = true
+	}
+	if identity, ok := tool.(tools.PermissionIdentity); ok {
+		disabled = disabled || a.disabled[identity.PermissionToolName()]
+	}
+	subagent, graphWorker := a.subagent, a.graphWorker
+	a.mu.RUnlock()
+	if graphEnabled {
+		// An approved graph is runtime-owned. Whole-plan replacement and
+		// model-directed delegation stay unavailable; automatic claims enter
+		// only through the controller's bounded scheduling path.
+		if graphOwnedTool(name) {
 			return false
 		}
-		if !plan {
-			return true
+		// These tools mutate only the bounded runtime state machine and grant
+		// no tool, path, network, publication, or budget authority. They must
+		// survive an ordinary profile tool allowlist or the controller could
+		// lose its only typed replan/block routes after activation.
+		if goalgraph.MetaTool(name) {
+			return !plan
 		}
-		return planTool(name)
-	})
+	}
+	if disabled || (subagent && parentOnlyTool(name)) {
+		return false
+	}
+	if graphWorker && graphWorkerDeniedTool(name) {
+		return false
+	}
+	return !plan || planTool(name)
+}
+
+// graphWorkerDeniedTool names what an automatically dispatched Orchestrated
+// Goal worker may not reach even inside its own isolated worktree. Committing
+// or branching there is an automatic publication step the mode does not hold
+// authority for, and it would move the ref the retained candidate's diff is
+// measured against. This is the enforcement layer behind the registry removal:
+// a model can always fabricate a call by name.
+func graphWorkerDeniedTool(name string) bool {
+	switch name {
+	case "git_commit", "git_branch":
+		return true
+	default:
+		return false
+	}
+}
+
+func graphOwnedTool(name string) bool {
+	switch name {
+	case "update_plan", "delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes":
+		return true
+	default:
+		return false
+	}
 }
 func planTool(name string) bool {
 	switch name {
@@ -753,6 +1145,9 @@ func planTool(name string) bool {
 }
 
 func parentOnlyTool(name string) bool {
+	if goalgraph.MetaTool(name) {
+		return true
+	}
 	switch name {
 	case "delegate", "inspect_delegate_changes", "compare_delegate_changes", "verify_delegate_changes", "apply_delegate_changes":
 		return true
@@ -803,10 +1198,16 @@ func (a *Agent) systemPrompt(plan bool) string {
 // the conversation cannot accumulate stale copies of a plan and compaction has
 // nothing to preserve — the board is the single source of truth either way.
 func (a *Agent) turnState() (provider.Message, bool) {
-	if a.pinnedContext == nil {
-		return provider.Message{}, false
+	var sections []string
+	if a.pinnedContext != nil {
+		if value := strings.TrimSpace(a.pinnedContext()); value != "" {
+			sections = append(sections, value)
+		}
 	}
-	value := strings.TrimSpace(a.pinnedContext())
+	if a.goalGraph != nil {
+		sections = append(sections, a.goalGraph.Render())
+	}
+	value := strings.TrimSpace(strings.Join(sections, "\n\n"))
 	if value == "" {
 		return provider.Message{}, false
 	}
@@ -845,6 +1246,20 @@ type DelegateTask struct {
 	// PlanStep associates the child result with an existing structured plan
 	// step. It does not create or autonomously execute a plan.
 	PlanStep int `json:"plan_step,omitempty"`
+	// The remaining fields are runtime-only controls for graph-owned automatic
+	// workers. They are never accepted from the delegate tool's JSON arguments.
+	RuntimeID             string  `json:"-"`
+	GraphNode             bool    `json:"-"`
+	TokenBudgetOverride   int     `json:"-"`
+	CostBudgetOverride    float64 `json:"-"`
+	TimeoutOverride       int     `json:"-"`
+	MaxIterationsOverride int     `json:"-"`
+	BaseCommitOverride    string  `json:"-"`
+	// OnWorktree reports a newly created isolated worktree before the child
+	// runs in it, so a runtime owner can record the directory durably. A
+	// non-nil error aborts the task rather than proceeding with a tree the
+	// runtime could not commit to remembering.
+	OnWorktree func(worktree, branch string) error `json:"-"`
 }
 
 // AddDelegationTool registers the delegate tool: a concurrency-limited
@@ -858,6 +1273,9 @@ func (a *Agent) AddDelegationTool(cfg appconfig.Config, approver permission.Appr
 		board = boards[0]
 	}
 	scheduler := NewScheduler(cfg.Options.DelegateMaxConcurrency, cfg.Options.DelegateProviderConcurrency)
+	a.mu.Lock()
+	a.delegateConfig, a.delegateApprover, a.delegateTeam, a.delegateBoard, a.delegateScheduler = cfg, approver, team, board, scheduler
+	a.mu.Unlock()
 	desc := fmt.Sprintf("Delegate up to %d bounded tasks to sub-agents. A session-wide scheduler runs up to %d at once, with optional tighter per-provider limits. Use it to parallelize independent investigations or independent file changes. Each task is read-only in the shared workspace unless write is true, in which case it runs in its own isolated git worktree (no other agent's files are affected, and nothing is merged or committed automatically). Write tasks should declare write_paths as repository-relative files or directory prefixes ending in /; overlapping scopes are serialized, omitted scopes are workspace-wide, and out-of-scope results are reported as violations. Sub-agents cannot recursively delegate.", maxDelegateTasks, scheduler.max)
 	if cfg.Options.AgentIntegration == "reviewed" {
 		desc += " Reviewed integration is enabled: after a successful write task, inspect its exact evidence and hunks with inspect_delegate_changes, run proportionate detected child-worktree verification with verify_delegate_changes, compare candidates when useful, and only then decide whether to publish selected changes with apply_delegate_changes."
@@ -962,9 +1380,14 @@ type DelegateResult struct {
 	Worktree        string         `json:"worktree,omitempty"`
 	Branch          string         `json:"branch,omitempty"`
 	BaseCommit      string         `json:"base_commit,omitempty"`
+	Iterations      int            `json:"iterations,omitempty"`
+	ToolSuccesses   int            `json:"tool_successes,omitempty"`
 	InputTokens     int            `json:"input_tokens,omitempty"`
+	CachedTokens    int            `json:"cached_tokens,omitempty"`
 	OutputTokens    int            `json:"output_tokens,omitempty"`
 	CostUSD         float64        `json:"cost_usd,omitempty"`
+	CostAvailable   bool           `json:"cost_available,omitempty"`
+	CostEstimated   bool           `json:"cost_estimated,omitempty"`
 	TokenBudget     int            `json:"token_budget,omitempty"`
 	CostBudgetUSD   float64        `json:"cost_budget_usd,omitempty"`
 	TimeoutSeconds  int            `json:"timeout_seconds"`
@@ -1187,7 +1610,10 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		name = fmt.Sprintf("task-%d", index+1)
 	}
 	task.Name = name
-	id := fmt.Sprintf("d%d-%d", time.Now().UnixNano(), delegateIDCounter.Add(1))
+	id := strings.TrimSpace(task.RuntimeID)
+	if id == "" {
+		id = fmt.Sprintf("d%d-%d", time.Now().UnixNano(), delegateIDCounter.Add(1))
+	}
 
 	var profile appconfig.AgentDefinition
 	var profileErr error
@@ -1204,19 +1630,16 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if profile.Model != "" {
 		model = profile.Model
 	}
-	timeoutSeconds := profile.TimeoutSeconds
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 10 * 60
-	}
+	tokenBudget, costBudget, timeoutSeconds, _ := delegateLimits(task, profile)
 	taskCtx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 	writeScopes, scopeErr := NormalizeWriteScopes(task.WritePaths, task.Write)
 	if team != nil {
 		team.Enqueue(DelegateStart{
 			ID: id, Name: name, Task: task.Task, Profile: task.Agent,
-			Provider: providerName, Model: model, Write: task.Write, PlanStep: task.PlanStep,
+			Provider: providerName, Model: model, Write: task.Write, GraphNode: task.GraphNode, PlanStep: task.PlanStep,
 			WriteScopes: writeScopes,
-			TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
+			TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds, Cancel: cancel,
 		})
 	}
 	finishError := func(err error) DelegateResult {
@@ -1227,7 +1650,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 				return delegateResult(status)
 			}
 		}
-		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), WriteScopes: writeScopes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds}
+		return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: DelegateError, Error: err.Error(), FailureID: failureid.ID(err), WriteScopes: writeScopes, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
 	}
 	if strings.TrimSpace(task.Task) == "" {
 		return finishError(errors.New("empty task"))
@@ -1238,8 +1661,10 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if scopeErr != nil {
 		return finishError(scopeErr)
 	}
-	if err := validatePlanAssignment(board, task.PlanStep); err != nil {
-		return finishError(err)
+	if !task.GraphNode {
+		if err := validatePlanAssignment(board, task.PlanStep); err != nil {
+			return finishError(err)
+		}
 	}
 	release, err := scheduler.AcquireScoped(taskCtx, providerName, writeScopes)
 	if err != nil {
@@ -1251,7 +1676,7 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	}
 
 	a.lifecycle.Fire(taskCtx, hooks.Payload{Event: "subagent_start", Workspace: a.workspace, Subject: name, Detail: map[string]any{"id": id, "task": task.Task, "write": task.Write, "write_scopes": writeScopes, "agent": task.Agent, "token_budget": profile.TokenBudget, "cost_budget_usd": profile.CostBudgetUSD, "timeout_seconds": timeoutSeconds}})
-	output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
+	output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, toolSuccesses, usage, runErr := a.runDelegateTask(taskCtx, id, task, profile, cfg, approver, team)
 	violations := writeScopeViolations(writeScopes, changed)
 	if len(violations) > 0 {
 		scopeViolationErr := fmt.Errorf("delegated agent changed files outside its declared write_paths: %s", strings.Join(violations, ", "))
@@ -1269,6 +1694,9 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 		if status, ok := team.Get(id); ok {
 			result := delegateResult(status)
 			result.ChangedHunks = boundedDelegateHunks(hunks)
+			result.Iterations = iterations
+			result.ToolSuccesses = toolSuccesses
+			result.CostEstimated = usage.CostEstimated
 			return result
 		}
 	}
@@ -1276,7 +1704,28 @@ func (a *Agent) runScheduledDelegate(parent context.Context, index int, task Del
 	if runErr != nil {
 		status = delegateTerminalStatus(runErr)
 	}
-	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, TimeoutSeconds: timeoutSeconds}
+	return DelegateResult{ID: id, Name: name, Profile: task.Agent, PlanStep: task.PlanStep, Status: status, Summary: boundedDelegateText(output, 16<<10), Error: boundedDelegateText(errorString(runErr), 4<<10), FailureID: failureid.ID(runErr), Evidence: evidence, ChangedFiles: changed, ChangedHunks: boundedDelegateHunks(hunks), WriteScopes: writeScopes, ScopeViolations: violations, Worktree: worktreePath, Branch: branch, BaseCommit: baseCommit, Iterations: iterations, ToolSuccesses: toolSuccesses, InputTokens: usage.InputTokens, CachedTokens: usage.CachedTokens, OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD, CostAvailable: usage.CostAvailable, CostEstimated: usage.CostEstimated, TokenBudget: tokenBudget, CostBudgetUSD: costBudget, TimeoutSeconds: timeoutSeconds}
+}
+
+func delegateLimits(task DelegateTask, profile appconfig.AgentDefinition) (tokenBudget int, costBudget float64, timeoutSeconds, maxIterations int) {
+	tokenBudget, costBudget = profile.TokenBudget, profile.CostBudgetUSD
+	timeoutSeconds, maxIterations = profile.TimeoutSeconds, profile.MaxIterations
+	if task.TokenBudgetOverride > 0 && (tokenBudget <= 0 || task.TokenBudgetOverride < tokenBudget) {
+		tokenBudget = task.TokenBudgetOverride
+	}
+	if task.CostBudgetOverride > 0 && (costBudget <= 0 || task.CostBudgetOverride < costBudget) {
+		costBudget = task.CostBudgetOverride
+	}
+	if task.TimeoutOverride > 0 && (timeoutSeconds <= 0 || task.TimeoutOverride < timeoutSeconds) {
+		timeoutSeconds = task.TimeoutOverride
+	}
+	if task.MaxIterationsOverride > 0 && (maxIterations <= 0 || task.MaxIterationsOverride < maxIterations) {
+		maxIterations = task.MaxIterationsOverride
+	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 10 * 60
+	}
+	return tokenBudget, costBudget, timeoutSeconds, maxIterations
 }
 
 func validatePlanAssignment(board *plan.Board, stepID int) error {
@@ -1318,7 +1767,7 @@ func boundedDelegateHunks(hunks []DelegateHunk) []DelegateHunk {
 	return bounded
 }
 
-func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch, baseCommit string, usage provider.Usage, runErr error) {
+func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTask, profile appconfig.AgentDefinition, cfg appconfig.Config, approver permission.Approver, team *Team) (output string, evidence, changed []string, hunks []DelegateHunk, worktreePath, branch, baseCommit string, iterations, toolSuccesses int, usage provider.Usage, runErr error) {
 	a.mu.RLock()
 	client, providerName, model, providerConfig := a.client, a.providerName, a.model, a.providerConfig
 	workspace, parentRegistry := a.workspace, a.registry
@@ -1342,8 +1791,9 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		scopes, _ := NormalizeWriteScopes(task.WritePaths, true)
 		instructions = prompts.Render(prompts.DelegateWriteContract, strings.Join(scopes, ", ")) + "\n\n" + instructions
 	}
-	if profile.MaxIterations > 0 {
-		maxIter = profile.MaxIterations
+	tokenBudget, costBudget, _, delegateMaxIterations := delegateLimits(task, profile)
+	if delegateMaxIterations > 0 {
+		maxIter = delegateMaxIterations
 	}
 	childCatalog := catalog.Restrict(profile.Skills)
 	childConfig := cfg
@@ -1378,6 +1828,11 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	childRegistry.Remove("compare_delegate_changes")
 	childRegistry.Remove("verify_delegate_changes")
 	childRegistry.Remove("apply_delegate_changes")
+	// Hidden definitions are not an authorization boundary: a model can still
+	// fabricate a call by name. Remove the parent graph handles from the clone,
+	// and keep parentOnlyTool as the second enforcement layer.
+	childRegistry.Remove(goalgraph.ReviseToolName)
+	childRegistry.Remove(goalgraph.BlockToolName)
 	// A child may report suggestions in its result but must not mutate the
 	// parent's shared structured plan artifact.
 	childRegistry.Remove("update_plan")
@@ -1388,23 +1843,32 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	if task.Write {
 		childPlan = false
 		if !isGitRepo(ctx, workspace) {
-			return "", nil, nil, nil, "", "", "", provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
+			return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, errors.New("workspace is not a git repository; cannot isolate a write-capable agent")
 		}
 		var err error
 		// Git mutates shared administrative state under .git/worktrees while
 		// adding a worktree. Serialize only this short setup operation per
 		// parent agent; child execution remains fully concurrent afterward.
 		a.worktreeMu.Lock()
-		wt, err = newWorktree(ctx, workspace, task.Name)
+		wt, err = newWorktree(ctx, workspace, task.Name, task.BaseCommitOverride)
 		a.worktreeMu.Unlock()
 		if err != nil {
-			return "", nil, nil, nil, "", "", "", provider.Usage{}, err
+			return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, err
+		}
+		// The tree exists on disk from here on. Record it before the child can
+		// touch it: a session that stops mid-task otherwise leaves a directory
+		// no attempt can be traced to.
+		if task.OnWorktree != nil {
+			if recordErr := task.OnWorktree(wt.path, wt.branch); recordErr != nil {
+				wt.remove(context.WithoutCancel(ctx))
+				return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, recordErr
+			}
 		}
 		childWorkspace = wt.path
 		reg, _, childProcs, buildErr := tools.Builtins(wt.path, childConfig)
 		if buildErr != nil {
 			wt.remove(ctx)
-			return "", nil, nil, nil, "", "", "", provider.Usage{}, buildErr
+			return "", nil, nil, nil, "", "", "", 0, 0, provider.Usage{}, buildErr
 		}
 		defer childProcs.StopAll()
 		if discovered, discoverErr := skills.Discover(childWorkspace, cfg.ProjectTrusted); discoverErr == nil {
@@ -1412,6 +1876,16 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		}
 		reg.Add(skills.Tool(childCatalog))
 		childRegistry = reg
+		if task.GraphNode {
+			// A rebuilt registry restores every builtin, including the mutating
+			// VCS tools. Automatic commit and branch creation are explicit
+			// Orchestrated Goal non-goals, and a commit would also move the ref
+			// the retained candidate's diff is computed against. Prompt text is
+			// not an authority boundary, so they are removed structurally here
+			// as they are for read workers.
+			childRegistry.Remove("git_commit")
+			childRegistry.Remove("git_branch")
+		}
 		childManager = permission.New(childConfig.Permissions, childApprover)
 		childManager.SetRestrictions(profile.Permissions.Rules)
 		a.attachLedger(childManager, childWorkspace, childActor, id)
@@ -1433,8 +1907,8 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		Client: client, ProviderName: providerName, Model: model, Workspace: childWorkspace,
 		ProviderConfig: providerConfig, Registry: childRegistry, Permissions: childManager,
 		Catalog: childCatalog, ProjectInstructions: instructions,
-		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
-		DisabledTools: disabled, PlanMode: childPlan, Subagent: true,
+		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
+		DisabledTools: disabled, PlanMode: childPlan, Subagent: true, GraphWorker: task.GraphNode,
 		PersistenceError: persistenceError,
 		// A child that delegates further must keep the same reporting route
 		// and the same session identity, or the grandchild is the unaudited
@@ -1487,6 +1961,12 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			}
 			line += runtimeEvent.Tool.Output
 			evidenceMu.Lock()
+			// Counted here rather than recovered from the rendered line later:
+			// whether a read node produced grounded evidence is a machine fact,
+			// and the bounded evidence list drops results past its limit.
+			if !runtimeEvent.Tool.IsError {
+				toolSuccesses++
+			}
 			if len(evidence) < 8 {
 				evidence = append(evidence, boundedDelegateText(line, 1024))
 			}
@@ -1497,6 +1977,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		team.SetAction(id, "calling "+providerName+"/"+model)
 	}
 	output, runErr = child.Run(ctx, task.Task, emit)
+	iterations = child.ProviderIterations()
 	usage = child.Usage()
 	if wt != nil {
 		changed = wt.changedFiles(context.WithoutCancel(ctx))
@@ -1507,7 +1988,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 			branch, worktreePath, baseCommit = wt.branch, wt.path, wt.baseCommit
 		}
 	}
-	return output, evidence, changed, hunks, worktreePath, branch, baseCommit, usage, runErr
+	return output, evidence, changed, hunks, worktreePath, branch, baseCommit, iterations, toolSuccesses, usage, runErr
 }
 
 func restrictAgentPermissions(parent appconfig.Permissions, child appconfig.AgentPermissions) appconfig.Permissions {
@@ -1556,7 +2037,7 @@ func delegateResult(status DelegateStatus) DelegateResult {
 		ChangedFiles: status.Changed, WriteScopes: status.WriteScopes, ScopeViolations: status.ScopeViolations,
 		Worktree: status.Worktree, Branch: status.Branch, BaseCommit: status.BaseCommit,
 		InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens,
-		CostUSD: status.Usage.CostUSD, TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds,
+		CostUSD: status.Usage.CostUSD, CostAvailable: status.Usage.CostAvailable, TokenBudget: status.TokenBudget, CostBudgetUSD: status.CostBudgetUSD, TimeoutSeconds: status.TimeoutSeconds,
 	}
 }
 
@@ -1601,6 +2082,7 @@ func (a *Agent) Clear() {
 	a.messages = nil
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
+	a.goalBoundaryCompact = false
 	a.mu.Unlock()
 }
 
@@ -1612,6 +2094,7 @@ func (a *Agent) Reset() {
 	a.usage = provider.Usage{}
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
+	a.goalBoundaryCompact = false
 	a.mu.Unlock()
 }
 
@@ -1721,6 +2204,21 @@ func (a *Agent) ProviderHealth() provider.Health {
 
 func (a *Agent) Usage() provider.Usage { a.mu.RLock(); defer a.mu.RUnlock(); return a.usage }
 
+// ProviderIterations reports every provider request made by this Agent,
+// including compaction. Delegated agents are one-shot, so this is also their
+// exact bounded iteration contribution to graph accounting.
+func (a *Agent) ProviderIterations() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.providerIterations
+}
+
+func (a *Agent) beginProviderIteration() {
+	a.mu.Lock()
+	a.providerIterations++
+	a.mu.Unlock()
+}
+
 // CacheGaps reports how this session's request cadence sits against the
 // prompt-cache lifetime. See cachegap.go for why this is the measurement the
 // one-hour-TTL decision needs.
@@ -1751,31 +2249,64 @@ func (a *Agent) nextRequestMaxTokens() (int, error) {
 	spent := a.usage.CostUSD
 	pricing := a.providerConfig.Pricing
 	configured := a.providerConfig.MaxTokens
+	graph := a.goalGraph
 	a.mu.RUnlock()
-	if budget <= 0 && costBudget <= 0 {
+	if budget <= 0 && costBudget <= 0 && graph == nil {
 		return configured, nil
 	}
 	estimatedInput, _ := a.ContextEstimate()
+	remainingTokens := 0
+	tokenErr := ErrTokenBudgetExceeded
 	if budget > 0 {
-		remaining := budget - used
-		if remaining <= 0 {
+		remainingTokens = budget - used
+		if remainingTokens <= 0 {
 			return 0, fmt.Errorf("%w: used %d of %d tokens", ErrTokenBudgetExceeded, used, budget)
 		}
-		if estimatedInput >= remaining {
-			return 0, fmt.Errorf("%w: approximately %d input tokens need the remaining %d-token allowance", ErrTokenBudgetExceeded, estimatedInput, remaining)
+	}
+	var aggregate goalgraph.BudgetStatus
+	if graph != nil {
+		aggregate = graph.BudgetStatus(time.Now())
+		if aggregate.RemainingTokens <= 0 {
+			return 0, fmt.Errorf("%w: aggregate token allowance is exhausted", ErrAggregateBudgetExceeded)
 		}
-		allowance := remaining - estimatedInput
+		if remainingTokens == 0 || aggregate.RemainingTokens < remainingTokens {
+			remainingTokens = aggregate.RemainingTokens
+			tokenErr = ErrAggregateBudgetExceeded
+		}
+	}
+	if remainingTokens > 0 {
+		if estimatedInput >= remainingTokens {
+			return 0, fmt.Errorf("%w: approximately %d input tokens need the remaining %d-token allowance", tokenErr, estimatedInput, remainingTokens)
+		}
+		allowance := remainingTokens - estimatedInput
 		if configured <= 0 || configured > allowance {
 			configured = allowance
 		}
 	}
+	remainingCost := 0.0
+	costErr := ErrCostBudgetExceeded
 	if costBudget > 0 {
 		if pricing == nil || pricing.InputPerMillion <= 0 || pricing.OutputPerMillion <= 0 {
 			return 0, fmt.Errorf("%w: cost_budget_usd requires positive pricing.input_per_million and pricing.output_per_million on the selected provider", ErrCostBudgetExceeded)
 		}
-		remainingUSD := costBudget - spent - float64(estimatedInput)*pricing.InputPerMillion/1_000_000
+		remainingCost = costBudget - spent
+		if remainingCost <= 0 {
+			return 0, fmt.Errorf("%w: estimated spend $%.6f exhausted $%.6f", ErrCostBudgetExceeded, spent, costBudget)
+		}
+	}
+	if graph != nil && aggregate.CostEnforceable && pricing != nil && pricing.InputPerMillion > 0 && pricing.OutputPerMillion > 0 {
+		if aggregate.RemainingCostUSD <= 0 {
+			return 0, fmt.Errorf("%w: aggregate estimated-cost allowance is exhausted", ErrAggregateBudgetExceeded)
+		}
+		if remainingCost == 0 || aggregate.RemainingCostUSD < remainingCost {
+			remainingCost = aggregate.RemainingCostUSD
+			costErr = ErrAggregateBudgetExceeded
+		}
+	}
+	if remainingCost > 0 {
+		remainingUSD := remainingCost - float64(estimatedInput)*pricing.InputPerMillion/1_000_000
 		if remainingUSD <= 0 {
-			return 0, fmt.Errorf("%w: estimated input would exceed the remaining $%.6f", ErrCostBudgetExceeded, costBudget-spent)
+			return 0, fmt.Errorf("%w: estimated input would exceed the remaining $%.6f", costErr, remainingCost)
 		}
 		costAllowance := int(math.Floor(remainingUSD * 1_000_000 / pricing.OutputPerMillion))
 		if configured <= 0 || configured > costAllowance {
@@ -1783,10 +2314,10 @@ func (a *Agent) nextRequestMaxTokens() (int, error) {
 		}
 	}
 	if configured <= 0 {
-		if costBudget > 0 {
-			return 0, fmt.Errorf("%w: no output allowance remains", ErrCostBudgetExceeded)
+		if remainingCost > 0 {
+			return 0, fmt.Errorf("%w: no output allowance remains", costErr)
 		}
-		return 0, fmt.Errorf("%w: no output allowance remains", ErrTokenBudgetExceeded)
+		return 0, fmt.Errorf("%w: no output allowance remains", tokenErr)
 	}
 	return configured, nil
 }
@@ -1937,10 +2468,101 @@ const compactKeepRecent = 6
 
 func (a *Agent) shouldCompact() bool {
 	estimated, window := a.ContextEstimate()
-	if window <= 0 {
+	a.mu.RLock()
+	graph := a.goalGraph
+	boundary := a.goalBoundaryCompact
+	messageCount := len(a.messages)
+	a.mu.RUnlock()
+	if messageCount <= compactKeepRecent+2 {
 		return false
 	}
-	return estimated > window*80/100 && a.MessageCount() > compactKeepRecent+2
+	if boundary {
+		return true
+	}
+	// Compaction costs a provider request, so it must be able to reclaim more
+	// than it spends. Once the context has been reduced to a summary plus the
+	// recent turns, compacting again removes almost nothing while still paying
+	// full price — and under budget pressure the threshold below keeps falling
+	// as the allowance shrinks, which turns that into a spiral that consumes
+	// the remaining allowance in summaries. Require real growth since the last
+	// compaction before paying for another.
+	a.mu.RLock()
+	floor := a.lastCompactionEstimate
+	a.mu.RUnlock()
+	if floor > 0 && estimated < floor+floor/2 {
+		return false
+	}
+	if window > 0 && estimated > window*80/100 {
+		return true
+	}
+	if graph == nil || estimated <= 0 {
+		return false
+	}
+	remaining := graph.BudgetStatus(time.Now()).RemainingTokens
+	// Compact while there is still ample room to pay for the summary request,
+	// rather than waiting until the next ordinary request no longer fits. One
+	// eighth is deliberately conservative: repeated provider calls resend the
+	// active prompt even when very little wall-clock time has elapsed.
+	return remaining > 0 && estimated >= (remaining+7)/8
+}
+
+// RequestGoalBoundaryCompaction schedules one provider-accounted compaction
+// at the beginning of the newly approved graph's execution turn. The proposal
+// and full transcript remain durable; only the active model context changes.
+func (a *Agent) RequestGoalBoundaryCompaction() {
+	a.mu.Lock()
+	// The execution prompt is appended after approval returns, so account for
+	// that one pending message when deciding whether a compactable prefix will
+	// exist at the beginning of the execution turn.
+	a.goalBoundaryCompact = len(a.messages)+1 > compactKeepRecent+2
+	a.mu.Unlock()
+}
+
+func (a *Agent) clearGoalBoundaryCompaction() {
+	a.mu.Lock()
+	a.goalBoundaryCompact = false
+	a.mu.Unlock()
+}
+
+// compactAcceptedGoalNode replaces the active provider context with a
+// runtime-authored handoff after one graph node is accepted. This costs no
+// provider request, leaves the full durable transcript intact, and prevents
+// the next node from paying to resend or reinterpret the previous node's tool
+// loop. The pinned runtime graph supplies the authoritative next-node state.
+func (a *Agent) compactAcceptedGoalNode(ctx context.Context, notice string, send Emit) error {
+	notice = strings.TrimSpace(notice)
+	summary := provider.Message{Role: "user", Content: "[Runtime-owned Orchestrated Goal node handoff]\n" + notice + "\nThe full prior transcript remains in the durable session log. The pinned runtime graph is authoritative for current state and selects the next dependency-ready node. Work only on that running node, reread workspace files as needed, and return a tool-free response immediately after its acceptance criteria have fresh evidence. Do not begin work assigned to later nodes."}
+	a.mu.Lock()
+	replaced := len(a.messages)
+	if replaced == 0 {
+		a.mu.Unlock()
+		return nil
+	}
+	a.messages = append([]provider.Message{summary}, a.goalSteering...)
+	a.lastInputTokens = 0
+	a.usageWatermark = 0
+	a.goalBoundaryCompact = false
+	notify := a.onCompaction
+	a.mu.Unlock()
+	if notify != nil {
+		notify(summary, replaced)
+	}
+	// The handoff replaces the whole context, so it resets the floor the
+	// ordinary compaction trigger measures growth against.
+	handoff, _ := a.ContextEstimate()
+	a.mu.Lock()
+	a.lastCompactionEstimate = handoff
+	a.mu.Unlock()
+	if err := a.checkPersistence(); err != nil {
+		return err
+	}
+	if send != nil {
+		e := event.New(event.KindCompaction)
+		e.Text = fmt.Sprintf("created a runtime node handoff and compacted %d messages", replaced)
+		send(e)
+	}
+	a.lifecycle.Fire(ctx, hooks.Payload{Event: "compaction", Workspace: a.workspace, Subject: "goal_node_handoff", Detail: map[string]any{"replaced_messages": replaced}})
+	return nil
 }
 
 // Compact summarizes older conversation into one message, keeping the most
@@ -2001,11 +2623,16 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 		reasoningEffort = a.providerConfig.Reasoning.Effort
 	}
 	req := provider.Request{Model: model, System: prompts.Text(prompts.CompactSystem), Messages: []provider.Message{{Role: "user", Content: instructions + "\n\n---\n" + serialized.String()}}, MaxTokens: requestMaxTokens, ReasoningEffort: reasoningEffort}
+	a.beginProviderIteration()
 	response, err := client.Chat(ctx, req, nil)
+	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
+	if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {
+		a.emitGoalUpdates(send)
+		return 0, graphErr
+	}
 	if err != nil {
 		return 0, err
 	}
-	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 	a.mu.Lock()
 	a.usage.InputTokens += response.Usage.InputTokens
 	a.usage.OutputTokens += response.Usage.OutputTokens
@@ -2048,6 +2675,13 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
 	notify := a.onCompaction
+	a.mu.Unlock()
+	// Remember where compaction left the context. The next one has to justify
+	// its own provider request against this floor rather than firing again on
+	// a context it has already reduced as far as it can.
+	compacted, _ := a.ContextEstimate()
+	a.mu.Lock()
+	a.lastCompactionEstimate = compacted
 	a.mu.Unlock()
 	if notify != nil {
 		notify(summary, cut)

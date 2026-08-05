@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -366,7 +367,17 @@ type Options struct {
 	// changes into the parent workspace. "manual" (the default) exposes only
 	// /agents apply; "reviewed" additionally gives the primary agent bounded
 	// inspect/apply tools backed by the same guarded integration path.
-	AgentIntegration    string   `json:"agent_integration,omitempty"`
+	AgentIntegration string `json:"agent_integration,omitempty"`
+	// The four orchestration bounds below size the whole-graph execution
+	// envelope of an approved Orchestrated Goal. Each is a speed bump rather
+	// than a wall: reaching one stops the graph and asks the user, who can
+	// grant another envelope of the same size with /orchestrate extend. Zero
+	// uses the built-in default.
+	OrchestrationMaxIterations        int     `json:"orchestration_max_iterations,omitempty"`
+	OrchestrationMaxTokens            int     `json:"orchestration_max_tokens,omitempty"`
+	OrchestrationMaxCostUSD           float64 `json:"orchestration_max_cost_usd,omitempty"`
+	OrchestrationMaxActiveWallSeconds int     `json:"orchestration_max_active_wall_seconds,omitempty"`
+
 	DisabledTools       []string `json:"disabled_tools,omitempty"`
 	TranscriptDirectory string   `json:"transcript_directory,omitempty"`
 	Theme               string   `json:"theme,omitempty"`
@@ -412,15 +423,13 @@ type EditorOptions struct {
 
 func Defaults() Config {
 	return Config{
-		SchemaVersion:   CurrentSchemaVersion,
-		DefaultProvider: "ollama",
-		DefaultModel:    "qwen3-coder",
-		Providers: map[string]Provider{
-			"ollama": {
-				Type: "openai-compatible", BaseURL: "http://127.0.0.1:11434/v1",
-				Model: "qwen3-coder", Context: 32768, MaxTokens: 8192,
-			},
-		},
+		SchemaVersion: CurrentSchemaVersion,
+		// A provider is not a safe built-in default. A fresh installation has
+		// not established that Ollama is running, that any particular model is
+		// installed, or that a hosted credential works. Interactive startup uses
+		// this empty map as the explicit signal to enter verified provider setup;
+		// headless startup reports the same state with an actionable error.
+		Providers: map[string]Provider{},
 		Permissions: Permissions{
 			Mode:                             "ask",
 			Network:                          "open",
@@ -1031,19 +1040,37 @@ func (e ValidationError) Error() string {
 // ValidateFields returns every problem found, each tied to its field path.
 func (c Config) ValidateFields() []FieldError {
 	var errs []FieldError
+	// An empty provider map is a valid configuration state, but it is not a
+	// session-ready one. Keeping those concepts separate lets `collo setup`
+	// read themes, permissions, and other settings before the first provider is
+	// configured. Selected reports the readiness error at the point a session
+	// is actually requested.
 	if len(c.Providers) == 0 {
-		errs = append(errs, FieldError{"providers", "at least one provider is required"})
-		return errs
-	}
-	providerName := c.DefaultProvider
-	if c.EnvProvider != "" {
-		providerName = c.EnvProvider
-	}
-	provider, ok := c.Providers[providerName]
-	if !ok {
-		errs = append(errs, FieldError{"default_provider", fmt.Sprintf("provider %q is not configured (configured: %s)", providerName, strings.Join(c.ProviderNames(), ", "))})
-	} else if c.DefaultModel == "" && c.EnvModel == "" && provider.Model == "" {
-		errs = append(errs, FieldError{"default_model", "default_model or provider.model is required"})
+		providerName := c.DefaultProvider
+		if c.EnvProvider != "" {
+			providerName = c.EnvProvider
+		}
+		if providerName != "" {
+			errs = append(errs, FieldError{"default_provider", fmt.Sprintf("provider %q is selected, but no providers are configured; run `collo setup` or remove the stale selection", providerName)})
+		}
+		model := c.DefaultModel
+		if c.EnvModel != "" {
+			model = c.EnvModel
+		}
+		if model != "" {
+			errs = append(errs, FieldError{"default_model", fmt.Sprintf("model %q is selected, but no providers are configured; run `collo setup` or remove the stale selection", model)})
+		}
+	} else {
+		providerName := c.DefaultProvider
+		if c.EnvProvider != "" {
+			providerName = c.EnvProvider
+		}
+		provider, ok := c.Providers[providerName]
+		if !ok {
+			errs = append(errs, FieldError{"default_provider", fmt.Sprintf("provider %q is not configured (configured: %s)", providerName, strings.Join(c.ProviderNames(), ", "))})
+		} else if c.DefaultModel == "" && c.EnvModel == "" && provider.Model == "" {
+			errs = append(errs, FieldError{"default_model", "default_model or provider.model is required"})
+		}
 	}
 	errs = appendEnumErrors(errs,
 		enumField{field: "permissions.mode", value: c.Permissions.Mode, allowed: AutonomyModes()},
@@ -1264,6 +1291,21 @@ func (c Config) ValidateFields() []FieldError {
 	if c.Options.DelegateMaxConcurrency < 0 || c.Options.DelegateMaxConcurrency > 6 {
 		errs = append(errs, FieldError{"options.delegate_max_concurrency", "must be zero (default) or between 1 and 6"})
 	}
+	// The orchestration envelope is the user's decision, so validation only
+	// refuses values no honest configuration would hold. Reaching a bound
+	// pauses the graph for a person; it does not discard the work already done.
+	if c.Options.OrchestrationMaxIterations < 0 || c.Options.OrchestrationMaxIterations > 10_000 {
+		errs = append(errs, FieldError{"options.orchestration_max_iterations", "must be zero (default) or between 1 and 10000"})
+	}
+	if c.Options.OrchestrationMaxTokens < 0 || c.Options.OrchestrationMaxTokens > 100_000_000 {
+		errs = append(errs, FieldError{"options.orchestration_max_tokens", "must be zero (default) or between 1 and 100000000"})
+	}
+	if c.Options.OrchestrationMaxCostUSD < 0 || c.Options.OrchestrationMaxCostUSD > 1000 || math.IsNaN(c.Options.OrchestrationMaxCostUSD) || math.IsInf(c.Options.OrchestrationMaxCostUSD, 0) {
+		errs = append(errs, FieldError{"options.orchestration_max_cost_usd", "must be zero (default) or between 0 and 1000"})
+	}
+	if c.Options.OrchestrationMaxActiveWallSeconds < 0 || c.Options.OrchestrationMaxActiveWallSeconds > 86_400 {
+		errs = append(errs, FieldError{"options.orchestration_max_active_wall_seconds", "must be zero (default) or between 1 and 86400"})
+	}
 	for name, limit := range c.Options.DelegateProviderConcurrency {
 		if strings.TrimSpace(name) == "" {
 			errs = append(errs, FieldError{"options.delegate_provider_concurrency", "provider names must not be empty"})
@@ -1356,6 +1398,12 @@ func (c Config) Validate() error {
 }
 
 func (c Config) Selected(providerName, modelOverride string) (string, Provider, string, error) {
+	if len(c.Providers) == 0 {
+		return "", Provider{}, "", ValidationError{Errors: []FieldError{{
+			Field:   "providers",
+			Message: "no provider is configured; run `collo setup` in an interactive terminal, then retry",
+		}}}
+	}
 	if providerName == "" {
 		providerName = c.EnvProvider
 	}

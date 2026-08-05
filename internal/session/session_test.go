@@ -648,6 +648,67 @@ func TestCompactionPreservesTranscriptAndShrinksActive(t *testing.T) {
 	}
 }
 
+func TestSessionPersistsLatestGoalGraphSnapshot(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := json.RawMessage(`{"schema":1,"id":"graph-1","generation":1}`)
+	second := json.RawMessage(`{"schema":1,"id":"graph-1","generation":2}`)
+	if err := sess.AppendGoalGraph(first, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.AppendGoalGraph(second, true); err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+	restored, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if string(restored.GoalGraphRaw) != string(second) {
+		t.Fatalf("restored goal graph=%s", restored.GoalGraphRaw)
+	}
+}
+
+func TestSessionGoalGraphTombstoneClearsCurrentSnapshotButRetainsHistory(t *testing.T) {
+	store := testStore(t)
+	sess, err := store.New("fixture", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.AppendGoalGraph(json.RawMessage(`{"schema":1,"id":"graph-1","outcome":"done"}`), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.ClearGoalGraph(true); err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.GoalGraphRaw) != 0 {
+		t.Fatalf("live goal graph was not cleared: %s", sess.GoalGraphRaw)
+	}
+	id := sess.Meta.ID
+	sess.Close()
+
+	data, err := os.ReadFile(store.path(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"id":"graph-1"`) || strings.Count(string(data), `"type":"goal_graph"`) != 2 {
+		t.Fatalf("append-only graph history missing snapshot or tombstone:\n%s", data)
+	}
+	restored, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if len(restored.GoalGraphRaw) != 0 {
+		t.Fatalf("tombstoned graph became resumable: %s", restored.GoalGraphRaw)
+	}
+}
+
 func TestListRenameArchiveDelete(t *testing.T) {
 	store := testStore(t)
 	a, _ := store.New("p", "m")

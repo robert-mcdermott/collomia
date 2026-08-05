@@ -91,6 +91,9 @@ func TestReadRejectsCorruptOrIncompleteTraces(t *testing.T) {
 		{"mismatched failure ids", eventLine(1, "run.result", `,"failure_id":"err-0123456789abcdef","result":{"status":"error","duration_ms":1,"failure":{"id":"err-fedcba9876543210","kind":"runtime"}}`), "failure id does not match"},
 		{"ephemeral session", eventLine(1, "run.result", `,"result":{"status":"ok","ephemeral":true,"session_id":"unexpected","duration_ms":1}`), "ephemeral result cannot include a session_id"},
 		{"success with error", eventLine(1, "run.result", `,"result":{"status":"ok","error":"unexpected","duration_ms":1}`), "successful result cannot include an error message"},
+		{"done outcome on error", eventLine(1, "run.result", `,"result":{"status":"error","outcome":"done","duration_ms":1,"failure":{"kind":"runtime"}}`), `outcome "done" requires status "ok"`},
+		{"blocked outcome on success", eventLine(1, "turn.start", ``) + eventLine(1, "turn.end", ``) + eventLine(1, "run.result", `,"result":{"status":"ok","outcome":"blocked","duration_ms":1}`), `outcome "blocked" requires status "error"`},
+		{"unknown outcome", eventLine(1, "turn.start", ``) + eventLine(1, "turn.end", ``) + eventLine(1, "run.result", `,"result":{"status":"ok","outcome":"confused","duration_ms":1}`), "unsupported result outcome"},
 		{"unreported refusal", eventLine(1, "turn.start", ``) + eventLine(1, "permission.decision", `,"permission":{"tool":"run_command","summary":"run tests","risk":"execute","allowed":false}`) + eventLine(1, "turn.end", ``) + successfulResult(), "must set refused"},
 	}
 	for _, test := range tests {

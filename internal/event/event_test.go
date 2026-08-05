@@ -60,7 +60,7 @@ func TestRunResultRoundTrips(t *testing.T) {
 	e := New(KindRunResult)
 	e.FailureID = "err-0123456789abcdef"
 	e.Result = &RunResult{
-		Status: "cancelled", Error: "context canceled", Failure: &Failure{ID: e.FailureID, Kind: FailureCancelled}, Partial: true,
+		Status: "cancelled", Outcome: "cancelled", Error: "context canceled", Failure: &Failure{ID: e.FailureID, Kind: FailureCancelled}, Partial: true,
 		Ephemeral: true, Refused: true, SessionID: "abc123", ChangedFiles: []string{"main.go"}, DurationMS: 1500,
 		Version: "0.1.9", Commit: "abc1234",
 	}
@@ -73,7 +73,7 @@ func TestRunResultRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" ||
+	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" || decoded.Result.Outcome != "cancelled" ||
 		decoded.FailureID != e.FailureID || decoded.Result.Failure == nil || decoded.Result.Failure.ID != e.FailureID || decoded.Result.Failure.Kind != FailureCancelled || !decoded.Result.Partial || !decoded.Result.Ephemeral || !decoded.Result.Refused ||
 		len(decoded.Result.ChangedFiles) != 1 || decoded.Usage == nil || decoded.Usage.InputTokens != 10 ||
 		decoded.Result.Version != "0.1.9" || decoded.Result.Commit != "abc1234" {
@@ -146,7 +146,7 @@ func TestEmbeddedJSONSchemaPublishesEveryEventKind(t *testing.T) {
 	wantKinds := []Kind{
 		KindSessionStart, KindTurnStart, KindTextDelta, KindReasoningDelta, KindToolCallDelta,
 		KindToolStart, KindToolOutput, KindToolResult, KindPermissionRequest, KindPermissionDecision,
-		KindFileChange, KindPlanUpdate, KindDelegateUpdate, KindUsage, KindCompaction, KindWarning, KindError, KindTurnEnd, KindRunResult,
+		KindFileChange, KindPlanUpdate, KindGoalGraphUpdate, KindDelegateUpdate, KindUsage, KindCompaction, KindWarning, KindError, KindTurnEnd, KindRunResult,
 	}
 	for _, kind := range wantKinds {
 		if !slices.Contains(schema.Properties.Kind.Enum, string(kind)) {
@@ -155,6 +155,22 @@ func TestEmbeddedJSONSchemaPublishesEveryEventKind(t *testing.T) {
 	}
 	if len(schema.Properties.Kind.Enum) != len(wantKinds) {
 		t.Fatalf("published kinds=%v; want exactly %v", schema.Properties.Kind.Enum, wantKinds)
+	}
+}
+
+func TestGoalGraphUpdateRoundTrips(t *testing.T) {
+	e := New(KindGoalGraphUpdate)
+	e.GoalGraph = &GoalGraphStatus{ID: "graph-1", Generation: 2, NodeID: 3, AttemptID: "attempt-4", State: "running", Reason: "dependencies accepted", Ready: []int{3, 4}}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.GoalGraph == nil || decoded.GoalGraph.ID != "graph-1" || decoded.GoalGraph.NodeID != 3 || len(decoded.GoalGraph.Ready) != 2 {
+		t.Fatalf("goal graph round trip=%+v", decoded.GoalGraph)
 	}
 }
 

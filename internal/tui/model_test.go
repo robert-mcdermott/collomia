@@ -17,6 +17,7 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/failureid"
+	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	workspacestate "github.com/robert-mcdermott/collomia/internal/workspace"
@@ -42,9 +43,7 @@ func toolResultEvent(name, output string) runtimeevent.Event {
 
 func newTestModel(t *testing.T) Model {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	configureTestProvider(t)
 	runtime, err := app.New(context.Background(), app.Options{Workspace: t.TempDir()})
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
@@ -53,6 +52,21 @@ func newTestModel(t *testing.T) Model {
 	m := New(runtime, NewApprovalBroker(), "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	return updated.(Model)
+}
+
+func configureTestProvider(t testing.TB) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".collomia")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}}}`)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func typeKeys(t *testing.T, m Model, keys string) Model {
@@ -97,6 +111,93 @@ func TestTabCycling(t *testing.T) {
 	m = press(t, m, tea.KeyCtrlT)
 	if m.tab != tabChat {
 		t.Fatalf("tabs should wrap back to chat, got %d", m.tab)
+	}
+}
+
+func TestOrchestratedGoalPreviewIsVisibleAndInspectable(t *testing.T) {
+	configureTestProvider(t)
+	approved := &plan.Plan{Goal: "inspect safely", Steps: []plan.Step{{ID: 1, Title: "inspect repository", Acceptance: []string{"repository evidence is recorded"}}}}
+	runtime, err := app.New(t.Context(), app.Options{Workspace: t.TempDir(), OrchestratedGoal: approved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	m := New(runtime, NewApprovalBroker(), "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = updated.(Model)
+	if bar := ansi.Strip(m.renderStatusBar()); !strings.Contains(bar, "GOAL · EXP") || !strings.Contains(bar, "nodes 0/1") {
+		t.Fatalf("experimental graph is not visible in the status bar: %q", bar)
+	}
+	if rail := ansi.Strip(m.renderRail(30)); !strings.Contains(rail, "Goal · EXP") || !strings.Contains(rail, "inspect repository") {
+		t.Fatalf("runtime graph is not visible in the context rail:\n%s", rail)
+	}
+	if quit, cmd := (&m).slash("/orchestrate status 1"); quit || cmd != nil {
+		t.Fatalf("status should be a local inspection: quit=%t cmd=%v", quit, cmd)
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "panel" || !strings.Contains(last.content, "Attempts and evidence") {
+		t.Fatalf("node inspection panel=%+v", last)
+	}
+	if quit, cmd := (&m).slash("/context"); quit || cmd != nil {
+		t.Fatalf("context should be a local inspection: quit=%t cmd=%v", quit, cmd)
+	}
+	contextPanel := m.blocks[len(m.blocks)-1].content
+	for _, want := range []string{"Orchestrated Goal cumulative budget (active): 0/1000000 tokens", "Estimated current prompt for one request:"} {
+		if !strings.Contains(contextPanel, want) {
+			t.Fatalf("context panel did not distinguish graph and request budgets; missing %q:\n%s", want, contextPanel)
+		}
+	}
+	session := m.sessionContent()
+	for _, want := range []string{"goal tokens", "active · 0/1000000 cumulative", "prompt/request"} {
+		if !strings.Contains(session, want) {
+			t.Fatalf("session context did not distinguish graph and request budgets; missing %q:\n%s", want, session)
+		}
+	}
+	cancelled := false
+	m.busy = true
+	m.cancel = func() { cancelled = true }
+	if quit, cmd := (&m).slash("/orchestrate pause"); quit || cmd != nil {
+		t.Fatalf("pause should be a local cooperative control: quit=%t cmd=%v", quit, cmd)
+	}
+	if cancelled || runtime.OrchestratedGoalPhase() != "paused" {
+		t.Fatalf("pause cancelled current work=%t phase=%q", cancelled, runtime.OrchestratedGoalPhase())
+	}
+	if bar := ansi.Strip(m.renderStatusBar()); !strings.Contains(bar, "GOAL ‖ · EXP") {
+		t.Fatalf("paused graph is not visible in the status bar: %q", bar)
+	}
+}
+
+func TestPlanOffCancelsOrchestratedProposalAndRestoresExecutionMode(t *testing.T) {
+	m := newTestModel(t)
+	if _, err := m.runtime.BeginOrchestratedProposal("improve the interface"); err != nil {
+		t.Fatal(err)
+	}
+	if !m.runtime.Agent.Plan() || m.runtime.OrchestratedGoalPhase() != "proposal" {
+		t.Fatalf("proposal did not enter plan mode: plan=%t phase=%q", m.runtime.Agent.Plan(), m.runtime.OrchestratedGoalPhase())
+	}
+	matches := m.argumentMatches("/plan", "off")
+	if len(matches) != 1 || !strings.Contains(matches[0].desc, "cancel goal proposal") {
+		t.Fatalf("plan-off completion did not expose proposal cancellation: %+v", matches)
+	}
+	if quit, cmd := (&m).slash("/plan off"); quit || cmd != nil {
+		t.Fatalf("plan off should be a local proposal cancellation: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.runtime.Agent.Plan() || m.runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("plan off left proposal trap active: plan=%t phase=%q", m.runtime.Agent.Plan(), m.runtime.OrchestratedGoalPhase())
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "panel" || !strings.Contains(last.content, "proposal cancelled") {
+		t.Fatalf("proposal cancellation was not explained: %+v", last)
+	}
+
+	if _, err := m.runtime.BeginOrchestratedProposal("try another proposal"); err != nil {
+		t.Fatal(err)
+	}
+	if quit, cmd := (&m).slash("/orchestrate cancel"); quit || cmd != nil {
+		t.Fatalf("orchestrate cancel should remain a local recovery path: quit=%t cmd=%v", quit, cmd)
+	}
+	if m.runtime.Agent.Plan() || m.runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("orchestrate cancel left proposal active: plan=%t phase=%q", m.runtime.Agent.Plan(), m.runtime.OrchestratedGoalPhase())
 	}
 }
 
@@ -262,6 +363,47 @@ func TestPaletteDismissAndTabComplete(t *testing.T) {
 	m = typeKeys(t, m, "y")
 	if m.paletteOn {
 		t.Fatal("palette should stay dismissed after esc while typing arguments")
+	}
+}
+
+func TestOrchestratePaletteShowsControlsAndKeepsRetryNodeInput(t *testing.T) {
+	m := newTestModel(t)
+	m = typeKeys(t, m, "/orchestrate ")
+	if !m.paletteOn {
+		t.Fatal("orchestrate argument palette is not visible")
+	}
+	seen := map[string]bool{}
+	for _, entry := range m.palette {
+		seen[entry.name] = true
+	}
+	for _, want := range []string{"/orchestrate pause", "/orchestrate resume", "/orchestrate retry"} {
+		if !seen[want] {
+			t.Fatalf("orchestrate palette is missing %q: %+v", want, m.palette)
+		}
+	}
+
+	m = newTestModel(t)
+	m = typeKeys(t, m, "/orchestrate ret")
+	if !m.paletteOn || len(m.palette) != 1 || m.palette[0].name != "/orchestrate retry" {
+		t.Fatalf("retry completion=%+v", m.palette)
+	}
+	m = press(t, m, tea.KeyEnter)
+	if got := m.input.Value(); got != "/orchestrate retry " {
+		t.Fatalf("retry completion should wait for a node id, got %q", got)
+	}
+
+	m = newTestModel(t)
+	m.busy = true
+	m = typeKeys(t, m, "/orchestrate ")
+	seen = map[string]bool{}
+	for _, entry := range m.palette {
+		seen[entry.name] = true
+	}
+	if !seen["/orchestrate pause"] {
+		t.Fatalf("busy palette should expose cooperative pause: %+v", m.palette)
+	}
+	if seen["/orchestrate retry"] || seen["/orchestrate resume"] {
+		t.Fatalf("busy palette exposed controls that start a turn: %+v", m.palette)
 	}
 }
 

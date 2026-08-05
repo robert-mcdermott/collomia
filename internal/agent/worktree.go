@@ -44,14 +44,21 @@ func isGitRepo(ctx context.Context, workspace string) bool {
 	return cmd.Run() == nil
 }
 
-// newWorktree creates a new branch and working tree off HEAD, isolated
-// under the system temp directory.
-func newWorktree(ctx context.Context, workspace, name string) (*worktree, error) {
-	baseOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "HEAD").Output()
+// newWorktree creates a new branch and working tree from HEAD or an exact
+// runtime-required commit, isolated under the system temp directory.
+func newWorktree(ctx context.Context, workspace, name, requiredBase string) (*worktree, error) {
+	baseRef := "HEAD"
+	if strings.TrimSpace(requiredBase) != "" {
+		baseRef = strings.TrimSpace(requiredBase)
+	}
+	baseOut, err := exec.CommandContext(ctx, "git", "-C", workspace, "rev-parse", baseRef).Output()
 	if err != nil {
 		return nil, fmt.Errorf("resolve delegated worktree base: %w", err)
 	}
 	baseCommit := strings.TrimSpace(string(baseOut))
+	if requiredBase != "" && baseCommit != strings.TrimSpace(requiredBase) {
+		return nil, fmt.Errorf("delegated worktree base changed: required %s, resolved %s", strings.TrimSpace(requiredBase), baseCommit)
+	}
 	base := filepath.Join(os.TempDir(), "collomia-worktrees")
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return nil, err
@@ -59,7 +66,7 @@ func newWorktree(ctx context.Context, workspace, name string) (*worktree, error)
 	id := fmt.Sprintf("%s-%d", slugify(name), time.Now().UnixNano())
 	path := filepath.Join(base, id)
 	branch := "collomia/" + id
-	cmd := exec.CommandContext(ctx, "git", "-C", workspace, "worktree", "add", "-b", branch, path, "HEAD")
+	cmd := exec.CommandContext(ctx, "git", "-C", workspace, "worktree", "add", "-b", branch, path, baseCommit)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))

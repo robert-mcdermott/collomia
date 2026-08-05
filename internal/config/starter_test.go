@@ -44,12 +44,12 @@ func TestWriteProjectStarterIsMinimal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Permissions.Mode != "ask" || cfg.DefaultProvider != "ollama" {
+	if cfg.Permissions.Mode != "ask" || cfg.DefaultProvider != "" || len(cfg.Providers) != 0 {
 		t.Fatalf("starter did not layer over defaults: mode=%q provider=%q", cfg.Permissions.Mode, cfg.DefaultProvider)
 	}
 }
 
-func TestWriteGlobalStarterIncludesProvidersPermissionsAndOptions(t *testing.T) {
+func TestWriteGlobalStarterIncludesSettingsWithoutAssumingAProvider(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := WriteStarter(path, true); err != nil {
 		t.Fatal(err)
@@ -62,18 +62,8 @@ func TestWriteGlobalStarterIncludesProvidersPermissionsAndOptions(t *testing.T) 
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultProvider != "ollama" || cfg.DefaultModel != "qwen3-coder" {
-		t.Fatalf("selection=%s/%s", cfg.DefaultProvider, cfg.DefaultModel)
-	}
-	openrouter, ok := cfg.Providers["openrouter"]
-	if !ok {
-		t.Fatal("global starter is missing openrouter")
-	}
-	if openrouter.Type != "openai" || openrouter.BaseURL != "https://openrouter.ai/api/v1" || openrouter.APIKeyEnv != "OR_API_KEY" || openrouter.Model != "z-ai/glm-5.2" || openrouter.MaxTokens != 128000 || openrouter.Context != 500000 {
-		t.Fatalf("openrouter=%+v", openrouter)
-	}
-	if openrouter.ConnectTimeoutSeconds != 10 || openrouter.RequestTimeoutSeconds != 1800 || openrouter.StreamIdleTimeoutSeconds != 300 {
-		t.Fatalf("openrouter timeout defaults=%+v", openrouter)
+	if cfg.DefaultProvider != "" || cfg.DefaultModel != "" || len(cfg.Providers) != 0 {
+		t.Fatalf("global starter invented an unverified provider: selection=%s/%s providers=%v", cfg.DefaultProvider, cfg.DefaultModel, cfg.ProviderNames())
 	}
 	var permissions map[string]json.RawMessage
 	if err := json.Unmarshal(rawField(t, data, "permissions"), &permissions); err != nil {

@@ -30,6 +30,19 @@ func (m *Model) rebuildTranscript() {
 	m.refresh()
 }
 
+// reloadActivities picks up runtime-owned transitions emitted outside an
+// agent turn, such as explicit Orchestrated Goal approval, resume, or cancel.
+// Turn events continue to append incrementally through handleEvent.
+func (m *Model) reloadActivities() {
+	if m.runtime.Session == nil {
+		return
+	}
+	m.activities = activity.Project(m.runtime.Session.RecentEvents(), activity.DefaultLimit)
+	if m.activityView != nil {
+		m.rebuildActivityView()
+	}
+}
+
 func restoredBlocks(messages []provider.Message) []block {
 	blocks := make([]block, 0, len(messages))
 	calls := make(map[string]savedToolCall)

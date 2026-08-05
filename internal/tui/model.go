@@ -286,12 +286,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
 			if msg.err != nil {
-				m.alert("Turn failed: " + failureid.Display(msg.err))
+				switch agent.GoalOutcomeFor(msg.err) {
+				case agent.GoalBudgetExhausted:
+					m.alert("Turn stopped: budget exhausted")
+				case agent.GoalCancelled:
+					m.alert("Turn cancelled")
+				default:
+					m.alert("Turn blocked: " + failureid.Display(msg.err))
+				}
 			} else if elapsed > 10*time.Second {
 				m.alert(fmt.Sprintf("Turn finished after %s", elapsed))
 			}
 			if msg.err != nil {
-				m.blocks = append(m.blocks, block{role: "error", content: failureid.Display(msg.err)})
+				label := "Blocked"
+				if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {
+					label = "Budget exhausted"
+				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalCancelled {
+					label = "Cancelled"
+				}
+				m.blocks = append(m.blocks, block{role: "error", content: label + ": " + failureid.Display(msg.err)})
 			} else if strings.TrimSpace(msg.final) == "" {
 				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}
@@ -477,6 +490,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				fields := strings.Fields(m.input.Value())
 				chosen := m.palette[m.paletteSel]
+				if chosen.needsArg {
+					m.setComposerValue(chosen.name + " ")
+					if m.updatePalette() {
+						m.layout()
+					}
+					m.refresh()
+					return m, nil
+				}
 				line := chosen.name
 				// Argument completions are already full command lines; for
 				// bare commands, keep whatever arguments were typed.
@@ -1123,6 +1144,14 @@ func (m *Model) sessionSections(width int) string {
 	b.WriteString(kv("reasoning", reasoningEffort) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
 	b.WriteString(kv("planning", fmt.Sprintf("%t", m.runtime.Agent.Plan())) + "\n")
+	orchestration := m.runtime.OrchestratedGoalPhase()
+	if orchestration == "" {
+		orchestration = "off"
+	}
+	if orchestration != "off" {
+		orchestration += " · experimental"
+	}
+	b.WriteString(kv("orchestrated goal", orchestration) + "\n")
 	b.WriteString(kv("config", m.runtime.Config.Source) + "\n")
 	b.WriteString(kv("theme", m.theme.Name) + "\n")
 	// The transcript header no longer carries the build, so a bug report needs
@@ -1183,7 +1212,10 @@ func (m *Model) sessionSections(width int) string {
 	if tokenBudget > 0 || costBudget > 0 {
 		b.WriteString(kv("budgets", fmt.Sprintf("%d tokens / $%.6f", tokenBudget, costBudget)) + "\n")
 	}
-	b.WriteString(kv("prompt", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
+	if phase, used, limit, ok := m.runtime.OrchestratedGoalTokenBudget(); ok {
+		b.WriteString(kv("goal tokens", fmt.Sprintf("%s · %d/%d cumulative · %d remain", phase, used, limit, max(0, limit-used))) + "\n")
+	}
+	b.WriteString(kv("prompt/request", fmt.Sprintf("~%s of %s", formatTokens(estimate), windowText)) + "\n")
 	b.WriteString(kv("messages", fmt.Sprintf("%d", m.runtime.Agent.MessageCount())) + "\n")
 	b.WriteString("  " + contextGauge(m.theme, estimate, window, 30) + "\n\n")
 
@@ -1543,7 +1575,27 @@ func (m Model) renderStatusBar() string {
 	if m.runtime.Agent.Plan() {
 		segments = append(segments, statusSegment{text: badge("PLAN", m.theme.Accent), drop: 30})
 	}
-	if current := m.runtime.Plan.Current(); current != nil && len(current.Steps) > 0 {
+	if phase := m.runtime.OrchestratedGoalPhase(); phase != "" {
+		label := "GOAL · EXP"
+		if phase == "proposal" {
+			label = "GOAL? · EXP"
+		} else if phase == "paused" {
+			label = "GOAL ‖ · EXP"
+		} else if phase == "pausing" {
+			label = "GOAL… · EXP"
+		}
+		segments = append(segments, statusSegment{text: badge(label, m.theme.Warning), drop: 25})
+	}
+	if graph := m.runtime.GoalGraph; graph != nil {
+		snapshot := graph.Snapshot()
+		done := 0
+		for _, node := range snapshot.Nodes {
+			if node.State == "done" {
+				done++
+			}
+		}
+		segments = append(segments, statusSegment{text: badge(fmt.Sprintf("nodes %d/%d", done, len(snapshot.Nodes)), m.theme.Secondary), drop: 40})
+	} else if current := m.runtime.Plan.Current(); current != nil && len(current.Steps) > 0 {
 		done := 0
 		for _, step := range current.Steps {
 			if step.Status == "done" || step.Status == "skipped" {

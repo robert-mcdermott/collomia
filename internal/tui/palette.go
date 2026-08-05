@@ -11,6 +11,9 @@ type commandInfo struct {
 	// complete marks palette entries whose name is a full command line
 	// (argument completion) rather than a command awaiting arguments.
 	complete bool
+	// needsArg keeps a subcommand suggestion in the composer instead of
+	// executing it, so a required second argument can be entered.
+	needsArg bool
 }
 
 var slashCommands = []commandInfo{
@@ -21,6 +24,7 @@ var slashCommands = []commandInfo{
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
+	{name: "/orchestrate", args: "[goal|approve|status [node]|pause|resume|retry node|extend|integrate node|verify|waive reason|reconcile|discard node [confirm]|cancel]", desc: "explicit experimental goal proposal and execution"},
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
@@ -41,7 +45,7 @@ var slashCommands = []commandInfo{
 	{name: "/ps", args: "", desc: "list background processes (stop with /ps stop <id>)"},
 	{name: "/sessions", args: "", desc: "pick a saved session to resume"},
 	{name: "/rewind", args: "[turn]", desc: "branch from an earlier completed turn without undoing files"},
-	{name: "/restore", args: "[turn]", desc: "return the conversation and tracked files to a completed turn"},
+	{name: "/restore", args: "[turn|integration [id [keep]]]", desc: "return to a completed turn, or inspect, undo, or keep an interrupted integration"},
 	{name: "/retry", args: "", desc: "load the previous prompt for review without running it"},
 	{name: "/new", args: "", desc: "start a fresh session (current one stays saved)"},
 	{name: "/compact", args: "[focus]", desc: "summarize older context to free the window"},
@@ -91,7 +95,26 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 			{"autopilot", "auto-approve workspace actions (hard denials remain)"},
 		}
 	case "/plan":
-		candidates = []candidate{{"on", "read-only planning mode"}, {"off", "execution mode"}}
+		off := "execution mode"
+		if m.runtime.OrchestratedGoalPhase() == "proposal" {
+			off = "cancel goal proposal and restore execution mode"
+		}
+		candidates = []candidate{{"on", "read-only planning mode"}, {"off", off}}
+	case "/orchestrate":
+		candidates = []candidate{
+			{"approve", "approve the fresh visible proposal and execute once"},
+			{"status", "inspect proposal or runtime graph state"},
+			{"pause", "pause at the next safe scheduling boundary"},
+			{"resume", "resume a paused graph or reattach a saved graph"},
+			{"retry", "safely retry an eligible blocked node"},
+			{"extend", "grant an exhausted graph another bounded envelope"},
+			{"integrate", "publish a verified candidate into your workspace (unverified combined)"},
+			{"verify", "run the repository checks against the combined workspace"},
+			{"waive", "record your written judgement where no automated check applies"},
+			{"reconcile", "observe what is actually left in each retained worktree"},
+			{"discard", "remove a reconciled retained worktree you no longer want"},
+			{"cancel", "cancel the proposal or active graph"},
+		}
 	case "/model":
 		for _, name := range m.runtime.Config.ProviderNames() {
 			p := m.runtime.Config.Providers[name]
@@ -122,7 +145,8 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 	var out []commandInfo
 	for _, c := range candidates {
 		if _, ok := fuzzyScore(partial, c.value); ok {
-			out = append(out, commandInfo{name: command + " " + c.value, desc: c.desc, complete: true})
+			needsArg := command == "/orchestrate" && (c.value == "retry" || c.value == "discard" || c.value == "integrate" || c.value == "waive")
+			out = append(out, commandInfo{name: command + " " + c.value, desc: c.desc, complete: !needsArg, needsArg: needsArg})
 		}
 	}
 	return out
