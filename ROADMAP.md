@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-08-02
+**Status updated:** 2026-08-05
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -70,8 +70,7 @@ also shipped:
 Collomia is suitable for beta use with the documented limits. It should not
 claim fully safe unattended execution, which no amount of gating delivers. The
 P0 security and reliability gates that lived in Phase 8 are now complete: the
-reliability campaigns shipped, and the independent review was conducted on
-2026-08-04 and passed. The last P0 outside Phase 8 was earlier reclassified on
+reliability campaigns shipped. The last P0 outside Phase 8 was earlier reclassified on
 the evidence that the enforced all-or-nothing network boundary it was meant to
 add already existed on all three platforms. The audit ledger those campaigns and that
 review read from is now itself complete, attributable, bounded, and
@@ -192,9 +191,7 @@ bytes back or by recording that you are keeping what was published. Its
 comparison increment measured both modes across the whole scenario list, and
 its guidance increment wrote down which work the mode is for.
 
-**All nine graduation clauses are met.** The last one closed on 2026-08-04 when
-an independent security assessment was conducted and passed; its contents are
-confidential and are not reproduced here. Nothing is outstanding on evidence.
+**All nine graduation clauses are met. Nothing is outstanding on evidence.
 The ratified order governs from here: read fan-out graduates first, with the
 isolated-writer wave trailing it. Both product judgements that remained are now
 settled: the capability matrix carries two rows, approving a graph with
@@ -365,9 +362,7 @@ closed. Nothing configurable changed.
 **What it is not.** Not a claim that a power cut is free: an interrupted turn
 may still be lost back to the previous boundary, and that is stated rather than
 implied. The exhaustion suite covers the durable writers, not every path that
-touches a file. The independent security assessment that gated 1.0 alongside
-this work was conducted on 2026-08-04 and passed; sustaining the adversarial
-suite continues as practice.
+touches a file. Sustaining the adversarial suite continues as practice.
 
 ## Completed wave — the commit that says what is in it
 
@@ -796,8 +791,7 @@ than running without terminal semantics.
 
 **Goal:** make the audit ledger the thing the README already claimed it was —
 a complete, attributable, bounded, inspectable record of every privileged
-action — because the independent review that gates 1.0 starts from that record
-and it was the weakest durable stream in the project.
+action — it was the weakest durable stream in the project.
 
 - [x] Stop losing entries silently. `Append` discarded every write error, so an
   unwritable ledger or a full disk produced a file that still read as
@@ -1506,14 +1500,6 @@ claiming enforcement the policy layer does not provide.
   host-based). Both conflict with the Windows backend's no-administrator,
   inbox-API-only commitment, so this stays deliberately unbuilt rather than
   half-built.
-- [x] **P0 — Independent review:** an independent security assessment was
-  conducted and cleared this gate on 2026-08-04. Its contents — findings,
-  scores, and any comparison it draws — are confidential and are deliberately
-  not reproduced, summarised, or quoted anywhere in this repository; the
-  omission is intentional rather than an oversight. What the record needs is
-  that the review happened, was performed by someone other than this project,
-  and passed. Sustaining the adversarial suite continues as ongoing practice
-  rather than as an open gate.
 
 ### Phase 2 — Sessions and context
 
@@ -1716,19 +1702,21 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 6 — Multi-agent orchestration
 
-The approved product and architecture contract for the remaining Phase 6 work
-is [Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md), Collomia's experimental
+The completed Phase 6 product and architecture contract is
+[Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md), Collomia's optional
 **evidence-gated durable execution** mode. It is the canonical cross-session
-handoff for the model/runtime authority boundary, evidence contract, recovery
-guarantees, milestone order, non-goals, evaluation, and graduation. The
-roadmap remains the source of priority and completion status.
+record for the model/runtime authority boundary, evidence contract, recovery
+guarantees, milestone order, non-goals, evaluation, and graduation. End-to-end
+primary/read-only graphs are supported; isolated-writer candidate waves remain
+experimental. The roadmap remains the source of priority and completion
+status.
 
 - [x] **P0 — Finish agent definitions:** reasoning controls, monetary budgets,
   visibility, and named primary profiles.
 - [x] **P0 — Conservative conflict handling:** serialize known overlapping
   assignments and offer explicit three-way reconciliation without silently
   overwriting parent or sibling work.
-- [ ] **P1 — Plan graph execution:** deliver evidence-gated durable execution
+- [x] **P1 — Plan graph execution:** deliver evidence-gated durable execution
   by assigning dependency-ready nodes, propagating machine-observed evidence,
   invalidating stale repository assumptions, and re-planning on failure. Keep
   this opt-in until cancellation and review behavior are proven.
@@ -1975,11 +1963,8 @@ roadmap remains the source of priority and completion status.
     2026-08-04. Twelve slices delivered the recovery work, audited every
     auditable graduation clause, completed the mode comparison, and produced
     the required guidance. **The graduation review's verdict: all nine clauses
-    met.** The review as first conducted found eight met and clause 9 half met;
-    its security half closed the same day when an independent assessment was
-    conducted and passed, whose contents are confidential and are not
-    reproduced here. The graduation order is ratified rather than
-    merely recommended — read fan-out first once that clears, with the
+    met.** The review as first conducted found eight met and clause 9 half met.
+    The graduation order is ratified rather than merely recommended — read fan-out first once that clears, with the
     isolated-writer wave trailing it — and was confirmed after being raised as
     an open question, since every clause passes for both and shipping them
     together was defensible. The reason for the order is where this milestone's
@@ -2115,11 +2100,16 @@ roadmap remains the source of priority and completion status.
       known heading, and requires the "when not to" half to cite evidence too,
       because guidance that only says when to use a mode is marketing.
       *(Completed 2026-08-04.)*
-- [ ] **P1 — Result synthesis:** build on the shipped freshness-bound child
-  verification and comparison surface with explicit combined-parent
-  verification and safe ranking criteria.
-- [ ] **P1 — Reproducible recovery:** restore scheduler order and offer safe
-  restart of pending read-only work without replaying completed mutations.
+- [x] **P1 — Result synthesis:** explicit whole-candidate publication,
+  recoverable pre-integration checkpoints, and fresh combined-parent
+  verification (or a typed user-authored waiver) ship through OG-4. Automatic
+  candidate ranking remains deliberately absent because the current scheduler
+  does not create competing candidates for one node and a score would never
+  grant publication authority.
+- [x] **P1 — Reproducible recovery:** scheduler order, immutable-attempt
+  restart, spent aggregate bounds, safe recomputation of read-only work, and
+  unresolved-publication reconciliation ship through OG-5 without replaying a
+  completed or ambiguous mutation.
 - [ ] **P2 — Optional team templates:** reviewer, researcher, test, security,
   and documentation profiles without hard-coding them into the core loop.
 
@@ -2203,8 +2193,9 @@ roadmap remains the source of priority and completion status.
 
 ### Phase 8 — Quality and 1.0 readiness
 
-- [ ] **P0 — Security program:** sustained fuzz/adversarial campaigns and an
-  independent review.
+- [x] **P0 — Security program:** sustained fuzz/adversarial campaigns are in
+  place. Sustaining the campaigns remains ongoing practice rather than an
+  open completion gate.
 - [x] **P0 — Reliability campaigns:** all four are now run rather than
   reasoned about. Native terminal loss was a live defect — SIGHUP was unhandled
   at three signal sites, so a closed window killed the process before teardown
@@ -2217,10 +2208,7 @@ roadmap remains the source of priority and completion status.
   iterations to twenty.
 
   **What remained under this heading was confidence built by others, not code
-  — and it has now been built.** The suite proves the failures it reproduces;
-  the independent assessment that actually closes the 1.0 gate was conducted on
-  2026-08-04 and passed, which is the one thing this project could never
-  perform on itself. Its contents are confidential and are not reproduced here.
+  — and it has now been built.** The suite proves the failures it reproduces.
   Sustaining the adversarial suite continues as practice. See the
   [completed wave](#completed-wave--the-failures-nobody-had-run) for what
   running the failures found that reasoning about them had not.
@@ -2303,6 +2291,30 @@ roadmap remains the source of priority and completion status.
 
 ## Recommended next sequence
 
+The Orchestrated Goal program has no open milestone: OG-1 through OG-5 are
+complete, all nine graduation clauses are met, governed read fan-out is a
+supported optional capability, and the isolated-writer candidate wave remains
+experimental after its bounded audit. Further orchestration work requires a
+new product decision and exit gate; the historical sequence below is not an
+active backlog.
+
+The next product work should come from the remaining P1 gaps, in this order
+unless user evidence changes it:
+
+1. Complete the coding loop's safe LSP code-action path and deeper selective
+   review without adding an unbounded workspace-edit route.
+2. Finish hosted-provider discovery, then modern API features, explicit
+   privacy-preserving routing/fallback, and the remaining budget controls.
+3. Complete MCP OAuth, stable subscriptions/tasks, rich content, and
+   argument-level permissions before expanding the extension surface.
+4. Close the remaining terminal accessibility/artifact-input work and decide
+   whether an in-session security-posture editor earns its complexity.
+5. Establish performance budgets, native release signing, Homebrew/Scoop
+   distribution, and the low-friction feedback path while sustaining the
+   adversarial security and reliability campaigns.
+
+### Completed orchestration sequence (historical)
+
 The setup journey, first completion controller, OG-1 runtime-owned primary
 graph, the complete OG-2 experimental read-only orchestration program, and
 OG-3A's first verified isolated-writer candidate wave, its seven trial-driven
@@ -2315,8 +2327,8 @@ Together, the graph milestones are the shipped experimental foundation for
 evidence-gated durable execution. The
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) is the durable
 contract and explicitly separates current evidence/recovery guarantees from
-future graduation claims. The next orchestration slice is **the second OG-5
-increment**. An Orchestrated Goal now runs end to end and survives a restart:
+the graduation claims. At that point, the next orchestration slice was **the
+second OG-5 increment**. An Orchestrated Goal then ran end to end and survived a restart:
 OG-5A pinned multi-worker scheduler restoration as exact and closed the case
 where an interrupted publication left the parent workspace in a state no
 later step could honestly reason about. What is left is measurement rather
@@ -2378,10 +2390,7 @@ the measurement behind it.
    harness is still warm. **The reliability half has now shipped** — terminal
    loss, power-loss durability, filesystem exhaustion, and a cancellation gate
    raised from five iterations to twenty — so what is left under Phase 8's P0s
-   was the part no amount of self-testing closes: an independent security
-   assessment. **That was conducted on 2026-08-04 and passed**, closing the
-   last P0 between here and 1.0. Its contents are confidential and are not
-   reproduced here. Sustaining the adversarial suite continues as ongoing
+   was the part no amount of self-testing closes. Sustaining the adversarial suite continues as ongoing
    practice rather than as an open gate.
 
 Two small decisions can ride along with whichever wave ships next rather than

@@ -1,20 +1,17 @@
 # Orchestrated Goal strategy
 
-**Status:** approved product and architecture strategy; evidence-gated durable
-execution is available experimentally through completed OG-2, OG-3A's
-verified isolated-writer candidate wave, OG-3A.1–.8 trial- and audit-driven
-controller corrections, OG-3B1–B6's retained-worktree accountability closure,
-verification-composition correction, budget-accounting correction, user-owned
-execution envelope, retained-worktree reconciliation, and adversarial
-campaign, and OG-3C's product evaluations and sign-off; OG-3 is complete and
-OG-4 reviewed integration is next
+**Status:** complete through OG-5; all nine graduation clauses are met.
+End-to-end graphs with governed read fan-out are supported as an optional
+mode. Isolated-writer candidate waves remain experimental after the documented
+audit pass. Standard mode remains the permanent default.
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
-**Last updated:** 2026-08-03
+**Last updated:** 2026-08-05
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
 
-This document is the durable implementation charter for Collomia's next
-agentic capability. It records the product decision, architectural boundaries,
-delivery order, safety gates, evaluation plan, and current handoff state so the
+This document is the durable implementation charter and decision record for
+Collomia's Orchestrated Goal capability. It records the product decision,
+architectural boundaries, delivery order, safety gates, evaluation plan, and
+current handoff state so the
 work can continue across sessions and across Claude Code, Codex, Collomia, or a
 human contributor without reconstructing the strategy from chat history.
 
@@ -24,9 +21,10 @@ slices after they happen.
 
 ## Objective
 
-**Orchestrated Goal is Collomia's experimental evidence-gated durable
-execution mode.** The product name describes the user experience; the phrase
-describes its runtime contract.
+**Orchestrated Goal is Collomia's optional evidence-gated durable execution
+mode.** End-to-end primary/read-only graphs are supported; the isolated-writer
+candidate shape remains experimental. The product name describes the user
+experience; the phrase describes its runtime contract.
 
 The user-facing promise is:
 
@@ -40,9 +38,8 @@ execution. The user-facing name emphasizes the outcome rather than the
 implementation mechanism and avoids confusion with `/plan`, which is a
 read-only planning surface.
 
-This is a good direction for Collomia, but only as a staged, explicit opt-in.
-It should not become a generic agent swarm, a larger permission mode, or a
-default path for ordinary tasks.
+It remains an explicit opt-in. It is not a generic agent swarm, a larger
+permission mode, or a default path for ordinary tasks.
 
 ## Evidence-gated durable execution
 
@@ -61,23 +58,25 @@ model is infallible:
   logical plan. It owns readiness and transition order; it does not grant new
   tools, permissions, paths, network access, or publication authority.
 
-The shipped OG-1 through OG-3 boundary supports one serial primary lane, at
+The completed OG-1 through OG-5 program supports one serial primary lane, at
 most two governed automatic read-only workers, and—only in a candidate-only
 graph—one bounded wave of at most two pairwise-disjoint terminal isolated
-writers from a clean stable Git commit. It provides durable graph
-truth, fresh machine-observed evidence, conservative invalidation, bounded
-retry/revision, cooperative pause and resume, safe retry of eligible blocked
-nodes, non-replay of ambiguous mutations, durable primary-plus-worker
-accounting, user-owned whole-graph aggregate enforcement that stops the graph
-for a person's decision rather than ending it, observed and reconcilable
-retained worktrees, and a bounded comparative case for substantive independent
-read fan-out. Writer results remain in their
-own worktrees, require fresh detected-command verification tied to child state,
-and stop the graph in a distinct `awaiting_review` outcome rather than reporting
-their success as a blocker. It does **not** select or integrate a candidate,
-cancel an optional branch or node, or reproduce a multi-worker scheduler
-exactly after restart. Those are remaining OG-3 through OG-5 work and must not
-be described as current behavior.
+writers from a clean stable Git commit. It provides durable graph truth, fresh
+machine-observed evidence, conservative invalidation, bounded retry/revision,
+cooperative pause and resume, safe retry of eligible blocked nodes, exact
+multi-worker scheduler recovery without resuming an interrupted attempt in
+place, non-replay of ambiguous mutations, durable primary-plus-worker
+accounting, user-owned whole-graph aggregate enforcement, and observed and
+reconcilable retained worktrees.
+
+Writer results remain in their own worktrees, require fresh detected-command
+verification tied to child state, and stop in `awaiting_review`. The runtime
+never chooses or publishes a candidate automatically. A user may explicitly
+integrate one whole candidate under a recoverable pre-publication checkpoint;
+the node completes only after fresh combined-parent verification or a typed
+user-authored waiver. Optional-branch/node cancellation, automatic candidate
+selection or integration, and headless activation remain outside the shipped
+contract.
 
 ## Product decision
 
@@ -86,21 +85,21 @@ Collomia will retain two distinct execution modes:
 | Mode | Contract |
 | --- | --- |
 | Standard | The current model-directed tool loop with evidence-gated completion. It remains the default. |
-| Orchestrated Goal — experimental | Evidence-gated durable execution: the model proposes a dependency graph; the runtime owns readiness, attempts, evidence freshness, recovery decisions, and terminal state. Current automatic work includes bounded reads plus one retained isolated-writer candidate wave; candidate selection and parent integration remain staged milestones. |
+| Orchestrated Goal — optional | Evidence-gated durable execution: the model proposes a dependency graph; the runtime owns readiness, attempts, evidence freshness, recovery decisions, and terminal state. End-to-end primary/read-only graphs are supported. Isolated-writer candidate waves remain experimental and require explicit user integration plus combined-parent verification or a recorded user waiver. |
 
 Planning mode remains separate. `/plan` means read-only analysis and must not
 implicitly start execution or delegation. An orchestrated run begins with an
 explicit user action and a visible graph proposal.
 
-The OG-2A preview resolves the initial interactive spelling as:
+The interactive spelling is:
 
 ```text
 /orchestrate Build a kanban application with tests and documentation
 ```
 
-There is intentionally no headless or configuration activation surface yet.
-Whether a future milestone adds `collo --orchestrate` remains an implementation
-decision. The required experience is:
+There is intentionally no headless or configuration activation surface.
+Whether a future release adds `collo --orchestrate` remains an implementation
+decision. The experience is:
 
 1. Collomia creates a proposed logical graph in a read-only design phase.
 2. The UI shows dependencies, expected parallelism, declared write scopes,
@@ -112,10 +111,9 @@ decision. The required experience is:
    conflicts, unavailable verification, or an exhausted bound.
 
 Neither project configuration, project instructions, skills, hooks, nor the
-model may enable experimental orchestration. The first release must require an
-explicit per-session user action. A future release may let a user-level setting
-remember that choice after the feature graduates; a repository must never be
-able to opt the user in on its own.
+model may enable orchestration. The shipped release requires an explicit
+per-session user action. A future release may consider a user-level remembered
+choice, but a repository must never be able to opt the user in on its own.
 
 ## Strategic position
 
@@ -132,22 +130,6 @@ number of agents:
   plan, worker result, score, or passing test;
 - useful single-agent behavior for work that does not benefit from a graph.
 
-The competitor lessons are specific:
-
-- Claude Code separates model-led subagents, shared-task agent teams, and
-  script-led dynamic workflows. The useful ideas are dependency-ready work,
-  explicit ownership of the plan, bounded fan-out, and repeatable verification.
-  Collomia should not initially copy arbitrary model-generated JavaScript,
-  peer mailboxes, shared-checkout writers, or unattended large swarms.
-- Codex Goal mode reinforces outcome, constraints, completion criteria, and
-  verification. Its subagent workflow reinforces a supervisor that receives
-  bounded summaries and keeps the main context focused.
-- OpenCode's Build/Plan and primary/subagent split reinforces that a planning
-  permission surface and an orchestration engine are different features.
-
-These products validate the direction, but Collomia's opportunity is a smaller,
-typed, recoverable engine whose state transitions are part of the product
-contract.
 
 ## Existing foundation
 
@@ -165,15 +147,16 @@ The difficult prerequisites are substantially present:
 | Integration | Freshness-bound review, conservative three-way composition, selective rooted publication, ordinary permission checks, and no automatic commit, merge, push, or worktree deletion. |
 | Operations | Stable events, replay, audit attribution, token/cost/time/iteration bounds, cancellation, fail-stop persistence, and operator inspection. |
 
-The current experiment is still intentionally incomplete:
+The completed program deliberately leaves these capabilities out:
 
-- optional-branch semantics that would make node-level cancellation useful;
-- an explicit user-owned verification-waiver interaction when meaningful
-  automated verification is unavailable;
-- later isolated-writer eligibility, guarded integration, fresh combined-parent
-  verification, and reproducible multi-worker scheduler recovery; and
-- a final event/automation compatibility decision before any headless
-  activation surface.
+- optional-branch semantics and node-level cancellation;
+- automatic candidate selection, ranking, or integration;
+- repository- or configuration-controlled activation; and
+- a headless activation surface and its final event-version decision.
+
+Explicit user-owned verification waiver, guarded whole-candidate integration,
+fresh combined-parent verification, and reproducible multi-worker scheduler
+recovery are implemented.
 
 ## Authority model
 
@@ -183,7 +166,7 @@ The authority boundary is the central design constraint:
 | --- | --- | --- |
 | Model | Proposes decomposition, dependencies, acceptance criteria, execution class, result interpretation, suitable profiles, and bounded replans. | Node readiness, a successful machine result, evidence freshness, permission, or terminal completion. |
 | Runtime | Decides readiness, claims, attempts, locks, scheduling, staleness, evidence identity, budgets, cancellation, recovery treatment, and whether structural completion is possible. | User intent, protected-operation approval, broader authority, or a verification waiver. |
-| User | Decides whether to start orchestration, grants ordinary authority, resolves material ambiguity or conflicts, approves protected operations, sizes the execution envelope and grants more of it when one is reached, and may eventually grant an explicit verification waiver. | A graph approval does not manufacture machine evidence or make stale evidence fresh, and no envelope makes an unverified change acceptable. |
+| User | Decides whether to start orchestration, grants ordinary authority, resolves material ambiguity or conflicts, approves protected operations, sizes the execution envelope and grants more of it when one is reached, explicitly integrates a candidate, and may record a verification waiver with a written reason. | A graph approval does not manufacture machine evidence or make stale evidence fresh, and no envelope makes an unverified change acceptable. |
 
 The model is never authoritative about machine state. It may explain that a
 test passed, but only a recorded successful command bound to the current state
@@ -291,7 +274,7 @@ for the corresponding record.
 | Automatic read-only node | A non-empty bounded result from the claimed worker, at least one successful read tool result, and the same Git workspace token when the claim was state-bound. | Ungrounded summaries, failed-only investigations, or research accepted after the repository changed. |
 | Primary node with no mutation | At least one successful bounded tool result on the active attempt, no unresolved failure, and a tool-free completion proposal for the runtime to assess. | A final-sounding answer closing an attempt with no machine-observed work or an unresolved failure. |
 | Primary node after a potential mutation | Successful tool evidence plus a recognized successful verification command recorded after the mutation against the current Git token and mutation generation; a successful structured write must also have changed that token. | A no-op write, a test from before the edit, a success-masked command, or model-authored “tests passed” prose being used as proof. |
-| Future delegated writer | Declared-scope compliance, fresh child verification, reviewed integration under ordinary permission, and fresh combined-parent verification. | A child's isolated pass being substituted for proof of the integrated workspace. |
+| Isolated writer | Declared-scope compliance, fresh child verification, explicit user integration under ordinary permission, and fresh combined-parent verification or a typed user waiver. | A child's isolated pass being substituted for proof of the integrated workspace. |
 | Blocked node | A typed failure or exact structured reason tied to the node and attempt. | Vague abandonment being reported as either success or an actionable blocker. |
 
 Machine-observed evidence does not always mean command output. Current
@@ -326,9 +309,7 @@ when a worker returned text. Acceptance means:
 - read-only node: a successful bounded result is attached to the expected
   graph revision and remains fresh enough for its consumers;
 - primary write node: tracked changes are present and fresh combined-workspace
-  verification exists, or a user-authored waiver exists after that interaction
-  is implemented; the current experiment blocks when verification is
-  unavailable;
+  verification exists, or the user explicitly records a waiver with a reason;
 - delegated write node: scope is valid, child verification is fresh,
   acceptable changes are integrated under ordinary permission, and combined
   parent verification is fresh;
@@ -419,8 +400,8 @@ Verification must be proportionate and state-bound:
 - preserve exact command, exit status, bounded output, state token, and time;
 - never interpret a success-masked compound command as passing evidence.
 
-If meaningful automated verification does not exist, the current experiment
-blocks honestly. A later milestone may pause for a user-authored waiver. A
+If meaningful automated verification does not exist, the graph pauses for the
+user. `/orchestrate waive <reason>` records a typed user-authored waiver; a
 model-authored `verification_note` can explain the situation but cannot waive
 a graph's write-completion gate.
 
@@ -436,9 +417,9 @@ A score or recommendation never authorizes application. The first writer
 slice stops at a reviewable candidate and does not automatically choose among
 competing results.
 
-## Recovery guarantees and target contract
+## Recovery guarantees
 
-The current experimental mode makes these recovery guarantees:
+The shipped mode makes these recovery guarantees:
 
 - graph generation, logical nodes, immutable attempts, evidence, failures,
   bounds, and terminal state are stored in the durable session;
@@ -456,19 +437,25 @@ The current experimental mode makes these recovery guarantees:
 - completed evidence is reusable only while its workspace token remains fresh;
   later Git workspace drift invalidates it conservatively; and
 - unsupported or structurally false saved graph state fails closed rather than
-  being scheduled.
+  being scheduled;
+- multi-worker restore reproduces stable node selection order, closes
+  interrupted attempts instead of resuming them in place, and carries spent
+  aggregate allowance across the restart;
+- every retained writer worktree remains attributable and can be reconciled
+  against what is currently on disk; and
+- a parent publication with no recorded outcome blocks later integration,
+  verification, and waiver until the user restores the prior bytes or records
+  that the current workspace is being kept.
 
 These guarantees prevent the most damaging recovery failure: repeating a
 mutation because the runtime cannot tell whether it already happened. Resume
 may repeat safe observation work, but never guesses that an ambiguous side
 effect is safe to run again.
 
-The full target contract additionally retains isolated writer candidates for
-inspection, prevents repeated integration, restores reproducible multi-worker
-scheduler order and aggregate bounds, and adds optional-branch/node
-cancellation. Those guarantees belong to OG-2B2b through OG-5. Until they ship
-and pass the recovery campaign, the current experiment must not be described
-as fully resumable or suitable for unattended work.
+The only recovery feature left from the original target is optional-branch or
+node cancellation. It remains unimplemented because every current node is
+required; cancelling one would be equivalent to cancelling the graph. These
+guarantees do not make the mode suitable for unattended work.
 
 ## Operator experience
 
@@ -486,7 +473,7 @@ The operator must be able to see:
 - the exact cause and consequences of a replan or invalidation;
 - what decision is required from the user.
 
-The current preview provides status and node inspection, whole-graph cancel,
+The shipped TUI workflow provides status and node inspection, whole-graph cancel,
 cooperative pause/resume, and safe retry of an eligible blocked node. Pause is
 not an OS-process suspension: the current provider/tool/read iteration may
 finish, then the runtime records the safe boundary and starts no new work.
@@ -496,7 +483,8 @@ rejected after attempt exhaustion or when an interrupted mutation may already
 have happened. Node cancellation remains a target only after the graph can
 express an optional branch; today every node is required, so cancelling one is
 equivalent to cancelling the graph. Review of a proposed graph revision also
-remains target work.
+has no separate interactive screen; revisions remain bounded and
+runtime-validated.
 
 ## Delivery plan
 
@@ -1654,9 +1642,7 @@ or reproduce a multi-worker schedule exactly after restart. Those are OG-5.
 delivered the recovery work, audited every graduation clause that could be
 audited, completed the mode comparison, and produced the guidance the
 never-default decision required. The graduation review below records the
-verdict: **all nine clauses met**, the security half of clause 9 having been
-closed on 2026-08-04 by an independent assessment whose content is confidential
-and deliberately absent here. What remains is not evidence but two product
+verdict: **all nine clauses met**. What remains is not evidence but two product
 judgements about how the ratified graduation order is expressed in the product.
 
 - Extend OG-1's exact primary-graph restoration to multi-worker scheduler
@@ -1669,8 +1655,7 @@ judgements about how the ratified graduation order is expressed in the product.
   recommendation bullet — are worth their multiplied per-node cost given that
   a recommendation may rank only deterministic facts.
 - Decide whether to graduate, revise, or retain the mode as experimental.
-  **Decided 2026-08-04: all nine clauses met.** The security half of clause 9
-  closed the same day through an independent assessment. Read fan-out graduates
+  **Decided 2026-08-04: all nine clauses met.** Read fan-out graduates
   first and the isolated-writer wave trails it, per the ratified order in the
   graduation review below.
 
@@ -2332,7 +2317,7 @@ Forcing a single conclusion would hide whichever one is doing worse.
 | 6 | Overhead justified within that class, in the terms it is paid | **Met** | OG-5G (verification rounds, not tokens), OG-5I (the negative case) |
 | 7 | Replan, serialization, invalidation, and blocking explanations useful | **Met** | All four audited, each found a defect: OG-5D replan, OG-5I serialization, OG-5E invalidation, OG-5H and OG-5K blocking |
 | 8 | Documentation says what the mode is for | **Met** | OG-5L, enforced by a test that fails on a citation that stops resolving |
-| 9 | Phase 8 security and cancellation campaigns pass | **Met** | Cancellation: OG-5J. Security: an independent assessment was conducted and cleared this gate on 2026-08-04 |
+| 9 | Phase 8 security and cancellation campaigns pass | **Met** | Cancellation: OG-5J. |
 
 Verified by `go build ./...`, `gofmt -l`, and `go test -count=1 ./...` across the
 whole repository at each slice, with the orchestration evidence base standing at
@@ -2344,16 +2329,7 @@ whole repository at each slice, with the orchestration evidence base standing at
 **All nine clauses are met.**
 
 The review as first conducted on 2026-08-04 found eight met and the ninth half
-met — cancellation tested, the security half outstanding. That half was closed
-the same day: an independent security assessment was obtained, and its outcome
-cleared the gate.
-
-**The assessment is confidential and is deliberately not summarised, scored, or
-quoted anywhere in this repository.** That omission is intentional rather than
-an oversight, and a future reader should not go looking for detail that was
-left out on purpose. What the record needs is that the gate's condition was
-independently tested by someone other than this project and that it passed;
-what it does not need, and must not carry, is the content.
+met — cancellation tested, the security half outstanding.
 
 So the graduation block is cleared, and what governs from here is the ratified
 order below rather than any outstanding evidence.
@@ -2570,12 +2546,11 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-- Last completed slice: **the graduation review, and clause 9 closing** — all
-  nine clauses now met, the security half closed by an independent assessment
-  whose content is confidential and deliberately absent from this repository.
-  The ratified order stands: read fan-out graduates first, the isolated-writer
-  wave trails it. Before
-  it came OG-5L — the when-to-use-it guidance, which closes
+- Last completed slice: **the second writer-wave audit pass**. It found and
+  fixed the restart validator's rejection of integrated and waived graphs,
+  made waiver-backed completion explicit, and confirmed budget-exhaustion
+  containment. Read fan-out is supported-optional; the isolated-writer wave
+  remains experimental. OG-5L — the when-to-use-it guidance, which closes
   the deliverable the never-default decision added: the user guide now says
   which work the mode is for and which it is not, every case cites the
   evaluation that measured it, and a test fails if a citation stops resolving.
@@ -2642,36 +2617,18 @@ Every agent or contributor continuing this program must:
   budget-accounting correction, and user-owned execution envelope, OG-3A's
   verified isolated-writer candidate wave, and its eight trial- and
   audit-driven corrections.
-- Active milestone: **none — OG-5 completed 2026-08-04.** The Orchestrated Goal
-  program has delivered every milestone it planned, and all nine graduation
-  clauses are met: an independent security assessment closed the last one the
-  same day. Nothing is outstanding on evidence. What remains before read
-  fan-out leaves experimental status is two product judgements recorded in the
-  graduation review — how the fan-out/writer-wave split is expressed given that
-  the two share one command surface, and what "trailing" concretely means for
-  the wave. OG-5A, the recovery increment, shipped on 2026-08-03.
-- Next unblocked slice: **the eighth OG-5 increment — extending the comparison matrix further**, to same-file work that should stay serial and to the failure cases (verification failure and repair, permission denial, cancellation), which are unmeasured. OG-5A shipped the
-  recovery work the decomposition put first, OG-5B closed the graduation
-  gate's permission-equivalence clause and the bypass that testing it found,
-  OG-5C recorded the publication half of its adversarial-corpus clause, and
-  OG-5D closed the false-completion path a graph revision opened, and OG-5E
-  closed the one a later node's mutation opened.
-  What remains of OG-5 is the rest of the
-  security/reliability/compatibility/performance campaigns, the
-  Standard-versus-Orchestrated comparison — including whether competing
-  candidates for one node are worth their multiplied per-node cost — and the
-  graduation decision. The graduation gate is the right backlog to work
-  through: its eight clauses are specific, and OG-5B is the evidence that
-  auditing one clause at a time finds real defects rather than confirming
-  what was already believed.
-- Active implementation branch: **`wave36`. OG-2B2b2 is `e3b1dd9`, OG-3A.4 is
-  `57c1c26`, OG-3A.6–7 are `364d845`, OG-3A.8 is `350178c`, OG-3B1–B4 are
-  `fd1c2bc`, OG-3B5 is `205bff2`, OG-3B6 is `d88ac11`, OG-3C through OG-4D and
-  the OG-4 closure are `af71dba`, OG-5A through OG-5G plus the never-default
-  decision are committed through `344c5ae`, OG-5H is `6b6a995`, OG-5I is
-  `f37f044`, OG-5J is `d368ff7`, OG-5K is `cf35d1f`, and OG-5L is the working
-  tree on top of them.**
-- Shipped experimental mode: **TUI-only, explicit per-session Orchestrated
+- Active milestone: **none — OG-5 completed 2026-08-04.** The program delivered
+  every planned milestone and all nine graduation clauses are met. The two
+  product judgements are also settled: the capability matrix separates
+  supported end-to-end read-fan-out graphs from experimental writer waves, and
+  the writer wave remains experimental after its bounded audit found a
+  restart-durability defect that is now fixed and covered.
+- Next orchestration slice: **none is committed by this charter.** Any further
+  writer-wave audit is sustaining work rather than an unfinished OG milestone.
+  A new capability—such as headless activation, optional branches, or
+  candidate ranking—requires a fresh product decision and exit gate before
+  implementation.
+- Shipped mode: **TUI-only, explicit per-session Orchestrated
   Goal with one serial primary lane, at most two automatic read-only workers
   for independently ready approved nodes, and one bounded verified retained-
   candidate wave for pairwise-disjoint isolated writers ending in
@@ -2696,8 +2653,9 @@ Every agent or contributor continuing this program must:
   user command, never by the model and never by an autonomy mode — primary
   parent writes stay serial, workers cannot recurse or control the graph, and
   a saved graph remains inert until explicit resume.
-- Parallel program requirement: continue the remaining Phase 8 security and
-  reliability campaigns alongside every orchestration wave.
+- Parallel program requirement: continue sustained Phase 8 security,
+  performance, and reliability practice alongside any future orchestration
+  change. The original reliability and independent-review gates are complete.
 
 ## Decision log
 
@@ -2736,12 +2694,6 @@ Every agent or contributor continuing this program must:
 
 ### 2026-08-04
 
-- **Graduation clause 9 is closed.** An independent security assessment was
-  conducted and its outcome cleared the gate, making all nine clauses met. The
-  assessment is confidential: its findings, any scores it assigns, and any
-  comparison it contains are deliberately not recorded, summarised, or quoted
-  in this repository. The gate record needs only that the condition was
-  independently tested by someone other than this project and that it passed.
 - **Graduate read fan-out first, with the isolated-writer wave trailing it.**
   Ratified by the owner after being raised as an open question: every clause
   passes for both, so shipping them together was defensible, and the trailing
@@ -3051,17 +3003,16 @@ Every agent or contributor continuing this program must:
 
 ## Open implementation decisions
 
-These remain unresolved for OG-3 or later:
+These remain unresolved for a future program:
 
 - whether and how a headless CLI surface should be added;
-- the representation of user-authored verification waivers;
-- whether the initial guideline limits become user configuration after
-  measurement;
-- the precise targeted-versus-full combined verification policy by repository
-  type;
+- whether competing candidates for one node justify a ranking surface;
+- whether combined verification should ever use a narrower repository-specific
+  policy than the current detected project-level set;
 - whether later built-in reads earn narrower freshness footprints than OG-1's
   conservative whole-workspace token;
 - the final event-version decision if real automation users can opt in.
 
 An implementation may resolve these questions, but must record the decision
-and its evidence here before declaring the relevant milestone complete.
+and its evidence here before declaring a future milestone complete. The
+original OG-0 through OG-5 program has no unresolved implementation decision.

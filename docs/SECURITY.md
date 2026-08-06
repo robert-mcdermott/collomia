@@ -767,14 +767,17 @@ previous generation is retained, so a workspace's history occupies at most
 128 MiB. A rotation that had to discard an older generation records that fact
 in the new file rather than leaving it to be inferred from a missing one.
 
-## Evidence-gated durable goal-graph boundary (experimental OG-1–OG-3A.8)
+## Evidence-gated durable goal-graph boundary
 
 Orchestrated Goal is evidence-gated durable execution: the model proposes
 logical work and interprets results, while the runtime owns operational graph
 truth and accepts completion only through fresh, typed machine-observed
-evidence. It exposes the runtime controller only through a TUI action the
-user takes for one session. `/orchestrate <goal>` enters read-only proposal
-mode; it does not execute. `/orchestrate approve` accepts only a newly written
+evidence. End-to-end graphs using the serial primary lane and governed
+read-only fan-out are supported as an optional mode; isolated-writer candidate
+waves remain experimental. The runtime controller is exposed only through a
+TUI action the user takes for one session. `/orchestrate <goal>` enters
+read-only proposal mode; it does not execute. `/orchestrate approve` accepts
+only a newly written
 pending plan whose every node has a concrete acceptance criterion. A graph
 approval is scheduling state, never authority. Primary work still uses the
 primary agent's existing tool registry, permission decision, lifecycle hooks,
@@ -830,8 +833,8 @@ an explicitly candidate-only graph, with explicit normalized `write_paths`
 narrower than `"*"`. Candidate graphs may have `read_only` prerequisites but
 no primary nodes, every isolated writer must be a terminal leaf, and no later
 node may depend on it; proposal approval and bounded revisions reject other
-topologies because this slice cannot select or integrate retained work. The
-runtime
+topologies because writer candidates stop at a user review boundary and cannot
+unlock downstream work before explicit integration. The runtime
 selects at most two dependency-ready nodes in stable order and excludes any
 scope that overlaps an earlier claim, including nested and case-folded
 matches. Every selected writer in this bounded candidate wave starts from the
@@ -857,8 +860,12 @@ stores bounded candidate identity, changed-file, scope, verification-command,
 and child-state-token facts, marks the node `awaiting_review` with a
 reviewed-integration reason, leaves dependents closed, and retains the
 worktree. Awaiting review is a successful stop, distinct from a blocker, and it
-still grants nothing: the graph never chooses a candidate or applies, commits,
-merges, pushes, or publishes its bytes. Those candidate facts are made durable
+still grants nothing: the runtime never chooses or publishes a candidate
+automatically, and never commits, merges, pushes, or treats child verification
+as publication authority. Only the user-only `/orchestrate integrate
+<node-id>` command can apply the whole candidate to the parent under ordinary
+integration permission and a durable pre-publication checkpoint. Those
+candidate facts are made durable
 before the aggregate budget is enforced, so a wave that exhausts the ceiling
 still records where each retained worktree is instead of leaving orphans the
 runtime cannot name. Automatic writers additionally cannot reach `git_commit`
@@ -868,7 +875,26 @@ publication step this mode holds no authority for and would move the ref the
 candidate's diff is measured against. A
 process boundary while a writer is running is treated as an ambiguous
 mutation of the retained worktree and is not replayed or admitted through safe
-retry. Broader orphaned-worktree reconciliation remains OG-3B/OG-5 work.
+retry. `/orchestrate reconcile` records whether every retained tree is present,
+empty, missing, orphaned, unreachable from its base, or already discarded;
+user-only discard refuses unobserved work, requires confirmation for changed
+trees, and will not recursively remove a directory Git no longer owns.
+
+Explicit integration publishes the candidate as one unit, never selected
+hunks, because the child verified its whole tree. Any conflict refuses the
+entire operation. Before the first parent byte changes, Collomia flushes a
+bounded checkpoint of the prior content, mode, and existence of every target;
+an interrupted publication is therefore detectable and is never completed by
+replay. Until the user either restores that checkpoint with `/restore
+integration <id>` or records `/restore integration <id> keep`, no later graph
+integration, combined verification, or waiver may proceed.
+
+Integration moves a node to `integrated`, not `done`. `/orchestrate verify`
+runs the repository's detected checks through ordinary command permission and
+accepts the integrated nodes only when every check passes against one settled
+combined-parent state. `/orchestrate waive <reason>` is the user-only
+alternative when no meaningful automated check applies; it records a typed,
+user-authored waiver and never presents that judgement as machine verification.
 
 Graph execution truth is separate from the model-authored plan and full
 transcript. The session stores a versioned, structurally validated snapshot
@@ -925,7 +951,8 @@ bound to the current token and generation. External drift stales accepted
 nodes conservatively. Ignored generated output is excluded from the token; it
 still advances the in-process mutation generation when Collomia ran the action,
 but an out-of-process change only to ignored data is intentionally outside the
-claim. A model-authored verification note is not a waiver.
+claim. A model-authored verification note is not a waiver; only the explicit
+user command above can create one.
 
 The only activation surface is the `/orchestrate` TUI command family. There is
 no configuration or headless flag, and project instructions, skills, hooks,
@@ -942,19 +969,27 @@ the blocked attempt as history. Provider iterations, input/output tokens,
 price availability, estimated cost, and elapsed time are durable runtime facts
 split between proposal-plus-primary, automatic-read, and automatic-writer
 lanes; they grant no
-permission and never substitute for completion evidence. Fixed runtime-owned
-aggregate ceilings limit new graphs to 96 provider iterations, 1,000,000 tokens,
-$5 estimated cost when pricing is complete, and 30 minutes of active
-post-approval execution. Project/config/model content cannot widen them, and
-restored graphs retain their stored ceiling. Approval-boundary and later
-budget-pressure compactions are ordinary accounted provider requests. The
+permission and never substitute for completion evidence. The whole-graph
+envelope defaults to 96 provider iterations, 1,000,000 charged tokens, $5
+estimated cost when pricing is complete, and 30 minutes of active post-approval
+execution. The user may size it through `options.orchestration_*`, and an
+explicit `/orchestrate extend` grants another envelope of that configured size
+after exhaustion. Repository configuration, instructions, skills, hooks, and
+the model cannot widen it; restored graphs retain the envelope they were
+created with. Resource limits stop work for a user decision but never relax
+permission, verification, scope, or publication gates. Approval-boundary and
+later budget-pressure compactions are ordinary accounted provider requests. The
 accepted-node runtime handoff is instead a zero-provider deterministic
 compaction marker;
 unpriced work remains bounded by tokens, iterations, and active wall rather
 than receiving a fictitious dollar verdict. Active time stops at a reached
 pause or process boundary and restarts only after explicit resume.
-Optional-branch/node cancellation, automatic candidate integration, and
-headless activation remain unimplemented.
+Recovery reproduces a multi-worker schedule in stable node order, closes
+interrupted attempts instead of resuming them in place, and carries spent
+allowance across the restart. Optional-branch/node cancellation, automatic
+candidate selection or integration, and headless activation remain
+unimplemented; explicit user integration is the only publication path for a
+graph candidate.
 
 ## Delegated-agent boundary
 

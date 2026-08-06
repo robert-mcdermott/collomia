@@ -2898,7 +2898,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, or cancel the experimental Orchestrated Goal preview. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, or cancel Orchestrated Goal. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -2935,17 +2935,19 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/clear` | Clear active conversation context. It does not delete the durable session file or reset cumulative token/cost accounting and budgets. |
 | `/quit` or `/exit` | Exit. |
 
-### Experimental Orchestrated Goal preview
+### Orchestrated Goal
 
-Orchestrated Goal is Collomia's opt-in TUI preview for **evidence-gated durable
+Orchestrated Goal is Collomia's opt-in TUI workflow for **evidence-gated durable
 execution**. The model proposes and interprets a bounded dependency graph; the
 runtime owns readiness, attempts, evidence freshness, recovery treatment,
 aggregate bounds, and the terminal outcome. End-to-end graphs keep one serial
 primary lane and can use at most two automatic governed workers for
-independently ready approved `read_only` nodes. As a separate candidate-only
-shape, the preview can produce one bounded wave of verified retained terminal
-candidates for narrowly scoped `isolated_write` nodes. Standard mode
-remains the default.
+independently ready approved `read_only` nodes; this graph shape is supported.
+As a separate candidate-only shape, the workflow can produce one bounded wave
+of verified retained terminal candidates for narrowly scoped `isolated_write`
+nodes; that writer shape remains experimental and is identified at approval.
+The shared TUI command family still uses an experimental marker where the two
+shapes cannot be presented separately. Standard mode remains the default.
 
 #### When to use it, and when not to
 
@@ -3138,11 +3140,13 @@ remain in scope.
 
 A passing writer is a candidate, not completed parent work. `/orchestrate
 status <node-id>` shows its retained worktree, branch, base, changed files, and
-verification state. The graph stops `blocked` with “reviewed integration is
-required,” dependents remain closed, and the parent workspace is unchanged.
-Use the displayed worktree and the Session agent view to inspect the result.
-Automatic candidate selection and integration are OG-4 work; this preview does
-not apply, commit, merge, push, or publish the candidate.
+verification state. The graph stops `awaiting_review`, dependents remain
+closed, and the parent workspace is unchanged. Use the displayed worktree and
+the Session agent view to inspect the result. Collomia never selects or
+publishes a candidate automatically: only the user-only `/orchestrate integrate
+<node-id>` command can move the whole verified candidate into the parent, and
+the node remains unfinished until combined-workspace verification or a
+user-authored waiver is recorded.
 
 Every publication into your workspace — graph candidate or ordinary delegate —
 now records what it replaced before it changes the first byte. That record
@@ -3201,9 +3205,10 @@ delegate's retained worktree as far as that surface is concerned, so it can be
 reviewed there, but publishing it would change your workspace while the node
 still said reviewed integration was required and no combined-workspace
 verification had run. Both operator and primary-agent publication are refused
-for graph candidates until the rest of OG-4 ships. Reviewing, `/agents verify`,
-and the `/orchestrate reconcile` and `/orchestrate discard` worktree controls
-all remain available.
+for graph candidates because `/orchestrate integrate` is the single graph-owned
+publication path and couples publication to its durable checkpoint and later
+combined verification. Reviewing, `/agents verify`, and the `/orchestrate
+reconcile` and `/orchestrate discard` worktree controls all remain available.
 
 ### Reconciling retained worktrees
 
@@ -3406,17 +3411,19 @@ only as part of that explicit action. For a terminal blocked graph, an explicit
 step. Neither command runs merely because persisted bytes exist, preventing
 project or session content from silently opting the user back in.
 
-Resume is mutation-safe, but not yet an exact replay of a multi-worker
-schedule. An interrupted replay-safe read may be recomputed only as a fresh
-bounded attempt. An interrupted isolated writer blocks for inspection and
-cannot use safe retry, because its retained worktree may already have changed.
-A potentially mutating or external parent action is durably marked
-before it starts; if its outcome is ambiguous after interruption, the graph
-blocks for reconciliation and never automatically repeats it. `/orchestrate
-reconcile` tells you what is actually left in that writer's worktree, and
-`/orchestrate discard` removes it if you decide it is worth nothing. Exact
-scheduler recovery, reusing a retained candidate, and reviewed integration are
-later milestones.
+Resume is mutation-safe and reproduces a multi-worker schedule exactly: the
+same nodes are selected in the same stable order, interrupted attempts are
+closed rather than resumed in place, and the spent envelope carries across so
+restarted work is charged again. An interrupted replay-safe read may be
+recomputed only as a fresh bounded attempt. An interrupted isolated writer
+blocks for inspection and cannot use safe retry, because its retained worktree
+may already have changed. A potentially mutating or external parent action is
+durably marked before it starts; if its outcome is ambiguous after interruption,
+the graph blocks for reconciliation and never automatically repeats it.
+`/orchestrate reconcile` reports what remains in a writer worktree, while an
+unresolved parent-publication checkpoint blocks further integration,
+verification, and waiver until the user restores the old bytes or records that
+the published state is being kept.
 
 An active graph prevents session switching and rewind. After it reaches
 `done`, `blocked`, `cancelled`, or `budget_exhausted`, start another wave in
@@ -3424,16 +3431,19 @@ the same session with `/orchestrate <new-goal>`. Collomia durably tombstones
 the old graph as the resumable graph and detaches its controls while retaining
 all old snapshots, evidence, and transcript records. The same behavior applies
 to a terminal saved graph after reopening the session; a nonterminal saved
-graph still requires explicit resume or cancellation. This preview has no
-configuration switch, repository-controlled opt-in,
-headless flag, per-node/branch cancellation, or verification waiver.
+graph still requires explicit resume or cancellation. This workflow has no
+configuration switch, repository-controlled opt-in, headless flag, or
+per-node/branch cancellation. A verification waiver exists only as the
+explicit user command `/orchestrate waive <reason>`; the model, repository,
+skills, and hooks cannot grant one.
 Controlled credential-free comparisons support the current narrow fan-out
 decision: substantive independent repository-fact and cross-layer source/test
 investigations produced the same grounded result faster than Standard and
 primary-only graph runs, while their extra iterations and tokens stayed
 visible. This is not a claim that orchestration is always faster or cheaper.
-Automatic candidate selection/integration and exact multi-worker recovery
-remain later Orchestrated Goal work.
+Automatic candidate selection and integration remain intentionally absent;
+publication is a user decision. Exact multi-worker recovery and reviewed
+whole-candidate integration are implemented.
 
 ### Workspace paths and prompt files
 

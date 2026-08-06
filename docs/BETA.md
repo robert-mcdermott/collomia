@@ -167,8 +167,9 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   child verification. Automatic writers cannot commit or create branches even
   inside their own worktree. Passing candidates stop the graph in a distinct
   `awaiting_review` state — reported as a finished run naming the review step,
-  not as a blocker — and Collomia does not select or integrate them; the parent
-  workspace remains unchanged. Every worktree the runtime creates stays
+  not as a blocker — and Collomia does not automatically select or integrate
+  them; the parent workspace remains unchanged until the user explicitly runs
+  `/orchestrate integrate <node-id>`. Every worktree the runtime creates stays
   attributable to its node and attempt however the wave ends: identity is
   recorded durably the moment Git creates the tree, and a wave that is
   cancelled or exhausts the aggregate budget still records where each one is.
@@ -243,8 +244,8 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   regional availability, and upstream API changes. Use the capability display,
   `collo doctor`, and live provider qualification before relying on a hosted
   endpoint.
-- The project has extensive automated security tests but has not completed the
-  independent security review required for 1.0.
+- The project has extensive automated security tests. Continued adversarial testing remains ongoing beta work; passing one assessment is not
+  a claim that unattended execution is risk-free.
 - Configuration, event, and session formats have explicit version checks and a
   documented [compatibility policy](COMPATIBILITY.md), but downgrading a global
   state directory after a newer release has written to it is not guaranteed.

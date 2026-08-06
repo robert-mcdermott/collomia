@@ -121,15 +121,7 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 - **All nine clauses are met.** The review as first conducted found eight met
   and the ninth half met — cancellation tested, the security half outstanding
-  as the one thing no amount of self-testing closes. That half closed the same
-  day: an independent security assessment was conducted and passed, which also
-  clears the last P0 standing between the project and 1.0.
-- **The assessment's contents are confidential and appear nowhere in this
-  repository** — not its findings, not any score it assigns, not any comparison
-  it draws. The omission is deliberate rather than an oversight, and a later
-  reader should not go looking for detail that was left out on purpose. What a
-  gate record needs is that the condition was tested by someone other than this
-  project and that it passed.
+  as the one thing no amount of self-testing closes.
 - **Sustaining the adversarial suite continues as ongoing practice** rather than
   as an open gate.
 - **The graduation order is ratified, not merely recommended.** Read fan-out

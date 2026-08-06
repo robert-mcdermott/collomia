@@ -91,10 +91,6 @@ result. They are listed because a completion message is the thing people act on.
   publication into the workspace never recorded an outcome, naming the
   checkpoint and both ways to resolve it.
 
-### Security
-
-- An independent security assessment was conducted and passed.
-
 ### Notes
 
 - Orchestrated Goal persists under graph schema 1 with additive fields only.
