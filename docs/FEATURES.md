@@ -113,7 +113,7 @@ as experimental or unsupported; the generated
   - Automatic or configured discovery of `gopls`, Pyright, TypeScript Language Server, and `rust-analyzer`.
   - LSP formatting is treated as a tracked file change and participates in undo and review.
   - Definition and reference requests can identify locations by file, line, and symbol without requiring the user to know an exact character column.
-  - Read-only Git tools expose status, diff, log, and blame information without providing commit or push authority.
+  - Read-only Git tools expose status, diff, log, and blame information. Separate `git_commit` and `git_branch` tools provide narrowly scoped writes under ordinary permission checks; `git_commit` declares its exact paths so credential protection can inspect what enters history, and neither tool pushes.
   - `/review` performs read-only review against uncommitted changes, a Git reference, or custom instructions.
   - `/verify` discovers and runs applicable build, lint, and test commands, preserving the resulting evidence.
 
@@ -300,7 +300,7 @@ as experimental or unsupported; the generated
 
 - **Important security boundaries and limitations**
 
-  - Collomia remains a technical beta and has not been presented as independently penetration-tested.
+  - Collomia remains a technical beta; its documented controls are not a claim that unattended execution is risk-free.
   - The operating-system sandbox and scoped-egress broker are marked experimental.
   - Default `sandbox=auto` is fail-visible but fail-open; deployments requiring strict containment should use `sandbox=require`.
   - The standard preset permits command network access and outside-workspace reads unless explicitly tightened.

@@ -273,9 +273,11 @@ system implementation. Tests may inject writers, clocks, transports, or
 providers, but normal runtime behavior should not depend on test-only global
 state.
 
-The Linux quality and tagged-release workflows also repeat the deterministic
-interruption/cancellation subset five times. Run the same bounded stress pass
-locally with:
+The Linux quality workflow repeats the core deterministic
+interruption/cancellation subset five times. The tagged-release workflow runs
+an expanded durability subset twenty times, including terminal hangup,
+directory-sync failure, and completed-turn flush cases. Run the core CI stress
+pass locally with:
 
 ```sh
 go test -count=5 \

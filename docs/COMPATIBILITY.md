@@ -17,7 +17,7 @@ without rewriting it.
 | User/project configuration | `schema_version: 1` | A missing version is legacy version 1. Normal loading tolerates unknown fields; strict validation rejects them. A newer version is rejected before activation. |
 | Headless runtime events | `schema: 1` | Optional additive fields are allowed. Unknown event kinds, incompatible required fields, and other schema versions are rejected by `collo replay`. |
 | Durable session records | `schema_version: 1` | New records carry the version on every JSONL line. Legacy records without it are version 1. Unknown optional fields are ignored; a newer version is rejected without appending to the session. |
-| Runtime-owned goal-graph snapshots | `schema: 1` | OG-1 onward snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. OG-2B2a adds optional pause request/reached/reason fields; omission restores as not paused. OG-2B2b1 adds aggregate accounting plus attempt iteration/cost-estimate fields; a legacy snapshot reconstructs only stored attempt usage and does not invent missing proposal or iteration history. OG-2B2b2 adds fixed aggregate limits, active-time state, and per-read cost/iteration bounds. OG-3A adds explicit narrow writer scopes, a fixed writer envelope, writer accounting, stable-base identity, retained-candidate and child-verification facts, and the `candidate` attempt state. OG-3A.1 raises the hard token ceiling for newly created graphs but does not rewrite a nonzero stored limit, so a graph created under the earlier 192,000-token envelope resumes with 192,000 rather than acquiring the new 1,000,000-token allowance. OG-3A.3 adds optional attempt `last_progress_iteration` and pending-action base workspace/generation fields. OG-3A.4 adds optional `completion_gap` and `completion_gap_iteration` attempt fields; omission means no previously recorded exact gap and grants no inferred remediation progress. Omission never invents prior exact progress; an active legacy attempt with successful tool evidence receives one fresh bounded progress lease on its next accounted provider cycle, while the stored aggregate envelope remains unchanged. Omitted limits restore to the current experimental defaults; legacy nodes remain serial, interrupted writers become blockers, restore freezes active time at the last durable update, and stored limits are rejected when implausible or inconsistent with the recorded envelope grant rather than for exceeding a build default (see the OG-3B4 note below). |
+| Runtime-owned goal-graph snapshots | `schema: 1` | OG-1 onward snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. OG-2B2a adds optional pause request/reached/reason fields; omission restores as not paused. OG-2B2b1 adds aggregate accounting plus attempt iteration/cost-estimate fields; a legacy snapshot reconstructs only stored attempt usage and does not invent missing proposal or iteration history. OG-2B2b2 adds fixed aggregate limits, active-time state, and per-read cost/iteration bounds. OG-3A adds explicit narrow writer scopes, a fixed writer envelope, writer accounting, stable-base identity, retained-candidate and child-verification facts, and the `candidate` attempt state. OG-3A.1 raises the hard token ceiling for newly created graphs but does not rewrite a nonzero stored limit, so a graph created under the earlier 192,000-token envelope resumes with 192,000 rather than acquiring the new 1,000,000-token allowance. OG-3A.3 adds optional attempt `last_progress_iteration` and pending-action base workspace/generation fields. OG-3A.4 adds optional `completion_gap` and `completion_gap_iteration` attempt fields; omission means no previously recorded exact gap and grants no inferred remediation progress. Omission never invents prior exact progress; an active legacy attempt with successful tool evidence receives one fresh bounded progress lease on its next accounted provider cycle, while the stored aggregate envelope remains unchanged. Omitted limits restore to the current configured/default envelope; legacy nodes remain serial, interrupted writers become blockers, restore freezes active time at the last durable update, and stored limits are rejected when implausible or inconsistent with the recorded envelope grant rather than for exceeding a build default (see the OG-3B4 note below). |
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
@@ -116,9 +116,11 @@ A repository can now tighten any containment setting but never weaken one.
 This is an intentional security behavior change within schema version 1, and
 it can change the effective policy of an unmodified project file:
 
-- affected settings are `sandbox`, `sandbox_allow_network`,
-  `sandbox_allow_read_outside_workspace`, `command_env`, `network`,
-  `commands`, and `allow_outside_workspace`;
+- the complete current set is `sandbox`, `sandbox_allow_network`,
+  `sandbox_egress`, `sandbox_allow_read_outside_workspace`, `command_env`,
+  `network`, `commands`, `allow_outside_workspace`, `protect_credentials`, and
+  `publication`; the later sections below describe when `sandbox_egress`,
+  `protect_credentials`, and `publication` joined the rule;
 - it applies identically to an explicit field and to `permissions.preset`;
 - a project file that weakens one of these is refused, not applied, and the
   refusal is printed by `collo config show` and `collo config validate`;
@@ -443,14 +445,14 @@ strict replay clients reject unknown kinds, so the change requires an explicit
 compatibility decision.
 
 The OG-1/OG-2 decision is deliberately narrow: `goal.graph.update` remains an
-additive schema-v1 kind. Standard CLI/TUI/headless streams never emit it. The
-explicit TUI-only `/orchestrate` preview does emit it into that session's
-durable activity record, but there is no headless activation flag and no
-persisted setting can opt a process in. A consumer of an experimental graph
+additive schema-v1 kind. Standard-mode CLI/TUI streams and all headless streams
+never emit it. The explicit TUI-only `/orchestrate` workflow does emit it into
+that session's durable activity record, but there is no headless activation
+flag and no persisted setting can opt a process in. A consumer of a graph
 trace must use a binary/schema that knows the kind; an older strict replay
 correctly rejects that trace. The established meanings and required payloads
-of every pre-existing schema-v1 kind remain byte-compatible. OG-2B2b must revisit
-event versioning before Orchestrated Goal is exposed to headless automation.
+of every pre-existing schema-v1 kind remain byte-compatible. Event versioning
+must be revisited before Orchestrated Goal is exposed to headless automation.
 
 `plan.steps[].acceptance` is an additive optional session-plan field. Older
 readers ignore it; ordinary plans may omit it. The explicit Orchestrated Goal
@@ -569,9 +571,11 @@ An integration refused because its retained worktree no longer exists now says
 so, instead of reporting the same "not the recorded Git worktree" wording used
 for a genuine path mismatch.
 
-The graduation review itself changes nothing shipped. It is a recorded decision:
-the mode stays experimental, so every compatibility note below continues to
-apply unchanged.
+The graduation review changes no persisted shape. It records the ratified
+maturity split: end-to-end graphs made of `primary` and `read_only` nodes are a
+supported capability, while the isolated-writer candidate wave remains
+experimental. The compatibility notes below continue to apply to the shapes
+and behavior they describe.
 
 OG-5L changes nothing shipped: user-guide guidance and a test that enforces its
 citations. No product code.

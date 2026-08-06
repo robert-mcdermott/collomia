@@ -49,7 +49,7 @@ platform-signed.
    checking its embedded version and full commit identity.
 7. Creates provenance/SBOM attestations and a **draft** GitHub Release.
 
-A tag containing a prerelease suffix, such as `v0.2.0-beta.1`, produces a draft
+A tag containing a prerelease suffix, such as `vX.Y.Z-beta.1`, produces a draft
 marked as a prerelease. GitHub's `/releases/latest/download` URL continues to
 refer to the latest stable, non-prerelease release. Beta users must pin the beta
 tag explicitly.
@@ -57,7 +57,7 @@ tag explicitly.
 ## Prepare a release
 
 1. On the release branch, update `VERSION` to the intended semantic version,
-   for example `v0.2.0-beta.1`, and update release notes plus [beta
+   for example `vX.Y.Z-beta.1`, and update release notes plus [beta
    limitations](BETA.md) if behavior changed.
 1. Re-review [the feature and security summary](FEATURES.md) against the
    release and update its version and commit header. It is a hand-written

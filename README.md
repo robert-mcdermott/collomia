@@ -58,9 +58,9 @@ and the terminal outcome.
   search/fetch, MCP, skills, hooks, and governed multi-agent delegation all use
   the same permission and lifecycle machinery.
 
-For a complete list of Collomia's features see [FEATURES](docs/FEATURES.md).
-
-The exact generated implementation status is in the [capability matrix](docs/CAPABILITIES.md); security guarantees and limits are
+See the [feature overview](docs/FEATURES.md) for the complete list. The exact
+generated implementation status is in the
+[capability matrix](docs/CAPABILITIES.md); security guarantees and limits are
 defined in the [security model](docs/SECURITY.md).
 
 ## Install
@@ -139,7 +139,8 @@ The top-level command surface is intentionally small:
 
 | Purpose | Commands |
 | --- | --- |
-| Set up and inspect | `collo setup`, `collo config`, `collo doctor`, `collo capabilities` |
+| Work and automate | `collo run`, `collo review`, `collo verify`, `collo replay` |
+| Set up and inspect | `collo setup`, `collo init`, `collo config`, `collo doctor`, `collo capabilities` |
 | Trust and security | `collo trust`, `collo policy`, `collo auth`, `collo audit` |
 | Sessions and extensions | `collo sessions`, `collo skills`, `collo mcp` |
 | Diagnostics and integration | `collo support`, `collo completion`, `collo schema` |

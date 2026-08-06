@@ -86,137 +86,32 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   untrusted external data: it arrives inside a provenance frame, but framing
   guides a model rather than constraining it, and the controls that actually
   hold are the permission pipeline and the address boundary.
-- Multi-agent work is isolated and selectively integrated, but Collomia does
-  not automatically reconcile conflicts or resume pending child work. The
-  runtime-owned goal graph can now be tried as a TUI-only experimental
-  **evidence-gated durable execution** mode: `/orchestrate <goal>` creates a
-  read-only proposal and only the separate `/orchestrate approve` action
-  executes it. The model cannot mark its own claim done; the runtime owns
-  readiness, attempts, evidence freshness, recovery treatment, and terminal
-  state. Status, node evidence, cancellation, and explicit saved-graph resume
-  are inspectable. At most two
-  independently ready approved `read_only` nodes can run through automatic
-  governed workers before execution returns to the one serial primary lane.
-  Workers cannot write, run commands, recurse, update the plan, or control the
-  graph; their prose is accepted only with successful tool evidence and a
-  fresh workspace token. A mutation requires recognized verification against
-  the current Git state, and an ambiguous interrupted mutation is blocked
-  instead of replayed. Recognized verification covers the conventional
-  build/lint/test entry points of the ecosystems Collomia meets — including
-  `uv`, `poetry`, `pipenv`, `conda`, `tox`/`nox`, R, Ruby, Elixir, PHP, Swift,
-  CMake, Deno, Haskell, Bazel, and task runners — because a mutating node
-  blocks honestly when it cannot verify, so a missing ecosystem would mean the
-  mode could not finish work there. A wrapper counts only when what it wraps is
-  itself a recognized check, and a command that passes on almost any tree, such
-  as `git diff --check`, is not verification of a change. Cooperative pause/resume is available at the next safe
-  provider/scheduler boundary, and a blocked node can be retried only when its
-  attempt budget and non-replay checks allow it; whole-graph cancel remains
-  immediate. The whole-graph envelope charges new work rather than prompt tokens
-  the provider served from cache, so a long node's re-sent context does not
-  exhaust it, and compaction will not repeat on a context it has already
-  reduced. The envelope's four bounds default to the values above and are set
-  in `options.orchestration_*`. Each is a speed bump rather than a wall: if one
-  is reached, the accepted nodes and retained candidates stand and
-  `/orchestrate extend` grants another envelope of the same size, as often as
-  the user decides to; unfinished nodes resume in new attempts, so nothing
-  interrupted is replayed. Repository text, hooks, skills, and the model cannot
-  widen it, and permission, verification, write-scope, and publication remain
-  safety gates that no envelope affects. A terminal graph yields to a fresh `/orchestrate <goal>` in the
-  same session through an append-only tombstone, and cancel on an already-
-  terminal graph performs the same archive action without deleting evidence.
-  Proposal-time `done` or `in_progress` annotations are never imported as
-  runtime state: approval starts every node pending with no model-authored
-  evidence. `/plan off` safely cancels an unapproved proposal and restores
-  execution mode; it does not approve or execute the saved plan.
-  An explicit retry can reattach its saved blocked graph directly
-  after the exact conversation is reopened; restored bytes remain inert until
-  that user action. Status durably separates proposal-plus-primary and automatic-read
-  iterations, tokens, honest price availability, estimated cost, elapsed
-  time, and active time. A whole-graph envelope limits the preview to 96
-  provider iterations, 1,000,000 tokens, $5 estimated cost when pricing is
-  complete, and 30 minutes of active post-approval execution; each is settable
-  through `options.orchestration_*`, and only implausible values are refused.
-  Older saved graphs retain their stored ceiling. The ordinary `max_iterations` value is a
-  provider-response-cycle limit, not a tool-call count. In this mode it bounds
-  consecutive cycles without novel durable successful tool evidence inside a
-  primary attempt; productive evidence renews that lease, equivalent repeated
-  evidence does not, and 96 remains the whole-graph outer limit. Once an exact
-  completion gap is open, a separate four-cycle lease renews for an actual
-  workspace repair, a novel machine-observed verification failure, or evidence
-  that closes the gate. Identical failures, command variation, and unrelated
-  output do not prolong it. Proposal guidance prefers one to three nodes for a
-  scoped change and four to six only for broad work, and requires the first mutating node
-  in a project without an applicable test surface to create a focused smoke
-  test. Passing verification is acknowledged as recorded against the current workspace, and
-  later process/network actions do not stale it unless the observed repository
-  token changes. The receipt also tells the model to stop at the current node;
-  after runtime acceptance, a zero-provider handoff replaces that node's active
-  tool-loop context while the complete transcript remains durable. Approval
-  compacts proposal history once,
-  and later cumulative-budget pressure can compact again; these requests are
-  counted rather than treated as free work. Controlled
-  comparisons retain two-worker fan-out for substantive independent reads
-  while showing its extra model work; trivial and dependency-serial work stays
-  serial. End-to-end change graphs use the primary lane. An explicitly
-  candidate-only graph can instead declare narrowly scoped terminal
-  `isolated_write` nodes; it cannot mix those retained candidates with primary
-  work or make later nodes depend on them. Approval first checks the clean Git
-  base and names dirty paths without consuming the proposal. One bounded wave starts at most two ready,
-  pairwise-disjoint writers from the same clean commit, keeps them in isolated
-  worktrees, and requires ordinary dispatch permission plus fresh detected
-  child verification. Automatic writers cannot commit or create branches even
-  inside their own worktree. Passing candidates stop the graph in a distinct
-  `awaiting_review` state — reported as a finished run naming the review step,
-  not as a blocker — and Collomia does not automatically select or integrate
-  them; the parent workspace remains unchanged until the user explicitly runs
-  `/orchestrate integrate <node-id>`. Every worktree the runtime creates stays
-  attributable to its node and attempt however the wave ends: identity is
-  recorded durably the moment Git creates the tree, and a wave that is
-  cancelled or exhausts the aggregate budget still records where each one is.
-  `/orchestrate status` lists them for the whole graph, live or saved, and says
-  when the runtime never examined one. An interrupted writer is blocked rather
-  than replayed, and recovery names the exact orphaned worktree and branch.
-  `/orchestrate reconcile` then answers what is actually left in each one —
-  present, empty, missing, no longer registered with Git, or unmoored from the
-  base commit its claim recorded — and stores that answer durably, so a
-  remembered path is never reported as though someone had just checked it.
-  `/orchestrate discard <node-id>` removes a tree you no longer want: it
-  refuses one nobody has reconciled, asks you to repeat the command with
-  `confirm` when the tree still holds changes, and declines outright to delete
-  a directory Git no longer registers, since that would be a recursive delete
-  of a path rather than a Git operation. Archiving a terminal graph waits until
-  its worktrees have been observed, because the graph is the only thing that
-  knows they exist. Nothing reuses a candidate: that is still review work you
-  do yourself, and `/agents apply` refuses a graph candidate rather than
-  publishing it behind the graph's back — you can review it there, but not
-  apply it. `/orchestrate integrate <node-id>` is the one path that does
-  publish one: it applies the whole candidate under the pre-integration
-  checkpoint, refuses outright if any file conflicts with your own changes,
-  and leaves the node reading `integrated` rather than `done`, because the
-  child's tests passed in its own worktree and nothing has yet verified the
-  combined workspace. `/orchestrate verify` then runs this repository's own
-  checks against the merged result and completes the node only when they all
-  pass; a failure leaves it integrated and unfinished, which is exactly the
-  case a child worktree's own suite cannot see. Where no automated check
-  applies, `/orchestrate waive <reason>` completes it on your written
-  judgement, recorded as a waiver rather than as verification. There is
-  deterministic feedback when a verification-like shell command cannot count
-  as evidence, naming the direct command to run wherever the check sits in
-  what was refused, and a node that stalls after refused checks repeats it in
-  the blocker. A composed command qualifies when the shell provably reports the
-  verifier's own status — an `&&` chain ending in the check, so preparation
-  such as a sandbox-required cache redirect or a virtualenv activation is fine
-  — while `||`, `;`, pipelines, backgrounding, redirection, a check that is not
-  last, and a leading segment that would run it outside the workspace do not. Graph-hidden plan/delegation tools are blocked again before
-  their arguments are decoded. A restart now reproduces a
-  multi-worker schedule exactly, and an earlier publication that never recorded
-  an outcome stops integration, combined verification, and waiver until you
-  either restore the prior bytes or record that you are keeping what was
-  published. There is
-  no optional-branch/node cancellation and no automatic candidate integration.
-  Configuration, a repository, a saved graph,
-  and a headless flag still cannot enable the preview. Standard execution
-  remains the default.
+- Orchestrated Goal is an optional TUI workflow for **evidence-gated durable
+  execution**. End-to-end graphs made of `primary` and `read_only` nodes are a
+  supported capability: the model proposes the dependency graph, but the
+  runtime owns readiness, attempts, evidence freshness, recovery, accounting,
+  and terminal state. Up to two independent read-only workers can run in
+  parallel before work returns to the serial primary lane. Ambiguous mutating
+  actions are never replayed after interruption, and saved graph bytes remain
+  inert until the user explicitly resumes or retries them.
+- The `isolated_write` candidate wave is still experimental. It runs at most
+  two pairwise-disjoint writers in retained Git worktrees, verifies them there,
+  and stops at `awaiting_review` without changing the parent workspace. There
+  is no automatic candidate selection or integration. Publishing a candidate
+  requires `/orchestrate integrate <node-id>`, followed by fresh combined-
+  workspace checks through `/orchestrate verify` or a written user waiver.
+  Interrupted publications must be reconciled before integration,
+  verification, or waiver can continue.
+- Orchestrated Goal requires explicit per-session user activation through
+  `/orchestrate <goal>` and `/orchestrate approve`. Configuration, repository
+  content, a saved graph, and headless flags cannot enable it. Its aggregate
+  iteration, token, cost, and active-time limits are user-configurable and can
+  be explicitly extended, but extensions never weaken permission,
+  verification, write-scope, or publication gates. Optional node cancellation,
+  recursion, and automatic candidate ranking are not implemented. See the
+  [Orchestrated Goal guide](USER_GUIDE.md#orchestrated-goal) for operation and
+  the [strategy](ORCHESTRATION_STRATEGY.md) for the durable authority and
+  maturity contract.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache
@@ -244,7 +139,8 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   regional availability, and upstream API changes. Use the capability display,
   `collo doctor`, and live provider qualification before relying on a hosted
   endpoint.
-- The project has extensive automated security tests. Continued adversarial testing remains ongoing beta work; passing one assessment is not
+- The project has extensive automated security tests, and continued
+  adversarial testing remains ongoing beta work. Passing an assessment is not
   a claim that unattended execution is risk-free.
 - Configuration, event, and session formats have explicit version checks and a
   documented [compatibility policy](COMPATIBILITY.md), but downgrading a global

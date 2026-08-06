@@ -62,7 +62,8 @@ versioning contract.
 
 ## Event kinds
 
-Current one-shot runs emit these events when applicable:
+The current runtime event model defines these kinds. One-shot runs emit the
+applicable public subset; rows below identify internal or TUI-only events:
 
 | Kind | Payload | Meaning |
 |---|---|---|
@@ -74,7 +75,7 @@ Current one-shot runs emit these events when applicable:
 | `tool.output` | `tool` | Live bounded tool output. |
 | `tool.result` | `tool` | Completed tool result and error flag. |
 | `permission.decision` | `permission` | Allow/deny decision, source, matched rule, and resources. |
-| `goal.graph.update` | `goal_graph` | Bounded runtime-owned graph transition: graph/generation identity, optional node/attempt, state, reason, ready node IDs, and terminal outcome. The experimental TUI flow reports automatic-read selection as `delegated_read` and cooperative controls as `pause_requested`, `paused`, `resumed`, or `retry_requested`. Emitted by internal evaluations and the explicit TUI-only Orchestrated Goal preview; Standard/headless runs do not emit it. |
+| `goal.graph.update` | `goal_graph` | Bounded runtime-owned graph transition: graph/generation identity, optional node/attempt, state, reason, ready node IDs, and terminal outcome. The TUI workflow reports automatic-read selection as `delegated_read` and cooperative controls as `pause_requested`, `paused`, `resumed`, or `retry_requested`. Emitted by internal evaluations and the explicit TUI-only Orchestrated Goal workflow; Standard-mode and headless runs do not emit it. |
 | `usage` | `usage` | Provider-reported input/output/cached/cache-write/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. `input_tokens` counts the whole prompt including cached tokens; see [final result](#final-result). |
 | `context.compaction` | `text` | Context was compacted. |
 | `warning` | `text` | Non-fatal runtime/provider warning. |
@@ -84,7 +85,7 @@ Current one-shot runs emit these events when applicable:
 Schema v1 also reserves `session.start`, `permission.request`, `file.change`,
 `plan.update`, `goal.graph.update`, and `delegate.update` for consumers sharing
 the runtime event model. `goal.graph.update` is emitted by the explicit
-TUI-only `/orchestrate` experiment and internal evaluations; there is no
+TUI-only `/orchestrate` workflow and internal evaluations; there is no
 headless or configuration switch for it. `delegate.update` carries the latest
 bounded manual or graph-selected child status used by durable interactive sessions; one-shot
 JSONL runs do not currently promise either internal lifecycle kind.

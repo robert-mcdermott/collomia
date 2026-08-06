@@ -89,7 +89,7 @@ Installer overrides:
 # Install a particular release tag.
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh |
-  COLLO_VERSION=v0.1.8 sh
+  COLLO_VERSION=vX.Y.Z sh
 
 # Install somewhere else.
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -134,11 +134,11 @@ Piping into `iex` cannot pass parameters, so set the environment variables the
 script reads, or build a script block:
 
 ```powershell
-$env:COLLO_VERSION = 'v0.2.0-beta.1'
+$env:COLLO_VERSION = 'vX.Y.Z'
 irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex
 
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1))) `
-  -Version v0.2.0-beta.1 -InstallDir "$HOME\bin"
+  -Version vX.Y.Z -InstallDir "$HOME\bin"
 ```
 
 `COLLO_VERSION`, `COLLO_INSTALL_DIR`, `COLLO_REPOSITORY`, `COLLO_ARCH`, and
@@ -428,6 +428,8 @@ This creates:
   configuration.
 - `config.example.jsonc` beside it: commented documentation only; Collomia
   never loads this file.
+- `collomia.schema.json` beside the active configuration: generated editor
+  schema only; Collomia never loads this file either.
 
 The global starter includes safe permission defaults and common runtime
 options. It deliberately includes no provider or model because a static file
@@ -459,9 +461,10 @@ From a repository root:
 collo init --with-reference
 ```
 
-This creates `.collomia.json` plus the optional `.collomia.example.jsonc`.
-The project starter contains only a permission-mode override so that providers
-and other user defaults continue to inherit from the global file.
+This creates `.collomia.json` plus `collomia.schema.json` and the optional
+`.collomia.example.jsonc`. The project starter contains only a permission-mode
+override so that providers and other user defaults continue to inherit from
+the global file.
 
 Project configuration is quarantined until approved:
 
@@ -596,8 +599,9 @@ The effective configuration is assembled from lowest to highest precedence:
 `--agent` overrides it for one invocation. `--autonomy` overrides
 `permissions.mode`. `/model`, `/agent`, `/autonomy`, `/plan`, `/orchestrate`,
 and `/theme` can make runtime changes, but they do not rewrite configuration
-files. Orchestrated Goal is an explicit per-session experiment; it cannot be
-enabled by any configuration layer.
+files. Orchestrated Goal is an explicit per-session TUI workflow; it cannot be
+enabled by any configuration layer. End-to-end `primary`/`read_only` graphs are
+supported, while the `isolated_write` candidate wave remains experimental.
 
 Later layers override only values they supply. Scalar fields nested in an
 object inherit independently. Named maps such as `providers`, `mcp`, and
@@ -915,7 +919,7 @@ to warm up again. And anything that changes the front of a request — switching
 model or provider, editing project instructions, changing agent profile — starts
 a new prefix.
 
-### Presets: one line instead of eight
+### Presets: one line instead of nine
 
 `permissions.preset` selects a named containment bundle so a working, coherent
 policy does not require composing every switch below by hand. Omit it and you
@@ -930,9 +934,12 @@ get `standard`, which is exactly what earlier releases did.
 | `sandbox` | `off` | `auto` | `require` |
 | `sandbox_allow_network` | `true` | `true` | `true` |
 | `sandbox_allow_read_outside_workspace` | `true` | `true` | `false` |
+| `allow_outside_workspace` | `false` | `false` | `false` |
 | `network` | `open` | `open` | `scoped` |
 | `commands` | `open` | `open` | `allowlist` |
 | `command_env` | `full` | `minimal` | `minimal` |
+| `protect_credentials` | `off` | `prompt` | `deny` |
+| `publication` | `off` | `prompt` | `deny` |
 
 No preset sets `sandbox_egress`. Scoped egress is enforceable on macOS only,
 so folding it into a cross-platform bundle would make one preset name mean
@@ -983,8 +990,8 @@ ambiguous.
 **Rule 2 — a project file can tighten containment, never weaken it.** This
 applies to `sandbox`, `sandbox_allow_network`, `sandbox_egress`,
 `sandbox_allow_read_outside_workspace`, `command_env`, `network`, `commands`,
-and `allow_outside_workspace`, and it applies the same way to an explicit
-field and to a preset:
+`allow_outside_workspace`, `protect_credentials`, and `publication`, and it
+applies the same way to an explicit field and to a preset:
 
 | global (`~/.collomia/config.json`) | project (`.collomia.json`) | effective |
 | --- | --- | --- |
@@ -1033,6 +1040,7 @@ layer is read at all; these rules decide what it may do once it is trusted.
 | `sandbox_allow_read_outside_workspace` | boolean | Allows broad user-data reads inside sandboxed commands. Defaults to `true` for toolchain compatibility; set `false` to request OS-enforced workspace-scoped user-data reads. Windows AppContainer remains read-confined either way. |
 | `sandbox_readable_roots` | string list | Additional narrowly scoped read/execute roots used when reads are confined, resolved from the workspace when relative. Useful for dependency stores and read-only SDKs. |
 | `sandbox_writable_roots` | string list | Additional narrowly scoped read/write roots for sandboxed commands, resolved from the workspace when relative. Every writable root is implicitly readable. |
+| `protect_credentials` | string | `off`, `prompt` (default), or `deny`. Protects recognized credential-store locations from file tools and commands; a matching operation-scoped rule may authorize `prompt`, while `deny` cannot be overridden by a session grant. See [Credential files](#credential-files). |
 | `publication` | string | `off`, `prompt` (default), or `deny`. Decides what happens when an action puts something outside this machine: publishing a package or image, opening a pull request or release, applying infrastructure, pushing to a Git remote, or running a command on another host. Under `prompt` it is not covered by autopilot or a tool-wide "always allow"; a rule naming the operation is. See [Publishing outside this machine](#publishing-outside-this-machine). |
 | `command_env` | string | `full` or `minimal`; if omitted while sandboxing is enabled, minimal is used. |
 | `reviewer_command` | string | Optional external policy reviewer for otherwise auto-approved non-read actions. |
@@ -3260,8 +3268,8 @@ profile, scheduler, permission, and cancellation limits can be tighter. The
 graph records why it delegated and the worker identity, usage, evidence,
 retry, and terminal state.
 
-The whole graph also has an experimental envelope: 96 provider
-iterations, 1,000,000 charged tokens, $5 estimated cost when
+The whole graph has a user-owned aggregate envelope: 96 provider iterations,
+1,000,000 charged tokens, $5 estimated cost when
 every token-bearing contribution has configured pricing, and 30 minutes of
 active execution after approval. Each is yours to set through
 `options.orchestration_*`, and only an implausible value is refused. The
@@ -3335,7 +3343,7 @@ snapshot, and the handoff marker.
 
 Use `/orchestrate status [node]` at any time to inspect the graph or one node,
 including dependencies, acceptance criteria, attempts, failures, commands,
-evidence, and the fixed preview bounds. `/tasks` and the Session/context-rail
+evidence, and the graph's configured bounds. `/tasks` and the Session/context-rail
 views project the active graph rather than showing a stale logical plan.
 After approval, whole-plan replacement and model-directed delegation tools are
 not part of the primary tool surface; the runtime owns graph transitions and
@@ -4133,7 +4141,7 @@ question broker can make the model-visible subset smaller.
 | `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
 | `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |
 | `apply_patch` | Validate related create/update/delete operations before applying them through rooted atomic replacement and safe deletion, with rollback on a later publish failure. |
-| `run_command` | Shell command in workspace; default timeout 120 seconds, maximum 1,800; bounded/live output; optional Unix PTY. |
+| `run_command` | Shell command in workspace; default timeout 120 seconds, maximum 1,800; bounded/live output; optional PTY on Unix or pseudoconsole on Windows 10 1809 and later. |
 | `git_status` | Read-only branch/ahead/behind/change status. |
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
 | `git_log` | Read-only recent history, default 20 and maximum 100 commits. |
@@ -4204,8 +4212,9 @@ which owns the shared goal and structured plan.
 
 Verification recognition is conservative. Collomia recognizes direct common
 commands such as Go build/vet/test, Cargo checks, package-manager scripts,
-pytest/Ruff/mypy, Make targets, and `git diff --check`; shell compounds and
-success-masking forms such as `go test ./... || true` never count. The write
+pytest/Ruff/mypy, and Make targets. A whitespace-only check such as
+`git diff --check` is deliberately insufficient, and success-masking forms
+such as `go test ./... || true` never count. The write
 gate covers file mutations made through Collomia's tracked write tools. A
 command or external tool can have side effects the runtime cannot enumerate,
 so permissions, plan evidence, and the final diff remain necessary review
@@ -4279,11 +4288,14 @@ platform kill primitive cannot hang terminal restoration indefinitely.
 
 ### Git inspection
 
-Git tools invoke Git directly, never through a shell, reject user-supplied
-values beginning with `-`, cap output, and time out after 30 seconds. They do
-not add, commit, branch, merge, rebase, reset, or push. If you ask the agent to
-perform those operations, it must use `run_command` and pass the normal command
-approval/sandbox policy.
+The read-only `git_status`, `git_diff`, `git_log`, and `git_blame` tools invoke
+Git directly, never through a shell, reject user-supplied values beginning with
+`-`, cap output, and time out after 30 seconds. Separate `git_commit` and
+`git_branch` tools provide narrowly scoped writes under normal permission
+checks; `git_commit` declares its exact paths so credential protection can
+inspect what enters history. There are no built-in add, merge, rebase, reset,
+push, or arbitrary-checkout tools; those operations require `run_command` and
+its normal command approval and sandbox policy.
 
 ### Verification detection
 
@@ -5601,8 +5613,8 @@ manual inspection.
 Every run creates or resumes a durable per-workspace session. The append-only
 JSONL file includes metadata, full messages, runtime events, compaction
 markers, structured plan updates, bounded delegated-agent lifecycle/outcome
-snapshots, and—only for the internal OG-1 evaluation path—complete versioned
-goal-graph snapshots. Graph attempts and evidence are restored as state, never
+snapshots, and complete versioned snapshots for approved Orchestrated Goal
+graphs. Graph attempts and evidence are restored as state, never
 replayed as work; an interrupted non-replayable action becomes a reconciliation
 blocker.
 
@@ -5759,7 +5771,7 @@ on every provider request. It is refreshed after `update_plan`, resume,
 in-process session switching, compaction, and rewind. Because it is outside the
 message history, compaction cannot remove it. In Standard and planning modes,
 `/tasks` shows the same logical plan the model receives. During an approved
-Orchestrated Goal preview, `/tasks` instead shows the runtime graph and its live
+Orchestrated Goal graph, `/tasks` instead shows the runtime graph and its live
 node states so a completed proposal cannot be mistaken for execution truth.
 
 When estimated active context exceeds 80% of a known window and enough messages
@@ -5856,8 +5868,9 @@ remote identity, reconnect, or observer sessions. Refreshing the page ends the
 current first-generation browser session.
 
 All web assets are vendored and embedded; npm is not required to build or run
-the existing interface. Native Windows browser mode is unavailable until a
-ConPTY backend can preserve equivalent terminal and process semantics.
+the existing interface. Windows 10 1809 or later uses the same interface
+through a pseudoconsole; older Windows versions fail clearly because that API
+is unavailable.
 
 ## Files, state, logs, and privacy
 
@@ -5870,10 +5883,12 @@ In this table, `<global-root>` means `~/.collomia` on macOS/Linux and
 | --- | --- |
 | `<global-root>/config.json` | Global active configuration. |
 | `<global-root>/config.example.jsonc` | Generated commented reference; never loaded. |
+| `<global-root>/collomia.schema.json` | Generated editor schema for the global configuration; never loaded. |
 | `<global-root>/AGENTS.md` or `COLLOMIA.md` | User-wide instructions. |
 | `<global-root>/skills/` | User-wide skills. |
 | `<workspace>/.collomia.json` | Project configuration, content-trusted when present. |
 | `<workspace>/.collomia.example.jsonc` | Project reference only. |
+| `<workspace>/collomia.schema.json` | Generated editor schema for the project configuration; never loaded. |
 | `<workspace>/AGENTS.md`, `COLLOMIA.md` | Project instructions. |
 | `<workspace>/.collomia/skills/`, `.agents/skills/` | Project skills. |
 
@@ -5893,6 +5908,7 @@ macOS/Linux and `%USERPROFILE%\.collomia\` on Windows:
 | Oversized result artifacts | `sessions/<workspace-name-and-hash>/<session-id>.artifacts/*.json` |
 | Audit ledger | `audit/<workspace-name-and-hash>.jsonl` (plus one retained `.1.jsonl` generation) |
 | Trust database | `trust.json` |
+| Credential-store name index | `credentials.json` (provider names and store metadata, never credential values) |
 | MCP pins | `mcp-pins.json` |
 | Debug logs | `logs/*.log` |
 | Support bundles | `support/collomia-support-*.zip` |
@@ -6162,7 +6178,8 @@ occurs. Prefer a narrow fix over globally disabling controls.
 
 ### Browser terminal does not open
 
-- Browser mode is available only on macOS/Linux.
+- Browser mode is available on macOS, Linux, and Windows 10 1809 or later.
+  Older Windows versions do not provide the required pseudoconsole API.
 - With `--no-open`, copy the complete printed URL including its fragment.
 - Confirm the selected loopback port is free, or omit `--web-port`.
 - Do not refresh: the current implementation ends when the controlling

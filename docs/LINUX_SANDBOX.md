@@ -222,9 +222,11 @@ On ABI v4–v9, including stock Ubuntu 26.04:
   containment as complete network denial.
 
 Do not treat TCP-only Landlock as an offline environment: UDP and DNS
-datagrams may still leave the process. Collomia does not currently provide
-domain-scoped grants or configure a network namespace, firewall, or proxy on
-the user's behalf.
+datagrams may still leave the process. Host rules, the `network: "scoped"`
+posture, and endpoint-scoped grants remain available as policy controls, but
+Landlock cannot turn them into a remote-address boundary. Collomia does not
+configure a network namespace, firewall, or proxy on the user's behalf on
+Linux.
 
 ## Configuration field reference
 
@@ -349,8 +351,12 @@ Landlock is an additional restriction layer, not a VM or container:
 - Existing permissions, AppArmor/SELinux policy, container confinement, and
   filesystem ACLs still apply. Landlock can only remove access; it cannot
   grant access the user did not already have.
-- Collomia's current network switch is all-or-nothing. Domain- and
-  endpoint-scoped command grants are not implemented yet.
+- Linux sandbox enforcement remains all-or-nothing for command networking.
+  Host rules, the `network: "scoped"` posture, and endpoint-scoped grants are
+  available at the policy layer, but Linux cannot enforce them against sockets
+  a process opens without declaring the destination. The macOS-only
+  `sandbox_egress: "scoped"` broker is unavailable because Landlock filters by
+  port rather than remote address.
 
 Use `sandbox: "require"` for workflows where silently losing an available
 boundary would be unacceptable, but interpret its guarantees together with

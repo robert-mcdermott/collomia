@@ -151,10 +151,10 @@ correction, and graph-hidden tools are enforced before argument decoding.
 An exact open completion gap now has its own four-cycle lease that renews only
 when evidence can change that gate, redundant exact-workspace `cd ... &&` and
 final `2>&1` verification wrappers are recognized without accepting status-
-masking shell composition, and unschedulable isolated-writer graphs are
-rejected before approval. End-to-end change graphs default to `primary`;
-`isolated_write` remains a clean-base, candidate-only terminal preview until
-reviewed integration exists.
+  masking shell composition, and unschedulable isolated-writer graphs are
+  rejected before approval. At that milestone, end-to-end change graphs
+  defaulted to `primary`; `isolated_write` was a clean-base, candidate-only
+  terminal preview until reviewed integration shipped in OG-4.
 The latest correction distinguishes repair progress from churn: a novel
 machine-observed verification failure and an actual repository mutation renew
 the short completion-gap window so the agent can add or fix a focused test,
@@ -169,11 +169,11 @@ authority boundary: approval always initializes runtime nodes pending, and
 both `/orchestrate cancel` and `/plan off` provide visible recovery from an
 unapproved read-only proposal.
 Standard evidence-gated execution remains the default.
-**OG-3 — Isolated writer candidates is complete** as of 2026-08-03: OG-3B5
+**OG-3 — Isolated writer candidates was completed** on 2026-08-03: OG-3B5
 made every retained worktree observable and disposable by the user, OG-3B6
 completed the adversarial campaign, and OG-3C added the product evaluations
-that proved the exit gate. **OG-4 — Reviewed integration** is now the active
-milestone through 2026-08-03, when it met its exit gate and closed. Its four
+that proved the exit gate. **OG-4 — Reviewed integration** then met its exit
+gate and closed on 2026-08-03. Its four
 increments shipped: a graph candidate could be
 published into the parent workspace through `/agents apply` while the graph
 still reported that reviewed integration was required, and that path is now
@@ -191,7 +191,7 @@ bytes back or by recording that you are keeping what was published. Its
 comparison increment measured both modes across the whole scenario list, and
 its guidance increment wrote down which work the mode is for.
 
-**All nine graduation clauses are met. Nothing is outstanding on evidence.
+**All nine graduation clauses are met. Nothing is outstanding on evidence.**
 The ratified order governs from here: read fan-out graduates first, with the
 isolated-writer wave trailing it. Both product judgements that remained are now
 settled: the capability matrix carries two rows, approving a graph with

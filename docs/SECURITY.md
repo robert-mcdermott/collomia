@@ -271,24 +271,29 @@ collo --autonomy autopilot policy check 'rm -rf node_modules'  # allow
 ## Containment presets
 
 `permissions.preset` bundles the containment switches so a coherent policy is
-one line rather than eight decisions. It is sugar over the same fields, never
+one line rather than nine decisions. It is sugar over the same fields, never
 a hidden mode:
 
 | | `frictionless` | `standard` (default) | `hardened` |
 | --- | --- | --- | --- |
 | `sandbox` | `off` | `auto` | `require` |
+| `sandbox_allow_network` | `true` | `true` | `true` |
 | `sandbox_allow_read_outside_workspace` | `true` | `true` | `false` |
+| `allow_outside_workspace` | `false` | `false` | `false` |
 | `network` | `open` | `open` | `scoped` |
 | `commands` | `open` | `open` | `allowlist` |
 | `command_env` | `full` | `minimal` | `minimal` |
+| `protect_credentials` | `off` | `prompt` | `deny` |
+| `publication` | `off` | `prompt` | `deny` |
 
 - Fields you set explicitly always win over the preset in the same layer,
   whichever is stricter.
 - **A repository can tighten containment but never weaken it.** This is one
   rule with no exceptions, covering `sandbox`, `sandbox_allow_network`,
   `sandbox_egress`, `sandbox_allow_read_outside_workspace`, `command_env`,
-  `network`, `commands`, and `allow_outside_workspace`, and applying identically to an
-  explicit field and to a preset. A project file's `frictionless` cannot undo
+  `network`, `commands`, `allow_outside_workspace`, `protect_credentials`, and
+  `publication`, and applying identically to an explicit field and to a preset.
+  A project file's `frictionless` cannot undo
   a global `hardened`, and neither can a project file's explicit
   `"sandbox": "off"`. Refusals are listed by `collo config show` and
   `collo config validate` rather than applied silently, so an ignored setting
@@ -626,9 +631,13 @@ Shared limitations, stated plainly:
 - `auto` never silently equates partial enforcement with a complete sandbox:
   it emits an actionable degradation warning. `require` refuses a command if
   any requested write, read, or network protection is unavailable.
-- Network policy remains all-or-nothing for a command. Domain-scoped egress is
-  roadmap work; environment-only proxy settings would not be a security
-  boundary because a hostile command could bypass them.
+- Network sandboxing remains all-or-nothing on Linux and Windows. macOS can
+  opt into experimental per-host enforcement with
+  `sandbox_egress: "scoped"`, which denies direct remote traffic and routes
+  approved hosts through a loopback broker. Host rules and endpoint-scoped
+  grants remain policy-only on Linux and Windows; environment-only proxy
+  settings would not be a security boundary because a hostile command could
+  bypass them.
 - Package managers and build tools may need dependencies or caches outside the
   workspace. Prefer a narrow `sandbox_readable_roots` entry for immutable
   inputs and `sandbox_writable_roots` only for paths that must change. Writable
@@ -1187,8 +1196,9 @@ control as the user at the terminal, including the ability to answer approval
 prompts. Do not share it. Do not put this server behind a reverse proxy, port
 forward, tunnel, or non-loopback listener: there is no TLS, account identity,
 remote-access policy, or idle-session authentication. The server shuts down
-with the TUI. Windows web-terminal mode is rejected until a real ConPTY backend
-can preserve equivalent terminal and process-lifecycle behavior.
+with the TUI. On Windows 10 1809 or later, the browser terminal uses a
+pseudoconsole whose child is assigned to a Job Object before it runs; older
+Windows versions fail clearly because the pseudoconsole API is unavailable.
 
 ## Provider streams
 
@@ -1322,12 +1332,13 @@ disable Entra instance discovery or infer sovereign audiences. Use
 `AZURE_TOKEN_CREDENTIALS` to restrict `DefaultAzureCredential` to the intended
 development or production credential set.
 
-By default, agent commands (including background processes and PTY runs)
-inherit your full environment, which may include unrelated secrets from
-your shell. `permissions.command_env: "minimal"` strips commands down to an
-allowlist — this is the default automatically whenever the sandbox is enabled
-(`sandbox: "auto"` or `"require"`), and can be set explicitly without the
-sandbox too.
+When `command_env` is omitted, `sandbox: "auto"` or `"require"` selects the
+minimal environment automatically; that remains true if `auto` visibly
+degrades on a host, so degradation does not re-expose the parent environment.
+With `sandbox: "off"`, omission inherits the full environment, which may
+include unrelated secrets from your shell. Setting
+`permissions.command_env: "minimal"` makes the allowlist explicit and also
+applies it when the sandbox is off.
 
 The allowlist is exactly `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
 `TMPDIR`, `TEMP`, `TMP`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `COLUMNS`,
