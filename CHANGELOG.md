@@ -5,6 +5,77 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
+## Unreleased
+
+### Added
+
+- **`/orchestrate done` ends a goal that has finished.** A terminal graph stays
+  attached so it remains inspectable, which also means it keeps owning the
+  session until something releases it. Until now the only command that did so
+  was `/orchestrate cancel`, which on a terminal graph had always archived
+  rather than cancelled — so finishing successfully and abandoning work in
+  flight shared one word, and the word was the wrong one. `/orchestrate done`
+  (also spelled `release`) returns the session to Standard mode and deletes
+  nothing: the transcript, evidence, and graph snapshots stay in the session
+  log.
+
+  Mostly you will not type it. A graph that finished with nothing left to run —
+  `done`, or one you cancelled — is released by your next ordinary prompt,
+  which then runs. `/orchestrate cancel` on a terminal graph still releases it,
+  so nothing that worked before stops working.
+
+  Release is narrower than cancellation on purpose. It refuses a running graph
+  (`/orchestrate pause` or `/orchestrate cancel`), refuses one stopped at
+  `awaiting_review` or `awaiting_verification` because each is holding a
+  decision that is yours to make, and still refuses any graph that is the only
+  record of a worktree nobody has reconciled.
+
+### Fixed
+
+- **A finished run could report itself as blocked.** The completion
+  controller's notice offered one way to record an unfinished step — mark it
+  `blocked` — and any blocked step ends the turn as blocked. A run that built
+  and verified its deliverable therefore came back as a failure because the
+  agent had abandoned a side attempt (a reference it turned out not to need, a
+  tool call it replaced with a better one) and had only that word to record it
+  with. The notice and the system prompt now distinguish `skipped` — the action
+  proved unnecessary or was accomplished another way — from `blocked`, which is
+  for work that genuinely cannot be completed, and say that blocked ends the
+  turn.
+- **A skill's own reference files could not be read.** `load_skill` tells the
+  model that a skill's references are read with `read_file` and lists their
+  paths, but the read was denied for being outside the workspace. An active
+  skill's directory is now readable by `read_file`, `list_files`, and
+  `search_files` regardless of `allow_outside_workspace`. Reads only: writes
+  still resolve against the workspace, so no tool can modify a skill bundle;
+  symlinks are contained against the resolved path; and disabled or
+  untrusted-project skills are excluded, so the project-trust quarantine is
+  unchanged.
+- **Orchestrated Goal could not verify a Node project that had no
+  `package.json`.** `node` was missing from the verification recognizer, so
+  `node --test` and `node tests/smoke.js` were not accepted as proof — while
+  the proposal contract requires the first mutating node to create a focused
+  test exactly when a project has no test surface. A node could therefore be
+  required to write a test and then refused every way of running it, blocking
+  with its own passing suite recorded in evidence. Node's entry points are now
+  recognized, by entry point rather than by interpreter: `node --test` and a
+  script in a conventional test location qualify, `node index.js` and
+  `node -e "..."` do not.
+- **A passing command the recognizer does not cover is no longer silent.**
+  While a node is waiting on verification, a declined command's tool result now
+  names it and gives either the project's detected verification commands or, if
+  the project has no recognized manifest, what declaring a test entry point
+  would achieve. The blocker names it too, instead of reporting that no
+  verification exists directly beneath a check you watched pass.
+
+### Changed
+
+- Terminal Orchestrated Goal messages name the commands that apply to them. A
+  completed graph pointed at `/new`, which ends the whole session, instead of
+  the command that ends the goal; blocked and budget-exhausted graphs named no
+  exit at all. They now name `/orchestrate status`, `retry`, `extend`, and the
+  release as applicable.
+
 ## v0.3.0
 
 A minor rather than a patch release. Most of it is one new opt-in mode, but one

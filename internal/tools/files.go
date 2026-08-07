@@ -35,7 +35,7 @@ func (t ReadFileTool) Assess(raw json.RawMessage) (Action, error) {
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return Action{}, err
 	}
-	p, o, e := t.Guard.Resolve(a.Path)
+	p, o, e := t.Guard.ResolveRead(a.Path)
 	return Action{Risk: RiskRead, Summary: "read " + p, Outside: o, Paths: []string{p}}, e
 }
 func (t ReadFileTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
@@ -47,7 +47,7 @@ func (t ReadFileTool) Execute(_ context.Context, raw json.RawMessage) (string, e
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", err
 	}
-	p, _, err := t.Guard.Resolve(a.Path)
+	p, _, err := t.Guard.ResolveRead(a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -102,7 +102,7 @@ func (t ListFilesTool) Assess(raw json.RawMessage) (Action, error) {
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return Action{}, err
 	}
-	p, o, e := t.Guard.Resolve(a.Path)
+	p, o, e := t.Guard.ResolveRead(a.Path)
 	return Action{Risk: RiskRead, Summary: "list " + p, Outside: o, Paths: []string{p}}, e
 }
 func (t ListFilesTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
@@ -116,7 +116,7 @@ func (t ListFilesTool) Execute(_ context.Context, raw json.RawMessage) (string, 
 	if a.MaxDepth <= 0 {
 		a.MaxDepth = 3
 	}
-	root, _, err := t.Guard.Resolve(a.Path)
+	root, _, err := t.Guard.ResolveRead(a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -168,7 +168,7 @@ func (t SearchFilesTool) Assess(raw json.RawMessage) (Action, error) {
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return Action{}, err
 	}
-	p, o, e := t.Guard.Resolve(a.Path)
+	p, o, e := t.Guard.ResolveRead(a.Path)
 	return Action{Risk: RiskRead, Summary: "search " + p, Outside: o, Paths: []string{p}}, e
 }
 func (t SearchFilesTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -185,7 +185,7 @@ func (t SearchFilesTool) Execute(ctx context.Context, raw json.RawMessage) (stri
 	if err != nil {
 		return "", err
 	}
-	root, _, err := t.Guard.Resolve(a.Path)
+	root, _, err := t.Guard.ResolveRead(a.Path)
 	if err != nil {
 		return "", err
 	}

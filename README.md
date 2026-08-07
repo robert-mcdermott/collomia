@@ -160,7 +160,10 @@ overhead:
 /orchestrate approve
 ```
 
-Saved graphs remain inert until explicitly resumed. Graph bounds are visible,
+A finished graph stays attached so you can still inspect it; `/orchestrate done`
+releases it and returns the session to Standard mode, and for a goal with
+nothing left to run your next ordinary prompt does the same. Saved graphs remain
+inert until explicitly resumed. Graph bounds are visible,
 user-configurable, and extendable by the user; they never weaken permission,
 scope, verification, or publication gates. Read the
 [Orchestrated Goal guide](docs/USER_GUIDE.md#orchestrated-goal)
@@ -202,13 +205,6 @@ go build -o collo ./cmd/collo
 Development and release checks are documented in [Testing](docs/TESTING.md)
 and [Releasing](docs/RELEASING.md). Security issues should be reported through
 the private process in [SECURITY.md](SECURITY.md).
-
-## Project status
-
-Collomia is in technical beta. It is suitable for interactive, reviewable
-repository work with the documented limits; it is not advertised as safe for
-unattended production changes. See the [changelog](CHANGELOG.md) and
-[compatibility policy](docs/COMPATIBILITY.md) before upgrading.
 
 ## License
 

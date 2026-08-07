@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,6 +22,12 @@ const maxGoalCompletionRemediationIterations = 4
 type refusedVerification struct {
 	Count      int
 	Suggestion string
+	// Unrecognized is the last passing command the runtime declined because it
+	// is not in the recognizer's table, as opposed to Suggestion's refused
+	// shell composition. A blocker that names it lets the operator see the
+	// real cause — an ecosystem the table does not cover — instead of reading
+	// that no verification exists under a test suite they watched pass.
+	Unrecognized string
 }
 
 func (a *Agent) graphEnabled() bool {
@@ -180,6 +187,53 @@ func (a *Agent) recordRefusedVerification(suggestion string) {
 	a.refusedVerification[attempt.ID] = record
 }
 
+// goalAwaitingVerification reports that the runtime has already told this
+// attempt its acceptance is missing fresh verification. It is the state in
+// which an unrecognized command is worth explaining, and the state the
+// remediation lease is counting down through.
+func (a *Agent) goalAwaitingVerification() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph == nil {
+		return false
+	}
+	_, attempt, active := graph.Active()
+	if !active {
+		return false
+	}
+	return slices.Contains(attempt.CompletionGapKinds, goalgraph.GapNoFreshVerification)
+}
+
+// recordUnrecognizedVerification remembers the passing command the table did
+// not cover, so a blocker can name it rather than reporting an absence.
+func (a *Agent) recordUnrecognizedVerification(command string) {
+	if a == nil || strings.TrimSpace(command) == "" {
+		return
+	}
+	a.mu.RLock()
+	graph := a.goalGraph
+	a.mu.RUnlock()
+	if graph == nil {
+		return
+	}
+	_, attempt, active := graph.Active()
+	if !active {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.refusedVerification == nil {
+		a.refusedVerification = make(map[string]refusedVerification)
+	}
+	record := a.refusedVerification[attempt.ID]
+	record.Unrecognized = command
+	a.refusedVerification[attempt.ID] = record
+}
+
 func (a *Agent) refusedVerificationFor(attemptID string) refusedVerification {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -191,8 +245,12 @@ func (a *Agent) blockStalledGoalCompletion(ctx context.Context, node goalgraph.N
 	// Name the refused check. Without this the operator reads that no
 	// verification exists directly beneath a passing test suite they watched
 	// run, with nothing to act on.
-	if refused := a.refusedVerificationFor(attempt.ID); refused.Count > 0 {
+	refused := a.refusedVerificationFor(attempt.ID)
+	if refused.Count > 0 {
 		reason += fmt.Sprintf("; %d verification-like command(s) were refused during this attempt — run %q directly, without shell composition", refused.Count, refused.Suggestion)
+	}
+	if refused.Unrecognized != "" {
+		reason += fmt.Sprintf("; %q passed but is not a recognized verification command, so it could not be bound to the workspace state as proof — this project needs a recognized test entry point (or the command's ecosystem needs to be recognized by Collomia)", refused.Unrecognized)
 	}
 	if err := a.goalGraph.BlockActive(context.WithoutCancel(ctx), attempt.ID, reason); err != nil {
 		return err
@@ -278,6 +336,12 @@ func (a *Agent) ensureGoalAttempt(ctx context.Context, send Emit) error {
 	return err
 }
 
+// releaseAdvice is the one exit every terminal outcome shares. A graph that
+// has stopped still owns the session's scheduling until it is released, and
+// the frontends that reach these errors are where a person finds that out, so
+// each of them names the command instead of leaving the session looking stuck.
+const releaseAdvice = "/orchestrate done returns this session to Standard mode"
+
 func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 	switch outcome {
 	case goalgraph.OutcomeDone:
@@ -285,20 +349,25 @@ func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 		// removes the last unfinished node, in which case this is the only
 		// thing the user is told about the turn — and the reason is where the
 		// runtime records that the approved plan was reduced to get here.
+		//
+		// Then name the way out. A finished graph stays attached until someone
+		// releases it, so this is the message a person meets when they try to
+		// carry on working, and it has to point at the command that ends the
+		// goal rather than at /new, which ends the whole session.
 		if reason = strings.TrimSpace(reason); reason != "" {
-			return fmt.Errorf("%w: %s; start /new for unrelated work", ErrGoalGraphComplete, reason)
+			return fmt.Errorf("%w: %s; %s", ErrGoalGraphComplete, reason, releaseAdvice)
 		}
-		return fmt.Errorf("%w; start /new for unrelated work", ErrGoalGraphComplete)
+		return fmt.Errorf("%w; %s", ErrGoalGraphComplete, releaseAdvice)
 	case goalgraph.OutcomeCancelled:
 		if strings.TrimSpace(reason) == "" {
 			reason = "goal graph cancelled"
 		}
-		return fmt.Errorf("%s: %w", reason, context.Canceled)
+		return fmt.Errorf("%s (%s): %w", reason, releaseAdvice, context.Canceled)
 	case goalgraph.OutcomeBudgetExhausted:
 		if strings.TrimSpace(reason) == "" {
 			reason = "goal graph budget exhausted"
 		}
-		return fmt.Errorf("%w: %s", ErrAggregateBudgetExceeded, reason)
+		return fmt.Errorf("%w: %s; /orchestrate extend grants another envelope and keeps every accepted node, or %s", ErrAggregateBudgetExceeded, reason, releaseAdvice)
 	case goalgraph.OutcomeAwaitingReview:
 		if strings.TrimSpace(reason) == "" {
 			reason = "verified candidates are retained for review"
@@ -308,7 +377,7 @@ func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 		if strings.TrimSpace(reason) == "" {
 			reason = "goal graph blocked"
 		}
-		return fmt.Errorf("%w: %s", ErrGoalBlocked, reason)
+		return fmt.Errorf("%w: %s; /orchestrate status names the blocker, /orchestrate retry <node-id> reopens a safe one, or %s", ErrGoalBlocked, reason, releaseAdvice)
 	default:
 		return nil
 	}
@@ -547,8 +616,8 @@ func goalAwaitingReviewAnswer(err error, graph *goalgraph.Graph) string {
 		// The ordering matters and is not obvious: these nodes are not blocked
 		// by a failure, they are blocked on the review above. Integrating and
 		// verifying is what lets them start.
-		answer += "\n\nThese are not blocked — they are waiting on the review above. Integrating and verifying the candidates lets them run. /orchestrate cancel would release the graph and abandon them."
+		answer += "\n\nThese are not blocked — they are waiting on the review above. Integrating and verifying the candidates lets them run. /orchestrate cancel would abandon the graph, them, and the retained candidates."
 		return answer
 	}
-	return answer + " /orchestrate cancel releases the graph when you are done."
+	return answer + " Once you have ruled on them, /orchestrate done returns this session to Standard mode; /orchestrate cancel abandons the graph and its candidates instead."
 }

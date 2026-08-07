@@ -189,7 +189,7 @@ func TestOrchestratedGoalComparativeSameScopeSerialEvaluation(t *testing.T) {
 		"have not run yet",
 		"node 2 (extend alpha two)",
 		"not blocked",
-		"would release the graph and abandon them",
+		"would abandon the graph, them, and the retained candidates",
 	} {
 		if !strings.Contains(waveAnswer, phrase) {
 			t.Fatalf("the answer does not say %q:\n%s", phrase, waveAnswer)

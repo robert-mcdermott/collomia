@@ -129,6 +129,22 @@ type ResultStreamer interface {
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
+	// guard is the path guard the built-in file tools share. It is exposed so
+	// a caller that learns later which directories are legitimately readable —
+	// the skill catalog is discovered after the registry is built — can widen
+	// reads without rebuilding every tool. Nil for registries assembled by
+	// hand in tests.
+	guard *PathGuard
+}
+
+// Guard returns the shared path guard for a registry built by Builtins.
+func (r *Registry) Guard() *PathGuard {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.guard
 }
 
 func NewRegistry(items ...Tool) *Registry {

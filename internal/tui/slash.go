@@ -334,6 +334,16 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			}
 			break
 		}
+		if len(args) == 1 && (strings.EqualFold(args[0], "done") || strings.EqualFold(args[0], "release")) {
+			notice, err := m.runtime.ReleaseOrchestratedGoal()
+			if err != nil {
+				m.addError(err)
+				break
+			}
+			m.reloadActivities()
+			m.addSystem(notice)
+			break
+		}
 		if len(args) == 1 && strings.EqualFold(args[0], "cancel") {
 			if m.busy && m.cancel != nil {
 				m.cancel()

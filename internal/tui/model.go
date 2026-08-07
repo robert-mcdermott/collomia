@@ -308,6 +308,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if strings.TrimSpace(msg.final) == "" {
 				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}
+			if notice := m.finishedGoalNotice(); notice != "" {
+				m.blocks = append(m.blocks, block{role: "system", content: notice})
+			}
 			cmds = append(cmds, m.refreshWorkspaceStatus())
 			m.refresh()
 		} else {
@@ -569,6 +572,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 			}
+			if !m.releaseFinishedGoal(value) {
+				m.updatePalette()
+				m.layout()
+				m.refresh()
+				return m, nil
+			}
 			cmd := m.startTurn(value)
 			m.updatePalette()
 			m.layout()
@@ -614,6 +623,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// finishedGoalNotice tells a person at the end of the turn what the session
+// will do next. A graph that has stopped keeps owning the session's scheduling
+// until it is released, and the difference between a session that reads as
+// finished and one that reads as stuck is whether anyone said so. Only the two
+// outcomes releaseFinishedGoal actually releases are announced here; blocked
+// and budget-exhausted graphs have recovery commands of their own, and the
+// awaiting states are holding a decision rather than waiting to be let go.
+func (m *Model) finishedGoalNotice() string {
+	switch m.runtime.OrchestratedGoalPhase() {
+	case "done":
+		return "Orchestrated Goal complete. It stays attached while you read /orchestrate status; your next ordinary prompt releases it and returns this session to Standard mode."
+	case "cancelled":
+		return "Orchestrated Goal cancelled. Your next ordinary prompt releases it and returns this session to Standard mode."
+	}
+	return ""
+}
+
+// releaseFinishedGoal lets an ordinary prompt end a goal that is already over.
+// A finished graph keeps owning the session's scheduling until it is released,
+// so before this the next thing a person typed failed against a graph with
+// nothing left to run, and the way out was a command named cancel. Typing a
+// new prompt is itself the explicit user act the release needs, and the
+// release is not destructive: the transcript and evidence stay in the session
+// log. The runtime decides what qualifies; only a done or cancelled graph is
+// released here, and the retained-worktree guard still refuses.
+//
+// It reports whether the prompt may proceed. A refused release keeps the draft
+// in the composer, because the reason is always something the user has to act
+// on first.
+func (m *Model) releaseFinishedGoal(value string) bool {
+	notice, released, err := m.runtime.ReleaseFinishedOrchestratedGoal()
+	if err != nil {
+		m.setComposerValue(value)
+		m.addError(err)
+		return false
+	}
+	if released {
+		m.reloadActivities()
+		m.addSystem(notice)
+	}
+	return true
 }
 
 // startTurn submits one prompt to the agent and begins streaming events.

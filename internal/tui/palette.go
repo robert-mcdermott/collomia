@@ -24,7 +24,7 @@ var slashCommands = []commandInfo{
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
-	{name: "/orchestrate", args: "[goal|approve|status [node]|pause|resume|retry node|extend|integrate node|verify|waive reason|reconcile|discard node [confirm]|cancel]", desc: "explicit experimental goal proposal and execution"},
+	{name: "/orchestrate", args: "[goal|approve|status [node]|pause|resume|retry node|extend|integrate node|verify|waive reason|reconcile|discard node [confirm]|done|cancel]", desc: "explicit experimental goal proposal and execution"},
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},
 	{name: "/theme", args: "[name]", desc: "list or switch color themes"},
 	{name: "/skills", args: "[list]", desc: "pick a skill to use (list prints them instead)"},
@@ -113,6 +113,7 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 			{"waive", "record your written judgement where no automated check applies"},
 			{"reconcile", "observe what is actually left in each retained worktree"},
 			{"discard", "remove a reconciled retained worktree you no longer want"},
+			{"done", "release a finished graph and return to Standard mode"},
 			{"cancel", "cancel the proposal or active graph"},
 		}
 	case "/model":

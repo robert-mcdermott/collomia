@@ -1027,7 +1027,7 @@ layer is read at all; these rules decide what it may do once it is trusted.
 | --- | --- | --- |
 | `preset` | string | `frictionless`, `standard` (default), or `hardened`. Fills only the containment fields you do not set yourself. |
 | `mode` | string | `ask`, `workspace`, or `autopilot`; default `ask`. |
-| `allow_outside_workspace` | boolean | Allows built-in path tools to resolve outside the workspace; permission checks still apply. |
+| `allow_outside_workspace` | boolean | Allows built-in path tools to resolve outside the workspace; permission checks still apply. Independently of this setting, an active skill's own directory is always readable (never writable) so its documented references can be opened. |
 | `allowed_tools` | string list | Persistent session-start allowlist by exact tool name. |
 | `denied_tools` | string list | Exact tool names that are always disabled by the permission manager. |
 | `denied_commands` | regex list | Additional hard command denials checked again at execution. Built-in, global, and project patterns accumulate and cannot be removed by a lower layer; structural catastrophic checks are separate and always active. |
@@ -2906,7 +2906,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
-| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, or cancel Orchestrated Goal. |
+| `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|done\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, release a graph that has finished (`done`, also spelled `release`), or cancel Orchestrated Goal. |
 | `/tasks` | Show the structured plan. |
 | `/autonomy [mode]` | Show or set `ask`, `workspace`, or `autopilot`. |
 | `/theme [name]` | Pick or switch themes for this process. |
@@ -3027,6 +3027,7 @@ A complete trial looks like this:
 /orchestrate status 2
 /orchestrate pause
 /orchestrate resume
+/orchestrate done
 ```
 
 The first command enters read-only proposal mode. Collomia asks the model for a
@@ -3101,6 +3102,22 @@ ineligible because a later operation can hide that status.
 If a successful command looks like verification but is ineligible, its tool
 result says why and shows the direct form to run; for example,
 `pytest -v 2>&1; echo "$?"` is rejected and suggests `pytest -v`.
+
+The command also has to be a check Collomia recognizes. The table covers the
+conventional build, lint, type, and test entry points of the ecosystems
+Collomia meets, including Node's own: `node --test` and a script in a
+conventional test location, such as `node tests/smoke.js` or
+`node app.test.js`. Recognition is by entry point rather than by interpreter,
+so `node index.js` and `node -e "..."` are not verification — an arbitrary
+script is not something a project can be said to check itself with.
+
+No table covers every ecosystem, so a passing command may still be declined.
+When that happens while a node is waiting on verification, the tool result says
+so plainly — naming the command, and either this project's detected
+verification commands or, if the project has no recognized manifest, that
+declaring a test entry point is what would make the check bindable. If the node
+runs out of remediation budget anyway, its blocker names the declined command
+rather than reporting that no verification exists.
 
 After the runtime names a completion gap, remediation is deliberately narrow.
 The agent receives four provider responses to produce concrete repair or
@@ -3358,13 +3375,53 @@ shows `GOAL… · EXP` while the boundary is pending and `GOAL ‖ · EXP` once 
 is reached. `/orchestrate resume` clears only pause state and starts the next
 turn, so an in-process active attempt, its evidence, and its bounds remain
 intact. `/orchestrate cancel` remains the immediate whole-graph stop.
-If the graph is already terminal, cancel instead archives it as the session's
-current resumable graph and reports that the session is ready for another
-`/orchestrate <goal>`; it does not delete the earlier transcript or evidence.
 During an unapproved proposal, `/orchestrate cancel` returns to the mode that
 was active before the proposal. `/plan off` is also an explicit escape: it
 cancels the proposal and returns directly to execution mode. Neither command
 approves the plan or runs an implementation tool.
+
+### Ending a goal that has finished
+
+A graph that reaches a terminal state stays attached, because a finished goal
+is still the thing `/orchestrate status`, `/tasks`, and the context rail are
+describing, and none of that should vanish the moment the last node passes.
+Attached also means the graph still owns this session's scheduling, so the
+session has to be told the goal is over before it will take ordinary prompts
+again. That is what releasing does.
+
+`/orchestrate done` (or `/orchestrate release`) releases a graph that has
+already stopped and returns the session to Standard mode. It is not a
+cancellation and destroys nothing: the transcript, evidence, and every graph
+snapshot remain in the session log, and no workspace file or retained worktree
+is touched. Afterwards you can send ordinary prompts or start another goal with
+`/orchestrate <goal>`.
+
+You usually will not need to type it. When a goal has finished with nothing
+left to run — a `done` graph, or one you cancelled yourself — the next ordinary
+prompt you send releases it and then runs, and Collomia says so both at the end
+of the turn and when the release happens. Sending a new `/orchestrate <goal>`
+also releases a terminal graph on its own.
+
+Releasing is deliberately narrower than cancelling, because the two answer
+different questions:
+
+- A **running** graph refuses to be released. Holding it at a safe boundary is
+  `/orchestrate pause`; ending it in flight is `/orchestrate cancel`.
+- A **blocked** or **budget-exhausted** graph still has a recovery command —
+  `/orchestrate retry <node-id>` and `/orchestrate extend` — so an ordinary
+  prompt will not release it out from under you. `/orchestrate done` still
+  will, once you have decided not to recover it.
+- An **awaiting-review** or **awaiting-verification** graph has not finished:
+  it stopped to ask you something. Release refuses and points at
+  `/orchestrate integrate`, `/orchestrate verify`, or `/orchestrate waive`.
+  Abandoning that decision, and the retained candidates with it, is still
+  spelled `/orchestrate cancel`.
+- A graph that is the only record of a retained worktree nobody has looked at
+  refuses to be released until `/orchestrate reconcile` has observed it, exactly
+  as archiving always has.
+
+For continuity, `/orchestrate cancel` on a graph that is already terminal still
+releases it rather than reporting an error.
 
 If a graph ends `blocked`, `/orchestrate retry <node-id>` creates a new attempt
 only when that node has attempt budget remaining and no non-replayable action
@@ -3434,8 +3491,10 @@ verification, and waiver until the user restores the old bytes or records that
 the published state is being kept.
 
 An active graph prevents session switching and rewind. After it reaches
-`done`, `blocked`, `cancelled`, or `budget_exhausted`, start another wave in
-the same session with `/orchestrate <new-goal>`. Collomia durably tombstones
+`done`, `blocked`, `cancelled`, or `budget_exhausted`, return the session to
+Standard mode with `/orchestrate done` — or, for a `done` or `cancelled` graph,
+simply by sending your next prompt — and start another wave in the same session
+with `/orchestrate <new-goal>` whenever you want one. Collomia durably tombstones
 the old graph as the resumable graph and detaches its controls while retaining
 all old snapshots, evidence, and transcript records. The same behavior applies
 to a terminal saved graph after reopening the session; a nonterminal saved
@@ -4190,8 +4249,16 @@ against structured state it can observe:
   carry a specific `verification_note` explaining why no meaningful automated
   check applies. The note is model-authored disclosure, not machine-observed
   proof.
-- After a tool failure, the agent must use another tool to recover or update
-  the relevant plan step to `blocked` with the exact reason.
+- After a tool failure, the agent must use another tool to recover or record
+  the relevant plan step with an exact reason: `skipped` when the action proved
+  unnecessary or was accomplished another way, `blocked` when the work
+  genuinely cannot be completed.
+
+The difference between those two statuses decides how the whole turn is
+reported. Any `blocked` step makes the turn end blocked; a `skipped` step with
+a reason does not. An abandoned side attempt — a reference that turned out not
+to be needed, a tool call replaced by a better one — belongs in `skipped`, so a
+finished deliverable is not reported as a failed run.
 
 When a gap remains, Collomia adds a deterministic controller notice and gives
 the agent another iteration. It does this at most twice; the existing
@@ -4670,6 +4737,17 @@ Locations, in precedence order:
 Project skills of the same name shadow user skills; shadowing is reported.
 Legacy project `SKILLS.md`/`skills.md` files at the root or under `.collomia`
 are still discovered.
+
+An active skill's own directory is readable by `read_file`, `list_files`, and
+`search_files` even though it sits outside the workspace, so the references and
+assets a skill documents can actually be opened. This is a read allowance only:
+every write still resolves against the workspace, so no tool can modify a skill
+bundle, and symlink targets are checked against the path a request resolves to,
+so a link inside a bundle cannot reach beyond it. It covers active skills only
+— a disabled skill and an untrusted project skill are excluded, leaving the
+project-trust quarantine unchanged — and it does not depend on
+`allow_outside_workspace`, which remains `false` by default for everything
+else.
 
 `SKILL.md` uses YAML front matter:
 

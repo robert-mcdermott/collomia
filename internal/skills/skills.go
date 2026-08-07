@@ -293,6 +293,25 @@ func (c Catalog) Summary() string {
 	return b.String()
 }
 
+// ReadableDirs are the bundle directories of the active skills. Collomia tells
+// the model that a skill's references are read with read_file and lists them
+// by path, so refusing to open one contradicts the tool's own description and
+// strands the agent on material the user installed on purpose.
+//
+// Only active skills are included. A disabled skill is off, and an untrusted
+// project skill never reaches this catalog at all, so neither becomes readable
+// through this route — the quarantine that keeps repository-controlled content
+// out of the model's context is unaffected.
+func (c Catalog) ReadableDirs() []string {
+	dirs := make([]string, 0, len(c.Skills))
+	for _, s := range c.Skills {
+		if strings.TrimSpace(s.Dir) != "" {
+			dirs = append(dirs, s.Dir)
+		}
+	}
+	return dirs
+}
+
 func (c Catalog) Names() []string {
 	names := make([]string, len(c.Skills))
 	for i, s := range c.Skills {

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +32,83 @@ func TestPathGuardContainsWorkspaceAndSymlinks(t *testing.T) {
 		if _, outsideFlag, err := guard.Resolve(filepath.Join("escape", "secret")); err == nil || !outsideFlag {
 			t.Fatalf("symlink escape should fail: outside=%t err=%v", outsideFlag, err)
 		}
+	}
+}
+
+// A read root makes a directory readable and nothing else. It exists because
+// load_skill tells the model to open a skill's references with read_file, and
+// the read was then denied for being outside the workspace — Collomia
+// contradicting its own tool description over files the user installed.
+func TestReadRootAllowsReadsAndNeverWrites(t *testing.T) {
+	root := t.TempDir()
+	skill := t.TempDir()
+	reference := filepath.Join(skill, "references", "example-page.html")
+	if err := os.MkdirAll(filepath.Dir(reference), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reference, []byte("<h1>reference</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := NewPathGuard(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Before registration the read is refused, which is the reported failure.
+	if _, _, err := guard.ResolveRead(reference); err == nil {
+		t.Fatal("an unregistered outside path was readable")
+	}
+	guard.AddReadRoot(skill)
+
+	resolved, outside, err := guard.ResolveRead(reference)
+	if err != nil || !outside || resolved == "" {
+		t.Fatalf("registered skill reference read: resolved=%q outside=%t err=%v", resolved, outside, err)
+	}
+	content, err := ReadFileTool{Guard: guard}.Execute(t.Context(), json.RawMessage(`{"path":`+strconv.Quote(reference)+`}`))
+	if err != nil || !strings.Contains(content, "reference") {
+		t.Fatalf("read_file on a skill reference: %q err=%v", content, err)
+	}
+
+	// The strict path is what every mutation resolves through, so the same
+	// directory stays read-only however it is reached.
+	if _, _, err := guard.Resolve(reference); err == nil {
+		t.Fatal("a read root widened the strict resolver")
+	}
+	if _, err := (WriteFileTool{Guard: guard}).Execute(t.Context(), json.RawMessage(`{"path":`+strconv.Quote(reference)+`,"content":"tampered"}`)); err == nil {
+		t.Fatal("a read root allowed a write into a skill directory")
+	}
+	if _, err := (EditFileTool{Guard: guard}).Execute(t.Context(), json.RawMessage(`{"path":`+strconv.Quote(reference)+`,"old_text":"reference","new_text":"tampered"}`)); err == nil {
+		t.Fatal("a read root allowed an edit inside a skill directory")
+	}
+	after, err := os.ReadFile(reference)
+	if err != nil || string(after) != "<h1>reference</h1>" {
+		t.Fatalf("skill reference changed: %q err=%v", after, err)
+	}
+}
+
+// Containment is checked against the path a request actually resolves to, so
+// a link planted inside a skill bundle cannot turn a read allowance into a
+// tour of the filesystem.
+func TestReadRootDoesNotFollowLinksOutOfItself(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ordinary Windows CI users cannot reliably create symbolic links")
+	}
+	root := t.TempDir()
+	skill := t.TempDir()
+	secrets := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secrets, "creds"), []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secrets, filepath.Join(skill, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := NewPathGuard(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard.AddReadRoot(skill)
+	if _, _, err := guard.ResolveRead(filepath.Join(skill, "escape", "creds")); err == nil {
+		t.Fatal("a symlink inside a read root escaped it")
 	}
 }
 

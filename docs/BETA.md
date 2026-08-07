@@ -107,7 +107,10 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   content, a saved graph, and headless flags cannot enable it. Its aggregate
   iteration, token, cost, and active-time limits are user-configurable and can
   be explicitly extended, but extensions never weaken permission,
-  verification, write-scope, or publication gates. Optional node cancellation,
+  verification, write-scope, or publication gates. A finished graph stays
+  attached until it is released: `/orchestrate done` returns the session to
+  Standard mode, and a `done` or `cancelled` graph is released by your next
+  ordinary prompt. Optional node cancellation,
   recursion, and automatic candidate ranking are not implemented. See the
   [Orchestrated Goal guide](USER_GUIDE.md#orchestrated-goal) for operation and
   the [strategy](ORCHESTRATION_STRATEGY.md) for the durable authority and
