@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collomia — a local-first coding agent for the terminal</title>
+<meta name="description" content="Collomia is a local-first, provider-neutral coding agent for the terminal, built around an explicit trust boundary: OS sandboxing on macOS, Linux, and Windows, layered monotonic permission policy, and evidence-gated completion. Free and Apache-2.0.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/styles.css">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="Collomia — a local-first coding agent for the terminal">
+<meta property="og:description" content="A provider-neutral terminal coding agent with OS sandboxing on macOS, Linux, and Windows, layered monotonic permission policy, and evidence-gated completion. Apache-2.0.">
+<meta property="og:image" content="https://robert-mcdermott.github.io/collomia/assets/collo-screenshot.png">
+<meta property="og:url" content="https://robert-mcdermott.github.io/collomia/">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="glyph">✳</span>collomia<span class="tail">_</span></a>
+    <nav class="site-nav">
+      <a href="#work">How it works</a>
+      <a href="#sandbox">Sandboxing</a>
+      <a href="#policy">Policy</a>
+      <a href="#safety">Safety</a>
+      <a href="#capabilities">Capabilities</a>
+      <a href="#install">Install</a>
+      <a class="nav-gh" href="https://github.com/robert-mcdermott/collomia">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ============================================================== hero -->
+<section class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>Apache-2.0 · free · local-first</span>
+
+    <h1>A coding agent you can<br><span class="accent">actually watch work</span></h1>
+
+    <p class="lede">
+      Collomia is a provider-neutral coding agent for the terminal. It ships as one
+      <code>collo</code> binary for macOS, Linux, and Windows, and it is built around an unusually
+      explicit trust boundary — <strong>every model-proposed action passes through layered
+      permissions, command analysis, OS sandboxing, network controls, an audit ledger, and
+      evidence-based completion checks</strong> before it touches your machine.
+    </p>
+
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#install">Install Collomia</a>
+      <a class="btn btn-ghost" href="https://github.com/robert-mcdermott/collomia">Read the source</a>
+    </div>
+
+    <div class="hero-meta">
+      <span><em class="tick">✓</em> One static binary</span>
+      <span><em class="tick">✓</em> Your models, your machine</span>
+      <span><em class="tick">✓</em> No account, no telemetry</span>
+    </div>
+
+    <figure class="shot">
+      <div class="shot-bar">
+        <i></i><i></i><i></i>
+        <span class="title">collo — demo-project</span>
+      </div>
+      <img src="assets/collo-screenshot.png" width="3494" height="2220"
+           alt="The Collomia terminal interface: a transcript of tool calls on the left, a live workspace panel showing branch, plan progress, changed files, and background processes on the right, and the slash-command palette open at the bottom.">
+      <figcaption>
+        The full-screen interface: streamed tool calls on the left, live workspace, plan, and
+        change tracking on the right, command palette at the bottom. 19 themes, or
+        <code>plain</code> when you want no color at all.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ======================================================= what stands out -->
+<section id="why" class="band">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Why it's different</div>
+      <h2>Most of the hard part isn't writing code. It's deciding what the agent is allowed to do.</h2>
+      <p>
+        An agent that can edit files and run commands has your account's authority. Collomia treats
+        that as the central design problem rather than a settings page, and it tells you exactly
+        which boundary is holding at any moment.
+      </p>
+    </div>
+
+    <div class="grid g3">
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/></svg></span>
+        <h3>Native containment on every desktop OS</h3>
+        <p>
+          Commands run under macOS Seatbelt, Linux Landlock, or Windows AppContainer plus Job
+          Objects — inbox kernel features, not a container runtime you have to install.
+        </p>
+      </div>
+
+      <div class="card pink">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/><path d="M9 4v16"/></svg></span>
+        <h3>Policy that composes in one direction</h3>
+        <p>
+          Defaults, your configuration, trusted project configuration, and environment overrides
+          layer predictably. A repository can tighten containment. It can never weaken your posture.
+        </p>
+      </div>
+
+      <div class="card amber">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+        <h3>Completion has to be earned</h3>
+        <p>
+          A confident-sounding "all done" doesn't finish a goal while plan work is open,
+          verification is stale after a write, or a tool failure is unresolved. The runtime checks
+          the evidence it can actually observe.
+        </p>
+      </div>
+
+      <div class="card violet">
+        <span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span>
+        <h3>Provider-neutral by default</h3>
+        <p>
+          OpenAI-compatible endpoints, Anthropic-compatible APIs, Azure OpenAI and AI Foundry, AWS
+          Bedrock — or a local Ollama, vLLM, or LM Studio server that never leaves your laptop.
+        </p>
+      </div>
+
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></span>
+        <h3>Interruptible and reversible</h3>
+        <p>
+          Sessions survive a crash, finished turns are flushed to durable storage, ambiguous
+          mutations are never replayed, and file changes are reviewable, undoable, and recorded.
+        </p>
+      </div>
+
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 10l3 2-3 2M13 14h4"/></svg></span>
+        <h3>A whole coding loop in one binary</h3>
+        <p>
+          Atomic edits and patches, Git inspection and scoped commits, build/test detection, LSP
+          diagnostics and navigation, background processes, images, web search and fetch, MCP,
+          skills, hooks, and governed sub-agents.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================== execution modes -->
+<section id="work">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Two ways to work</div>
+      <h2>Start conversational. Escalate to a durable graph when the work deserves one.</h2>
+      <p>
+        Most sessions never need more than a prompt and a review. When a task is large enough that
+        you want its structure written down and its completion gated by something other than the
+        model's own confidence, one command turns it into runtime-owned state.
+      </p>
+    </div>
+
+    <div class="grid g2">
+      <div class="mode">
+        <span class="mode-tag default">Permanent default</span>
+        <h3>Standard mode</h3>
+        <p>
+          Describe the task; Collomia works through its ordinary governed tool loop — reading,
+          editing, running commands, checking diagnostics, asking when a decision is yours to make.
+          Fast and model-directed, with the runtime still holding the gates.
+        </p>
+        <div class="snippet"><span class="d">$</span> collo
+<span class="m">&gt;</span> Add rate limiting to the upload endpoint
+
+<span class="g">✓</span> <span class="c">read_file</span>    internal/api/upload.go
+<span class="g">✓</span> <span class="c">edit_file</span>    internal/api/upload.go
+<span class="g">✓</span> <span class="c">run_command</span>  go test ./...  <span class="d">(sandboxed)</span></div>
+        <ul class="ticks">
+          <li>You can <strong>steer a running turn</strong> — type and press enter, and the guidance lands at the next iteration boundary, never mid-tool and never as a permission grant.</li>
+          <li>A <strong>bounded completion controller</strong> refuses an ordinary final answer while an active plan is unfinished or a write is newer than the last passing verification.</li>
+          <li><strong>Review and undo built in:</strong> full-screen unified or side-by-side diffs, hunk-level acceptance, and a restore that reverses recorded changes as one operation.</li>
+        </ul>
+      </div>
+
+      <div class="mode">
+        <span class="mode-tag opt">Opt in per session</span>
+        <h3>Orchestrated Goal</h3>
+        <p>
+          The model proposes a bounded dependency graph; you approve it. From there the
+          <em>runtime</em> — not model prose — owns readiness, immutable attempts, evidence
+          freshness, conservative recovery, budgets, and the terminal outcome.
+        </p>
+        <div class="snippet"><span class="m">/orchestrate</span> Implement the feature and verify it
+<span class="m">/orchestrate</span> <span class="c">status</span>
+<span class="m">/orchestrate</span> <span class="c">approve</span>
+<span class="d">…</span>
+<span class="m">/orchestrate</span> <span class="a">integrate</span> node-4  <span class="d">← user only</span>
+<span class="m">/orchestrate</span> <span class="c">done</span></div>
+        <ul class="ticks pink">
+          <li><strong>Explicit and TUI-only.</strong> Repository content, configuration, instructions, skills, hooks, model output, and saved graph bytes cannot opt you in.</li>
+          <li><strong>Durable but inert.</strong> Graph state survives restart and stays inert until you resume it. Interrupted attempts are closed, not resumed in place.</li>
+          <li><strong>Bounded on purpose.</strong> A visible whole-graph envelope of iterations, tokens, cost, and active minutes that you can size — and that no repository or model can widen.</li>
+          <li><strong>Publication is yours.</strong> Verified candidate work stops and waits; applying it takes your command, under a recoverable checkpoint and ordinary permission.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= sandbox -->
+<section id="sandbox" class="band">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Operating-system sandboxing</div>
+      <h2>Real kernel containment on macOS, Linux, and Windows.</h2>
+      <p>
+        Permission prompts are in-process policy. The sandbox is the part the operating system
+        enforces. Collomia requests it by default on all three platforms using inbox facilities —
+        no Docker, no Hyper-V, no privileged driver, no extra runtime.
+      </p>
+    </div>
+
+    <div class="os-grid">
+      <div class="os">
+        <div class="os-top">
+          <svg viewBox="0 0 24 24"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.15-2.8.85-3.5.85s-1.8-.83-3-.8c-1.5.02-2.9.9-3.7 2.25-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.7 2.3 2.9 2.25 1.2-.05 1.6-.75 3-.75s1.8.75 3 .72c1.25-.02 2-1.1 2.8-2.2.9-1.3 1.25-2.5 1.27-2.55-.03-.02-2.45-.95-2.47-3.7zM14.1 5.3c.65-.8 1.1-1.9 1-3-.95.04-2.1.63-2.8 1.42-.6.7-1.15 1.83-1 2.9 1.05.08 2.15-.53 2.8-1.32z"/></svg>
+          <span class="name">macOS</span>
+        </div>
+        <div class="os-body">
+          <span class="tech">Seatbelt via sandbox-exec</span>
+          <p>Confines command writes to the workspace and approved temporary locations, and can optionally prohibit reads outside it.</p>
+          <ul>
+            <li><span>Deny command network</span><span>yes</span></li>
+            <li><span>Host-scoped egress</span><span>experimental</span></li>
+            <li><span>Process-tree cleanup</span><span>process group</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="os">
+        <div class="os-top">
+          <svg viewBox="0 0 24 24"><path d="M12 2c-2.2 0-3.4 1.8-3.4 4.1 0 1.4.2 2.2-.3 3.2-.6 1.2-2 2.7-2.7 4.4-.5 1.2-.5 2.3-.9 3-.4.7-1.3 1-1.2 1.8.1.7 1 .8 1.9 1 .9.2 1.6.6 2.3 1 .6.3 1.2.3 1.6-.1.5-.5.6-1.3.4-2 .9.3 1.9.4 2.9.3.9-.1 1.7-.3 2.4-.6-.1.7 0 1.5.5 1.9.5.4 1.1.3 1.7 0 .7-.4 1.4-.8 2.3-1 .9-.2 1.8-.3 1.9-1 .1-.8-.8-1.1-1.2-1.8-.4-.7-.4-1.8-.9-3-.7-1.7-2.1-3.2-2.7-4.4-.5-1-.3-1.8-.3-3.2C15.4 3.8 14.2 2 12 2zm-1.6 3.1c.5 0 .9.5.9 1.2s-.4 1.2-.9 1.2-.9-.5-.9-1.2.4-1.2.9-1.2zm3.2 0c.5 0 .9.5.9 1.2s-.4 1.2-.9 1.2-.9-.5-.9-1.2.4-1.2.9-1.2z"/></svg>
+          <span class="name">Linux</span>
+        </div>
+        <div class="os-body">
+          <span class="tech">Landlock LSM</span>
+          <p>Kernel-enforced filesystem access rules applied to the command's own process tree, with no daemon or root setup.</p>
+          <ul>
+            <li><span>Deny command network</span><span>yes</span></li>
+            <li><span>Host-scoped egress</span><span>port-level only</span></li>
+            <li><span>Process-tree cleanup</span><span>process group</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="os">
+        <div class="os-top">
+          <svg viewBox="0 0 24 24"><path d="M3 5.6l7.4-1v7.1H3V5.6zm0 12.8l7.4 1v-7H3v6zM11.4 4.4L21 3v8.7h-9.6V4.4zm0 15.2L21 21v-8.6h-9.6v7.2z"/></svg>
+          <span class="name">Windows 11</span>
+        </div>
+        <div class="os-body">
+          <span class="tech">AppContainer + Job Objects</span>
+          <p>The child is created suspended and joined to a job object before it runs, so cancellation reaches the whole tree with no window to escape.</p>
+          <ul>
+            <li><span>Deny command network</span><span>yes</span></li>
+            <li><span>Host-scoped egress</span><span>not claimed</span></li>
+            <li><span>Process-tree cleanup</span><span>job object</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="posture">
+      <div class="req">
+        <code>sandbox: require</code>
+        <p>Fails closed. If the requested backend can't be established, the command doesn't run. Use this when degraded execution is unacceptable.</p>
+      </div>
+      <div class="auto">
+        <code>sandbox: auto</code>
+        <p>The default. Compatibility-first: it visibly reports degradation and continues when a backend is unavailable — fail-visible, not silent.</p>
+      </div>
+      <div class="off">
+        <code>sandbox: off</code>
+        <p>An explicit opt-out that only the global configuration owner can make. No project can select it for you.</p>
+      </div>
+    </div>
+
+    <p class="mono-note" style="margin-top:24px">
+      Sandbox state is always on screen — <strong>contained</strong>, <strong>unsandboxed</strong>,
+      or <strong>degraded</strong>. Sandboxed commands also get a documented minimal environment by
+      default, which omits common API tokens, cloud credentials, proxy settings, and unrelated
+      toolchain state; full inheritance stays available as a deliberate compatibility choice.
+      OS sandboxing and the scoped-egress broker are marked experimental —
+      <a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/SECURITY.md">the security model</a>
+      states exactly what each backend does and does not guarantee.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== policy -->
+<section id="policy">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Layered monotonic policy</div>
+      <h2>Configuration composes in one direction: tighter.</h2>
+      <p>
+        Four layers merge into the settings a session actually runs with. Each one may raise the
+        floor. None may lower it — so cloning an unfamiliar repository can't quietly relax the
+        posture you chose, and you can always see which layer decided what.
+      </p>
+    </div>
+
+    <div class="mono-wrap">
+      <div>
+        <div class="layers">
+          <div class="layer">
+            <span class="n">01</span>
+            <span class="lbl">Built-in defaults
+              <span class="sub">Safe starting posture, shipped with the binary</span></span>
+          </div>
+          <div class="layer">
+            <span class="n">02</span>
+            <span class="lbl">Your global configuration
+              <span class="sub">The only layer that can disable the OS sandbox</span></span>
+          </div>
+          <div class="layer trusted">
+            <span class="n">03</span>
+            <span class="lbl">Trusted project configuration
+              <span class="sub">Quarantined until you explicitly trust the repository</span></span>
+          </div>
+          <div class="layer">
+            <span class="n">04</span>
+            <span class="lbl">Environment overrides
+              <span class="sub">For CI and one-off runs</span></span>
+          </div>
+        </div>
+
+        <div class="clamp">
+          <div class="yes">
+            <b>✓ ALLOWED</b>
+            A project may demand a stricter sandbox, deny command network access, forbid
+            outside-workspace reads, or add catastrophic-command patterns.
+          </div>
+          <div class="no">
+            <b>✗ REFUSED &amp; REPORTED</b>
+            A project may not disable the sandbox, widen network posture, weaken credential or
+            publication protection, or remove an inherited denial.
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="mono-note">
+          <strong>The clamp isn't limited to one setting.</strong> It applies to sandbox policy,
+          sandbox network and outside-workspace reads, the command environment, outside-workspace
+          access, command posture, network posture, scoped egress, credential protection,
+          publication posture, and containment presets. An attempt to weaken any of them is refused
+          and reported rather than silently ignored.
+        </p>
+        <p class="mono-note">
+          <strong>Untrusted repositories stay quarantined.</strong> A project's
+          <code>.collomia.json</code>, <code>AGENTS.md</code> instructions, skills, and MCP servers
+          are inert until you trust that repository's content — and trust is content-bound, so a
+          meaningful change invalidates it.
+        </p>
+        <p class="mono-note">
+          <strong>Hooks can only push the same direction.</strong> Prompt and tool-start hooks, and
+          an optional external reviewer command, may block or escalate an action. Neither can grant
+          permission, bypass the sandbox, or turn a denial into an approval.
+        </p>
+        <p class="mono-note">
+          Three presets — <code>frictionless</code>, <code>standard</code>, and
+          <code>hardened</code> — expand into ordinary inspectable fields rather than hiding
+          behavior, and <code>collo config show</code> reports both effective values and where each
+          one came from.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== safety -->
+<section id="safety" class="band">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Security &amp; safety</div>
+      <h2>Decisions scoped to the action, not to the tool.</h2>
+      <p>
+        Broad approvals are where agent safety usually leaks. In Collomia, a session grant covers
+        the exact declared capability and nothing else, and the consequential categories are carved
+        out so that no blanket "always allow" can quietly include them.
+      </p>
+    </div>
+
+    <div class="grid g3">
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.4 8.9-8 10-4.6-1.1-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg></span>
+        <h3>Ordered, scoped rules</h3>
+        <p>
+          <code>allow</code>, <code>prompt</code>, and <code>deny</code> rules can name tools,
+          paths, command operations, hosts, and MCP servers. A pattern with a space matches an
+          <em>operation</em> — so <code>npm install</code> can be routine while
+          <code>npm publish</code> is not.
+        </p>
+      </div>
+
+      <div class="card pink">
+        <span class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
+        <h3>Credential access is protected</h3>
+        <p>
+          Conventional credential stores and files need an exact rule or an exact session grant.
+          Blanket tool approval and full autonomy mode don't cover them, and under
+          <code>deny</code> no interactive grant can override the prohibition.
+        </p>
+      </div>
+
+      <div class="card amber">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/><path d="M4 21h16"/></svg></span>
+        <h3>Publishing is its own decision</h3>
+        <p>
+          Package and container registries, source remotes, code-forge writes, infrastructure
+          applies, and commands run on another host are governed separately. Read verbs and
+          <code>--dry-run</code> rehearsals stay ordinary.
+        </p>
+      </div>
+
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M10 3H4v6"/><path d="M4 3l7 7"/><path d="M14 21h6v-6"/><path d="M20 21l-7-7"/><path d="M3 21l7-7M21 3l-7 7"/></svg></span>
+        <h3>Commands judged by outcome</h3>
+        <p>
+          Analysis reads what a command is likely to <em>do</em>, not just which binary it names.
+          Wrappers are unwrapped, nested shell payloads are inspected, and anything unreadable
+          always asks. Catastrophic outcomes have no override at all.
+        </p>
+      </div>
+
+      <div class="card violet">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="18" cy="18" r="3"/></svg></span>
+        <h3>An attributable audit ledger</h3>
+        <p>
+          Every permission decision and execution outcome outside the workspace is written to a
+          JSONL ledger naming the session and the actor — <code>primary</code>, or
+          <code>agent:&lt;profile&gt;</code>. A write failure is counted and declared as a gap in the
+          file, never silently dropped.
+        </p>
+      </div>
+
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg></span>
+        <h3>Web tools that can't reach inward</h3>
+        <p>
+          <code>web_search</code> and <code>web_fetch</code> enforce a non-configurable
+          public-internet-only address guard: loopback, private, link-local, cloud-metadata, and
+          reserved ranges are rejected at connect time, proxies are ignored, URL credentials are
+          stripped, and no cookies are kept.
+        </p>
+      </div>
+
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l9 5v8l-9 5-9-5V8l9-5z"/><path d="M12 12l9-4M12 12v9M12 12L3 8"/></svg></span>
+        <h3>External content stays external</h3>
+        <p>
+          MCP results, fetched pages, and search results are wrapped with provenance so they arrive
+          as data rather than as trusted instructions. Injection resistance is part of the offline
+          evaluation suite, not an assumption.
+        </p>
+      </div>
+
+      <div class="card pink">
+        <span class="ico"><svg viewBox="0 0 24 24"><circle cx="9" cy="9" r="3"/><circle cx="17" cy="17" r="3"/><path d="M9 12v3a2 2 0 0 0 2 2h3"/></svg></span>
+        <h3>Sub-agents inherit, never expand</h3>
+        <p>
+          Delegated profiles can narrow model, tools, skills, iterations, budget, and write scope —
+          and only narrow. Agents with disjoint write scopes may run concurrently; overlapping ones
+          are serialized.
+        </p>
+      </div>
+
+      <div class="card amber">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M5 4h14v16l-7-3-7 3z"/><path d="M9 9h6"/></svg></span>
+        <h3>Nothing published without you</h3>
+        <p>
+          Delegated and orchestrated work never commits, merges, pushes, or deletes worktrees on its
+          own. Candidates are verified in place and wait for your review.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================== capabilities -->
+<section id="capabilities">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">The rest of it</div>
+      <h2>Everything you'd expect from a daily driver, in one binary.</h2>
+      <p>
+        Every one of these uses the same permission, sandbox, and lifecycle machinery — there is no
+        second path that skips the checks.
+      </p>
+    </div>
+
+    <div class="feat-cols">
+      <div class="feat-group">
+        <h4>Editing &amp; code intelligence</h4>
+        <ul>
+          <li>Atomic writes with mode preservation and undo</li>
+          <li>Exact-match edits and multi-file patches</li>
+          <li>Symlink, hard-link, and TOCTOU protections</li>
+          <li>Incremental symbol indexing for Go, Python, JS/TS, Rust</li>
+          <li>LSP diagnostics, definitions, references, formatting</li>
+          <li>Auto-discovery of gopls, Pyright, tsserver, rust-analyzer</li>
+        </ul>
+      </div>
+
+      <div class="feat-group">
+        <h4>Git &amp; verification</h4>
+        <ul>
+          <li>Read-only status, diff, log, and blame</li>
+          <li>Narrowly scoped <code>git_commit</code> and <code>git_branch</code> — neither pushes</li>
+          <li><code>/review</code> against uncommitted work or any ref</li>
+          <li><code>/verify</code> discovers and runs build, lint, and test</li>
+          <li>Verification evidence is preserved across compaction</li>
+        </ul>
+      </div>
+
+      <div class="feat-group">
+        <h4>Providers</h4>
+        <ul>
+          <li>OpenAI and OpenAI-compatible (Ollama, vLLM, LM Studio)</li>
+          <li>Anthropic-compatible APIs</li>
+          <li>Azure OpenAI and Azure AI Foundry</li>
+          <li>AWS Bedrock ConverseStream and Mantle</li>
+          <li>Capability registry with pre-flight compatibility checks</li>
+          <li>Classified failures, bounded retries, circuit health</li>
+          <li>Automatic prompt caching where the route supports it</li>
+        </ul>
+      </div>
+
+      <div class="feat-group">
+        <h4>Sessions &amp; context</h4>
+        <ul>
+          <li>Durable sessions with resume, fork, rewind, crash recovery</li>
+          <li>Append-only storage that fails safely, never silently</li>
+          <li>Searchable transcripts and prompt history</li>
+          <li>Restore reverses recorded file changes as one operation</li>
+          <li>Automatic and manual compaction that keeps failures</li>
+          <li>Per-turn and per-session token and cost accounting</li>
+        </ul>
+      </div>
+
+      <div class="feat-group">
+        <h4>Interface</h4>
+        <ul>
+          <li>19 themes, syntax highlighting, tabs, command palette</li>
+          <li><code>NO_COLOR</code> support and a color-independent theme</li>
+          <li>Side-by-side or unified diffs with hunk review</li>
+          <li>Workspace-aware <code>@</code> file selection and image input</li>
+          <li>Activity center, status dashboard, transcript browser</li>
+          <li>Reduced-motion and reduced-dimming options</li>
+          <li>Toggleable mouse reporting for native text selection</li>
+          <li>Completions for Bash, Zsh, Fish, and PowerShell</li>
+        </ul>
+      </div>
+
+      <div class="feat-group">
+        <h4>Extend &amp; automate</h4>
+        <ul>
+          <li><code>collo run --jsonl</code> versioned event stream</li>
+          <li>Published event schema via <code>collo schema events</code></li>
+          <li>Offline trace replay with no providers or tools loaded</li>
+          <li>MCP over stdio and streamable HTTP, with server pinning</li>
+          <li>Skills with SHA-256 identity and progressive loading</li>
+          <li>Hooks on session, prompt, permission, tool, and stop events</li>
+          <li>Named agent profiles with their own budgets and scopes</li>
+          <li><code>collo --web</code> embedded loopback browser terminal</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= install -->
+<section id="install" class="band">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Install</div>
+      <h2>One binary. No sudo, no elevation, no runtime.</h2>
+      <p>
+        Both installers verify the download's SHA-256 checksum and its reported version before
+        replacing anything already installed.
+      </p>
+    </div>
+
+    <div class="install-grid">
+      <div class="install-card">
+        <h3>macOS &amp; Linux</h3>
+        <p>Installs to <code>$HOME/.local/bin</code>. Doesn't use sudo or modify your <code>PATH</code>.</p>
+        <div class="cmd">
+          <span class="prompt">$</span>
+          <code>curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh | sh</code>
+          <button class="copy" type="button" data-copy="curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.sh | sh">copy</button>
+        </div>
+      </div>
+
+      <div class="install-card">
+        <h3>Windows</h3>
+        <p>AMD64 and ARM64. No elevation and no execution-policy change; open a new terminal afterward.</p>
+        <div class="cmd">
+          <span class="prompt">&gt;</span>
+          <code>irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex</code>
+          <button class="copy" type="button" data-copy="irm https://raw.githubusercontent.com/robert-mcdermott/collomia/main/install.ps1 | iex">copy</button>
+        </div>
+      </div>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <b>Point it at a model.</b> The wizard finds local model servers that are actually
+        listening and recognized hosted-provider credentials, reads each endpoint's own catalog, and
+        proves your choice with two real requests — one ordinary completion and one carrying a tool
+        definition. It never writes an API key into a configuration file.
+        <div class="cmd"><span class="prompt">$</span><code>collo setup</code>
+          <button class="copy" type="button" data-copy="collo setup">copy</button></div>
+      </li>
+      <li>
+        <b>Start in a repository.</b> Running <code>collo</code> with no configured provider opens
+        the same flow and continues straight into your first session.
+        <div class="cmd"><span class="prompt">$</span><code>cd /path/to/project &amp;&amp; collo</code>
+          <button class="copy" type="button" data-copy="cd /path/to/project && collo">copy</button></div>
+      </li>
+      <li>
+        <b>Check what's actually enforced.</b> <code>doctor</code> inspects build, platform, merged
+        configuration, repository trust, Git, credentials, MCP definitions, and sandbox
+        availability; <code>capabilities</code> prints the generated implementation matrix.
+        <div class="cmd"><span class="prompt">$</span><code>collo doctor &amp;&amp; collo capabilities</code>
+          <button class="copy" type="button" data-copy="collo doctor && collo capabilities">copy</button></div>
+      </li>
+    </ol>
+
+    <p class="mono-note" style="margin-top:30px">
+      Prefer to build it yourself? <code>go build -o collo ./cmd/collo</code> against the Go version
+      declared in <code>go.mod</code>. Release artifacts ship with checksums, CycloneDX SBOMs, and
+      Sigstore/GitHub attestations —
+      <a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/INSTALLING.md">version pinning, provenance verification, rollback, and uninstall</a>
+      are all documented.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== limits -->
+<section id="limits" class="tight">
+  <div class="wrap">
+    <div class="limits">
+      <h3>What this doesn't claim</h3>
+      <p>
+        Collomia is a technical beta, and its documentation is deliberate about the edges of each
+        control. A few that are worth knowing before you point it at something valuable:
+      </p>
+      <ul>
+        <li>Default <code>auto</code> sandboxing is fail-<em>visible</em>, not fail-<em>closed</em>. Deployments that require strict containment should set <code>require</code>.</li>
+        <li>OS sandboxing and the macOS scoped-egress broker are marked experimental. Landlock filters TCP by port rather than address, and Windows AppContainer can't reach a loopback broker at all — so neither platform is given an enforcement claim it couldn't keep.</li>
+        <li>Host rules and publication classification are policy layers, not egress enforcement. They read what a command's text says it will do; a program that opens a socket or uploads an artifact without naming it is outside their view.</li>
+        <li>Credential protection is location- and convention-based, not content detection. A key in an unconventional place isn't recognized, and a secret the agent legitimately reads still reaches the model.</li>
+        <li>The audit ledger records what the permission layer decided and what execution returned. It is not a system-call audit.</li>
+        <li>Provider traffic, remote MCP connections, hooks, and LSP processes run in the Collomia process — outside the command sandbox.</li>
+        <li>Autonomy modes change approval behavior. They are explicitly not presented as an operating-system security boundary.</li>
+      </ul>
+      <p style="margin-top:18px">
+        The full accounting lives in
+        <a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/SECURITY.md">the security model</a>
+        and <a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/BETA.md">beta status</a>,
+        and the generated
+        <a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/CAPABILITIES.md">capability matrix</a>
+        is the canonical word on what is implemented today.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================= cta -->
+<section class="tight">
+  <div class="wrap">
+    <div class="cta">
+      <h2>Free, Apache-2.0, and yours to inspect</h2>
+      <p>
+        No account, no hosted control plane, no paid tier holding the safety features. Sessions,
+        configuration, trust records, and audit data stay on your machine.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#install">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/robert-mcdermott/collomia">Browse the repository</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-about">
+        <a class="brand" href="#top"><span class="glyph">✳</span>collomia<span class="tail">_</span></a>
+        <p>A local-first, provider-neutral coding agent for the terminal. One binary for macOS, Linux, and Windows.</p>
+      </div>
+
+      <div>
+        <h5>Start here</h5>
+        <ul>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/INSTALLING.md">Installing</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/USER_GUIDE.md">User guide</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/FEATURES.md">Feature overview</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/releases">Releases</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h5>Security</h5>
+        <ul>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/SECURITY.md">Security model</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/BETA.md">Beta status &amp; limits</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/LINUX_SANDBOX.md">Linux sandbox setup</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/SECURITY.md">Report a vulnerability</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h5>Deeper</h5>
+        <ul>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/ORCHESTRATION_STRATEGY.md">Orchestration strategy</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/AUTOMATION.md">Headless &amp; CI</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/MCP_PROTOCOL.md">MCP coverage</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/CAPABILITIES.md">Capability matrix</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="foot-bottom">
+      <span>Apache License 2.0 · technical beta</span>
+      <span>github.com/robert-mcdermott/collomia</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll(".copy").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var text = btn.getAttribute("data-copy");
+    var done = function () {
+      btn.textContent = "copied";
+      btn.classList.add("done");
+      setTimeout(function () {
+        btn.textContent = "copy";
+        btn.classList.remove("done");
+      }, 1600);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done, done);
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "absolute";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta);
+      done();
+    }
+  });
+});
+</script>
+
+</body>
+</html>
