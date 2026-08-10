@@ -1,6 +1,6 @@
 # Collomia — High-Level Feature and Security Summary
 
-_Reviewed against Collomia v0.3.0. Features are implemented unless identified
+_Reviewed against Collomia v0.3.1. Features are implemented unless identified
 as experimental or unsupported; the generated
 [capability matrix](CAPABILITIES.md) is the canonical current status._
 

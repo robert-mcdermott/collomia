@@ -5,7 +5,7 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-## Unreleased
+## v0.3.1
 
 ### Added
 
