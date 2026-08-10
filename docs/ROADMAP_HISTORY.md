@@ -45,6 +45,115 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-07 — Standard mode reported a finished site as a failed run
+
+- **The blocked verdict was the controller's own instruction coming back.**
+  Its notice offered exactly one way to record an unfinished step — mark it
+  `blocked` — and any blocked step makes `AssessCompletion` return
+  `CompletionBlocked`, which becomes the turn's error. The model followed the
+  advice and the user got a red failure over a site that had been built,
+  served, and checked.
+- **The status it actually wanted already existed.** `skipped` takes the same
+  reason field and completes the turn. The two steps in question were textbook
+  skips: a reference the model decided it did not need, and a tool call it
+  replaced with the right one. It chose `blocked` because that was the only
+  word on offer. The notice and the system prompt now name both and say which
+  one ends the turn.
+- **A skill's own references were unreadable.** `load_skill` tells the model
+  that references are read with `read_file` and lists their paths; the read was
+  then denied for being outside the workspace. Collomia was contradicting its
+  own tool description over files the user installed on purpose.
+- **The asymmetry made it look arbitrary.** The same session copied the logo
+  out of the same skill directory without trouble, because `cp` runs under the
+  OS sandbox, where `sandbox_allow_read_outside_workspace` defaults to true,
+  while `read_file` answers to the workspace path guard, where
+  `allow_outside_workspace` defaults to false. Two gates, one directory,
+  opposite answers.
+- **Active skill bundles are now readable and only readable.** Reads resolve
+  through a separate path that consults registered read roots; every mutation
+  still resolves through the strict one, so no tool can write into a bundle.
+  Containment is checked against the resolved path, so a symlink inside a
+  bundle cannot leave it, and disabled and untrusted project skills are
+  excluded — the trust quarantine is untouched.
+- **The model's own account of the failure was wrong, and that is worth
+  noting.** Its plan step said "denied by OS sandbox"; Collomia's actual error
+  named `permissions.allow_outside_workspace`. The runtime message was
+  accurate and the paraphrase the user read was not, which is a reminder that
+  model prose recorded as plan evidence is disclosure, not observation.
+
+### 2026-08-07 — A node blocked while its own passing test sat in its evidence
+
+- **Reported from a real run, and the evidence was unambiguous.** A goal to
+  build a static site in an empty directory blocked on node 1 for want of
+  verification. Its own evidence log holds `node tests/smoke.js` exiting zero
+  with `SMOKE TEST PASSED`, recorded as `tool_result` rather than
+  `verification`.
+- **`node` was absent from the recognizer.** Every other ecosystem's direct
+  runner was in the table — pytest, jest, vitest, rspec, phpunit, ctest, mvn,
+  cargo, R — and Node's was not, neither `node --test` nor a test script. The
+  other half of recognition, project detection, keys on `package.json`, which
+  a bare directory does not have.
+- **That closed a loop the mode creates itself.** A directory with no manifest
+  is precisely the "no applicable test surface" case in which the proposal
+  contract requires the first mutating node to establish a focused test. The
+  model created one, as instructed, and the runtime then refused the only way
+  to run it. The node could not verify and could not stop needing to.
+- **Recognition is by entry point, not by interpreter.** `node --test` and a
+  script in a conventional test location qualify; `node index.js` and
+  `node -e "..."` do not, since an inline expression can be spelled to look
+  like a test path and an arbitrary script is not a check a project has.
+  `smoke` is an accepted filename because it is the word this mode's own
+  proposal contract puts in the model's mouth.
+- **The silence cost more than the missing table entry.** Told only that
+  verification was absent, seconds after watching its suite pass, the model
+  misdiagnosed the cause as project detection and spent three of its four
+  remediation iterations on diagnosis. Its fourth action — writing a
+  `package.json` with a test script, which would have worked — never ran.
+- **So an unrecognized passing command now explains itself.** While a node is
+  awaiting verification, a declined command's tool result names it and gives
+  either the project's detected verifiers or, with no manifest, what declaring
+  a test entry point would achieve. The blocker names it too. This is the part
+  that generalizes: the table is finite, and the next missing ecosystem should
+  cost one correction rather than a graph.
+- **The explanation is gated on a recorded verification gap**, so ordinary
+  setup and read commands are not lectured about failing to verify work that
+  is going fine.
+
+### 2026-08-07 — A finished goal stops looking like a seized-up session
+
+- **Reported from real use, and the report was right.** After an approved graph
+  finished, ordinary prompts failed and the only way back to a working session
+  was `/orchestrate cancel` — which, on a terminal graph, had never actually
+  cancelled anything: it took the archive branch and said so. The behavior was
+  correct and the vocabulary was wrong, which is a worse combination than the
+  reverse, because the user is told to undo work that in fact succeeded.
+- **A terminal graph stays attached on purpose.** It is what `/orchestrate
+  status`, `/tasks`, and the rail describe, and dropping it the moment the last
+  node passes would erase the result at the moment of interest. But attached
+  also means it owns the session's scheduling, so the session must be told the
+  goal is over. That act now has its own verb: `/orchestrate done`, aliased
+  `release`.
+- **The message a person actually hit pointed at `/new`.** The terminal guard
+  told them to start a new session — throwing away the transcript — rather than
+  naming the command that ends the goal. Every terminal outcome now names its
+  own exits: blocked names `/orchestrate status` and `retry`, budget exhaustion
+  names `extend`, and all of them name the release.
+- **The next ordinary prompt now releases a goal with nothing left to run.**
+  Typing a prompt is itself the explicit user act, and releasing is not
+  destructive — transcript, evidence, and snapshots stay in the session log. It
+  is restricted to `done` and `cancelled`, the two outcomes with no runtime
+  continuation: releasing `blocked` or `budget_exhausted` on the next keystroke
+  would silently spend a recovery path the user still had.
+- **Release refuses what cancellation is for.** A running graph, an
+  `awaiting_review` graph still holding verified candidates, and an
+  `awaiting_verification` graph whose bytes are already in the workspace are
+  each refused with the command that actually applies. Abandoning any of them
+  remains `/orchestrate cancel`, so the word people reach for when work went
+  well cannot quietly discard work. The unreconciled-worktree guard is
+  unchanged and applies to every path.
+- **No authority boundary moved.** This is naming, message text, and one
+  narrow archive that was already reachable by two other routes.
+
 ### 2026-08-04 — A second audit pass finds integration undurable across a restart
 
 - **Probing the three areas the thin pass had skipped was the right call.** Two

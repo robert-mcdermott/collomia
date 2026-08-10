@@ -288,6 +288,15 @@ a hidden mode:
 
 - Fields you set explicitly always win over the preset in the same layer,
   whichever is stricter.
+- `allow_outside_workspace` governs arbitrary outside paths. Independently of
+  it, the built-in read tools may open an **active skill's own directory**,
+  because `load_skill` presents that skill's references as files to read and a
+  denial there contradicts Collomia's own tool description. The allowance is
+  read-only — writes resolve through the strict workspace path, so no tool can
+  modify a skill bundle — is contained against the path a request resolves to,
+  so a symlink planted in a bundle cannot leave it, and excludes disabled
+  skills and untrusted project skills, leaving the project-trust quarantine
+  unchanged.
 - **A repository can tighten containment but never weaken it.** This is one
   rule with no exceptions, covering `sandbox`, `sandbox_allow_network`,
   `sandbox_egress`, `sandbox_allow_read_outside_workspace`, `command_env`,

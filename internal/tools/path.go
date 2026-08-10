@@ -12,7 +12,16 @@ import (
 type PathGuard struct {
 	Workspace    string
 	AllowOutside bool
-	workspaceID  safefile.RootIdentity
+	// ReadRoots are directories outside the workspace whose contents may be
+	// read but never written. They exist because Collomia itself tells the
+	// model about files it then could not open: a loaded skill's own
+	// documentation names its reference files, and refusing to read them makes
+	// the agent look broken over material the user installed deliberately.
+	//
+	// This is a read allowance only. Writes resolve through MutationTarget,
+	// which uses the strict path, so nothing here can be modified.
+	ReadRoots   []string
+	workspaceID safefile.RootIdentity
 }
 
 // MutationTarget resolves policy exactly as Resolve does, then anchors the
@@ -68,7 +77,62 @@ func NewPathGuard(workspace string, allowOutside bool) (*PathGuard, error) {
 	return &PathGuard{Workspace: filepath.Clean(abs), AllowOutside: allowOutside, workspaceID: identity}, nil
 }
 
+// ResolveRead is Resolve plus the read-only roots. Only genuinely read-only
+// tools may call it; every mutation path stays on Resolve.
+func (g *PathGuard) ResolveRead(requested string) (resolved string, outside bool, err error) {
+	return g.resolve(requested, true)
+}
+
 func (g *PathGuard) Resolve(requested string) (resolved string, outside bool, err error) {
+	return g.resolve(requested, false)
+}
+
+// AddReadRoot registers a directory whose contents may be read. The path is
+// resolved through symlinks at registration, so a link planted inside it later
+// still cannot widen the allowance: containment is checked against the real
+// path a request resolves to.
+func (g *PathGuard) AddReadRoot(dir string) {
+	if g == nil || strings.TrimSpace(dir) == "" {
+		return
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return
+	}
+	if real, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+		abs = real
+	}
+	abs = filepath.Clean(abs)
+	if info, statErr := os.Stat(abs); statErr != nil || !info.IsDir() {
+		return
+	}
+	for _, existing := range g.ReadRoots {
+		if existing == abs {
+			return
+		}
+	}
+	g.ReadRoots = append(g.ReadRoots, abs)
+}
+
+// readableOutside reports whether an already-symlink-resolved path lies inside
+// a registered read root.
+func (g *PathGuard) readableOutside(resolved string) bool {
+	if g == nil {
+		return false
+	}
+	for _, root := range g.ReadRoots {
+		rel, err := filepath.Rel(root, resolved)
+		if err != nil {
+			continue
+		}
+		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *PathGuard) resolve(requested string, read bool) (resolved string, outside bool, err error) {
 	if requested == "" {
 		requested = "."
 	}
@@ -94,6 +158,9 @@ func (g *PathGuard) Resolve(requested string) (resolved string, outside bool, er
 	}
 	outside = rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
 	if outside && !g.AllowOutside {
+		if read && g.readableOutside(resolved) {
+			return resolved, true, nil
+		}
 		return "", true, fmt.Errorf("path %q is outside workspace %s; set permissions.allow_outside_workspace to grant access", requested, g.Workspace)
 	}
 	return resolved, outside, nil

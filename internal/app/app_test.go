@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,8 +81,134 @@ func TestCancelOnTerminalOrchestratedGoalArchivesItForAnotherWave(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GoalGraph != nil || len(runtime.Session.GoalGraphRaw) != 0 || !strings.Contains(status, "ready for /orchestrate <goal>") {
+	if runtime.GoalGraph != nil || len(runtime.Session.GoalGraphRaw) != 0 || !strings.Contains(status, "/orchestrate <goal>") {
 		t.Fatalf("terminal cancel did not archive graph: graph=%v raw=%d status=%q", runtime.GoalGraph, len(runtime.Session.GoalGraphRaw), status)
+	}
+}
+
+// terminalGoalRuntime attaches a graph that has already stopped, which is the
+// state a person is in when a goal finishes and they want their session back.
+func terminalGoalRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), OrchestratedGoal: &plan.Plan{Goal: "a wave", Steps: []plan.Step{{ID: 1, Title: "first", Acceptance: []string{"first result exists"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runtime.Close)
+	return runtime
+}
+
+// The release exists because "cancel" was the only way to end a goal that had
+// already ended, which told users they were undoing work they had just
+// approved.
+func TestReleaseReturnsAFinishedGoalSessionToStandardMode(t *testing.T) {
+	runtime := terminalGoalRuntime(t)
+	if err := runtime.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	notice, err := runtime.ReleaseOrchestratedGoal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GoalGraph != nil || len(runtime.Session.GoalGraphRaw) != 0 || runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("release left the graph owning the session: graph=%v raw=%d phase=%q", runtime.GoalGraph, len(runtime.Session.GoalGraphRaw), runtime.OrchestratedGoalPhase())
+	}
+	if !strings.Contains(notice, "Standard mode") {
+		t.Fatalf("release notice=%q, want the mode the session returns to", notice)
+	}
+}
+
+// Finishing and stopping in flight are different decisions, so they keep
+// different words: release refuses to become a quiet cancel.
+func TestReleaseRefusesARunningGoalAndNamesTheCommandsThatEndOne(t *testing.T) {
+	runtime := terminalGoalRuntime(t)
+	_, err := runtime.ReleaseOrchestratedGoal()
+	if err == nil || !strings.Contains(err.Error(), "/orchestrate pause") || !strings.Contains(err.Error(), "/orchestrate cancel") {
+		t.Fatalf("release of a running graph error=%v, want a refusal naming pause and cancel", err)
+	}
+	if runtime.GoalGraph == nil {
+		t.Fatal("a refused release detached the running graph anyway")
+	}
+}
+
+func TestReleaseRefusesAnUnapprovedProposal(t *testing.T) {
+	isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.BeginOrchestratedProposal("a goal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.ReleaseOrchestratedGoal(); err == nil || !strings.Contains(err.Error(), "/orchestrate cancel") {
+		t.Fatalf("release of a proposal error=%v, want a refusal naming cancel", err)
+	}
+	if runtime.OrchestratedGoalPhase() != "proposal" {
+		t.Fatalf("a refused release consumed the proposal: phase=%q", runtime.OrchestratedGoalPhase())
+	}
+}
+
+// A graph that stopped to ask the user something has not finished, and the
+// word for abandoning that decision stays "cancel". Releasing awaiting_review
+// would drop verified candidates; releasing awaiting_verification would walk
+// away from bytes already applied to the workspace.
+func TestReleaseRefusesGraphsStillHoldingAUserDecision(t *testing.T) {
+	for _, tc := range []struct {
+		outcome goalgraph.Outcome
+		want    string
+	}{
+		{goalgraph.OutcomeAwaitingReview, "/orchestrate integrate"},
+		{goalgraph.OutcomeAwaitingVerification, "/orchestrate verify"},
+	} {
+		err := awaitingUserDecisionReleaseError(tc.outcome)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "not finished") {
+			t.Fatalf("%s release error=%v, want a refusal naming %s", tc.outcome, err, tc.want)
+		}
+	}
+	for _, outcome := range []goalgraph.Outcome{goalgraph.OutcomeDone, goalgraph.OutcomeCancelled, goalgraph.OutcomeBlocked, goalgraph.OutcomeBudgetExhausted} {
+		if err := awaitingUserDecisionReleaseError(outcome); err != nil {
+			t.Fatalf("%s is nobody's pending decision but release refused it: %v", outcome, err)
+		}
+	}
+}
+
+// The prompt-driven release is what stops a finished goal from looking like a
+// stuck session, and it is narrow on purpose: a graph with a recovery command
+// left must survive the next thing somebody types.
+func TestOrdinaryPromptReleasesOnlyAGoalWithNothingLeftToRun(t *testing.T) {
+	runtime := terminalGoalRuntime(t)
+	if _, released, err := runtime.ReleaseFinishedOrchestratedGoal(); err != nil || released {
+		t.Fatalf("a running graph was released by a prompt: released=%t err=%v", released, err)
+	}
+
+	node, attempt, err := runtime.GoalGraph.StartNext(t.Context(), "workspace-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.GoalGraph.BlockActive(t.Context(), attempt.ID, "needs a human decision"); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, _ := runtime.GoalGraph.Outcome(); outcome != goalgraph.OutcomeBlocked {
+		t.Fatalf("fixture node %d outcome=%q, want blocked", node.ID, outcome)
+	}
+	if _, released, err := runtime.ReleaseFinishedOrchestratedGoal(); err != nil || released {
+		t.Fatalf("a blocked graph lost its /orchestrate retry path to a prompt: released=%t err=%v", released, err)
+	}
+
+	// A blocked graph stays blocked, so the finished case needs its own
+	// session rather than a second terminal state on this one.
+	runtime = terminalGoalRuntime(t)
+	if err := runtime.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	notice, released, err := runtime.ReleaseFinishedOrchestratedGoal()
+	if err != nil || !released || !strings.Contains(notice, "Standard mode") {
+		t.Fatalf("a finished graph did not yield to a prompt: released=%t notice=%q err=%v", released, notice, err)
+	}
+	if runtime.GoalGraph != nil || runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("prompt release left state behind: graph=%v phase=%q", runtime.GoalGraph, runtime.OrchestratedGoalPhase())
 	}
 }
 
@@ -1334,5 +1461,44 @@ func TestInterruptedPublicationStopsEveryCombinedWorkspaceStep(t *testing.T) {
 		if err := step(); err == nil || strings.Contains(err.Error(), marker) {
 			t.Fatalf("%s after acceptance: err=%v", name, err)
 		}
+	}
+}
+
+// The pieces of the skill-read allowance are unit tested; this is the wiring.
+// The reported failure was a real session in which load_skill named a
+// reference file and the very next read_file was denied for being outside the
+// workspace, so the check that matters is that a runtime built the ordinary
+// way can open the reference of a skill it just discovered.
+func TestRuntimeReadsAnActiveSkillsOwnReference(t *testing.T) {
+	home := isolateGlobalFiles(t)
+	skillDir := filepath.Join(home, ".collomia", "skills", "branding")
+	if err := os.MkdirAll(filepath.Join(skillDir, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: branding\ndescription: Apply the palette.\n---\n\n# Branding\nSee `references/example-page.html`.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reference := filepath.Join(skillDir, "references", "example-page.html")
+	if err := os.WriteFile(reference, []byte("<h1>reference markup</h1>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	out, err := runtime.Registry.Execute(t.Context(), "read_file", []byte(`{"path":`+strconv.Quote(reference)+`}`))
+	if err != nil || !strings.Contains(out, "reference markup") {
+		t.Fatalf("read_file on a discovered skill reference: %q err=%v", out, err)
+	}
+	// Readable is the whole grant. The bundle stays untouchable.
+	if _, err := runtime.Registry.Execute(t.Context(), "write_file", []byte(`{"path":`+strconv.Quote(reference)+`,"content":"tampered"}`)); err == nil {
+		t.Fatal("a skill bundle was writable through the ordinary registry")
+	}
+	after, err := os.ReadFile(reference)
+	if err != nil || string(after) != "<h1>reference markup</h1>" {
+		t.Fatalf("skill reference changed: %q err=%v", after, err)
 	}
 }

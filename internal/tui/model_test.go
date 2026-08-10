@@ -167,6 +167,71 @@ func TestOrchestratedGoalPreviewIsVisibleAndInspectable(t *testing.T) {
 	}
 }
 
+// A finished goal used to keep the session to itself: every ordinary prompt
+// failed against a graph with nothing left to run, and the only way out was a
+// command called cancel. Finishing now has its own word, and typing the next
+// prompt is enough to get an ordinary session back.
+func TestFinishedOrchestratedGoalReleasesTheSessionByCommandOrByPrompt(t *testing.T) {
+	configureTestProvider(t)
+	approved := &plan.Plan{Goal: "inspect safely", Steps: []plan.Step{{ID: 1, Title: "inspect repository", Acceptance: []string{"repository evidence is recorded"}}}}
+	newModel := func() Model {
+		runtime, err := app.New(t.Context(), app.Options{Workspace: t.TempDir(), OrchestratedGoal: approved})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(runtime.Close)
+		updated, _ := New(runtime, NewApprovalBroker(), "").Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+		return updated.(Model)
+	}
+
+	m := newModel()
+	if quit, cmd := (&m).slash("/orchestrate done"); quit || cmd != nil {
+		t.Fatalf("done should be a local control: quit=%t cmd=%v", quit, cmd)
+	}
+	if last := m.blocks[len(m.blocks)-1]; last.role != "error" || !strings.Contains(last.content, "/orchestrate cancel") {
+		t.Fatalf("done on a running graph=%+v, want a refusal naming cancel", last)
+	}
+
+	if err := m.runtime.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if notice := m.finishedGoalNotice(); !strings.Contains(notice, "next ordinary prompt") {
+		t.Fatalf("turn-end notice=%q, want the session to say what happens next", notice)
+	}
+	if quit, cmd := (&m).slash("/orchestrate done"); quit || cmd != nil {
+		t.Fatalf("done should not start a turn: quit=%t cmd=%v", quit, cmd)
+	}
+	if last := m.blocks[len(m.blocks)-1]; last.role != "system" || !strings.Contains(last.content, "Standard mode") {
+		t.Fatalf("release block=%+v, want the mode the session returns to", last)
+	}
+	if m.runtime.GoalGraph != nil || m.runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("release left the graph attached: graph=%v phase=%q", m.runtime.GoalGraph, m.runtime.OrchestratedGoalPhase())
+	}
+
+	// The same release reached by typing, which is how most people will meet
+	// it: the prompt is allowed through and the goal lets go on the way.
+	m = newModel()
+	if err := m.runtime.GoalGraph.Cancel(t.Context(), "terminal fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if !m.releaseFinishedGoal("now do something unrelated") {
+		t.Fatal("a finished goal refused an ordinary follow-up prompt")
+	}
+	if m.runtime.GoalGraph != nil || m.runtime.OrchestratedGoalPhase() != "" {
+		t.Fatalf("prompt release left the graph attached: graph=%v phase=%q", m.runtime.GoalGraph, m.runtime.OrchestratedGoalPhase())
+	}
+	if last := m.blocks[len(m.blocks)-1]; last.role != "system" || !strings.Contains(last.content, "Standard mode") {
+		t.Fatalf("prompt release block=%+v, want the release explained", last)
+	}
+
+	// A running graph is not something a prompt may end, and a prompt sent to
+	// one must still reach the running goal rather than being swallowed here.
+	m = newModel()
+	if !m.releaseFinishedGoal("more guidance") || m.runtime.GoalGraph == nil {
+		t.Fatalf("an ordinary prompt disturbed a running graph: graph=%v", m.runtime.GoalGraph)
+	}
+}
+
 func TestPlanOffCancelsOrchestratedProposalAndRestoresExecutionMode(t *testing.T) {
 	m := newTestModel(t)
 	if _, err := m.runtime.BeginOrchestratedProposal("improve the interface"); err != nil {

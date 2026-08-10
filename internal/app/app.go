@@ -302,6 +302,17 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		return nil, err
 	}
 	registry.Add(skills.Tool(catalog))
+	// An active skill's own bundle becomes readable, and only readable. The
+	// load_skill tool tells the model to open a skill's references with
+	// read_file and lists their paths; without this the next call is denied
+	// for being outside the workspace, which reads as Collomia breaking its
+	// own instructions. Writes are unaffected: they resolve through the strict
+	// path, so a skill directory stays read-only from every tool.
+	if guard := registry.Guard(); guard != nil {
+		for _, dir := range catalog.ReadableDirs() {
+			guard.AddReadRoot(dir)
+		}
+	}
 	// Instructions layer global (user-level) before project (trusted only);
 	// later sections take precedence when they conflict.
 	var sections []string
@@ -1292,7 +1303,7 @@ func (r *Runtime) CancelOrchestratedGoal(ctx context.Context) (string, error) {
 			if err := r.archiveTerminalGoalGraphLocked(); err != nil {
 				return "", err
 			}
-			return "Terminal Orchestrated Goal archived. Its transcript and evidence remain in the session log; this session is ready for /orchestrate <goal>.", nil
+			return goalGraphReleasedNotice, nil
 		}
 		if err := r.GoalGraph.Cancel(ctx, "cancelled explicitly by the user"); err != nil {
 			return "", err
@@ -1308,6 +1319,110 @@ func (r *Runtime) CancelOrchestratedGoal(ctx context.Context) (string, error) {
 		return "Orchestrated Goal proposal cancelled. The structured plan remains available in /tasks, but it cannot be approved without starting a new proposal.", nil
 	}
 	return "", errors.New("there is no active Orchestrated Goal proposal or graph")
+}
+
+// goalGraphReleasedNotice is what a person is told after a finished graph lets
+// go of the session. Releasing is not cancelling and not deletion: the graph
+// stopped on its own terms and its transcript and evidence stay in the session
+// log. The notice says what the session can do now, because the state a user
+// wants after a goal finishes is an ordinary session, and until this milestone
+// the only command that produced one was named cancel.
+const goalGraphReleasedNotice = "Orchestrated Goal released. Its transcript and evidence remain in the session log, and this session is back in Standard mode: send an ordinary prompt, or start another goal with /orchestrate <goal>."
+
+// ReleaseOrchestratedGoal returns a session whose graph has already reached a
+// terminal outcome to Standard mode. It is the same archive that
+// CancelOrchestratedGoal performs on a terminal graph, given the verb that
+// describes it, and it deliberately refuses an active graph rather than
+// quietly ending one: a person who means to stop work in flight is asking for
+// /orchestrate pause or /orchestrate cancel, and those two decisions should
+// not share a word with finishing. Nothing here undoes completed actions,
+// removes a retained worktree, or touches the workspace.
+func (r *Runtime) ReleaseOrchestratedGoal() (string, error) {
+	if r == nil || r.Agent == nil {
+		return "", errors.New("runtime is unavailable")
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph != nil {
+		outcome, _ := r.GoalGraph.Outcome()
+		if outcome == "" {
+			return "", errors.New("the attached Orchestrated Goal graph is still running, so there is nothing finished to release; /orchestrate pause holds it at a safe boundary and /orchestrate cancel ends it")
+		}
+		if err := awaitingUserDecisionReleaseError(outcome); err != nil {
+			return "", err
+		}
+		if err := r.archiveTerminalGoalGraphLocked(); err != nil {
+			return "", err
+		}
+		return goalGraphReleasedNotice, nil
+	}
+	if r.orchestrationProposal != nil {
+		return "", errors.New("the Orchestrated Goal proposal was never approved, so no graph exists to release; /orchestrate cancel discards the proposal and restores the previous mode")
+	}
+	if r.Session != nil && len(r.Session.GoalGraphRaw) > 0 {
+		// A saved graph is inert, so it is not what blocks a prompt, but it is
+		// still what a restarted session advertises. Releasing it is the same
+		// decision and gets the same refusals.
+		var snapshot goalgraph.Snapshot
+		if err := json.Unmarshal(r.Session.GoalGraphRaw, &snapshot); err != nil {
+			return "", fmt.Errorf("decode saved graph: %w", err)
+		}
+		if err := awaitingUserDecisionReleaseError(snapshot.Outcome); err != nil {
+			return "", err
+		}
+		if err := r.archiveSavedTerminalGoalGraphLocked(); err != nil {
+			return "", err
+		}
+		return goalGraphReleasedNotice, nil
+	}
+	return "", errors.New("there is no Orchestrated Goal to release; this session is already in Standard mode")
+}
+
+// awaitingUserDecisionReleaseError keeps "done" meaning the goal ended rather
+// than the goal was abandoned. Both awaiting states stopped precisely because
+// something is waiting on the user, and a graph released from either one takes
+// a real decision with it: awaiting_review still holds verified candidates
+// that never reached the workspace, and awaiting_verification has already put
+// a candidate's bytes there with nothing having checked the combined result.
+// Abandoning either remains available and remains spelled cancel, so the word
+// a person reaches for when work went well cannot quietly discard it.
+func awaitingUserDecisionReleaseError(outcome goalgraph.Outcome) error {
+	switch outcome {
+	case goalgraph.OutcomeAwaitingReview:
+		return errors.New("this Orchestrated Goal is not finished: it holds verified candidates nobody has ruled on. Inspect them with /orchestrate status, publish one with /orchestrate integrate <node-id>, or abandon the whole graph and its candidates with /orchestrate cancel")
+	case goalgraph.OutcomeAwaitingVerification:
+		return errors.New("this Orchestrated Goal is not finished: an integrated candidate's bytes are in your workspace and nothing has verified the combined result. Run /orchestrate verify, or record a written judgement with /orchestrate waive <reason>; /orchestrate cancel abandons the graph and leaves those bytes unverified in place")
+	default:
+		return nil
+	}
+}
+
+// ReleaseFinishedOrchestratedGoal releases a graph that stopped with nothing
+// left for the user to decide, so an ordinary follow-up prompt runs instead of
+// failing against a graph that is over. It is deliberately narrow. A done or
+// cancelled graph has no runtime continuation: retry requires blocked, extend
+// requires budget_exhausted, and both awaiting states are holding candidate
+// work that a person still has to rule on, so releasing any of those on the
+// next thing somebody types would throw away a recovery path or real work.
+// The archive guard still applies, so an unobserved retained worktree refuses
+// here exactly as it refuses an explicit release.
+func (r *Runtime) ReleaseFinishedOrchestratedGoal() (string, bool, error) {
+	if r == nil || r.Agent == nil {
+		return "", false, nil
+	}
+	r.orchestrationMu.Lock()
+	defer r.orchestrationMu.Unlock()
+	if r.GoalGraph == nil {
+		return "", false, nil
+	}
+	outcome, _ := r.GoalGraph.Outcome()
+	if outcome != goalgraph.OutcomeDone && outcome != goalgraph.OutcomeCancelled {
+		return "", false, nil
+	}
+	if err := r.archiveTerminalGoalGraphLocked(); err != nil {
+		return "", false, err
+	}
+	return goalGraphReleasedNotice, true, nil
 }
 
 func (r *Runtime) archiveSavedTerminalGoalGraphLocked() error {
@@ -1625,7 +1740,7 @@ func (r *Runtime) NewSession() error {
 // completed turn. The source session and workspace remain unchanged.
 func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error) {
 	if phase := r.OrchestratedGoalPhase(); phase != "" {
-		return "", "", fmt.Errorf("rewinding during an Orchestrated Goal %s is not supported; cancel a proposal, or start /new after a graph reaches a terminal state", phase)
+		return "", "", fmt.Errorf("rewinding during an Orchestrated Goal %s is not supported; /orchestrate cancel discards an unapproved proposal, and /orchestrate done releases a graph that has reached a terminal state", phase)
 	}
 	if r.Sessions == nil || r.Session == nil {
 		return "", "", fmt.Errorf("session persistence is unavailable")

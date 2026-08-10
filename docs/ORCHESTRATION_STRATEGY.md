@@ -602,7 +602,16 @@ slash-command family:
   newly proposed logical plan into runtime graph state and begins execution;
 - `/orchestrate status [node-id]` shows the proposal or durable node, attempt,
   failure, evidence, readiness, and terminal state;
-- `/orchestrate cancel` cancels a pending proposal or the active graph; and
+- `/orchestrate cancel` cancels a pending proposal or the active graph;
+- `/orchestrate done` releases a graph that has already reached a terminal
+  state, returning the session to Standard mode without deleting its
+  transcript, evidence, or snapshots. It is the finishing verb, deliberately
+  separate from cancellation: it refuses a running graph, and refuses one
+  stopped at `awaiting_review` or `awaiting_verification`, because those are
+  holding a user decision rather than waiting to be let go. A terminal graph
+  is also released by the user's next ordinary prompt when nothing is left to
+  run, so a completed goal does not present as a session that has seized up;
+  and
 - `/orchestrate resume` explicitly reattaches a saved non-terminal graph after
   process or session resume. Persisted graph bytes alone never activate it.
 

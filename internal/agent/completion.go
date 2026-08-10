@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,7 +249,14 @@ func completionNotice(issues []string, intervention int) string {
 	for _, issue := range issues {
 		b.WriteString("- " + issue + "\n")
 	}
-	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence; recover safely from a failed tool by retrying or choosing an alternative; or update the relevant plan step to blocked with the exact reason. If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. Do not repeat the final answer until the recorded state supports done or blocked. This notice does not grant permission or change the user's requested scope.")
+	// The status this asks for decides how the whole turn is reported, so it
+	// has to name both. A step marked blocked makes the run end blocked, which
+	// is right for work that cannot be done and wrong for an action that
+	// turned out to be unnecessary or was achieved another way — and telling
+	// the model only about `blocked` produced exactly that: finished
+	// deliverables reported as failures because an abandoned side attempt was
+	// recorded with the only word on offer.
+	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence; recover safely from a failed tool by retrying or choosing an alternative; or record the relevant plan step with an exact reason — `skipped` when the action proved unnecessary or you achieved it another way, `blocked` only when the work genuinely cannot be completed, since a blocked step ends this turn as blocked. If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. Do not repeat the final answer until the recorded state supports done or blocked. This notice does not grant permission or change the user's requested scope.")
 	return b.String()
 }
 
@@ -261,6 +269,13 @@ type verificationAssessment struct {
 	VerificationLike bool
 	Reason           string
 	Suggestion       string
+	// Unrecognized marks a direct command whose composition was fine and which
+	// simply is not in the recognizer's table. It is separate from a refused
+	// composition because the correction differs: there is no direct form to
+	// suggest, and the honest answer is which verifiers this project actually
+	// has. The recognizer is a finite table, so this case will outlive any
+	// particular ecosystem being added to it.
+	Unrecognized bool
 }
 
 func isVerificationCommand(command, workspace string) bool {
@@ -277,7 +292,7 @@ func assessVerificationCommand(command, workspace string) verificationAssessment
 		if directVerificationCommand(final, workspace) {
 			return verificationAssessment{Recognized: true, VerificationLike: true}
 		}
-		return verificationAssessment{}
+		return verificationAssessment{Unrecognized: true}
 	}
 	// The composition is ineligible. Naming the direct form is the difference
 	// between a model that corrects itself on the next call and one that
@@ -494,6 +509,8 @@ func recognizedVerifier(fields []string, depth int) bool {
 			return true
 		}
 		return verb(1, "run") && verb(2, targets...)
+	case "node":
+		return nodeVerification(fields)
 	case "deno":
 		return verb(1, "test", "check", "lint")
 	case "make", "just", "task", "rake":
@@ -572,6 +589,92 @@ func verificationRunnerRemainder(fields []string) ([]string, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// unrecognizedVerificationNotice explains a passing command the runtime did
+// not accept as verification, and says what this project offers instead.
+//
+// The silence this replaces is the expensive part. A model told only that
+// verification is missing, immediately after watching its own test suite pass,
+// has nothing to correct: it re-runs the same command, inspects detection,
+// and spends its bounded remediation lease diagnosing rather than repairing.
+// Naming the refused command and the project's real verifiers turns that into
+// one step. The recognizer will always be a finite table, so this has to work
+// for an ecosystem nobody has added yet.
+func unrecognizedVerificationNotice(command, workspace string) string {
+	notice := fmt.Sprintf("Collomia verification evidence was not recorded: %q exited zero, but it is not a recognized verification command, so the runtime cannot bind it to the workspace state as proof. Its output is still a valid tool result.", strings.Join(strings.Fields(command), " "))
+	_, detected := tools.DetectVerificationCommands(workspace)
+	if len(detected) > 0 {
+		commands := make([]string, 0, len(detected))
+		for _, candidate := range detected {
+			commands = append(commands, strconv.Quote(candidate.Command))
+		}
+		return notice + " This project's detected verification commands are " + strings.Join(commands, ", ") + "; run one of those directly."
+	}
+	return notice + " This project has no detected verification commands, because it has no recognized project manifest at its root. If creating one is within this node's scope, add the manifest your ecosystem uses to declare a test entry point (for a plain JavaScript project, a package.json whose scripts.test runs your test file), then run that entry point directly."
+}
+
+// nodeVerification recognizes Node's two ordinary check entry points: the
+// built-in test runner, and a script in a conventional test location.
+//
+// Node's absence from the table above was worse than any other language's
+// would have been. A directory with no package.json is precisely the "no
+// applicable test surface" case in which the proposal contract requires the
+// first mutating node to establish a focused test — so the runtime asked for a
+// test to be created and then refused to accept the only way to run it. There
+// was no exit: the node could not verify, and could not stop needing to.
+//
+// An inline expression is never recognized. `node -e ...` is arbitrary code
+// whose text can be spelled to look like a test path, and unlike a script file
+// it is not something a project can be said to have.
+func nodeVerification(fields []string) bool {
+	script, builtinRunner := "", false
+	for _, field := range fields[1:] {
+		switch {
+		case field == "-e" || field == "--eval" || field == "-p" || field == "--print":
+			return false
+		// --check parses without executing and exits non-zero on a syntax
+		// error, which is the same kind of proof `tsc` and `go vet` give and
+		// the natural check for a project with no test surface at all.
+		case field == "--test" || strings.HasPrefix(field, "--test=") || field == "--check" || field == "-c":
+			builtinRunner = true
+		case strings.HasPrefix(field, "-"):
+		case script == "":
+			script = field
+		}
+	}
+	return builtinRunner || conventionalTestScript(script)
+}
+
+// conventionalTestScript reports whether a path is one a project would
+// conventionally treat as tests, by directory or by filename. `smoke` is
+// included deliberately: it is the word Collomia's own proposal contract uses
+// when it asks a node to create a focused test, so it is the name the model is
+// most likely to choose in the case this recognition exists to serve.
+func conventionalTestScript(path string) bool {
+	path = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(path), "\\", "/"))
+	if path == "" {
+		return false
+	}
+	segments := strings.Split(path, "/")
+	for _, segment := range segments[:len(segments)-1] {
+		switch segment {
+		case "test", "tests", "spec", "specs", "__tests__":
+			return true
+		}
+	}
+	name := segments[len(segments)-1]
+	if dot := strings.LastIndexByte(name, '.'); dot > 0 {
+		name = name[:dot]
+	}
+	for _, marker := range []string{"test", "spec", "smoke"} {
+		if name == marker ||
+			strings.HasPrefix(name, marker+"_") || strings.HasPrefix(name, marker+"-") ||
+			strings.HasSuffix(name, "."+marker) || strings.HasSuffix(name, "_"+marker) || strings.HasSuffix(name, "-"+marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func shellEnvironmentAssignment(field string) bool {

@@ -715,6 +715,61 @@ func TestGoalGraphAcceptsVerificationPreparedByAnEnvironmentExport(t *testing.T)
 	}
 }
 
+// The fredhutch-history session's exact shape: a brand-new directory with no
+// manifest of any kind, where the node was asked to create a focused smoke
+// test, created one, ran it, watched it pass — and blocked, because the only
+// way to run it was an unrecognized command.
+func TestGoalGraphAcceptsASmokeTestInAProjectWithNoManifest(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "scaffold and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "scaffold site and smoke test"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "workspace-before"
+	workspace := t.TempDir()
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "write index.html and tests/smoke.js"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			token = "workspace-after"
+			return "wrote 3 files", nil
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run smoke test", Command: "node tests/smoke.js"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "SMOKE TEST PASSED: index.html, styles.css, logo asset, and all four hutch CSS vars verified.", nil
+		}},
+	)
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("scaffold", "mutate", `{}`), nil
+		case 2:
+			return provider.Response{Content: "scaffolded"}, nil
+		case 3:
+			return graphToolResponse("verify", "run_command", `{}`), nil
+		default:
+			if requestContains(request, "verification evidence was not recorded") {
+				t.Fatal("the smoke test this mode asks a node to create was refused as evidence")
+			}
+			return provider.Response{Content: "scaffolded and verified"}, nil
+		}
+	}}
+	agentRuntime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 8, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
+	})
+	if _, err := agentRuntime.Run(t.Context(), "build the site", nil); err != nil {
+		t.Fatal(err)
+	}
+	if outcome := graph.Snapshot().Outcome; outcome != goalgraph.OutcomeDone {
+		t.Fatalf("outcome=%q, want done", outcome)
+	}
+	found := false
+	for _, evidence := range graph.Snapshot().Evidence {
+		found = found || (evidence.Kind == goalgraph.EvidenceVerification && evidence.Status == "passed" && evidence.WorkspaceToken == "workspace-after")
+	}
+	if !found {
+		t.Fatalf("passing smoke test was not recorded as verification: %+v", graph.Snapshot().Evidence)
+	}
+}
+
 // When a check really is refused, the blocker has to name it. The session that
 // motivated this read "no successful recognized verification" directly beneath
 // a passing test suite the user had watched run, with nothing to act on.
@@ -757,6 +812,92 @@ func TestStalledGoalNodeNamesTheRefusedVerification(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "were refused during this attempt") || !strings.Contains(err.Error(), "uv run pytest -q") {
 		t.Fatalf("blocker does not name the refused check: %v", err)
+	}
+}
+
+// An ecosystem the recognizer does not cover must not become silence. The
+// model that hit this ran its passing check, was told only that verification
+// was missing, and spent its whole remediation lease guessing at the cause —
+// so the explanation has to arrive while the lease is still running, and the
+// blocker has to name the command if it runs out anyway.
+func TestUnrecognizedCheckIsExplainedWhileTheAttemptCanStillAct(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "change source"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := "workspace-before"
+	workspace := t.TempDir()
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change source"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			token = "workspace-after"
+			return "changed", nil
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run checks", Command: "./run-my-checks.sh"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "ALL CHECKS PASSED", nil
+		}},
+	)
+	explained := false
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("write", "mutate", `{}`), nil
+		case 2:
+			// The completion proposal is what records the exact gap; the
+			// explanation is owed on every unrecognized check after it.
+			return provider.Response{Content: "implemented"}, nil
+		default:
+			if requestContains(request, "not a recognized verification command") && requestContains(request, "./run-my-checks.sh") {
+				explained = true
+			}
+			return graphToolResponse(fmt.Sprintf("verify-%d", call), "run_command", `{}`), nil
+		}
+	}}
+	agentRuntime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 20, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return token, nil },
+	})
+	_, err = agentRuntime.Run(t.Context(), "change it", nil)
+	if err == nil || !errors.Is(err, ErrGoalBlocked) {
+		t.Fatalf("stalled node error=%v, want a blocked goal", err)
+	}
+	if !explained {
+		t.Fatal("the model was never told which command was declined, which is the whole failure being fixed")
+	}
+	if !strings.Contains(err.Error(), "./run-my-checks.sh") || !strings.Contains(err.Error(), "not a recognized verification command") {
+		t.Fatalf("blocker does not name the unrecognized check: %v", err)
+	}
+}
+
+// The explanation is owed only once the runtime has asked for verification.
+// Attached to ordinary work it would be noise on every mkdir and every ls.
+func TestOrdinaryCommandsAreNotLecturedAboutVerification(t *testing.T) {
+	graph, err := goalgraph.New(goalgraph.Spec{Goal: "change and verify", Nodes: []goalgraph.NodeSpec{{ID: 1, Title: "change source"}}}, 1, goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	registry := tools.NewRegistry(
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)}, Action: tools.Action{Risk: tools.RiskRead, Summary: "list the workspace", Command: "ls -la"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "total 0", nil
+		}},
+	)
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return graphToolResponse("inspect", "run_command", `{}`), nil
+		}
+		if requestContains(request, "not a recognized verification command") {
+			t.Fatal("ordinary read work was told it failed to verify")
+		}
+		return provider.Response{Content: "inspected"}, nil
+	}}
+	agentRuntime := New(Options{
+		Client: client, ProviderName: "fixture", Model: "scripted", ProviderConfig: appconfig.Provider{MaxTokens: 100},
+		Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil),
+		MaxIterations: 8, GoalGraph: graph, GoalStateToken: func(context.Context) (string, error) { return "workspace", nil },
+	})
+	if _, err := agentRuntime.Run(t.Context(), "prepare it", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1033,6 +1174,39 @@ func TestCompletionControllerRequiresVerificationAfterWrite(t *testing.T) {
 	}
 	if result != "changed and verified" || client.calls != 5 || warnings != 1 {
 		t.Fatalf("result=%q calls=%d warnings=%d", result, client.calls, warnings)
+	}
+}
+
+// The controller's advice used to offer one word for an unfinished step, and
+// recording it is what makes the whole turn report blocked. A run that built
+// and verified its deliverable therefore ended in a red failure because the
+// model had abandoned one side attempt — read a reference it turned out not to
+// need — and was told the only way to record that was `blocked`.
+func TestCompletionNoticeDistinguishesSkippedFromBlocked(t *testing.T) {
+	notice := completionNotice([]string{"a failed tool has not been recovered or recorded as blocked: read_file"}, 1)
+	for _, want := range []string{
+		"`skipped` when the action proved unnecessary or you achieved it another way",
+		"`blocked` only when the work genuinely cannot be completed",
+		"a blocked step ends this turn as blocked",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("completion notice is missing %q:\n%s", want, notice)
+		}
+	}
+	// The distinction has to be real, not just described: a skipped step with
+	// a reason completes the turn, and a blocked one does not.
+	skipped := plan.Plan{Goal: "build", Steps: []plan.Step{
+		{ID: 1, Title: "build it", Status: "done", Evidence: "wrote the files"},
+		{ID: 2, Title: "read an optional reference", Status: "skipped", Evidence: "denied outside the workspace, and not needed"},
+	}}
+	if state := skipped.AssessCompletion().State; state != plan.CompletionReady {
+		t.Fatalf("a skipped side attempt left the plan %q, want ready", state)
+	}
+	blocked := skipped
+	blocked.Steps = append([]plan.Step(nil), skipped.Steps...)
+	blocked.Steps[1].Status = "blocked"
+	if state := blocked.AssessCompletion().State; state != plan.CompletionBlocked {
+		t.Fatalf("a blocked step left the plan %q, want blocked", state)
 	}
 }
 
@@ -1314,6 +1488,80 @@ func TestVerificationRecognitionCoversCommonEcosystems(t *testing.T) {
 		if isVerificationCommand(command, workspace) {
 			t.Errorf("non-verification wrapper command was recognized: %q", command)
 		}
+	}
+}
+
+// Node was the one ecosystem whose own test entry points were missing, and it
+// was the worst one to miss. A directory with no package.json is exactly the
+// "no applicable test surface" case where the proposal contract tells the
+// first mutating node to create a focused test — so the runtime required a
+// test and then refused every way of running it, and the node blocked with a
+// passing suite sitting in its own evidence.
+func TestNodeVerificationRecognizesItsOwnTestEntryPoints(t *testing.T) {
+	workspace := t.TempDir()
+	for _, command := range []string{
+		"node --test",
+		"node --test tests/",
+		"node --test --test-reporter=spec",
+		"node --check script.js",
+		"node -c app.js",
+		"node tests/smoke.js",
+		"node test/index.js",
+		"node ./spec/app.spec.mjs",
+		"node smoke.js",
+		"node smoke-test.js",
+		"node app.test.js",
+		"node scripts/db_test.js",
+	} {
+		if !isVerificationCommand(command, workspace) {
+			t.Errorf("node test entry point was not recognized: %q", command)
+		}
+	}
+	// Recognition is by conventional entry point, not by interpreter. `node`
+	// runs anything, and an inline expression can be spelled to look like a
+	// test path, so neither becomes proof.
+	for _, command := range []string{
+		"node index.js",
+		"node build.js",
+		"node scripts/seed.js",
+		"node server.js --port 8080",
+		`node -e "require('./tests/smoke.js')"`,
+		`node --eval "process.exit(0)"`,
+		"node -p tests/smoke.js",
+	} {
+		if isVerificationCommand(command, workspace) {
+			t.Errorf("arbitrary node invocation was recognized as verification: %q", command)
+		}
+	}
+}
+
+// The recognizer is a finite table, so some ecosystem is always missing from
+// it. What must not be missing is the explanation: a model told only that
+// verification is absent, seconds after its own suite passed, has nothing to
+// act on and spends its bounded remediation lease diagnosing.
+func TestUnrecognizedButPassingVerificationExplainsItself(t *testing.T) {
+	workspace := t.TempDir()
+	assessment := assessVerificationCommand("./run-my-checks.sh", workspace)
+	if assessment.Recognized || assessment.VerificationLike || !assessment.Unrecognized {
+		t.Fatalf("unrecognized direct command assessment=%+v", assessment)
+	}
+	bare := unrecognizedVerificationNotice("./run-my-checks.sh", workspace)
+	for _, want := range []string{"./run-my-checks.sh", "not a recognized verification command", "no detected verification commands", "package.json"} {
+		if !strings.Contains(bare, want) {
+			t.Fatalf("notice for a project with no manifest is missing %q:\n%s", want, bare)
+		}
+	}
+	// Once the project declares an entry point, the notice stops theorizing
+	// and names the command that would actually be accepted here.
+	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte(`{"scripts":{"test":"node tests/smoke.js"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	detected := unrecognizedVerificationNotice("./run-my-checks.sh", workspace)
+	if !strings.Contains(detected, `"npm run test"`) {
+		t.Fatalf("notice did not name the project's detected verifier:\n%s", detected)
+	}
+	if !isVerificationCommand("npm run test", workspace) {
+		t.Fatal("the command the notice recommends is not itself recognized")
 	}
 }
 

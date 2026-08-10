@@ -77,5 +77,6 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		FormatFileTool{Guard: guard, Servers: cfg.LSP, Tracker: tracker},
 		WebSearchTool{Client: webClient}, WebFetchTool{Client: webClient},
 	)
+	registry.guard = guard
 	return registry, tracker, procs, nil
 }

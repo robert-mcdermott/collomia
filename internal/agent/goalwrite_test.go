@@ -145,6 +145,37 @@ func (w *writeWave) attemptFor(t *testing.T, nodeID int) goalgraph.Attempt {
 	return goalgraph.Attempt{}
 }
 
+// describeWriterNode renders every input FinishWriter weighs when it decides
+// between a retained candidate and a blocked node. A bare state comparison
+// reports that the decision went the other way without saying which term
+// failed, which is unactionable when the difference only appears on a runner
+// nobody can attach a debugger to.
+func (w *writeWave) describeWriterNode(t *testing.T, id int) string {
+	t.Helper()
+	node := w.node(t, id)
+	out := fmt.Sprintf("node %d state=%q reason=%q", id, node.State, node.Reason)
+	attempt := w.attemptFor(t, id)
+	out += fmt.Sprintf("\n  attempt %s state=%q summary=%q", attempt.ID, attempt.State, attempt.Summary)
+	out += fmt.Sprintf("\n  base commit=%q workspace token=%q", attempt.BaseCommit, attempt.BaseWorkspaceToken)
+	for _, failure := range attempt.Failures {
+		out += fmt.Sprintf("\n  failure kind=%q tool=%q detail=%q", failure.Kind, failure.Tool, failure.Detail)
+	}
+	if attempt.Candidate == nil {
+		return out + "\n  candidate: none retained"
+	}
+	candidate := attempt.Candidate
+	out += fmt.Sprintf("\n  candidate worker=%q worktree=%q branch=%q base=%q",
+		candidate.WorkerID, candidate.Worktree, candidate.Branch, candidate.BaseCommit)
+	out += fmt.Sprintf("\n  candidate changed=%v scope=%v violations=%v",
+		candidate.ChangedFiles, candidate.WritePaths, candidate.ScopeViolations)
+	out += fmt.Sprintf("\n  candidate verification state=%q token=%q results=%d",
+		candidate.VerificationState, candidate.VerificationToken, len(candidate.Verification))
+	for _, verification := range candidate.Verification {
+		out += fmt.Sprintf("\n    %q status=%q token=%q", verification.Command, verification.Status, verification.StateToken)
+	}
+	return out
+}
+
 func writerNode(id int, title, scope string) goalgraph.NodeSpec {
 	return goalgraph.NodeSpec{
 		ID: id, Title: title, Execution: goalgraph.ExecutionIsolatedWrite,
@@ -365,10 +396,10 @@ func TestGoalWriteWaveKeepsAVerifiedSiblingWhenOneWriterFails(t *testing.T) {
 		t.Fatal("partially failed wave reported success")
 	}
 	if state := wave.node(t, 1).State; state != goalgraph.NodeAwaitingReview {
-		t.Fatalf("verified node state=%q, want awaiting_review", state)
+		t.Fatalf("verified node state=%q, want awaiting_review\n%s", state, wave.describeWriterNode(t, 1))
 	}
 	if state := wave.node(t, 2).State; state != goalgraph.NodeBlocked {
-		t.Fatalf("failed node state=%q, want blocked", state)
+		t.Fatalf("failed node state=%q, want blocked\n%s", state, wave.describeWriterNode(t, 2))
 	}
 	alpha := wave.attemptFor(t, 1)
 	if alpha.State != goalgraph.AttemptCandidate || alpha.Candidate == nil || alpha.Candidate.VerificationState != "passed" {

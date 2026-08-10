@@ -982,12 +982,23 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if call.Name == "run_command" {
 		assessment := assessVerificationCommand(action.Command, a.workspace)
 		observation.Verification = assessment.Recognized
-		if err == nil && assessment.VerificationLike && !assessment.Recognized {
+		switch {
+		case err == nil && assessment.VerificationLike && !assessment.Recognized:
 			notice := "Collomia verification evidence was not recorded: " + assessment.Reason
 			if assessment.Suggestion != "" {
 				notice += " Run the verification directly so its own exit status is preserved: " + assessment.Suggestion
 			}
 			a.recordRefusedVerification(assessment.Suggestion)
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += notice
+		// Only once the runtime has already named a verification gap. Before
+		// that, every ordinary mkdir and ls is equally "not verification", and
+		// saying so would be noise attached to work that is going fine.
+		case err == nil && assessment.Unrecognized && a.goalAwaitingVerification():
+			notice := unrecognizedVerificationNotice(action.Command, a.workspace)
+			a.recordUnrecognizedVerification(strings.Join(strings.Fields(action.Command), " "))
 			if result.Content != "" {
 				result.Content += "\n\n"
 			}
