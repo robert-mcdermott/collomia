@@ -31,7 +31,13 @@ import (
 // has to ask for. Comparing cost without saying that would be the most
 // misleading number in the file, so the end state is measured too.
 
-const writerComparisonDelay = 1200 * time.Millisecond
+// The delay has to stay well above the wall-clock cost of starting a writer,
+// because that cost lands inside the measured critical path. Each writer gets
+// its own Git worktree before it can issue a provider call, and creating one is
+// several hundred milliseconds on a Windows runner. That is real work, but it
+// is fixed: it does not shrink as the simulated implementation grows, so a
+// delay close to it reports mostly setup and reads as an absent overlap.
+const writerComparisonDelay = 2500 * time.Millisecond
 
 type writerComparisonClient struct {
 	mode  string
@@ -288,7 +294,17 @@ func TestOrchestratedGoalComparativeWriterWaveEvaluation(t *testing.T) {
 	if standardRecord.criticalPath < 2*writerComparisonDelay-slack {
 		t.Fatalf("standard mode did not serialize both implementations: %s", standardRecord)
 	}
-	if waveRecord.criticalPath > standardRecord.criticalPath-writerComparisonDelay+slack {
+	// Assert the overlap itself rather than a critical-path constant. The two
+	// differ by writer startup, which a threshold on the critical path silently
+	// requires to be faster than half the simulated implementation — a claim
+	// about the runner's filesystem, not about the wave. Measured directly, a
+	// wave that serialized its writers still fails: its overlap is zero.
+	waveOverlap := waveRecord.simulated - waveRecord.criticalPath
+	if waveOverlap < writerComparisonDelay/2 {
+		t.Fatalf("the wave did not overlap the two implementations (%s of %s):\n  %s\n  %s",
+			waveOverlap.Round(time.Millisecond), writerComparisonDelay, standardRecord, waveRecord)
+	}
+	if waveRecord.criticalPath >= standardRecord.criticalPath {
 		t.Fatalf("the wave did not shorten the implementation critical path:\n  %s\n  %s", standardRecord, waveRecord)
 	}
 	// And its cost. The suite count is the number simulated latency hides, and
