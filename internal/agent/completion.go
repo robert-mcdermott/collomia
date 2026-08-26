@@ -113,7 +113,6 @@ type completionController struct {
 	dirtyPaths           map[string]struct{}
 	waived               bool
 	recognizedEver       bool
-	validatedEver        bool
 	noteAtMutation       string
 	failures             []unresolvedToolFailure
 	successes            map[string]toolObservation
@@ -198,7 +197,6 @@ func (c *completionController) observe(observation toolObservation) {
 	}
 	if c.taskMode == taskmode.Work && observation.ArtifactValidation {
 		c.acceptArtifactValidation(observation.Action.Paths)
-		c.validatedEver = true
 	}
 	if observation.Name == "update_plan" && c.dirty && c.board != nil {
 		if current := c.board.Current(); current != nil && completionDisclosure(current, c.taskMode) != "" && completionDisclosure(current, c.taskMode) != c.noteAtMutation {
@@ -481,6 +479,49 @@ func (c *completionController) acceptArtifactValidation(paths []string) {
 	}
 }
 
+// outstandingWorkValidationIssue renders only the tracked paths that still
+// need evidence. validate_artifact removes a path from dirtyPaths, so naming
+// this set prevents the model from repeatedly validating an artifact whose
+// current digest the controller has already accepted. Unknown-path mutations
+// remain explicit and fail closed rather than disappearing behind the list.
+func (c *completionController) outstandingWorkValidationIssue() string {
+	const maxPaths = 8
+	paths := make([]string, 0, len(c.dirtyPaths))
+	workspace := completionPath(c.workspace)
+	for path := range c.dirtyPaths {
+		display := path
+		if relative, err := filepath.Rel(workspace, path); err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			display = filepath.ToSlash(relative)
+		}
+		paths = append(paths, strconv.Quote(clipUTF8(display, 240)))
+	}
+	slices.Sort(paths)
+	total := len(paths)
+	if len(paths) > maxPaths {
+		paths = paths[:maxPaths]
+	}
+
+	var issue string
+	if len(paths) > 0 {
+		issue = "changed artifacts still needing current task-appropriate validation: " + strings.Join(paths, ", ")
+		if total > len(paths) {
+			issue += fmt.Sprintf(" (and %d more)", total-len(paths))
+		}
+		issue += ". These are the controller's remaining tracked paths; artifacts with accepted current receipts are omitted"
+	}
+	if c.dirtyUnknown {
+		if issue != "" {
+			issue += "; additional changed workspace state has no reported path"
+		} else {
+			issue = "changed workspace state still needs current task-appropriate validation, but the mutating tool did not report its paths"
+		}
+	}
+	if issue == "" {
+		return "one or more changed artifacts have no current task-appropriate validation"
+	}
+	return issue
+}
+
 // completionPath gives mutation and validation receipts one stable identity.
 // macOS commonly exposes /var through /private/var, and an artifact written
 // through one spelling must not remain dirty after the path guard validates
@@ -539,11 +580,7 @@ func (c *completionController) assess() completionDecision {
 	verificationGap := c.dirty && !c.waived
 	if verificationGap {
 		if c.taskMode == taskmode.Work {
-			if c.validatedEver || c.recognizedEver {
-				issues = append(issues, "one or more artifacts changed after their last successful task-appropriate validation")
-			} else {
-				issues = append(issues, "one or more changed artifacts have no current task-appropriate validation")
-			}
+			issues = append(issues, c.outstandingWorkValidationIssue())
 		} else if c.recognizedEver {
 			issues = append(issues, "files changed after the last successful recognized verification command")
 		} else {
@@ -568,7 +605,18 @@ func (c *completionController) assess() completionDecision {
 	// buy an unlimited sequence of fresh controller retries.
 	gapCount := planIssueCount + len(c.failures)
 	if verificationGap {
-		gapCount++
+		if c.taskMode == taskmode.Work {
+			validationGaps := len(c.dirtyPaths)
+			if c.dirtyUnknown {
+				validationGaps++
+			}
+			if validationGaps == 0 {
+				validationGaps = 1
+			}
+			gapCount += validationGaps
+		} else {
+			gapCount++
+		}
 	}
 	if c.interventions > 0 && gapCount < c.bestInterventionGaps {
 		c.interventions = 0
@@ -628,7 +676,7 @@ func completionNotice(issues []string, intervention int, mode taskmode.Mode, rec
 	// recorded with the only word on offer.
 	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence. For each named failure ID, add an update_plan.resolved_failures entry tied to a terminal step: use `recovered_by_retry` or `recovered_by_alternative` with the successful `recovery_tool_call_id`; use `skipped_unnecessary` only when the action was not needed and its step is `skipped`; use `blocked` only when the work genuinely cannot be completed and its step is `blocked`, since a blocked step ends this turn as blocked. Include the exact failure_id, step_id, and evidence; prose alone does not resolve a failed call. ")
 	if mode == taskmode.Work {
-		b.WriteString("Validate each changed deliverable with validate_artifact after its final write. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
+		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Validate each listed file deliverable with validate_artifact after its final write. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
 	} else {
 		b.WriteString("If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. ")
 	}

@@ -5,6 +5,33 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
+## v0.4.1
+
+### Fixed
+
+- **Work completion notices now name the artifact that is actually still
+  outstanding.** A transcript changed an analysis script and a Markdown
+  report, successfully validated the report, then received only the generic
+  warning that "one or more artifacts" still needed evidence. Because the
+  notice hid the remaining script path, the model revalidated the already
+  accepted report and spent both interventions before a validation note closed
+  the gap. Work notices now list a bounded, deterministic set of
+  workspace-relative paths still in the dirty ledger, explicitly omit paths
+  with current accepted receipts, and preserve a separate fail-closed warning
+  when a mutating tool did not report paths.
+
+- **Developer and Work completion recovery no longer loops on web-result
+  provenance IDs.** A real Developer transcript copied an opaque
+  `COLLOMIA_EXTERNAL_WEB_DATA` marker into `recovery_tool_call_id` instead of
+  the successful `web_fetch` call's provider-envelope ID. The completion
+  notice now lists bounded, exact successful current-turn receipt candidates,
+  distinguishes those IDs from identifiers printed inside tool output, and
+  points a mistaken marker back to the actual successful call. Changing one
+  invalid guessed ID into another no longer resets the two-intervention bound;
+  the allowance renews only when the number of real completion gaps reaches a
+  new low. A metadata-only correction still releases the already-generated
+  answer without another provider call.
+
 ## v0.4.0
 
 ### Added
@@ -46,18 +73,6 @@ an accurate one; their history is in the Git log and in
   record of a worktree nobody has reconciled.
 
 ### Fixed
-
-- **Developer and Work completion recovery no longer loops on web-result
-  provenance IDs.** A real Developer transcript copied an opaque
-  `COLLOMIA_EXTERNAL_WEB_DATA` marker into `recovery_tool_call_id` instead of
-  the successful `web_fetch` call's provider-envelope ID. The completion
-  notice now lists bounded, exact successful current-turn receipt candidates,
-  distinguishes those IDs from identifiers printed inside tool output, and
-  points a mistaken marker back to the actual successful call. Changing one
-  invalid guessed ID into another no longer resets the two-intervention bound;
-  the allowance renews only when the number of real completion gaps reaches a
-  new low. A metadata-only correction still releases the already-generated
-  answer without another provider call.
 
 - **Work no longer reports a completed answer as blocked because an abandoned
   tool call used a different recovery mechanism.** Failed calls now carry

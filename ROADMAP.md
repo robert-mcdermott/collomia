@@ -131,6 +131,18 @@ only when the count of real plan, verification, or failed-tool gaps reaches a
 new low, so reworded diagnostics, new guesses, and added side failures cannot
 turn bounded recovery into an open-ended loop.
 
+The next Work validation run confirmed the monotonic bound but exposed one
+remaining source of wasted recovery. An analysis script and report were both
+tracked as changed; validating the report correctly left only the script
+dirty, but the controller rendered that precise state as the generic phrase
+"one or more artifacts." The model therefore validated the report again and
+used both interventions before recording a disclosure for the script. Work
+completion gaps now render a bounded, sorted, workspace-relative list of only
+the paths still outstanding, state that accepted current receipts are omitted,
+and describe unknown-path mutation state separately. This keeps path-specific
+validation fail-closed while directing the first remediation attempt to the
+actual remaining artifact.
+
 The preceding wave took the first sustained beta report at its word. It was
 not about a missing capability: it was about having to hand-write JSON, and in
 particular about correcting `max_tokens` and `context_window` by hand because

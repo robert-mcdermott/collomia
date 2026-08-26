@@ -4313,7 +4313,10 @@ against structured state it can observe:
   still accepted when Work produces code. Analysis, research, and external
   actions record their calculations, sources, receipts, or read-back in plan
   evidence; a fresh `validation_note` covers a genuinely subjective remainder
-  without pretending to be runtime proof.
+  without pretending to be runtime proof. If other tracked paths remain, the
+  completion notice names a bounded, sorted, workspace-relative list of those
+  paths and omits artifacts whose current receipts were accepted. A mutation
+  that did not report paths remains a separate explicit unknown-path gap.
 - After a tool failure, the completion notice names the failed tool-call ID.
   The agent records an exact `resolved_failures` entry in `update_plan`:
   `recovered_by_retry` or `recovered_by_alternative` names the successful

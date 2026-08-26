@@ -1270,13 +1270,87 @@ func TestWorkModeArtifactValidationIsPathSpecific(t *testing.T) {
 	first := filepath.Join(controller.workspace, "first.md")
 	second := filepath.Join(controller.workspace, "second.md")
 	controller.observe(toolObservation{Name: "apply_patch", Action: tools.Action{Risk: tools.RiskWrite, Paths: []string{first, second}}})
+	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, `"first.md"`) || !strings.Contains(decision.notice, `"second.md"`) || !strings.Contains(decision.notice, "intervention 1 of 2") {
+		t.Fatalf("initial outstanding paths were not rendered: %+v", decision)
+	}
 	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{first}}, ArtifactValidation: true})
-	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, "task-appropriate validation") {
+	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, `"second.md"`) || strings.Contains(decision.notice, `"first.md"`) || !strings.Contains(decision.notice, "accepted current receipts are omitted") || !strings.Contains(decision.notice, "intervention 1 of 2") {
 		t.Fatalf("one validated path incorrectly completed both artifacts: %+v", decision)
 	}
 	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{second}}, ArtifactValidation: true})
 	if decision := controller.assess(); !decision.done {
 		t.Fatalf("both validated paths did not complete the gate: %+v", decision)
+	}
+}
+
+func TestWorkModeUnknownDirtyPathsRemainExplicit(t *testing.T) {
+	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, taskmode.Work)
+	controller.observe(toolObservation{Name: "opaque_write", Action: tools.Action{Risk: tools.RiskWrite}})
+	decision := controller.assess()
+	if decision.done || decision.blocked || !strings.Contains(decision.notice, "mutating tool did not report its paths") {
+		t.Fatalf("unknown dirty state was not actionable: %+v", decision)
+	}
+}
+
+func TestWorkModeTranscriptNamesOnlyArtifactStillNeedingValidation(t *testing.T) {
+	workspace := t.TempDir()
+	analysisPath := filepath.Join(workspace, "analysis.py")
+	reportPath := filepath.Join(workspace, "report.md")
+	guard, err := tools.NewPathGuard(workspace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	board := plan.NewBoard()
+	registry := tools.NewRegistry(
+		plan.Tool(board),
+		tools.Function{Def: provider.ToolDefinition{Name: "write_analysis"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "write analysis script", Paths: []string{analysisPath}}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "analysis written", os.WriteFile(analysisPath, []byte("print('period: 11 years')\n"), 0o644)
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "write_report"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "write report", Paths: []string{reportPath}}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "report written", os.WriteFile(reportPath, []byte("# Findings\n\nPeriod: 11 years.\n"), 0o644)
+		}},
+		tools.ValidateArtifactTool{Guard: guard},
+	)
+	const answer = "The analysis and report are complete."
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("plan", "update_plan", `{"goal":"analyze data","steps":[{"id":1,"title":"analyze and report","status":"in_progress"}]}`), nil
+		case 2:
+			return graphToolResponse("write-analysis", "write_analysis", `{}`), nil
+		case 3:
+			return graphToolResponse("write-report", "write_report", `{}`), nil
+		case 4:
+			return graphToolResponse("validate-report", "validate_artifact", `{"path":"report.md","format":"markdown","required_text":["Findings","11 years"]}`), nil
+		case 5:
+			return graphToolResponse("done", "update_plan", `{"goal":"analyze data","steps":[{"id":1,"title":"analyze and report","status":"done","evidence":"analysis script produced the 11-year result and validate_artifact accepted report.md"}]}`), nil
+		case 6:
+			return provider.Response{Content: answer}, nil
+		case 7:
+			notice := ""
+			for i := len(request.Messages) - 1; i >= 0; i-- {
+				if strings.Contains(request.Messages[i].Content, "Collomia completion controller") {
+					notice = request.Messages[i].Content
+					break
+				}
+			}
+			if !strings.Contains(notice, `"analysis.py"`) || strings.Contains(notice, `"report.md"`) || !strings.Contains(notice, "do not revalidate a path absent from the list") {
+				t.Fatalf("completion notice did not isolate the outstanding artifact:\n%s", notice)
+			}
+			return graphToolResponse("validate-analysis", "validate_artifact", `{"path":"analysis.py","format":"text","required_text":["11 years"]}`), nil
+		default:
+			return provider.Response{Content: answer}, nil
+		}
+	}}
+	var warnings int
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), TaskMode: taskmode.Work, MaxIterations: 10, CompletionPlan: board})
+	result, err := a.Run(t.Context(), "analyze the data and write a report", func(e event.Event) {
+		if e.Kind == event.KindWarning && strings.Contains(e.Text, "completion controller") {
+			warnings++
+		}
+	})
+	if err != nil || result != answer || client.calls != 8 || warnings != 1 {
+		t.Fatalf("result=%q calls=%d warnings=%d error=%v", result, client.calls, warnings, err)
 	}
 }
 

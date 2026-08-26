@@ -91,8 +91,13 @@ Callers may require exact text in formats whose content can be inspected. A
 successful validation emits a typed `artifact_validated` receipt on the
 `tool.result` event. Validation is path-specific: writing one artifact cannot
 invalidate or satisfy another, and a later write to the same artifact makes
-its prior receipt stale. Conventional build/lint/test commands remain valid
-evidence when Work happens to produce code.
+its prior receipt stale. If a completion attempt still has dirty tracked
+artifacts, the controller lists only those remaining paths relative to the
+workspace and omits paths with accepted current receipts, so remediation does
+not repeat validation of an already-cleared deliverable. Mutations whose tools
+did not report paths remain an explicit unknown-path gap. Conventional
+build/lint/test commands remain valid evidence when Work happens to produce
+code.
 
 Structural validation does **not** establish factual correctness, source
 quality, accessibility, visual polish, or fitness for a human decision. When

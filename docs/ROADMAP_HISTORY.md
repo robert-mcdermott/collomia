@@ -13,6 +13,25 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-08-25 — Work validation notices identify the outstanding artifact
+
+- **The gate was right, but its explanation hid the useful state.** A Work
+  transcript changed an analysis script and a report, validated the report at
+  its final digest, and still correctly retained the unvalidated script. The
+  generic warning did not name that script, so the model revalidated the
+  already accepted report and spent both controller interventions.
+- **Only the remaining tracked paths are rendered.** Work validation gaps now
+  list a bounded, sorted set of workspace-relative dirty paths. A path removed
+  by an accepted `validate_artifact` receipt cannot reappear in that notice
+  unless a later write makes it dirty again.
+- **Unknown writes remain conservative.** A mutation whose tool action did not
+  report paths is named separately and cannot be cleared by validating an
+  unrelated known path.
+- **Regression evidence:** controller tests cover partial path validation and
+  unknown-path mutation; a transcript-shaped two-artifact run proves the first
+  notice names only the analysis script, omits the validated report, and
+  completes after one targeted validation with one intervention.
+
 ### 2026-08-25 — Exact recovery receipts close a Developer research loop
 
 - **The deliverable was excellent; recovery metadata kept the run alive.** A
