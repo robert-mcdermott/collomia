@@ -329,12 +329,13 @@ func TestPaletteFiltersAndRuns(t *testing.T) {
 	if !m.paletteOn {
 		t.Fatal("palette should open for a slash prefix")
 	}
-	if len(m.palette) != 2 || m.palette[0].name != "/model" || m.palette[1].name != "/models" {
+	if len(m.palette) != 3 || m.palette[0].name != "/model" || m.palette[1].name != "/mode" || m.palette[2].name != "/models" {
 		t.Fatalf("palette for /mod = %+v", m.palette)
 	}
 	m = press(t, m, tea.KeyDown)
-	if m.paletteSel != 1 {
-		t.Fatalf("down should select second entry, got %d", m.paletteSel)
+	m = press(t, m, tea.KeyDown)
+	if m.paletteSel != 2 {
+		t.Fatalf("down should select third entry, got %d", m.paletteSel)
 	}
 	m = press(t, m, tea.KeyEnter)
 	if m.paletteOn {

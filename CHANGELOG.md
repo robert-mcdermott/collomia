@@ -5,9 +5,67 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-## v0.3.1
+## v0.4.1
+
+### Fixed
+
+- **The minimum Go toolchain now includes the current standard-library
+  security fixes.** The build baseline moves from Go 1.26.5 to Go 1.26.6,
+  resolving six reachable `govulncheck` findings in `net/url`, `crypto/tls`,
+  `net/http`, `encoding/xml`, and `encoding/asn1`. CI and release builds both
+  consume the version from `go.mod`, so the quality gate and shipped binaries
+  now use the corrected standard library.
+
+- **Windows AppContainer commands can execute junction-backed toolchains.**
+  GitHub Actions exposes Go on a `C:` directory junction whose bytes live on
+  `D:`. The sandbox correctly granted the resolved SDK target but left the
+  child `PATH` on the inaccessible alias, so `cmd.exe` reported that `go` did
+  not exist and every command-backed evaluation failed downstream. The
+  AppContainer shim now resolves absolute `PATH` entries before launch, making
+  executable lookup use the same spelling as the existing read-only ACL
+  without granting any additional root.
+
+- **Work completion notices now name the artifact that is actually still
+  outstanding.** A transcript changed an analysis script and a Markdown
+  report, successfully validated the report, then received only the generic
+  warning that "one or more artifacts" still needed evidence. Because the
+  notice hid the remaining script path, the model revalidated the already
+  accepted report and spent both interventions before a validation note closed
+  the gap. Work notices now list a bounded, deterministic set of
+  workspace-relative paths still in the dirty ledger, explicitly omit paths
+  with current accepted receipts, and preserve a separate fail-closed warning
+  when a mutating tool did not report paths.
+
+- **Developer and Work completion recovery no longer loops on web-result
+  provenance IDs.** A real Developer transcript copied an opaque
+  `COLLOMIA_EXTERNAL_WEB_DATA` marker into `recovery_tool_call_id` instead of
+  the successful `web_fetch` call's provider-envelope ID. The completion
+  notice now lists bounded, exact successful current-turn receipt candidates,
+  distinguishes those IDs from identifiers printed inside tool output, and
+  points a mistaken marker back to the actual successful call. Changing one
+  invalid guessed ID into another no longer resets the two-intervention bound;
+  the allowance renews only when the number of real completion gaps reaches a
+  new low. A metadata-only correction still releases the already-generated
+  answer without another provider call.
+
+## v0.4.0
 
 ### Added
+
+- **Work mode makes non-software outcomes first-class.** `--mode work` and
+  `/mode work` select a persisted task profile for direct Q&A, research,
+  analysis, automation, knowledge retrieval, document/data artifacts, and
+  governed external actions in ordinary non-Git folders. Developer remains the
+  default, and switching profiles changes neither provider nor permissions.
+  Work matches evidence to the result instead of demanding a development test:
+  the new `validate_artifact` tool emits a typed path- and SHA-256-bound receipt
+  for bounded text, Markdown, JSON, CSV/TSV, DOCX, PPTX, PDF, and binary
+  structure/content checks; calculations, sources, external receipts/read-back,
+  and an explicitly model-authored `validation_note` cover other outcomes.
+  Structural validation does not claim factual correctness or visual polish.
+  The initial profile uses Standard execution and refuses Orchestrated Goal and
+  write-capable delegation while their state/isolation contracts remain
+  Git-backed. See [the Work contract](docs/WORK_MODE.md).
 
 - **`/orchestrate done` ends a goal that has finished.** A terminal graph stays
   attached so it remains inspectable, which also means it keeps owning the
@@ -31,6 +89,32 @@ an accurate one; their history is in the Git log and in
   record of a worktree nobody has reconciled.
 
 ### Fixed
+
+- **Work no longer reports a completed answer as blocked because an abandoned
+  tool call used a different recovery mechanism.** Failed calls now carry
+  controller-visible IDs, and `update_plan.resolved_failures` binds a retry or
+  alternative to its exact successful tool-call receipt while retaining
+  distinct unnecessary-skipped and genuinely-blocked dispositions. The
+  controller no longer guesses cross-tool recovery from permission-risk
+  labels, counts interventions against unchanged gaps, and reuses an answer
+  intercepted solely for metadata repair instead of paying the provider to
+  repeat it. Sandboxed `uv` failures now receive the concrete
+  `UV_CACHE_DIR="$PWD/.uv-cache"` recovery form, and file-tool errors explain
+  why command access to `/tmp` does not grant `edit_file` access there.
+
+- **Standard mode no longer burns its remediation attempts guessing why a
+  passing check did not count.** Once the completion controller has named a
+  verification gap, an ineligible heredoc, shell compound, or unrecognized
+  check explains the exact reason in its tool result and points to detected
+  direct verifiers or a fresh `verification_note`. A recognized verifier emits
+  a positive receipt for the current tracked-write state. If verification is
+  the only remaining gap after both bounded interventions, the result is now
+  `needs_verification` instead of the false claim `blocked`.
+- **Productive Standard turns are no longer cut off at cycle 24.**
+  `max_iterations` now measures consecutive provider cycles without novel
+  progress in Standard mode, matching its Orchestrated Goal meaning. Repeated
+  equivalent evidence still exhausts the lease, and a hard envelope at twice
+  the configured value bounds continuous write churn.
 
 - **A finished run could report itself as blocked.** The completion
   controller's notice offered one way to record an unfinished step — mark it

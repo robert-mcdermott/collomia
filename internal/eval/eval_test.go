@@ -17,8 +17,10 @@ import (
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/permission"
+	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
+	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -104,6 +106,64 @@ func TestBugFixAndVerificationEvaluation(t *testing.T) {
 	}
 	if len(tracker.Changed()) != 1 || countKind(events, event.KindToolStart) != 3 || deniedDecisions(events) != 0 {
 		t.Fatalf("changed=%v starts=%d denied=%d", tracker.Changed(), countKind(events, event.KindToolStart), deniedDecisions(events))
+	}
+}
+
+// TestWorkModeArtifactEvaluation is the product-level non-Git completion
+// scenario: a document is the outcome, structural/content validation is the
+// proof, and no development test ceremony or controller retry is required.
+func TestWorkModeArtifactEvaluation(t *testing.T) {
+	workspace := t.TempDir()
+	client := &scriptedProvider{t: t, steps: []scriptedStep{
+		{check: func(request provider.Request) error {
+			if !strings.Contains(request.System, "Task profile: Work") || strings.Contains(request.System, "Task profile: Developer") {
+				return fmt.Errorf("Work profile was not selected: %s", request.System)
+			}
+			return nil
+		}, response: toolResponse("plan", "update_plan", `{"goal":"prepare status report","steps":[{"id":1,"title":"write and validate report","status":"in_progress"}]}`)},
+		{response: toolResponse("write", "write_file", `{"path":"status.md","content":"# Status report\n\n## Findings\n\nThe fixture completed successfully.\n"}`)},
+		{check: requireLastToolContains("wrote", "status.md"), response: toolResponse("validate", "validate_artifact", `{"path":"status.md","required_text":["Status report","Findings"]}`)},
+		{check: requireLastToolContains("Artifact validation passed", "sha256", "2/2 present"), response: toolResponse("done", "update_plan", `{"goal":"prepare status report","steps":[{"id":1,"title":"write and validate report","status":"done","evidence":"status.md parsed as Markdown and its required sections were present at the recorded SHA-256 digest"}]}`)},
+		{response: provider.Response{Content: "Status report delivered at status.md."}},
+	}}
+
+	cfg := appconfig.Defaults()
+	cfg.Permissions.Mode = "autopilot"
+	registry, tracker, processes, err := tools.Builtins(workspace, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(processes.StopAll)
+	board := plan.NewBoard()
+	registry.Add(plan.Tool(board))
+	runtime := agent.New(agent.Options{
+		Client: client, ProviderName: "offline-evaluation", Model: "scripted",
+		ProviderConfig: appconfig.Provider{Type: "fixture", MaxTokens: 256, Context: 16_000},
+		Workspace:      workspace, Registry: registry, Permissions: permission.New(cfg.Permissions, nil),
+		TaskMode: taskmode.Work, MaxIterations: 8, MaxToolOutput: cfg.Options.MaxToolOutputBytes, CompletionPlan: board,
+	})
+	var events []event.Event
+	answer, err := runtime.Run(t.Context(), "Prepare a Markdown status report.", func(e event.Event) { events = append(events, e) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "Status report delivered at status.md." || client.next != len(client.steps) {
+		t.Fatalf("answer=%q provider steps=%d/%d", answer, client.next, len(client.steps))
+	}
+	if changed := tracker.Changed(); len(changed) != 1 || filepath.Base(changed[0]) != "status.md" {
+		t.Fatalf("changed files=%v", changed)
+	}
+	var receipt *event.Evidence
+	for _, e := range events {
+		if e.Kind == event.KindToolResult && e.Tool != nil && e.Tool.Name == "validate_artifact" {
+			receipt = e.Tool.Evidence
+		}
+	}
+	if receipt == nil || receipt.Kind != "artifact_validated" || receipt.Subject != "status.md" || !strings.HasPrefix(receipt.Digest, "sha256:") {
+		t.Fatalf("artifact receipt=%+v", receipt)
+	}
+	if countKind(events, event.KindFileChange) != 1 {
+		t.Fatalf("file-change manifest events=%d", countKind(events, event.KindFileChange))
 	}
 }
 

@@ -111,7 +111,7 @@ func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*Run
 }
 
 func (t RunCommandTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. The process already starts in the workspace; run verification directly without a leading cd or a trailing shell status wrapper so its result can be recognized as evidence. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. OS sandbox policy may deny outside-workspace reads or writes and command networking; required read-only dependencies belong in permissions.sandbox_readable_roots, writable caches in sandbox_writable_roots, and outbound access is controlled by sandbox_allow_network. Provider and remote MCP traffic are unaffected. Set pty=true for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal"}},"required":["command"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. The process already starts in the workspace; run verification directly without a leading cd or a trailing shell status wrapper so its result can be recognized as evidence. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. OS sandbox policy may deny outside-workspace reads or writes and command networking; required read-only dependencies belong in permissions.sandbox_readable_roots, writable external caches in sandbox_writable_roots, and outbound access is controlled by sandbox_allow_network. For uv under the sandbox, prefer a workspace-local cache prefix such as UV_CACHE_DIR=\"$PWD/.uv-cache\" uv run …. Provider and remote MCP traffic are unaffected. Set pty=true for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal"}},"required":["command"],"additionalProperties":false}`)}
 }
 func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -265,6 +265,9 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		// sandbox_allow_network would send the user to the switch scoped egress
 		// exists to replace.
 		out += "\n(command ran inside the OS sandbox; it may also have failed normally. If access was denied, use permissions.sandbox_readable_roots for required read-only dependencies, permissions.sandbox_writable_roots for caches, " + networkHint(broker != nil) + ", or permissions.command_env=full for deliberately inherited environment variables. To opt out of OS containment entirely, set permissions.preset=frictionless; inspect `collo doctor` and docs/SECURITY.md)"
+		if hint := uvSandboxCacheHint(a.Command, t.Workspace); hint != "" {
+			out += "\n" + hint
+		}
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
@@ -276,6 +279,24 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		out = "(command completed with no output)"
 	}
 	return out, nil
+}
+
+func uvSandboxCacheHint(command, workspace string) string {
+	if strings.Contains(command, "UV_CACHE_DIR") {
+		return ""
+	}
+	analysis := shell.AnalyzeInWorkspace(command, workspace)
+	usesUV := false
+	for _, executable := range analysis.Executables {
+		if strings.EqualFold(filepath.Base(executable), "uv") || strings.EqualFold(filepath.Base(executable), "uv.exe") {
+			usesUV = true
+			break
+		}
+	}
+	if !usesUV {
+		return ""
+	}
+	return "uv sandbox cache recovery: retry with UV_CACHE_DIR=\"$PWD/.uv-cache\" before the uv command so downloads and package metadata stay in the writable workspace (for example, UV_CACHE_DIR=\"$PWD/.uv-cache\" uv run --with <package> …)."
 }
 
 // checkCommandSafety repeats non-overridable checks immediately before

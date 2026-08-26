@@ -24,6 +24,23 @@ background processes started with `start_process`: they run under the same
 policy and sandbox as `run_command`, just detached from the turn that
 started them.
 
+## Task profiles do not grant authority
+
+Developer and Work are prompt/evidence profiles, not autonomy modes. Switching
+with `--mode` or `/mode` does not approve a tool, widen a path, expose an MCP
+server, relax project trust, change the sandbox, inherit more environment, or
+permit publication. Both profiles pass actions through the same permission,
+hook, redaction, audit, and containment layers described here.
+
+Work makes Git optional, not safety optional. Its artifact receipts establish
+only bounded structure/content at one path and SHA-256 digest; they do not prove
+facts, source quality, accessibility, visual polish, or the success of an
+external side effect. Ambiguous external mutations must be read back or handed
+to the user rather than retried blindly. The initial Work release refuses
+Orchestrated Goal and write-capable delegation because their state and
+isolation boundaries are Git-backed; it does not weaken those boundaries for a
+non-Git folder.
+
 ## Autonomy modes: exact properties
 
 | Mode | Reads (workspace) | Writes (workspace) | Commands | Outside workspace | Network |
@@ -593,7 +610,10 @@ troubleshooting.
 - Collomia grants that SID access to the workspace, the user temp directory,
   explicit `permissions.sandbox_readable_roots` (read/execute), and explicit
   `permissions.sandbox_writable_roots` (read/write). User-local executable
-  directories on `PATH` receive read/execute access, not write access. The
+  directories on `PATH` receive read/execute access, not write access.
+  Absolute `PATH` entries are resolved through directory junctions and
+  symlinks before launch so executable lookup and the ACL granted to a resolved
+  readable root identify the same target; no additional root is opened. The
   normal user's existing access checks still apply as well. AppContainer
   always restricts user-data reads even though the compatibility read switch
   defaults to broad reads on macOS/Linux; granting the whole user profile is
@@ -831,6 +851,13 @@ ambiguous and non-replayable. After a completed action, evidence freshness is
 bound separately to its machine-observed Git workspace token. An unchanged
 token preserves earlier verification; a changed or unavailable token requires
 fresh proof. This distinction grants no new network, process, or write access.
+
+Standard mode uses the same no-progress meaning and a hard provider-turn
+envelope at twice `max_iterations`. The hard envelope is not renewed by writes,
+and token/cost budgets continue to take precedence when configured. A command
+the verifier cannot safely classify stays ordinary tool output: Collomia now
+explains the refusal after a named verification gap, but never promotes an ad
+hoc success string or a shell status that may have been masked into proof.
 
 An approved step may declare `execution: read_only`. Only independently
 dependency-ready nodes with that class are eligible for automatic assignment,

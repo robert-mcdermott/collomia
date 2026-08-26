@@ -100,6 +100,24 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		providerName, model := m.runtime.Agent.Selection()
 		m.addSystem(fmt.Sprintf("Primary agent switched to %s (%s/%s). Conversation and cumulative usage were preserved.", active, providerName, model))
+	case "/mode":
+		if len(args) == 0 {
+			m.addPanel("Task mode", fmt.Sprintf("Current: %s\n\nDeveloper — software and repository work; prefers code-aware tools and build, lint, and test evidence.\n\nWork — general-purpose tasks in any folder; validates documents, analyses, research, and external actions with task-appropriate evidence.", m.runtime.TaskMode))
+			break
+		}
+		if len(args) != 1 {
+			m.addError(fmt.Errorf("usage: /mode <developer|work>"))
+			break
+		}
+		if err := m.runtime.SetTaskMode(args[0]); err != nil {
+			m.addError(err)
+			break
+		}
+		if m.runtime.TaskMode.String() == "work" {
+			m.addSystem("Work mode enabled. Standard execution now uses task-appropriate artifact, source, calculation, and action evidence; Git is optional and permissions are unchanged.")
+		} else {
+			m.addSystem("Developer mode enabled. Standard execution now prefers repository tools and build, lint, and test evidence; permissions are unchanged.")
+		}
 	case "/context":
 		usage := m.runtime.Agent.Usage()
 		estimate, window := m.runtime.Agent.ContextEstimate()
@@ -529,6 +547,13 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			m.addError(err)
 			break
 		}
+		operation := "edit"
+		if snapshot.Before == nil {
+			operation = "delete"
+		} else if snapshot.After == nil {
+			operation = "write"
+		}
+		m.runtime.LogFileChange(snapshot.Path, operation)
 		m.addSystem(fmt.Sprintf("Undid %s of %s. Run /undo again to revert earlier changes.", snapshot.Op, snapshot.Path))
 	case "/tasks":
 		if m.runtime.GoalGraph != nil {

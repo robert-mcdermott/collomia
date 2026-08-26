@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-08-05
+**Status updated:** 2026-08-25
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -9,9 +9,10 @@ summarized here only when it affects the next decision.
 
 ## Product direction
 
-Collomia is a cross-platform, provider-neutral terminal coding agent built
-around explicit trust, enforceable permissions, durable recovery, structured
-tool use, and a polished terminal experience.
+Collomia is a cross-platform, provider-neutral local terminal agent for
+software development and general knowledge work, built around explicit trust,
+enforceable permissions, durable recovery, structured tool use, and a polished
+terminal experience.
 
 The guiding principle remains:
 
@@ -47,6 +48,10 @@ also shipped:
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
   verification, LSP diagnostics/definitions/references/formatting, repository
   indexing, PTY commands, and background processes;
+- persisted Developer and Work task profiles: Developer retains the
+  repository/build-test default, while Work supports non-Git folders, direct
+  Q&A, research, analysis, external actions, and document/artifact outcomes
+  with task-appropriate evidence and path-bound validation receipts;
 - normalized provider capabilities, streaming, retries, health, contracts,
   Azure Entra refresh, Bedrock SigV4/bearer authentication, optional macOS/
   Windows keychain credential storage, opt-in provider-safe reasoning controls,
@@ -79,7 +84,66 @@ earlier wave closed the last known asymmetry in the risk classifier: the safety
 taxonomy described destruction only, so publishing and deploying rode along
 with autopilot while their deletion counterparts required a decision.
 
-The most recent wave took the first sustained beta report at its word. It was
+The 2026-08-25 reliability slice addressed a costly Standard-mode completion
+loop from a real session: completed work and passing ad hoc checks were followed
+by two opaque verification interventions, then falsely reported as blocked.
+Verification refusal now explains itself in the next tool result, accepted
+proof receives a current-state receipt, and an unresolved verification-only
+gap is `needs_verification` rather than `blocked`. The same slice changes
+`max_iterations` from a whole-Standard-turn cutoff into a consecutive
+no-progress lease, with a non-renewable hard envelope at twice its value. The
+regression suite covers the reported static-site sequence, accepted proof,
+terminal classification, repeated-output exhaustion, sustained progress, and
+continuous-write bounding.
+
+The Work-mode wave generalizes that evidence controller without weakening it.
+Task profile is now independent of Standard/Orchestrated execution, planning,
+and permission autonomy. Developer remains the compatibility default; Work is
+persisted per session, treats ordinary non-Git folders as first-class, avoids
+ceremony for direct questions, and matches completion evidence to artifacts,
+analysis, research, or external actions. A bounded `validate_artifact` tool
+emits path- and digest-bound typed receipts for common document/data formats;
+later writes stale only the affected artifact. The initial release deliberately
+keeps Work on Standard execution because Orchestrated Goal and write-capable
+delegates still rely on Git state and isolation contracts.
+
+A follow-up Work transcript exposed a second false-block path: the requested
+analysis and answer were complete, but a refused `edit_file` remained in an
+internal ledger after a successful `run_command` alternative and even after
+the plan recorded the attempt as skipped. Recovery is now explicit rather than
+inferred: controller-issued failure IDs are resolved through structured plan
+entries bound to successful current-turn tool-call receipts or to matching
+skipped/blocked steps. Intervention bounds follow unchanged gaps, and an answer
+held only for metadata repair is released without a duplicate provider call.
+The same slice gives sandboxed `uv` an actionable workspace-cache recovery
+form and explains the separate file-tool boundary around OS temp directories.
+
+A subsequent Developer transcript exposed an ambiguity in that recovery
+protocol. Web tools frame returned content with an opaque provenance marker;
+the model repeatedly copied that output-local marker where the controller
+required the provider-envelope tool-call receipt. The controller gave no list
+of valid receipt IDs, and each different bad guess changed the rendered issue
+text enough to reset the two-intervention counter. Recovery notices now expose
+bounded exact successful receipt candidates, explicitly distinguish tool-call
+IDs from identifiers printed inside results, and map a mistaken output marker
+back to its actual successful call. The retry allowance is monotonic: it resets
+only when the count of real plan, verification, or failed-tool gaps reaches a
+new low, so reworded diagnostics, new guesses, and added side failures cannot
+turn bounded recovery into an open-ended loop.
+
+The next Work validation run confirmed the monotonic bound but exposed one
+remaining source of wasted recovery. An analysis script and report were both
+tracked as changed; validating the report correctly left only the script
+dirty, but the controller rendered that precise state as the generic phrase
+"one or more artifacts." The model therefore validated the report again and
+used both interventions before recording a disclosure for the script. Work
+completion gaps now render a bounded, sorted, workspace-relative list of only
+the paths still outstanding, state that accepted current receipts are omitted,
+and describe unknown-path mutation state separately. This keeps path-specific
+validation fail-closed while directing the first remediation attempt to the
+actual remaining artifact.
+
+The preceding wave took the first sustained beta report at its word. It was
 not about a missing capability: it was about having to hand-write JSON, and in
 particular about correcting `max_tokens` and `context_window` by hand because
 the defaults were wrong for the models in use. Both fields turn out to have
@@ -205,6 +269,42 @@ as structurally false. That is decisively past the bar, so the wave stays
 experimental. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) for the contract,
 the clause-by-clause verdict, and the reasoning behind that ordering.
+
+## Completed wave — Work as a general-purpose task profile
+
+**Goal:** make non-software outcomes first-class without forcing documents,
+analysis, research, external actions, or direct answers through Git and
+development-test assumptions, while preserving every existing authority and
+safety boundary.
+
+- [x] Define task profile as an axis independent of Standard/Orchestrated
+  execution, Plan/Execute state, and ask/workspace/autopilot permissions.
+  Preserve Developer as the default and record the full contract in
+  [`docs/WORK_MODE.md`](docs/WORK_MODE.md).
+- [x] Add `--mode developer|work` and `/mode [developer|work]`, visible mode
+  status, append-only session persistence, resume/session-switch/new-session
+  behavior, and a `mode` field on headless `run.result`. Legacy sessions load
+  as Developer.
+- [x] Give Work a dedicated prompt contract for non-Git folders, research,
+  analysis, artifacts, external-action receipts/read-back, ambiguous-mutation
+  safety, and direct Q&A without synthetic verification ceremony.
+- [x] Add bounded `validate_artifact` evidence for text/Markdown, JSON,
+  CSV/TSV, DOCX, PPTX, PDF, and binary deliverables. Emit a typed
+  `artifact_validated` tool-result receipt bound to path and SHA-256 digest;
+  invalidate it only when that artifact changes.
+- [x] Add Work's `validation_note` as explicitly model-authored disclosure for
+  outcomes with no meaningful machine check. It does not masquerade as runtime
+  proof, factual correctness, source quality, or visual review.
+- [x] Preserve durable `file.change` manifests for tracked file tools and
+  `/undo`, and publish additive schema-v1 evidence/mode fields for automation.
+- [x] Keep initial authority boundaries narrow: Work uses Standard execution,
+  refuses Orchestrated Goal, and does not delegate write-capable work while
+  those paths require Git-backed state tokens and worktree isolation.
+- [x] Add unit, regression, and credential-free product evaluations for
+  defaulting/persistence, CLI/TUI switching, non-Git Q&A, non-Git document
+  delivery with one accepted validation receipt and no controller retry,
+  path-specific staleness, supported artifact formats, schema compatibility,
+  and the Work/Orchestrated refusal.
 
 ## Completed wave — evidence-gated goal completion
 
@@ -2364,11 +2464,11 @@ sitting safely on disk was being described as though it had been thrown away. OG
 support, and made its citations enforceable so a documented case cannot outlive
 the measurement behind it.
 
-1. Gather real-session evidence from the Standard completion gate: how often
-   each rule intervenes, which verification commands are still missed by the
-   recognizer after OG-3A.8's ecosystem breadth and OG-3B2's composition rule,
-   and whether two interventions is the right bound. Keep this local and
-   inspectable rather than adding telemetry by default.
+1. Continue gathering local, inspectable real-session evidence from the
+   Standard completion gate. The 2026-08-25 incident closed the known silent
+   verification-refusal, false-blocked outcome, and productive-24-cycle cutoff;
+   future reports should test whether two interventions remains the right bound
+   rather than adding telemetry by default.
 2. Continue **OG-4 — reviewed integration and combined verification**. OG-4A
    closed the one path that could publish a graph candidate without the graph
    knowing, OG-4B made every publication into the parent recoverable by

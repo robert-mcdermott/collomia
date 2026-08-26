@@ -427,6 +427,30 @@ by a newer release even when the newer release can still read the older data.
 Use the previous binary with a backup made before the upgrade rather than
 pointing it at state already updated by a newer version.
 
+### Work task-profile additions
+
+Work mode is additive within the existing session and event versions:
+
+- session metadata may contain `task_mode: "developer"|"work"`; omission in a
+  legacy session means Developer;
+- `run.result` may contain `mode` with the same values;
+- a `tool.result` tool object may contain `evidence` with required `kind` and
+  `subject` plus optional `digest` and `detail`;
+- a persisted structured plan may contain `validation_note`, Work's explicitly
+  model-authored counterpart to Developer's `verification_note`.
+
+No new event kind was required. Existing `file.change` records now also cover
+tracked file-tool and `/undo` manifests, and their established replay rule
+remains unchanged: they are observations, never instructions to repeat a
+mutation. Schema-v1 consumers must tolerate the optional fields. A consumer
+that cares about task semantics should branch on `result.mode`; one that does
+not can retain its existing process-status/outcome handling.
+
+The Work/Orchestrated combination is rejected by this release rather than
+encoded into goal snapshots. Orchestrated Goal's Git-derived state token and
+worktree contracts therefore keep their existing meaning, and a legacy graph
+cannot acquire non-Git execution behavior during normalization.
+
 ## Automation consumers
 
 Use `collo schema events` to retrieve the JSON Schema embedded in the exact
@@ -434,7 +458,7 @@ binary being run. Consumers should:
 
 - select process behavior using `schema`, `kind`, and `run.result.status`, and
   use the additive `run.result.outcome` when goal-level
-  done/blocked/cancelled/budget-exhausted behavior matters;
+  done/blocked/needs-verification/cancelled/budget-exhausted behavior matters;
 - tolerate unknown optional fields;
 - avoid inferring success from streamed text or an intermediate error;
 - require the final `run.result` for a complete run;
@@ -443,6 +467,14 @@ binary being run. Consumers should:
 Adding a new event kind is not treated like adding an optional field: existing
 strict replay clients reject unknown kinds, so the change requires an explicit
 compatibility decision.
+
+`needs_verification` was added to the optional schema-v1 `run.result.outcome`
+enum on 2026-08-25. Process compatibility is unchanged: it carries
+`status: "error"` and a non-zero exit just as an earlier unproven completion
+did. Consumers that enumerate outcomes should treat unknown error-status values
+conservatively rather than assuming the four original values are exhaustive;
+the embedded schema from `collo schema events` is the authority for the binary
+that produced a trace.
 
 The OG-1/OG-2 decision is deliberately narrow: `goal.graph.update` remains an
 additive schema-v1 kind. Standard-mode CLI/TUI streams and all headless streams

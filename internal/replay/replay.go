@@ -336,7 +336,7 @@ func validateResult(line int, result *event.RunResult, eventFailureID string, ra
 		if result.Status != "cancelled" {
 			return lineError(line, "result outcome %q requires status %q", result.Outcome, "cancelled")
 		}
-	case "blocked", "budget_exhausted":
+	case "blocked", "needs_verification", "budget_exhausted":
 		if result.Status != "error" {
 			return lineError(line, "result outcome %q requires status %q", result.Outcome, "error")
 		}

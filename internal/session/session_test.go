@@ -226,6 +226,37 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionTaskModePersistsAndDeveloperRemainsDefault(t *testing.T) {
+	store := testStore(t)
+	ordinary, err := store.New("provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinary.Meta.TaskMode != "developer" {
+		t.Fatalf("default task mode=%q", ordinary.Meta.TaskMode)
+	}
+	ordinary.Close()
+
+	work, err := store.NewForTaskMode("provider", "model", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := work.Meta.ID
+	if err := work.SetTaskMode("developer"); err != nil {
+		t.Fatal(err)
+	}
+	work.Close()
+
+	loaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	if loaded.Meta.TaskMode != "developer" {
+		t.Fatalf("resumed task mode=%q", loaded.Meta.TaskMode)
+	}
+}
+
 func TestSessionRecordsWriteCurrentSchemaVersion(t *testing.T) {
 	store := testStore(t)
 	sess, err := store.New("provider", "model")

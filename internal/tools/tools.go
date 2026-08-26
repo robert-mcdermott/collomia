@@ -112,6 +112,19 @@ type HookIdentity interface {
 type Result struct {
 	Content string
 	Parts   []provider.ContentPart
+	// Evidence is a typed, machine-observed receipt emitted by tools whose
+	// successful result can establish more than ordinary prose. It is narrow
+	// by design: a structural artifact validation does not claim factual or
+	// visual quality, and a command receipt does not claim more than the
+	// command status the runtime recognized.
+	Evidence *Evidence
+}
+
+type Evidence struct {
+	Kind    string
+	Subject string
+	Digest  string
+	Detail  string
 }
 
 // Streamer is an optional Tool capability: tools that produce output

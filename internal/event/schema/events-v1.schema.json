@@ -139,7 +139,19 @@
         "name": { "type": "string" },
         "summary": { "type": "string" },
         "output": { "type": "string" },
-        "is_error": { "type": "boolean" }
+        "is_error": { "type": "boolean" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["kind", "subject"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": { "enum": ["verification", "artifact_validated", "effect_recorded", "postcondition_confirmed", "source_grounded", "user_judgment"] },
+        "subject": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string" },
+        "detail": { "type": "string" }
       }
     },
     "permission": {
@@ -260,7 +272,8 @@
       "additionalProperties": true,
       "properties": {
         "status": { "enum": ["ok", "error", "cancelled"] },
-        "outcome": { "enum": ["done", "blocked", "cancelled", "budget_exhausted"] },
+        "mode": { "enum": ["developer", "work"] },
+        "outcome": { "enum": ["done", "blocked", "needs_verification", "cancelled", "budget_exhausted"] },
         "answer": { "type": "string" },
         "error": { "type": "string" },
         "failure": { "$ref": "#/$defs/failure" },

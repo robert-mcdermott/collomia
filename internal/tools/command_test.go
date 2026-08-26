@@ -284,6 +284,20 @@ func TestMinimalEnvKeepsGoBuildCacheWithoutLeakingSecrets(t *testing.T) {
 	}
 }
 
+func TestUVSandboxCacheHintGivesWorkspaceLocalRecovery(t *testing.T) {
+	workspace := t.TempDir()
+	hint := uvSandboxCacheHint("uv run --with numpy python analysis.py", workspace)
+	if !strings.Contains(hint, `UV_CACHE_DIR="$PWD/.uv-cache"`) || !strings.Contains(hint, "writable workspace") {
+		t.Fatalf("uv hint is not actionable: %q", hint)
+	}
+	if got := uvSandboxCacheHint(`UV_CACHE_DIR="$PWD/custom" uv run python analysis.py`, workspace); got != "" {
+		t.Fatalf("explicit uv cache override received redundant hint: %q", got)
+	}
+	if got := uvSandboxCacheHint("go test ./...", workspace); got != "" {
+		t.Fatalf("non-uv command received uv hint: %q", got)
+	}
+}
+
 func TestMinimalEnvKeepsWindowsAppContainerPaths(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "profile")
 	localAppData := filepath.Join(profile, "AppData", "Local")

@@ -110,10 +110,21 @@ type ProviderFailure struct {
 
 // Tool describes one tool invocation's lifecycle.
 type Tool struct {
-	Name    string `json:"name"`
-	Summary string `json:"summary,omitempty"`
-	Output  string `json:"output,omitempty"`
-	IsError bool   `json:"is_error,omitempty"`
+	Name     string    `json:"name"`
+	Summary  string    `json:"summary,omitempty"`
+	Output   string    `json:"output,omitempty"`
+	IsError  bool      `json:"is_error,omitempty"`
+	Evidence *Evidence `json:"evidence,omitempty"`
+}
+
+// Evidence is a typed machine-observed receipt attached to a successful tool
+// result. Kind describes the narrow claim the runtime can support; Detail must
+// not expand that claim into subjective quality or factual correctness.
+type Evidence struct {
+	Kind    string `json:"kind"`
+	Subject string `json:"subject"`
+	Digest  string `json:"digest,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 // Permission describes a requested privileged action and its decision.
@@ -139,8 +150,11 @@ type FileChange struct {
 // contract, and Outcome for the goal-level terminal state.
 type RunResult struct {
 	Status string `json:"status"`
-	// Outcome is the goal-level terminal state: done, blocked, cancelled, or
-	// budget_exhausted. Status retains its schema-v1 process contract
+	// Mode is the task profile used for this run: developer or work. It is
+	// independent of Standard/Orchestrated execution and permission autonomy.
+	Mode string `json:"mode,omitempty"`
+	// Outcome is the goal-level terminal state: done, blocked, needs_verification,
+	// cancelled, or budget_exhausted. Status retains its schema-v1 process contract
 	// (ok/error/cancelled); Outcome distinguishes why an error-status run
 	// stopped without making automation parse Error.
 	Outcome string   `json:"outcome,omitempty"`

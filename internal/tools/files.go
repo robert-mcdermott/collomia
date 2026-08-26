@@ -336,7 +336,7 @@ type EditFileTool struct {
 }
 
 func (t EditFileTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "edit_file", Description: "Replace one exact, unique text fragment in a file. The operation fails if old_text is missing or appears more than once, preventing ambiguous edits.", InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "edit_file", Description: "Replace one exact, unique text fragment in a workspace file. Keep scratch files inside the workspace (for example under .collomia-tmp/); OS command-sandbox access to /tmp does not grant this file tool access there. The operation fails if old_text is missing or appears more than once, preventing ambiguous edits.", InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"],"additionalProperties":false}`)}
 }
 func (t EditFileTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {

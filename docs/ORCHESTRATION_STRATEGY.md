@@ -5,7 +5,7 @@ End-to-end graphs with governed read fan-out are supported as an optional
 mode. Isolated-writer candidate waves remain experimental after the documented
 audit pass. Standard mode remains the permanent default.
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
-**Last updated:** 2026-08-05
+**Last updated:** 2026-08-25
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
 
 This document is the durable implementation charter and decision record for
@@ -138,7 +138,7 @@ The difficult prerequisites are substantially present:
 | Foundation | Current capability |
 | --- | --- |
 | Structured plan | Goals, stable step IDs, acyclic known dependencies, terminal reasons/evidence, persistence, and revisions. |
-| Goal completion | Tool-free answers are checked against open plan state, stale verification after tracked writes, and unresolved tool failures. Outcomes are `done`, `blocked`, `cancelled`, or `budget_exhausted`. |
+| Goal completion | Tool-free answers are checked against open plan state, stale verification after tracked writes, and unresolved tool failures. Standard verification refusal is actionable, accepted proof receives a receipt, and the outcomes distinguish `needs_verification` from `blocked`, alongside `done`, `cancelled`, and `budget_exhausted`. |
 | Primary graph controller | OG-1 durably owns required-node readiness, immutable attempts/evidence, typed retry/revision, conservative Git freshness, verification, terminal state, and non-replaying recovery through an internal programmatic evaluation seam. |
 | Delegation | Bounded batches, named profiles, plan-step association, per-agent budgets, steering, cancellation, durable results, and no recursive delegation. |
 | Scheduling | Session-wide FIFO admission, global/provider limits, declared write scopes, concurrent disjoint writers, and serialization of overlapping or workspace-wide writers. |
@@ -974,12 +974,13 @@ OG-3A.3 progress-aware primary control and workspace-evidence correction:
   submit the completion proposal. The fixed number 24 came from the ordinary
   `options.max_iterations` default; it was not a tool-call limit and did not
   describe lack of progress.
-- In Orchestrated Goal, `max_iterations` now measures consecutive provider
+- In Orchestrated Goal, `max_iterations` measures consecutive provider
   cycles since the last novel durable successful tool evidence. A new result,
   resolved failure outcome, changed workspace token, or verification bound to
   a new workspace generation renews that lease inside the same immutable
-  attempt. Repeating equivalent evidence does not. Standard mode still uses
-  `max_iterations` as its total turn bound, while the graph's fixed 96
+  attempt. Repeating equivalent evidence does not. As of 2026-08-25 Standard
+  mode uses the same no-progress meaning and a hard envelope at twice the
+  configured value, while the graph's fixed 96
   provider-iteration, token, conditional-cost, and active-wall envelope
   remains the non-renewable outer bound.
 - Write-ahead safety and evidence freshness now use separate generations.
@@ -2655,6 +2656,13 @@ Every agent or contributor continuing this program must:
   evidence-gated goal completion. **This is permanent, not a staging state:**
   Orchestrated Goal will never be the default mode (decided 2026-08-04), so
   graduation can only mean leaving experimental status as an optional mode.
+- Task profile is a separate axis. Developer remains the default profile;
+  Work is the non-Git general-purpose profile. The initial Work release uses
+  Standard execution only and explicitly refuses Orchestrated Goal rather than
+  deriving a false state token or isolation claim from a folder with no Git
+  base. Supporting Work here requires a designed non-Git workspace token,
+  isolated-write substrate, recovery contract, and reviewed publication gate;
+  it must not weaken the existing graph authority boundary.
 - Preserved implementation constraint: only approved `read_only` and narrowly
   scoped `isolated_write` nodes may be automatically delegated; writers never
   touch the parent workspace, no candidate is ever selected or integrated
@@ -2667,6 +2675,26 @@ Every agent or contributor continuing this program must:
   change. The original reliability and independent-review gates are complete.
 
 ## Decision log
+
+### 2026-08-25
+
+- Treat Developer/Work as a task-profile axis independent of
+  Standard/Orchestrated execution. Keep the first Work release on Standard
+  execution and refuse Work plus Orchestrated Goal until non-Git freshness,
+  isolation, recovery, and publication have explicit runtime-owned contracts.
+- Apply the progress-aware provider-cycle lease to Standard mode as well as
+  Orchestrated Goal. Keep `max_iterations` as the configurable no-progress
+  value and bound a Standard turn with a non-renewable hard envelope at twice
+  that value; token and cost bounds remain independent tighter controls.
+- Do not weaken verification recognition to accept arbitrary commands that
+  print `PASS`. Instead, attach the refusal reason and the detected direct
+  correction to the next tool result after a verification gap has been named,
+  and attach a positive current-state receipt to recognized proof.
+- Distinguish apparently complete work that still lacks accepted proof from
+  work that cannot be completed. `needs_verification` is an additive
+  `run.result.outcome` paired with the existing error process status;
+  `blocked` remains the outcome for unfinished work or another unresolved
+  completion failure.
 
 ### 2026-08-01
 

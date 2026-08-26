@@ -1,6 +1,6 @@
 module github.com/robert-mcdermott/collomia
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0

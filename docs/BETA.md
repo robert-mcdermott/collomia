@@ -1,14 +1,16 @@
 # Collomia beta status and known limitations
 
-Collomia is suitable for a public **technical beta** aimed at developers who
-want an interactive, inspectable terminal coding agent. Beta means the core
-permission, session, provider, editing, MCP, and multi-agent paths are usable
-and heavily tested; it does not mean unattended execution is risk-free or that
-every roadmap feature is complete.
+Collomia is suitable for a public **technical beta** aimed at developers and
+technical users who want an interactive, inspectable local terminal agent.
+Beta means the core permission, session, provider, editing, Work, MCP, and
+multi-agent paths are usable and heavily tested; it does not mean unattended
+execution is risk-free or that every roadmap feature is complete.
 
 ## Appropriate beta use
 
 - Interactive repository work with `permissions.mode: "ask"`.
+- Work-mode research, analysis, document/data artifacts, knowledge retrieval,
+  direct Q&A, and governed external actions in non-sensitive ordinary folders.
 - Reviewable workspace edits backed by Git and Collomia's diff/undo tools.
 - Provider, MCP, skills, hooks, LSP, web lookup, and headless evaluation in
   non-production environments.
@@ -115,6 +117,23 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   [Orchestrated Goal guide](USER_GUIDE.md#orchestrated-goal) for operation and
   the [strategy](ORCHESTRATION_STRATEGY.md) for the durable authority and
   maturity contract.
+- Work mode is a task/evidence profile, not a new permission or isolation
+  boundary. It supports non-Git folders and validates common artifact
+  structure/content at a path and digest, but that receipt does not prove
+  factual correctness, source quality, accessibility, or visual polish.
+  Review important reports and decisions yourself. The initial release uses
+  Standard execution and refuses Orchestrated Goal and write-capable
+  delegation until those Git-backed mechanisms have a designed non-Git state,
+  isolation, recovery, and publication contract.
+- Standard mode's `max_iterations` is a consecutive no-progress lease rather
+  than a whole-turn guillotine. Novel tool evidence renews it; equivalent
+  repeated output does not, and a hard envelope at twice the configured value
+  still stops continuous churn. After a verification gap is named, Collomia
+  explains why an ad hoc or composed passing command did not count and emits a
+  receipt when a recognized check does count. If proof alone remains missing,
+  the terminal outcome is `needs_verification`, not a claim that the work is
+  blocked. The recognizer remains deliberately conservative: arbitrary
+  always-passing shell commands do not become proof.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache

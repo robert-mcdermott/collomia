@@ -227,6 +227,29 @@ func TestWindowsBackendReportsCompleteIsolation(t *testing.T) {
 	}
 }
 
+func TestCanonicalAppContainerPathResolvesHostedToolcacheJunction(t *testing.T) {
+	alias := `C:\hostedtoolcache\windows\go\1.26.6\x64\bin`
+	target := `D:\hostedtoolcache\windows\go\1.26.6\x64\bin`
+	system := `C:\Windows\System32`
+	missing := `C:\missing-tool\bin`
+	input := strings.Join([]string{alias, system, missing, `relative\bin`}, string(os.PathListSeparator))
+
+	got := canonicalAppContainerPath(input, func(path string) (string, error) {
+		switch path {
+		case alias:
+			return target, nil
+		case system:
+			return system, nil
+		default:
+			return "", os.ErrNotExist
+		}
+	})
+	want := strings.Join([]string{target, system, missing, `relative\bin`}, string(os.PathListSeparator))
+	if got != want {
+		t.Fatalf("canonical PATH=%q, want %q", got, want)
+	}
+}
+
 func TestProcessDeviceMapSetInformationUsesHandleSizedABI(t *testing.T) {
 	got := unsafe.Sizeof(processDeviceMapSetInformation{})
 	want := unsafe.Sizeof(windows.Handle(0))

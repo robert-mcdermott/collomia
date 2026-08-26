@@ -23,6 +23,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/redact"
 	"github.com/robert-mcdermott/collomia/internal/setup"
 	"github.com/robert-mcdermott/collomia/internal/shutdown"
+	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tui"
 	"github.com/robert-mcdermott/collomia/internal/version"
 	"github.com/robert-mcdermott/collomia/internal/webterminal"
@@ -100,23 +101,23 @@ func exitCode(err error) int {
 }
 
 type options struct {
-	command, cwd, provider, model, agent, autonomy string
-	output                                         string
-	resume                                         string
-	mcpURL                                         string
-	auditSession, auditActor, auditTool            string
-	auditSince                                     string
-	auditLimit                                     int
-	webPort, mcpTimeout                            int
-	plan, global, help, version, jsonl, ephemeral  bool
-	strict, revoke, status, debug, markdown, yes   bool
-	check, denied                                  bool
-	includeLogs                                    bool
-	cont, withReference, web, webPortSet, noOpen   bool
-	mcpTimeoutSet                                  bool
-	altScreen                                      *bool
-	mcpEnv, mcpHeaders                             []string
-	args                                           []string
+	command, cwd, provider, model, agent, autonomy, taskMode string
+	output                                                   string
+	resume                                                   string
+	mcpURL                                                   string
+	auditSession, auditActor, auditTool                      string
+	auditSince                                               string
+	auditLimit                                               int
+	webPort, mcpTimeout                                      int
+	plan, global, help, version, jsonl, ephemeral            bool
+	strict, revoke, status, debug, markdown, yes             bool
+	check, denied                                            bool
+	includeLogs                                              bool
+	cont, withReference, web, webPortSet, noOpen             bool
+	mcpTimeoutSet                                            bool
+	altScreen                                                *bool
+	mcpEnv, mcpHeaders                                       []string
+	args                                                     []string
 }
 
 // run implements the CLI. The hidden sandbox re-exec entry points never reach
@@ -286,7 +287,7 @@ func run(args []string) error {
 		}
 	}
 	broker := tui.NewApprovalBroker()
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, ProviderCredential: setupCredential, Agent: opts.agent, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
+	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, ProviderCredential: setupCredential, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
 		return broker.Ask(ctx, tui.Question{Text: question, Options: options})
 	}})
 	if err != nil {
@@ -423,7 +424,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 	}
 
 	var err error
-	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
+	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
 	if err != nil {
 		return classifyCommandError(err)
 	}
@@ -478,9 +479,14 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 }
 
 func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options, answer string, refused, progressed bool, runErr error, started time.Time) {
-	result := event.RunResult{Status: "ok", Outcome: string(agent.GoalOutcomeFor(runErr)), Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds(), Version: version.Version, Commit: version.Commit}
+	mode := string(taskmode.Developer)
+	if parsed, err := taskmode.Parse(opts.taskMode); err == nil {
+		mode = parsed.String()
+	}
+	result := event.RunResult{Status: "ok", Mode: mode, Outcome: string(agent.GoalOutcomeFor(runErr)), Answer: answer, Ephemeral: opts.ephemeral, Refused: refused, DurationMS: time.Since(started).Milliseconds(), Version: version.Version, Commit: version.Commit}
 	var usage *event.Usage
 	if runtime != nil {
+		result.Mode = runtime.TaskMode.String()
 		result.ChangedFiles = runtime.Changes.Changed()
 		usage = usagePtr(runtime.Agent.Usage())
 		if runtime.Session != nil {
@@ -752,9 +758,11 @@ func parse(args []string) (options, error) {
 			opts.model = strings.TrimPrefix(arg, "--model=")
 		case strings.HasPrefix(arg, "--agent="):
 			opts.agent = strings.TrimPrefix(arg, "--agent=")
+		case strings.HasPrefix(arg, "--mode="):
+			opts.taskMode = strings.TrimPrefix(arg, "--mode=")
 		case strings.HasPrefix(arg, "--autonomy="):
 			opts.autonomy = strings.TrimPrefix(arg, "--autonomy=")
-		case arg == "--cwd" || arg == "--provider" || arg == "--model" || arg == "--agent" || arg == "--autonomy":
+		case arg == "--cwd" || arg == "--provider" || arg == "--model" || arg == "--agent" || arg == "--autonomy" || arg == "--mode":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("%s requires a value", arg)
 			}
@@ -769,6 +777,8 @@ func parse(args []string) (options, error) {
 				opts.model = value
 			case "--agent":
 				opts.agent = value
+			case "--mode":
+				opts.taskMode = value
 			case "--autonomy":
 				opts.autonomy = value
 			}
@@ -780,6 +790,9 @@ func parse(args []string) (options, error) {
 	}
 	if opts.web && opts.command != "tui" {
 		return opts, fmt.Errorf("--web is only available for the interactive TUI")
+	}
+	if _, err := taskmode.Parse(opts.taskMode); err != nil {
+		return opts, err
 	}
 	if !opts.web && (opts.webPortSet || opts.noOpen) {
 		return opts, fmt.Errorf("--web-port and --no-open require --web")
@@ -818,6 +831,9 @@ func tuiChildArgs(opts options) []string {
 	}
 	if opts.autonomy != "" {
 		args = append(args, "--autonomy", opts.autonomy)
+	}
+	if opts.taskMode != "" {
+		args = append(args, "--mode", opts.taskMode)
 	}
 	if opts.plan {
 		args = append(args, "--plan")
@@ -881,6 +897,7 @@ Flags:
   --provider <name>                    configured provider name; with setup, re-verify that provider
   --model <id>                         model or deployment ID
   --agent <name>                       named primary agent profile
+  --mode developer|work                task profile (default: developer; persisted per session)
   --autonomy ask|workspace|autopilot   permission policy
   --autopilot                          shorthand for --autonomy autopilot
   --workspace                          shorthand for --autonomy workspace

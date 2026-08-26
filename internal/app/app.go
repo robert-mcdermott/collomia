@@ -29,11 +29,13 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/skills"
+	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
 type Runtime struct {
 	Workspace   string
+	TaskMode    taskmode.Mode
 	Config      appconfig.Config
 	Agent       *agent.Agent
 	Registry    *tools.Registry
@@ -188,6 +190,14 @@ func (r *Runtime) LogEvent(e event.Event) {
 	}
 }
 
+// LogFileChange adds a durable path manifest entry for a file mutation that
+// occurs through a runtime-owned UI action rather than the primary tool loop.
+func (r *Runtime) LogFileChange(path, operation string) {
+	changed := event.New(event.KindFileChange)
+	changed.File = &event.FileChange{Path: path, Operation: operation}
+	r.LogEvent(changed)
+}
+
 // NewRedactor collects every secret the configuration knows about so logs,
 // events, and previews can scrub them.
 func NewRedactor(cfg appconfig.Config) *redact.Redactor {
@@ -220,7 +230,7 @@ func NewRedactor(cfg appconfig.Config) *redact.Redactor {
 }
 
 type Options struct {
-	Workspace, Provider, Model, Agent, Autonomy string
+	Workspace, Provider, Model, Agent, Autonomy, TaskMode string
 	// ProviderCredential carries a credential verified during automatic setup
 	// into the session opened immediately afterwards. It is never persisted and
 	// avoids putting the value in the process environment on platforms without
@@ -245,6 +255,11 @@ type Options struct {
 }
 
 func New(ctx context.Context, opts Options) (*Runtime, error) {
+	requestedTaskMode, err := taskmode.Parse(opts.TaskMode)
+	if err != nil {
+		return nil, err
+	}
+	explicitTaskMode := strings.TrimSpace(opts.TaskMode) != ""
 	if opts.OrchestratedGoal != nil && opts.Plan {
 		return nil, fmt.Errorf("orchestrated goal execution cannot run in read-only planning mode")
 	}
@@ -385,11 +400,31 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 					sess, storeErr = store.Load(latest)
 				}
 			default:
-				sess, storeErr = store.New(providerName, model)
+				sess, storeErr = store.NewForTaskMode(providerName, model, requestedTaskMode.String())
 			}
 			if storeErr != nil {
 				return nil, fmt.Errorf("session: %w", storeErr)
 			}
+		}
+	}
+	activeTaskMode := requestedTaskMode
+	if sess != nil && !explicitTaskMode {
+		activeTaskMode, err = taskmode.Parse(sess.Meta.TaskMode)
+		if err != nil {
+			sess.Close()
+			return nil, fmt.Errorf("session task mode: %w", err)
+		}
+	}
+	if activeTaskMode == taskmode.Work && (opts.OrchestratedGoal != nil || sess != nil && len(sess.GoalGraphRaw) > 0) {
+		if sess != nil {
+			sess.Close()
+		}
+		return nil, errors.New("Work mode currently uses Standard execution and cannot attach an Orchestrated Goal; resume in Developer mode or start a separate Work session")
+	}
+	if sess != nil && explicitTaskMode && sess.Meta.TaskMode != activeTaskMode.String() {
+		if err := sess.SetTaskMode(activeTaskMode.String()); err != nil {
+			sess.Close()
+			return nil, fmt.Errorf("persist task mode: %w", err)
 		}
 	}
 	sessionID := ""
@@ -469,7 +504,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if profile.MaxIterations > 0 {
 		maxIterations = profile.MaxIterations
 	}
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, TaskMode: activeTaskMode, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
 			return ""
@@ -506,7 +541,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime = &Runtime{Workspace: workspace, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
+	runtime = &Runtime{Workspace: workspace, TaskMode: activeTaskMode, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
 	agentRuntime.SetGoalWriterVerifier(func(verifyCtx context.Context, id string) ([]agent.DelegateVerification, error) {
 		return runtime.VerifyDelegateSuite(verifyCtx, id, nil)
 	})
@@ -903,6 +938,9 @@ func (r *Runtime) BeginOrchestratedProposal(goal string) (string, error) {
 	}
 	if r == nil || r.Agent == nil || r.Plan == nil {
 		return "", errors.New("runtime is unavailable")
+	}
+	if r.TaskMode == taskmode.Work {
+		return "", errors.New("Work mode currently uses Standard execution; switch to /mode developer before starting an Orchestrated Goal")
 	}
 	if r.Session == nil {
 		return "", errors.New("Orchestrated Goal requires durable session persistence")
@@ -1679,6 +1717,15 @@ func (r *Runtime) SwitchSession(id string) error {
 	if err != nil {
 		return err
 	}
+	mode, err := taskmode.Parse(sess.Meta.TaskMode)
+	if err != nil {
+		sess.Close()
+		return fmt.Errorf("session task mode: %w", err)
+	}
+	if mode == taskmode.Work && len(sess.GoalGraphRaw) > 0 {
+		sess.Close()
+		return errors.New("saved Work session contains an Orchestrated Goal and cannot be resumed safely; switch it to Developer mode explicitly before attaching the graph")
+	}
 	r.detachGoalGraph()
 	if r.Session != nil {
 		r.Session.Close()
@@ -1692,6 +1739,8 @@ func (r *Runtime) SwitchSession(id string) error {
 	}
 	r.Agent.SetMessages(sess.Active())
 	r.Agent.SetUsage(sess.Usage())
+	r.Agent.SetTaskMode(mode)
+	r.TaskMode = mode
 	sess.FlushInterrupted()
 	r.Agent.SetHooks(sess.AppendMessage, sess.AppendCompaction)
 	r.Agent.SetPersistenceGuard(sess.Err)
@@ -1712,7 +1761,7 @@ func (r *Runtime) NewSession() error {
 		return fmt.Errorf("session persistence is unavailable")
 	}
 	providerName, model := r.Agent.Selection()
-	sess, err := r.Sessions.New(providerName, model)
+	sess, err := r.Sessions.NewForTaskMode(providerName, model, r.TaskMode.String())
 	if err != nil {
 		return err
 	}
@@ -1888,6 +1937,38 @@ func (r *Runtime) Select(providerName, model string) error {
 	return nil
 }
 
+// SetTaskMode changes the task profile between turns without changing
+// execution strategy, planning state, provider, or permissions. Durable
+// sessions record the choice before the live prompt changes.
+func (r *Runtime) SetTaskMode(value string) error {
+	mode, err := taskmode.Parse(value)
+	if err != nil {
+		return err
+	}
+	if r == nil || r.Agent == nil {
+		return errors.New("runtime is unavailable")
+	}
+	if mode == r.TaskMode {
+		return nil
+	}
+	if mode == taskmode.Work {
+		if phase := r.OrchestratedGoalPhase(); phase != "" {
+			return fmt.Errorf("cannot enter Work mode while an Orchestrated Goal is %s; finish or cancel it first", phase)
+		}
+		if r.Session != nil && len(r.Session.GoalGraphRaw) > 0 {
+			return errors.New("cannot enter Work mode while this session retains an Orchestrated Goal; release it with /orchestrate done or start /new")
+		}
+	}
+	if r.Session != nil {
+		if err := r.Session.SetTaskMode(mode.String()); err != nil {
+			return fmt.Errorf("persist task mode: %w", err)
+		}
+	}
+	r.TaskMode = mode
+	r.Agent.SetTaskMode(mode)
+	return nil
+}
+
 // SelectAgent applies a named primary profile without resetting conversation
 // context or cumulative usage. "default", "none", and an empty name restore
 // the ordinary unprofiled primary agent.
@@ -1960,7 +2041,7 @@ func (r *Runtime) Summary() string {
 	if tokenBudget > 0 || costBudget > 0 {
 		budgets = fmt.Sprintf("%d tokens / $%.6f", tokenBudget, costBudget)
 	}
-	return fmt.Sprintf("workspace: %s\nagent: %s\nprovider: %s\nmodel: %s\nreasoning: %s\nbudgets: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nsandbox: %s\nplanning: %t\nconfig: %s", r.Workspace, profile, p, m, reasoning, budgets, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.SandboxSummary(), r.Agent.Plan(), r.Config.Source)
+	return fmt.Sprintf("workspace: %s\ntask mode: %s\nagent: %s\nprovider: %s\nmodel: %s\nreasoning: %s\nbudgets: %s\nprovider health: %s\ncapabilities: %s\nautonomy: %s\nsandbox: %s\nplanning: %t\nconfig: %s", r.Workspace, r.TaskMode, profile, p, m, reasoning, budgets, r.Agent.ProviderHealth().Summary(), r.Agent.Capabilities().CompactSummary(), r.Permissions.Mode(), r.SandboxSummary(), r.Agent.Plan(), r.Config.Source)
 }
 
 // SandboxSummary reports the effective command containment stance without

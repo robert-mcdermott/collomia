@@ -13,6 +13,123 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-08-26 — Windows AppContainer resolves junction-backed toolchains
+
+- **The failures shared one missing executable, not fourteen graph defects.**
+  The Windows evaluation matrix reported Standard verification failures and a
+  cascade of blocked Orchestrated writer nodes because every nested `go`
+  command returned “not recognized.” GitHub Actions installed Go behind a
+  `C:` junction to a `D:` hosted-tool-cache target.
+- **The sandbox authorized one spelling and executed another.** Explicit
+  readable roots are intentionally resolved before the AppContainer receives
+  a read/execute ACL, so the Go SDK target on `D:` was accessible. The minimal
+  child environment retained the lexical `C:` entry in `PATH`; `cmd.exe`
+  searched that inaccessible alias and never reached the authorized target.
+- **Lookup now follows the existing authority.** The Windows shim resolves
+  absolute `PATH` entries before launching the AppContainer. This makes lookup
+  use the same canonical target already authorized by the sandbox policy; it
+  grants no additional readable or writable root and leaves unresolved or
+  relative entries unchanged.
+- **Regression evidence:** a Windows-focused path test covers the exact
+  hosted-tool-cache junction shape, while the existing cross-platform
+  evaluation matrix exercises Standard and isolated-writer verification
+  through the production AppContainer path.
+
+### 2026-08-25 — Work validation notices identify the outstanding artifact
+
+- **The gate was right, but its explanation hid the useful state.** A Work
+  transcript changed an analysis script and a report, validated the report at
+  its final digest, and still correctly retained the unvalidated script. The
+  generic warning did not name that script, so the model revalidated the
+  already accepted report and spent both controller interventions.
+- **Only the remaining tracked paths are rendered.** Work validation gaps now
+  list a bounded, sorted set of workspace-relative dirty paths. A path removed
+  by an accepted `validate_artifact` receipt cannot reappear in that notice
+  unless a later write makes it dirty again.
+- **Unknown writes remain conservative.** A mutation whose tool action did not
+  report paths is named separately and cannot be cleared by validating an
+  unrelated known path.
+- **Regression evidence:** controller tests cover partial path validation and
+  unknown-path mutation; a transcript-shaped two-artifact run proves the first
+  notice names only the analysis script, omits the validated report, and
+  completes after one targeted validation with one intervention.
+
+### 2026-08-25 — Exact recovery receipts close a Developer research loop
+
+- **The deliverable was excellent; recovery metadata kept the run alive.** A
+  Developer transcript finished and checked a five-page site, then repeatedly
+  researched facts it had already sourced because two rate-limited searches
+  remained in the completion ledger.
+- **An output marker looked like a receipt.** `web_fetch` wraps untrusted data
+  in a `COLLOMIA_EXTERNAL_WEB_DATA` provenance identifier. The model copied
+  that identifier into `recovery_tool_call_id`, while the controller correctly
+  required the distinct provider-envelope tool-call ID but did not reveal the
+  valid choices or explain the mismatch.
+- **Recovery is now actionable without weakening proof.** Notices list a
+  bounded set of exact successful current-turn receipt candidates and warn
+  that IDs printed inside output are content provenance, not tool receipts. A
+  mistaken output marker is diagnosed with the actual successful call that
+  contained it; the alias itself is never accepted as proof.
+- **The bound is monotonic.** Different invalid guesses and newly created side
+  failures no longer reset two completion interventions. Only reaching a new
+  low in actual plan, verification, and failed-tool gaps renews the allowance.
+- **Regression evidence:** controller-level marker/call-ID diagnostics and
+  monotonic intervention tests accompany a transcript-shaped Developer run
+  that resolves one failed search with the advertised `web_fetch` receipt and
+  returns the original final answer without regeneration.
+
+### 2026-08-25 — Structured failed-tool recovery closes a Work false blocker
+
+- **The answer was complete; the ledger was not.** A Work transcript produced
+  and independently supported the requested analysis, recovered a refused
+  `/tmp` `edit_file` through `run_command`, and recorded the failed attempt as
+  skipped exactly as instructed. The controller still retained the failed
+  call through two interventions and reported `blocked`.
+- **Recovery is now referential, not textual or risk-based.** Every failed call
+  has a controller-visible ID. `update_plan.resolved_failures` connects it to a
+  terminal step and, for retry/alternative recovery, an exact successful
+  current-turn tool-call receipt. Unrelated tools with the same permission
+  risk no longer erase failures, and missing receipts fail closed.
+- **The bound measures unchanged gaps.** Plan or tool activity renews the
+  controller assessment only when the recorded completion gaps change. A
+  candidate answer intercepted solely for failure metadata is retained and
+  returned after resolution without another provider request; substantive
+  tools disable reuse so new evidence can change the answer.
+- **Sandbox recovery is actionable.** Sandboxed `uv` failures name the
+  `UV_CACHE_DIR="$PWD/.uv-cache"` form, while file-tool errors make clear that
+  command access to `/tmp` does not widen the workspace path guard.
+- **Regression evidence:** plan validation, missing-receipt refusal,
+  same-risk non-recovery, exact cross-tool recovery, cache guidance, and the
+  transcript-shaped single-answer lifecycle are covered in focused tests.
+
+### 2026-08-25 — Work mode makes non-software outcomes first-class
+
+- **A task profile, not a second scheduler.** Developer and Work now describe
+  the outcome and evidence contract independently of Standard/Orchestrated
+  execution, Plan/Execute state, and permission autonomy. Developer remains
+  the default; Work is explicit, visible, and persisted with the session.
+- **Ordinary folders are supported deliberately.** Work does not require Git,
+  initialize a repository, or turn missing repository metadata into a task
+  failure. Direct Q&A completes without a ceremonial plan or test run.
+- **Evidence follows the outcome.** `validate_artifact` emits a typed,
+  path-specific SHA-256 receipt after structural/content checks for common
+  text, data, Office, PDF, and binary artifacts. Analysis records inputs and
+  calculations; research records sources and inference; external mutations
+  require receipts/read-back and are not blindly retried when ambiguous.
+- **The claim stays narrow.** A receipt does not prove factual correctness,
+  source quality, or visual polish. Work's `validation_note` is labelled
+  model-authored disclosure, never machine proof.
+- **The existing authority boundary stays intact.** Permissions, sandboxing,
+  trust, hooks, redaction, audit, and autonomy are unchanged. The first Work
+  release uses Standard execution and refuses Orchestrated Goal or
+  write-capable delegation until those Git-backed mechanisms have a designed
+  non-Git state, isolation, recovery, and publication contract.
+- **Evaluation evidence:** persisted profile/resume and CLI/TUI controls,
+  non-Git Q&A, non-Git Markdown delivery with one accepted digest receipt and
+  no completion retry, path-specific staleness including macOS path aliases,
+  supported/malformed artifact formats, event-schema additions, and the
+  unsupported-combination refusal are covered offline.
+
 ## Executive summary
 
 *Original 2026-07-17 assessment:* Collomia was a credible **vertical-slice MVP** — one Go binary, a polished Bubble Tea interface, a provider-neutral tool-calling loop, approval prompts, workspace-aware tools, slash commands, skills, MCP tools, planning mode, and a bounded subagent — but not yet a production-grade agentic terminal.
@@ -44,6 +161,41 @@ agents, provider platforms, and the Model Context Protocol specification.
 The guiding principle is unchanged: make Collomia **safe and recoverable before making it more autonomous**. Phases below are dependency ordered, not calendar estimates.
 
 ## Recent updates
+
+### 2026-08-25 — Standard completion stopped guessing and stopped calling proof gaps blocked
+
+- **The supplied session made the cost visible.** The site and its smoke checks
+  were complete before the first final answer. Ten later provider cycles
+  consumed about 300,000 additional input tokens while the agent inspected
+  verification detection, reran variants of the same passing ad hoc checks,
+  received no actionable classification feedback, and finally ended
+  `blocked`. The terminal reason also said files changed *after* a successful
+  recognized verifier even though no recognized verifier had run.
+- **The recognizer remains conservative; the silence is gone.** Arbitrary
+  heredocs and commands that merely print `PASS` still cannot become runtime
+  proof. Once Standard completion has named a verification gap, the next
+  ineligible passing command says why its shell status cannot count and points
+  to detected direct verifiers or to a fresh specific `verification_note` when
+  no meaningful automated check exists. A recognized direct verifier now
+  returns a positive receipt bound to the current tracked-write state.
+- **The terminal state is truthful.** When the plan is otherwise ready and
+  verification alone remains after two bounded interventions, the public
+  outcome is `needs_verification`. `blocked` is reserved for unfinished work,
+  explicit plan blockers, unrecovered tool failures, and other runtime
+  failures. The process status remains `error`, preserving automation and exit
+  behavior while letting users and JSONL consumers distinguish the cause.
+- **Progress no longer loses to a lifetime counter at 24.** In Standard mode,
+  `max_iterations` now counts consecutive provider cycles without novel tool
+  evidence or plan progress. Equivalent repeated results do not renew it. A
+  separate hard envelope at twice the configured value bounds continuous
+  writes, and configured token/cost limits remain independent tighter bounds.
+- **The exit evidence follows the report's shape.** Regression tests exercise
+  a tracked static-site write, a passing inline smoke check declined because of
+  shell composition, the actionable next-request explanation, and successful
+  closure through a specific verification note. Separate tests cover the
+  recognized receipt, `needs_verification` mapping and schema/replay contract,
+  sustained progress beyond the old cutoff, repeated-output exhaustion, and
+  the hard write envelope.
 
 ### 2026-08-07 — Standard mode reported a finished site as a failed run
 

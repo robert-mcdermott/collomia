@@ -355,6 +355,8 @@ type Hook struct {
 var HookEvents = []string{"session_start", "user_prompt", "permission_decision", "tool_start", "tool_end", "file_change", "compaction", "subagent_start", "subagent_end", "stop", "session_end"}
 
 type Options struct {
+	// MaxIterations is a consecutive no-progress lease. Standard mode also
+	// keeps a hard provider-turn envelope at twice this value.
 	MaxIterations      int `json:"max_iterations,omitempty"`
 	MaxToolOutputBytes int `json:"max_tool_output_bytes,omitempty"`
 	// DelegateMaxConcurrency is the session-wide delegated-task limit. It

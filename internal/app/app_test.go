@@ -21,6 +21,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
+	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -348,6 +349,58 @@ func isolateGlobalFiles(t testing.TB) string {
 	t.Setenv("USERPROFILE", home)
 	writeGlobalConfig(t, home, `{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}}}`)
 	return home
+}
+
+func TestWorkTaskModePersistsAcrossResumeAndNewSession(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir() // Work mode must not require Git.
+	runtime, err := New(t.Context(), Options{Workspace: workspace, TaskMode: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := runtime.Session.Meta.ID
+	if runtime.TaskMode != taskmode.Work || runtime.Agent.TaskMode() != taskmode.Work || runtime.Session.Meta.TaskMode != "work" {
+		t.Fatalf("live=%q agent=%q persisted=%q", runtime.TaskMode, runtime.Agent.TaskMode(), runtime.Session.Meta.TaskMode)
+	}
+	runtime.Close()
+
+	resumed, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if resumed.TaskMode != taskmode.Work || !strings.Contains(resumed.Summary(), "task mode: work") {
+		t.Fatalf("resumed mode=%q summary=%q", resumed.TaskMode, resumed.Summary())
+	}
+	if err := resumed.NewSession(); err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Session.Meta.TaskMode != "work" {
+		t.Fatalf("new session did not inherit Work mode: %+v", resumed.Session.Meta)
+	}
+	if err := resumed.SetTaskMode("developer"); err != nil {
+		t.Fatal(err)
+	}
+	if resumed.TaskMode != taskmode.Developer || resumed.Session.Meta.TaskMode != "developer" {
+		t.Fatalf("switched live=%q persisted=%q", resumed.TaskMode, resumed.Session.Meta.TaskMode)
+	}
+}
+
+func TestWorkTaskModeKeepsOrchestratedGoalSeparate(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	goal := &plan.Plan{Goal: "write report", Steps: []plan.Step{{ID: 1, Title: "report", Acceptance: []string{"report exists"}}}}
+	if _, err := New(t.Context(), Options{Workspace: workspace, TaskMode: "work", OrchestratedGoal: goal}); err == nil || !strings.Contains(err.Error(), "cannot attach an Orchestrated Goal") {
+		t.Fatalf("Work+Orchestrated startup error=%v", err)
+	}
+	runtime, err := New(t.Context(), Options{Workspace: workspace, TaskMode: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.BeginOrchestratedProposal("research a topic"); err == nil || !strings.Contains(err.Error(), "switch to /mode developer") {
+		t.Fatalf("Work orchestration proposal error=%v", err)
+	}
 }
 
 // writeGlobalConfig installs a user-layer configuration in the isolated home.
@@ -1066,6 +1119,49 @@ func TestEndToEndRunIsFullyRepresentedByEventSchema(t *testing.T) {
 	}
 	if pos != len(wantOrder) {
 		t.Fatalf("event stream missing %v (in order); got %v", wantOrder[pos], kinds)
+	}
+}
+
+func TestWorkArtifactEvidenceAndFileManifestSurviveResume(t *testing.T) {
+	isolateGlobalFiles(t)
+	workspace := t.TempDir()
+	runtime, err := New(t.Context(), Options{Workspace: workspace, TaskMode: "work", Autonomy: "autopilot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{steps: []provider.Response{
+		{ToolCalls: []provider.ToolCall{{ID: "plan", Name: "update_plan", Arguments: json.RawMessage(`{"goal":"deliver report","steps":[{"id":1,"title":"write report","status":"in_progress"}]}`)}}},
+		{ToolCalls: []provider.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"report.md","content":"# Report\n\nComplete.\n"}`)}}},
+		{ToolCalls: []provider.ToolCall{{ID: "validate", Name: "validate_artifact", Arguments: json.RawMessage(`{"path":"report.md","required_text":["Report"]}`)}}},
+		{ToolCalls: []provider.ToolCall{{ID: "done", Name: "update_plan", Arguments: json.RawMessage(`{"goal":"deliver report","steps":[{"id":1,"title":"write report","status":"done","evidence":"report.md passed Markdown validation at its recorded digest"}]}`)}}},
+		{Content: "Delivered report.md."},
+	}}
+	runtime.Agent.SetProvider("scripted", "fixture", appconfig.Provider{MaxTokens: 100}, client)
+	if _, err := runtime.Agent.Run(t.Context(), "write the report", runtime.LogEvent); err != nil {
+		t.Fatal(err)
+	}
+	id := runtime.Session.Meta.ID
+	runtime.Close()
+
+	resumed, err := New(t.Context(), Options{Workspace: workspace, Resume: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if resumed.TaskMode != taskmode.Work {
+		t.Fatalf("resumed task mode=%q", resumed.TaskMode)
+	}
+	manifest, receipt := false, false
+	for _, e := range resumed.Session.RecentEvents() {
+		if e.Kind == event.KindFileChange && e.File != nil && filepath.Base(e.File.Path) == "report.md" {
+			manifest = true
+		}
+		if e.Kind == event.KindToolResult && e.Tool != nil && e.Tool.Name == "validate_artifact" && e.Tool.Evidence != nil && e.Tool.Evidence.Kind == "artifact_validated" && strings.HasPrefix(e.Tool.Evidence.Digest, "sha256:") {
+			receipt = true
+		}
+	}
+	if !manifest || !receipt {
+		t.Fatalf("durable manifest=%t receipt=%t events=%+v", manifest, receipt, resumed.Session.RecentEvents())
 	}
 }
 
