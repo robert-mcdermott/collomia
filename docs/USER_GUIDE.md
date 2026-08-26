@@ -4320,7 +4320,11 @@ against structured state it can observe:
   `recovery_tool_call_id`; `skipped_unnecessary` points to a skipped step; and
   `blocked` points to a blocked step. The runtime validates those current-turn
   references, so prose and a merely similar permission-risk label cannot
-  silently clear a failure.
+  silently clear a failure. When successful recovery candidates exist, the
+  notice lists their exact provider-envelope call IDs. An identifier printed
+  inside a tool's content, such as a `COLLOMIA_EXTERNAL_WEB_DATA` provenance
+  marker, is not a receipt ID; if one is supplied by mistake, the correction
+  names the actual successful call that contained it.
 
 The difference between those two statuses decides how the whole turn is
 reported. Any `blocked` step makes the turn end blocked; a `skipped` step with
@@ -4329,9 +4333,10 @@ to be needed, a tool call replaced by a better one — belongs in `skipped`, so 
 finished deliverable is not reported as a failed run.
 
 When a gap remains, Collomia adds a deterministic controller notice and gives
-the agent another iteration. It permits at most two final attempts with the
-same unchanged gaps; a changed gap receives a fresh assessment while unrelated
-activity does not renew the allowance. The existing
+the agent another iteration. It permits at most two final attempts until the
+number of actual plan, verification, or failed-tool gaps reaches a new low.
+Changing an invalid receipt guess, changing diagnostic text, or creating and
+then resolving a new side failure does not renew the allowance. The existing
 iteration, token, cost, cancellation, permission, and persistence limits still
 apply to every continuation. Once a verification gap has been named, a passing
 command that is not eligible for proof explains why in the same tool result

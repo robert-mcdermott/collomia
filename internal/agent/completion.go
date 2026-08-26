@@ -101,34 +101,36 @@ type toolObservation struct {
 }
 
 type completionController struct {
-	board                  *plan.Board
-	workspace              string
-	taskMode               taskmode.Mode
-	enabled                bool
-	initialRevision        uint64
-	initialOpen            bool
-	interventions          int
-	dirty                  bool
-	dirtyUnknown           bool
-	dirtyPaths             map[string]struct{}
-	waived                 bool
-	recognizedEver         bool
-	validatedEver          bool
-	noteAtMutation         string
-	failures               []unresolvedToolFailure
-	successes              map[string]toolObservation
-	resolutionIssues       []string
-	nextFailureID          int
-	failureIDCounts        map[string]int
-	progressVersion        uint64
-	seenProgress           map[[sha256.Size]byte]struct{}
-	lastRevision           uint64
-	lastInterventionIssues string
+	board                *plan.Board
+	workspace            string
+	taskMode             taskmode.Mode
+	enabled              bool
+	initialRevision      uint64
+	initialOpen          bool
+	interventions        int
+	dirty                bool
+	dirtyUnknown         bool
+	dirtyPaths           map[string]struct{}
+	waived               bool
+	recognizedEver       bool
+	validatedEver        bool
+	noteAtMutation       string
+	failures             []unresolvedToolFailure
+	successes            map[string]toolObservation
+	successOrder         []string
+	resolutionIssues     []string
+	nextFailureID        int
+	failureIDCounts      map[string]int
+	progressVersion      uint64
+	seenProgress         map[[sha256.Size]byte]struct{}
+	lastRevision         uint64
+	bestInterventionGaps int
 }
 
 type unresolvedToolFailure struct {
 	id           string
 	tool         string
+	risk         tools.Risk
 	detail       string
 	planRevision uint64
 }
@@ -177,6 +179,9 @@ func (c *completionController) observe(observation toolObservation) {
 		return
 	}
 	if strings.TrimSpace(observation.CallID) != "" {
+		if _, exists := c.successes[observation.CallID]; !exists {
+			c.successOrder = append(c.successOrder, observation.CallID)
+		}
 		c.successes[observation.CallID] = observation
 	}
 	// A same-tool success is an unambiguous retry. Cross-tool recovery is never
@@ -255,7 +260,7 @@ func (c *completionController) recordFailure(observation toolObservation) {
 	if c.board != nil {
 		_, revision = c.board.Snapshot()
 	}
-	failure := unresolvedToolFailure{id: id, tool: observation.Name, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision}
+	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision}
 	for i := range c.failures {
 		if c.failures[i].id == failure.id {
 			c.failures[i] = failure
@@ -329,7 +334,11 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 		recoveryID := strings.TrimSpace(resolution.RecoveryToolCallID)
 		recovery, ok := c.successes[recoveryID]
 		if !ok {
-			return prefix + " references recovery_tool_call_id " + recoveryID + " without a successful current-turn tool receipt"
+			issue := prefix + " references recovery_tool_call_id " + recoveryID + " without a successful current-turn tool receipt"
+			if actualID, actual := c.receiptForOutputMarker(recoveryID); actual {
+				issue += "; that value is embedded in the output of successful tool call " + actualID + " and is not its receipt ID"
+			}
+			return issue
 		}
 		if completionMetaTool(recovery.Name) {
 			return prefix + " cannot use completion metadata tool " + recovery.Name + " as recovery evidence"
@@ -359,6 +368,81 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 
 func completionMetaTool(name string) bool {
 	return name == "update_plan" || name == "detect_verification"
+}
+
+// receiptForOutputMarker recognizes the exact mistake that opaque external
+// data wrappers make easy: copying an identifier printed inside a successful
+// result and presenting it as the tool call's receipt. The marker is useful for
+// provenance, but the provider envelope's call ID is the runtime receipt. This
+// helper only improves the correction; it never accepts the alias as proof.
+func (c *completionController) receiptForOutputMarker(candidate string) (string, bool) {
+	marker := strings.TrimPrefix(strings.TrimSpace(candidate), "call_")
+	if len(marker) < 8 {
+		return "", false
+	}
+	for _, callID := range c.successOrder {
+		observation := c.successes[callID]
+		if strings.Contains(observation.ResultSummary, marker) {
+			return callID, true
+		}
+	}
+	return "", false
+}
+
+type recoveryReceipt struct {
+	callID  string
+	tool    string
+	summary string
+}
+
+// recoveryReceipts gives the model the provider-envelope IDs it otherwise has
+// to recover from protocol metadata while output-local source markers compete
+// for its attention. Matching-tool/risk candidates come first, followed by
+// recent successful non-metadata calls. The model still decides whether a
+// receipt semantically recovered the failure; the runtime does not guess.
+func (c *completionController) recoveryReceipts() []recoveryReceipt {
+	if c == nil || len(c.failures) == 0 || len(c.successOrder) == 0 {
+		return nil
+	}
+	const maxReceipts = 16
+	matching := func(observation toolObservation) bool {
+		for _, failure := range c.failures {
+			if observation.Name == failure.tool || (failure.risk != "" && observation.Action.Risk == failure.risk) {
+				return true
+			}
+		}
+		return false
+	}
+	selected := make(map[string]struct{}, maxReceipts)
+	receipts := make([]recoveryReceipt, 0, maxReceipts)
+	appendRecent := func(requireMatch bool) {
+		for i := len(c.successOrder) - 1; i >= 0 && len(receipts) < maxReceipts; i-- {
+			callID := c.successOrder[i]
+			if _, ok := selected[callID]; ok {
+				continue
+			}
+			observation := c.successes[callID]
+			if completionMetaTool(observation.Name) || requireMatch != matching(observation) {
+				continue
+			}
+			summary := strings.TrimSpace(observation.Action.Summary)
+			if summary == "" {
+				summary = strings.TrimSpace(firstLine(observation.ResultSummary))
+			}
+			receipts = append(receipts, recoveryReceipt{callID: callID, tool: observation.Name, summary: clipUTF8(summary, 180)})
+			selected[callID] = struct{}{}
+		}
+	}
+	appendRecent(true)
+	appendRecent(false)
+	return receipts
+}
+
+func firstLine(value string) string {
+	if index := strings.IndexByte(value, '\n'); index >= 0 {
+		return value[:index]
+	}
+	return value
 }
 
 func (c *completionController) markDirty(paths []string) {
@@ -477,11 +561,16 @@ func (c *completionController) assess() completionDecision {
 	if len(issues) == 0 {
 		return completionDecision{done: true}
 	}
-	// The bounded count applies to the same unchanged completion gaps. A plan
-	// revision or tool result earns a fresh assessment only when it actually
-	// changes those gaps; unrelated output cannot buy more controller retries.
-	issueKey := strings.Join(issues, "\x00")
-	if c.interventions > 0 && issueKey != c.lastInterventionIssues {
+	// The bounded count resets only when the number of actual completion gaps
+	// reaches a new low. Diagnostics about a malformed recovery reference are
+	// deliberately excluded: changing one guessed receipt ID into another is
+	// not corrective progress, and adding then resolving a new failure cannot
+	// buy an unlimited sequence of fresh controller retries.
+	gapCount := planIssueCount + len(c.failures)
+	if verificationGap {
+		gapCount++
+	}
+	if c.interventions > 0 && gapCount < c.bestInterventionGaps {
 		c.interventions = 0
 	}
 	if c.interventions >= maxCompletionInterventions {
@@ -491,9 +580,11 @@ func (c *completionController) assess() completionDecision {
 		return completionDecision{blocked: true, reason: "completion remained unproven after two controller interventions without corrective progress: " + strings.Join(issues, "; ")}
 	}
 	c.interventions++
-	c.lastInterventionIssues = issueKey
+	if c.bestInterventionGaps == 0 || gapCount < c.bestInterventionGaps {
+		c.bestInterventionGaps = gapCount
+	}
 	return completionDecision{
-		notice:         completionNotice(issues, c.interventions, c.taskMode),
+		notice:         completionNotice(issues, c.interventions, c.taskMode, c.recoveryReceipts()),
 		reuseCandidate: planIssueCount == 0 && !verificationGap && len(c.failures) > 0 && len(c.resolutionIssues) == 0,
 	}
 }
@@ -511,11 +602,22 @@ func blockedPlanReason(current *plan.Plan) string {
 	return "the active plan is blocked — " + strings.Join(reasons, "; ")
 }
 
-func completionNotice(issues []string, intervention int, mode taskmode.Mode) string {
+func completionNotice(issues []string, intervention int, mode taskmode.Mode, receipts []recoveryReceipt) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Collomia completion controller (intervention %d of %d): this response cannot finish the turn yet.\nRecorded gaps:\n", intervention, maxCompletionInterventions)
 	for _, issue := range issues {
 		b.WriteString("- " + issue + "\n")
+	}
+	if len(receipts) > 0 {
+		b.WriteString("Successful current-turn tool receipts available for an explicit recovery:\n")
+		for _, receipt := range receipts {
+			fmt.Fprintf(&b, "- `%s`: %s", receipt.callID, receipt.tool)
+			if receipt.summary != "" {
+				b.WriteString(" (" + receipt.summary + ")")
+			}
+			b.WriteByte('\n')
+		}
+		b.WriteString("Use the exact tool-call ID shown above only when that call truly recovered the named failure. An ID printed inside tool output (for example, a COLLOMIA_EXTERNAL_WEB_DATA marker) is content provenance, not a recovery_tool_call_id. If no listed receipt is a real recovery, run one necessary retry or alternative and use that successful call's provider-envelope ID. ")
 	}
 	// The status this asks for decides how the whole turn is reported, so it
 	// has to name both. A step marked blocked makes the run end blocked, which

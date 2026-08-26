@@ -47,6 +47,18 @@ an accurate one; their history is in the Git log and in
 
 ### Fixed
 
+- **Developer and Work completion recovery no longer loops on web-result
+  provenance IDs.** A real Developer transcript copied an opaque
+  `COLLOMIA_EXTERNAL_WEB_DATA` marker into `recovery_tool_call_id` instead of
+  the successful `web_fetch` call's provider-envelope ID. The completion
+  notice now lists bounded, exact successful current-turn receipt candidates,
+  distinguishes those IDs from identifiers printed inside tool output, and
+  points a mistaken marker back to the actual successful call. Changing one
+  invalid guessed ID into another no longer resets the two-intervention bound;
+  the allowance renews only when the number of real completion gaps reaches a
+  new low. A metadata-only correction still releases the already-generated
+  answer without another provider call.
+
 - **Work no longer reports a completed answer as blocked because an abandoned
   tool call used a different recovery mechanism.** Failed calls now carry
   controller-visible IDs, and `update_plan.resolved_failures` binds a retry or

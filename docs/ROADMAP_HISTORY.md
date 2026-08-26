@@ -13,6 +13,30 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-08-25 — Exact recovery receipts close a Developer research loop
+
+- **The deliverable was excellent; recovery metadata kept the run alive.** A
+  Developer transcript finished and checked a five-page site, then repeatedly
+  researched facts it had already sourced because two rate-limited searches
+  remained in the completion ledger.
+- **An output marker looked like a receipt.** `web_fetch` wraps untrusted data
+  in a `COLLOMIA_EXTERNAL_WEB_DATA` provenance identifier. The model copied
+  that identifier into `recovery_tool_call_id`, while the controller correctly
+  required the distinct provider-envelope tool-call ID but did not reveal the
+  valid choices or explain the mismatch.
+- **Recovery is now actionable without weakening proof.** Notices list a
+  bounded set of exact successful current-turn receipt candidates and warn
+  that IDs printed inside output are content provenance, not tool receipts. A
+  mistaken output marker is diagnosed with the actual successful call that
+  contained it; the alias itself is never accepted as proof.
+- **The bound is monotonic.** Different invalid guesses and newly created side
+  failures no longer reset two completion interventions. Only reaching a new
+  low in actual plan, verification, and failed-tool gaps renews the allowance.
+- **Regression evidence:** controller-level marker/call-ID diagnostics and
+  monotonic intervention tests accompany a transcript-shaped Developer run
+  that resolves one failed search with the advertised `web_fetch` receipt and
+  returns the original final answer without regeneration.
+
 ### 2026-08-25 — Structured failed-tool recovery closes a Work false blocker
 
 - **The answer was complete; the ledger was not.** A Work transcript produced

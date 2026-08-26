@@ -118,6 +118,19 @@ held only for metadata repair is released without a duplicate provider call.
 The same slice gives sandboxed `uv` an actionable workspace-cache recovery
 form and explains the separate file-tool boundary around OS temp directories.
 
+A subsequent Developer transcript exposed an ambiguity in that recovery
+protocol. Web tools frame returned content with an opaque provenance marker;
+the model repeatedly copied that output-local marker where the controller
+required the provider-envelope tool-call receipt. The controller gave no list
+of valid receipt IDs, and each different bad guess changed the rendered issue
+text enough to reset the two-intervention counter. Recovery notices now expose
+bounded exact successful receipt candidates, explicitly distinguish tool-call
+IDs from identifiers printed inside results, and map a mistaken output marker
+back to its actual successful call. The retry allowance is monotonic: it resets
+only when the count of real plan, verification, or failed-tool gaps reaches a
+new low, so reworded diagnostics, new guesses, and added side failures cannot
+turn bounded recovery into an open-ended loop.
+
 The preceding wave took the first sustained beta report at its word. It was
 not about a missing capability: it was about having to hand-write JSON, and in
 particular about correcting `max_tokens` and `context_window` by hand because

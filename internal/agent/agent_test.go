@@ -1357,7 +1357,7 @@ func TestStandardVerificationGapHasItsOwnTerminalOutcome(t *testing.T) {
 // model had abandoned one side attempt — read a reference it turned out not to
 // need — and was told the only way to record that was `blocked`.
 func TestCompletionNoticeDistinguishesSkippedFromBlocked(t *testing.T) {
-	notice := completionNotice([]string{"unresolved tool failure failed-read: read_file"}, 1, "")
+	notice := completionNotice([]string{"unresolved tool failure failed-read: read_file"}, 1, "", nil)
 	for _, want := range []string{
 		"update_plan.resolved_failures",
 		"`recovered_by_alternative`",
@@ -1505,6 +1505,73 @@ func TestCompletionControllerAcceptsStructuredCrossToolRecovery(t *testing.T) {
 	}
 }
 
+func TestCompletionControllerShowsExactRecoveryReceiptsInsteadOfOutputMarkers(t *testing.T) {
+	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, taskmode.Developer)
+	controller.observe(toolObservation{
+		CallID: "call_failed_search", Name: "web_search", Failed: true,
+		Action: tools.Action{Risk: tools.RiskExternal, Summary: "web search: Nobel Prize details"},
+	})
+	controller.observe(toolObservation{
+		CallID: "call_actual_fetch", Name: "web_fetch",
+		Action:        tools.Action{Risk: tools.RiskExternal, Summary: "web fetch: official Nobel Prize page"},
+		ResultSummary: "--- BEGIN COLLOMIA_EXTERNAL_WEB_DATA_d23b8b80af0e783e ---\nsource_url: official",
+	})
+	decision := controller.assess()
+	for _, want := range []string{
+		"`call_actual_fetch`: web_fetch",
+		"COLLOMIA_EXTERNAL_WEB_DATA marker",
+		"content provenance, not a recovery_tool_call_id",
+	} {
+		if decision.done || decision.blocked || !strings.Contains(decision.notice, want) {
+			t.Fatalf("completion notice is missing %q: %+v", want, decision)
+		}
+	}
+}
+
+func TestCompletionControllerDoesNotRenewInterventionsForNewGuessedReceiptIDs(t *testing.T) {
+	board := plan.NewBoard()
+	controller := newCompletionController(board, t.TempDir(), false, taskmode.Developer)
+	controller.observe(toolObservation{
+		CallID: "call_failed_search", Name: "web_search", Failed: true,
+		Action: tools.Action{Risk: tools.RiskExternal, Summary: "web search: Nobel Prize details"},
+	})
+	controller.observe(toolObservation{
+		CallID: "call_actual_fetch", Name: "web_fetch",
+		Action:        tools.Action{Risk: tools.RiskExternal, Summary: "web fetch: official Nobel Prize page"},
+		ResultSummary: "--- BEGIN COLLOMIA_EXTERNAL_WEB_DATA_d23b8b80af0e783e ---\nsource_url: official",
+	})
+	setBadResolution := func(recoveryID, updateID string) {
+		t.Helper()
+		if err := board.Set(plan.Plan{
+			Goal:  "build the site",
+			Steps: []plan.Step{{ID: 1, Title: "research and build", Status: "done", Evidence: "site built from fetched sources"}},
+			ResolvedFailures: []plan.FailureResolution{{
+				FailureID: "call_failed_search", Disposition: "recovered_by_alternative", StepID: 1,
+				RecoveryToolCallID: recoveryID, Evidence: "the fetch supplied the needed facts",
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		controller.observe(toolObservation{CallID: updateID, Name: "update_plan", Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"}})
+	}
+
+	setBadResolution("call_d23b8b80af0e783e", "plan-1")
+	first := controller.assess()
+	if first.done || first.blocked || !strings.Contains(first.notice, "embedded in the output of successful tool call call_actual_fetch") || !strings.Contains(first.notice, "intervention 1 of 2") {
+		t.Fatalf("first malformed receipt was not corrected actionably: %+v", first)
+	}
+	setBadResolution("call_another_output_marker", "plan-2")
+	second := controller.assess()
+	if second.done || second.blocked || !strings.Contains(second.notice, "intervention 2 of 2") {
+		t.Fatalf("second malformed receipt did not consume the bounded retry: %+v", second)
+	}
+	setBadResolution("call_yet_another_output_marker", "plan-3")
+	third := controller.assess()
+	if !third.blocked || !strings.Contains(third.reason, "after two controller interventions") {
+		t.Fatalf("changed guesses incorrectly renewed completion recovery: %+v", third)
+	}
+}
+
 func TestCompletionControllerRejectsRecoveryWithoutSuccessfulReceipt(t *testing.T) {
 	board := plan.NewBoard()
 	controller := newCompletionController(board, t.TempDir(), false, taskmode.Work)
@@ -1520,6 +1587,53 @@ func TestCompletionControllerRejectsRecoveryWithoutSuccessfulReceipt(t *testing.
 	decision := controller.assess()
 	if decision.done || !strings.Contains(decision.notice, "without a successful current-turn tool receipt") || !strings.Contains(decision.notice, "edit-attempt") {
 		t.Fatalf("unproven recovery was accepted: %+v", decision)
+	}
+}
+
+func TestDeveloperTranscriptRecoveryUsesAdvertisedReceiptAndReusesAnswer(t *testing.T) {
+	board := plan.NewBoard()
+	registry := tools.NewRegistry(
+		plan.Tool(board),
+		tools.Function{
+			Def:    provider.ToolDefinition{Name: "web_search"},
+			Action: tools.Action{Risk: tools.RiskRead, Summary: "web search: Nobel Prize details"},
+			Run: func(context.Context, json.RawMessage) (string, error) {
+				return "", errors.New("rate limited (HTTP 202)")
+			},
+		},
+		tools.Function{
+			Def:    provider.ToolDefinition{Name: "web_fetch"},
+			Action: tools.Action{Risk: tools.RiskRead, Summary: "web fetch: official Nobel Prize page"},
+			Run: func(context.Context, json.RawMessage) (string, error) {
+				return "--- BEGIN COLLOMIA_EXTERNAL_WEB_DATA_d23b8b80af0e783e ---\nverified facts", nil
+			},
+		},
+	)
+	const answer = "The Fred Hutch history site is complete and verified."
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("call_failed_search", "web_search", `{}`), nil
+		case 2:
+			return graphToolResponse("call_actual_fetch", "web_fetch", `{}`), nil
+		case 3:
+			return graphToolResponse("initial-plan", "update_plan", `{"goal":"build the site","steps":[{"id":1,"title":"research and build","status":"done","evidence":"site built and checked from authoritative fetched sources"}],"verification_note":"static HTML has no build or test manifest; structure and internal links were checked"}`), nil
+		case 4:
+			return provider.Response{Content: answer}, nil
+		case 5:
+			if !requestContains(request, "`call_actual_fetch`: web_fetch") || !requestContains(request, "content provenance, not a recovery_tool_call_id") {
+				t.Fatalf("controller did not advertise the exact usable receipt: %+v", request.Messages)
+			}
+			return graphToolResponse("resolution-plan", "update_plan", `{"goal":"build the site","steps":[{"id":1,"title":"research and build","status":"done","evidence":"site built and checked from authoritative fetched sources"}],"resolved_failures":[{"failure_id":"call_failed_search","disposition":"recovered_by_alternative","step_id":1,"recovery_tool_call_id":"call_actual_fetch","evidence":"the successful official-page fetch supplied the facts the rate-limited search was meant to find"}],"verification_note":"static HTML has no build or test manifest; structure and internal links were checked"}`), nil
+		default:
+			t.Fatalf("completed answer was regenerated in provider call %d", call)
+			return provider.Response{}, nil
+		}
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), TaskMode: taskmode.Developer, MaxIterations: 8, CompletionPlan: board})
+	result, err := a.Run(t.Context(), "build the site", nil)
+	if err != nil || result != answer || client.calls != 5 {
+		t.Fatalf("result=%q calls=%d error=%v", result, client.calls, err)
 	}
 }
 
