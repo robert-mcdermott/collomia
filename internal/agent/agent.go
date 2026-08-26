@@ -75,6 +75,7 @@ type Agent struct {
 	lastCompactionEstimate int
 	usageWatermark         int
 	maxIterations          int
+	maxTurnIterations      int
 	maxToolOutput          int
 	tokenBudget            int
 	costBudgetUSD          float64
@@ -119,14 +120,14 @@ type Agent struct {
 }
 
 type Options struct {
-	Client                         provider.Client
-	ProviderName, Model, Workspace string
-	ProviderConfig                 appconfig.Provider
-	Registry                       *tools.Registry
-	Permissions                    *permission.Manager
-	Catalog                        skills.Catalog
-	ProjectInstructions            string
-	MaxIterations, MaxToolOutput   int
+	Client                                          provider.Client
+	ProviderName, Model, Workspace                  string
+	ProviderConfig                                  appconfig.Provider
+	Registry                                        *tools.Registry
+	Permissions                                     *permission.Manager
+	Catalog                                         skills.Catalog
+	ProjectInstructions                             string
+	MaxIterations, MaxTurnIterations, MaxToolOutput int
 	// TokenBudget bounds cumulative provider-reported input plus output tokens.
 	// Zero disables this additional bound.
 	TokenBudget int
@@ -197,10 +198,23 @@ func New(opts Options) *Agent {
 	if opts.MaxIterations <= 0 {
 		opts.MaxIterations = 24
 	}
+	if opts.MaxTurnIterations <= 0 {
+		opts.MaxTurnIterations = standardHardIterationLimit(opts.MaxIterations)
+	}
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+}
+
+func standardHardIterationLimit(noProgressLimit int) int {
+	if noProgressLimit <= 0 {
+		noProgressLimit = 24
+	}
+	if noProgressLimit > math.MaxInt/2 {
+		return math.MaxInt
+	}
+	return noProgressLimit * 2
 }
 
 // attachLedger is the single site that gives a permission manager its audit
@@ -335,15 +349,28 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	}
 	a.mu.RLock()
 	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode)
+	maxTurnIterations := a.maxTurnIterations
 	a.mu.RUnlock()
-	// Ordinary turns have one model-iteration envelope. An Orchestrated Goal
-	// instead applies that same bound to each primary attempt while the graph's
+	standardLastProgressIteration := 0
+	standardProgressVersion := completion.progressVersion
+	// Ordinary turns use max_iterations as a consecutive no-progress lease and
+	// a separate, larger hard envelope. An Orchestrated Goal applies the lease
+	// to each primary attempt while the graph's
 	// smaller aggregate envelope remains the cross-node/cross-worker ceiling.
-	// This lets an accepted node hand a fresh bounded slice to its successor
-	// without turning max_iterations into an accidental whole-graph limit.
+	// Progress can therefore extend useful Standard work without permitting
+	// unbounded write churn or repeated identical inspection.
 	for iteration := 1; ; iteration++ {
-		if !a.graphEnabled() && iteration > a.maxIterations {
-			break
+		if !a.graphEnabled() {
+			if iteration > maxTurnIterations {
+				budgetErr := reportError(send, fmt.Errorf("%w after the hard limit of %d provider iterations; the turn was still making progress or had not stopped", ErrIterationBudgetExceeded, maxTurnIterations))
+				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
+				return "", budgetErr
+			}
+			if iteration > 1 && iteration-1-standardLastProgressIteration >= a.maxIterations {
+				budgetErr := reportError(send, fmt.Errorf("%w: no novel progress for %d consecutive provider iterations; work remains", ErrIterationBudgetExceeded, a.maxIterations))
+				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
+				return "", budgetErr
+			}
 		}
 		if err := a.checkPersistence(); err != nil {
 			return "", reportError(send, err)
@@ -651,10 +678,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				blocked := reportError(send, fmt.Errorf("%w: %s", ErrGoalBlocked, decision.reason))
 				a.endTurn(ctx, send, iteration, GoalBlocked)
 				return response.Content, blocked
-			case iteration >= a.maxIterations:
-				budgetErr := reportError(send, fmt.Errorf("%w after %d iterations; completion evidence is still missing", ErrIterationBudgetExceeded, a.maxIterations))
-				a.endTurn(ctx, send, iteration, GoalBudgetExhausted)
-				return response.Content, budgetErr
+			case decision.needsVerification:
+				verificationErr := reportError(send, fmt.Errorf("%w: %s", ErrGoalNeedsVerification, decision.reason))
+				a.endTurn(ctx, send, iteration, GoalNeedsVerification)
+				return response.Content, verificationErr
 			default:
 				warning := event.New(event.KindWarning)
 				warning.Text = decision.notice
@@ -670,7 +697,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			if err := a.checkPersistence(); err != nil {
 				return response.Content, reportError(send, err)
 			}
-			result, observation, fatalErr := a.executeTool(ctx, call, plan, send)
+			result, observation, fatalErr := a.executeTool(ctx, call, plan, completion, send)
 			if fatalErr != nil {
 				if errors.Is(fatalErr, context.Canceled) || ctx.Err() != nil {
 					if budgetErr := a.aggregateBudgetError(send); budgetErr != nil {
@@ -696,11 +723,11 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				completion.observe(observation)
 			}
 		}
+		if !a.graphEnabled() && completion.progressVersion != standardProgressVersion {
+			standardProgressVersion = completion.progressVersion
+			standardLastProgressIteration = iteration
+		}
 	}
-	err = fmt.Errorf("%w after %d iterations", ErrIterationBudgetExceeded, a.maxIterations)
-	a.exhaustGoalGraph(err.Error(), send)
-	err = reportError(send, err)
-	return "", err
 }
 
 func (a *Agent) endTurn(ctx context.Context, send Emit, iteration int, outcome GoalOutcome) {
@@ -824,7 +851,7 @@ func reportError(send Emit, err error) error {
 	return err
 }
 
-func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, send Emit) (tools.Result, toolObservation, error) {
+func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, completion *completionController, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
 	observation := toolObservation{Name: call.Name}
 	if hasItem && !a.toolAvailable(item, plan) {
@@ -982,7 +1009,14 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	if call.Name == "run_command" {
 		assessment := assessVerificationCommand(action.Command, a.workspace)
 		observation.Verification = assessment.Recognized
+		observation.VerificationCheck = assessment
+		standardAwaitingVerification := completion != nil && completion.awaitingVerificationGuidance()
 		switch {
+		case err == nil && assessment.Recognized && standardAwaitingVerification:
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += "Collomia verification evidence: recorded for the current tracked-write state. It remains current unless a later tool changes files."
 		case err == nil && assessment.VerificationLike && !assessment.Recognized:
 			notice := "Collomia verification evidence was not recorded: " + assessment.Reason
 			if assessment.Suggestion != "" {
@@ -996,9 +1030,16 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		// Only once the runtime has already named a verification gap. Before
 		// that, every ordinary mkdir and ls is equally "not verification", and
 		// saying so would be noise attached to work that is going fine.
-		case err == nil && assessment.Unrecognized && a.goalAwaitingVerification():
+		case err == nil && assessment.Refused && (a.goalAwaitingVerification() || standardAwaitingVerification):
+			notice := refusedVerificationNotice(action.Command, assessment.Reason, a.workspace)
+			a.recordUnrecognizedVerification(boundedVerificationCommand(action.Command))
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += notice
+		case err == nil && assessment.Unrecognized && (a.goalAwaitingVerification() || standardAwaitingVerification):
 			notice := unrecognizedVerificationNotice(action.Command, a.workspace)
-			a.recordUnrecognizedVerification(strings.Join(strings.Fields(action.Command), " "))
+			a.recordUnrecognizedVerification(boundedVerificationCommand(action.Command))
 			if result.Content != "" {
 				result.Content += "\n\n"
 			}
@@ -2133,6 +2174,9 @@ type ProfileSettings struct {
 // ApplyProfile changes only local agent behavior; the Runtime separately
 // changes provider/model and permission restrictions.
 func (a *Agent) ApplyProfile(settings ProfileSettings) {
+	if settings.MaxIterations <= 0 {
+		settings.MaxIterations = 24
+	}
 	disabled := map[string]bool{}
 	for _, name := range settings.DisabledTools {
 		disabled[name] = true
@@ -2156,6 +2200,7 @@ func (a *Agent) ApplyProfile(settings ProfileSettings) {
 	a.profileInstructions = settings.Instructions
 	a.catalog = settings.Catalog
 	a.maxIterations = settings.MaxIterations
+	a.maxTurnIterations = standardHardIterationLimit(settings.MaxIterations)
 	a.tokenBudget = settings.TokenBudget
 	a.costBudgetUSD = settings.CostBudgetUSD
 	a.disabled = disabled

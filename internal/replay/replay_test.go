@@ -93,6 +93,7 @@ func TestReadRejectsCorruptOrIncompleteTraces(t *testing.T) {
 		{"success with error", eventLine(1, "run.result", `,"result":{"status":"ok","error":"unexpected","duration_ms":1}`), "successful result cannot include an error message"},
 		{"done outcome on error", eventLine(1, "run.result", `,"result":{"status":"error","outcome":"done","duration_ms":1,"failure":{"kind":"runtime"}}`), `outcome "done" requires status "ok"`},
 		{"blocked outcome on success", eventLine(1, "turn.start", ``) + eventLine(1, "turn.end", ``) + eventLine(1, "run.result", `,"result":{"status":"ok","outcome":"blocked","duration_ms":1}`), `outcome "blocked" requires status "error"`},
+		{"needs verification on success", eventLine(1, "turn.start", ``) + eventLine(1, "turn.end", ``) + eventLine(1, "run.result", `,"result":{"status":"ok","outcome":"needs_verification","duration_ms":1}`), `outcome "needs_verification" requires status "error"`},
 		{"unknown outcome", eventLine(1, "turn.start", ``) + eventLine(1, "turn.end", ``) + eventLine(1, "run.result", `,"result":{"status":"ok","outcome":"confused","duration_ms":1}`), "unsupported result outcome"},
 		{"unreported refusal", eventLine(1, "turn.start", ``) + eventLine(1, "permission.decision", `,"permission":{"tool":"run_command","summary":"run tests","risk":"execute","allowed":false}`) + eventLine(1, "turn.end", ``) + successfulResult(), "must set refused"},
 	}

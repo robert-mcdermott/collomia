@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-08-05
+**Status updated:** 2026-08-25
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -79,7 +79,19 @@ earlier wave closed the last known asymmetry in the risk classifier: the safety
 taxonomy described destruction only, so publishing and deploying rode along
 with autopilot while their deletion counterparts required a decision.
 
-The most recent wave took the first sustained beta report at its word. It was
+The 2026-08-25 reliability slice addressed a costly Standard-mode completion
+loop from a real session: completed work and passing ad hoc checks were followed
+by two opaque verification interventions, then falsely reported as blocked.
+Verification refusal now explains itself in the next tool result, accepted
+proof receives a current-state receipt, and an unresolved verification-only
+gap is `needs_verification` rather than `blocked`. The same slice changes
+`max_iterations` from a whole-Standard-turn cutoff into a consecutive
+no-progress lease, with a non-renewable hard envelope at twice its value. The
+regression suite covers the reported static-site sequence, accepted proof,
+terminal classification, repeated-output exhaustion, sustained progress, and
+continuous-write bounding.
+
+The preceding wave took the first sustained beta report at its word. It was
 not about a missing capability: it was about having to hand-write JSON, and in
 particular about correcting `max_tokens` and `context_window` by hand because
 the defaults were wrong for the models in use. Both fields turn out to have
@@ -2364,11 +2376,11 @@ sitting safely on disk was being described as though it had been thrown away. OG
 support, and made its citations enforceable so a documented case cannot outlive
 the measurement behind it.
 
-1. Gather real-session evidence from the Standard completion gate: how often
-   each rule intervenes, which verification commands are still missed by the
-   recognizer after OG-3A.8's ecosystem breadth and OG-3B2's composition rule,
-   and whether two interventions is the right bound. Keep this local and
-   inspectable rather than adding telemetry by default.
+1. Continue gathering local, inspectable real-session evidence from the
+   Standard completion gate. The 2026-08-25 incident closed the known silent
+   verification-refusal, false-blocked outcome, and productive-24-cycle cutoff;
+   future reports should test whether two interventions remains the right bound
+   rather than adding telemetry by default.
 2. Continue **OG-4 — reviewed integration and combined verification**. OG-4A
    closed the one path that could publish a graph candidate without the graph
    knowing, OG-4B made every publication into the parent recoverable by

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -23,9 +24,13 @@ var (
 	// becoming an accidental container for later unrelated prompts.
 	ErrGoalGraphComplete = errors.New("orchestrated goal is already complete")
 	// ErrGoalBlocked means the agent reached a truthful terminal response but
-	// could not demonstrate completion. The reason names either an explicitly
-	// blocked plan step or the evidence the controller could not obtain.
+	// could not complete the requested work. Missing verification has its own
+	// outcome because an unproven success is not the same thing as blocked work.
 	ErrGoalBlocked = errors.New("goal blocked")
+	// ErrGoalNeedsVerification means the requested work appears complete, but
+	// the runtime could not bind recognized verification (or a specific
+	// verification exception) to the latest tracked write state.
+	ErrGoalNeedsVerification = errors.New("goal needs verification")
 	// ErrIterationBudgetExceeded distinguishes the ordinary iteration ceiling
 	// from a model choosing to stop. Token and cost ceilings have their own
 	// sentinels in agent.go; all three map to budget_exhausted.
@@ -42,10 +47,11 @@ var (
 type GoalOutcome string
 
 const (
-	GoalDone            GoalOutcome = "done"
-	GoalBlocked         GoalOutcome = "blocked"
-	GoalCancelled       GoalOutcome = "cancelled"
-	GoalBudgetExhausted GoalOutcome = "budget_exhausted"
+	GoalDone              GoalOutcome = "done"
+	GoalBlocked           GoalOutcome = "blocked"
+	GoalCancelled         GoalOutcome = "cancelled"
+	GoalBudgetExhausted   GoalOutcome = "budget_exhausted"
+	GoalNeedsVerification GoalOutcome = "needs_verification"
 	// GoalPaused is a nonterminal turn boundary used only by the interactive
 	// Orchestrated Goal controller. It is not a public run.result outcome.
 	GoalPaused GoalOutcome = "paused"
@@ -54,7 +60,7 @@ const (
 	GoalAwaitingReview GoalOutcome = "awaiting_review"
 )
 
-// GoalOutcomeFor reduces every runtime exit to the four goal-level states an
+// GoalOutcomeFor reduces every runtime exit to the goal-level states an
 // operator can act on. Unexpected runtime/provider failures are blockers with
 // structured failure metadata retained separately by the event contract.
 func GoalOutcomeFor(err error) GoalOutcome {
@@ -64,6 +70,8 @@ func GoalOutcomeFor(err error) GoalOutcome {
 	switch {
 	case err == nil:
 		return GoalDone
+	case errors.Is(err, ErrGoalNeedsVerification):
+		return GoalNeedsVerification
 	case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded), errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, ErrAggregateBudgetExceeded):
 		return GoalBudgetExhausted
 	case errors.Is(err, context.Canceled):
@@ -86,6 +94,7 @@ type toolObservation struct {
 	GraphRecorded      bool
 	IgnoreGraphFailure bool
 	Verification       bool
+	VerificationCheck  verificationAssessment
 }
 
 type completionController struct {
@@ -97,8 +106,12 @@ type completionController struct {
 	interventions   int
 	dirty           bool
 	waived          bool
+	recognizedEver  bool
 	noteAtMutation  string
 	failures        []unresolvedToolFailure
+	progressVersion uint64
+	seenProgress    map[[sha256.Size]byte]struct{}
+	lastRevision    uint64
 }
 
 type unresolvedToolFailure struct {
@@ -108,19 +121,21 @@ type unresolvedToolFailure struct {
 }
 
 type completionDecision struct {
-	done    bool
-	blocked bool
-	reason  string
-	notice  string
+	done              bool
+	blocked           bool
+	needsVerification bool
+	reason            string
+	notice            string
 }
 
 func newCompletionController(board *plan.Board, workspace string, planning bool) *completionController {
-	controller := &completionController{board: board, workspace: workspace, enabled: board != nil && !planning}
+	controller := &completionController{board: board, workspace: workspace, enabled: board != nil && !planning, seenProgress: make(map[[sha256.Size]byte]struct{})}
 	if !controller.enabled {
 		return controller
 	}
 	current, revision := board.Snapshot()
 	controller.initialRevision = revision
+	controller.lastRevision = revision
 	if current != nil {
 		controller.initialOpen = current.AssessCompletion().State == plan.CompletionIncomplete
 	}
@@ -128,7 +143,11 @@ func newCompletionController(board *plan.Board, workspace string, planning bool)
 }
 
 func (c *completionController) observe(observation toolObservation) {
-	if c == nil || !c.enabled {
+	if c == nil {
+		return
+	}
+	c.observeProgress(observation)
+	if !c.enabled {
 		return
 	}
 	if observation.Failed {
@@ -147,15 +166,54 @@ func (c *completionController) observe(observation toolObservation) {
 	if observation.Action.Risk == tools.RiskWrite {
 		c.markDirty()
 	}
-	if observation.Name == "run_command" && isVerificationCommand(observation.Action.Command, c.workspace) {
+	if observation.Name == "run_command" && observation.Verification {
 		c.dirty = false
 		c.waived = false
+		c.recognizedEver = true
 	}
 	if observation.Name == "update_plan" && c.dirty && c.board != nil {
 		if current := c.board.Current(); current != nil && strings.TrimSpace(current.VerificationNote) != "" && strings.TrimSpace(current.VerificationNote) != c.noteAtMutation {
 			c.waived = true
 		}
 	}
+}
+
+// observeProgress records novel, externally visible evidence rather than raw
+// provider turns. Repeating the same read result does not buy another lease;
+// a successful write always does because its content is intentionally absent
+// from toolObservation. The separate hard turn envelope still bounds churn.
+func (c *completionController) observeProgress(observation toolObservation) {
+	if observation.Action.Risk == tools.RiskWrite {
+		c.progressVersion++
+		return
+	}
+	if observation.Name == "update_plan" && c.board != nil {
+		_, revision := c.board.Snapshot()
+		if revision != c.lastRevision {
+			c.lastRevision = revision
+			c.progressVersion++
+			return
+		}
+	}
+	fingerprint := sha256.Sum256([]byte(strings.Join([]string{
+		observation.Name,
+		string(observation.Action.Risk),
+		observation.Action.Summary,
+		observation.Action.Command,
+		strings.Join(observation.Action.Paths, "\x00"),
+		strconv.FormatBool(observation.Failed),
+		observation.FailureDetail,
+		observation.ResultSummary,
+	}, "\x1f")))
+	if _, seen := c.seenProgress[fingerprint]; seen {
+		return
+	}
+	c.seenProgress[fingerprint] = struct{}{}
+	c.progressVersion++
+}
+
+func (c *completionController) awaitingVerificationGuidance() bool {
+	return c != nil && c.enabled && c.dirty && !c.waived && c.interventions > 0
 }
 
 func (c *completionController) recordFailure(observation toolObservation) {
@@ -201,6 +259,7 @@ func (c *completionController) assess() completionDecision {
 		return completionDecision{done: true}
 	}
 	var issues []string
+	planIssueCount := 0
 	current, revision := c.board.Snapshot()
 	activePlan := current != nil && (c.initialOpen || revision != c.initialRevision)
 	if activePlan {
@@ -209,9 +268,15 @@ func (c *completionController) assess() completionDecision {
 			return completionDecision{blocked: true, reason: blockedPlanReason(current)}
 		}
 		issues = append(issues, assessment.Issues...)
+		planIssueCount = len(assessment.Issues)
 	}
-	if c.dirty && !c.waived {
-		issues = append(issues, "files changed after the last successful recognized verification command")
+	verificationGap := c.dirty && !c.waived
+	if verificationGap {
+		if c.recognizedEver {
+			issues = append(issues, "files changed after the last successful recognized verification command")
+		} else {
+			issues = append(issues, "no successful recognized verification has run since the latest tracked file change")
+		}
 	}
 	for _, failure := range c.failures {
 		detail := failure.tool
@@ -224,6 +289,9 @@ func (c *completionController) assess() completionDecision {
 		return completionDecision{done: true}
 	}
 	if c.interventions >= maxCompletionInterventions {
+		if verificationGap && len(c.failures) == 0 && planIssueCount == 0 {
+			return completionDecision{needsVerification: true, reason: "completion still needs verification after two controller interventions: " + strings.Join(issues, "; ")}
+		}
 		return completionDecision{blocked: true, reason: "completion remained unproven after two controller interventions: " + strings.Join(issues, "; ")}
 	}
 	c.interventions++
@@ -276,6 +344,11 @@ type verificationAssessment struct {
 	// has. The recognizer is a finite table, so this case will outlive any
 	// particular ecosystem being added to it.
 	Unrecognized bool
+	// Refused marks a composition whose exit status cannot be accepted even
+	// when no conventional verifier can be extracted from it (for example, an
+	// inline heredoc smoke test). It prevents that common case from becoming
+	// silent after the controller has explicitly requested verification.
+	Refused bool
 }
 
 func isVerificationCommand(command, workspace string) bool {
@@ -303,7 +376,7 @@ func assessVerificationCommand(command, workspace string) verificationAssessment
 	if suggestion := verificationChainSuggestion(candidate, workspace); suggestion != "" {
 		return verificationAssessment{VerificationLike: true, Reason: refusal, Suggestion: suggestion}
 	}
-	return verificationAssessment{}
+	return verificationAssessment{Refused: true, Reason: refusal}
 }
 
 // safeVerificationChain returns the command whose exit status the shell will
@@ -602,7 +675,7 @@ func verificationRunnerRemainder(fields []string) ([]string, bool) {
 // one step. The recognizer will always be a finite table, so this has to work
 // for an ecosystem nobody has added yet.
 func unrecognizedVerificationNotice(command, workspace string) string {
-	notice := fmt.Sprintf("Collomia verification evidence was not recorded: %q exited zero, but it is not a recognized verification command, so the runtime cannot bind it to the workspace state as proof. Its output is still a valid tool result.", strings.Join(strings.Fields(command), " "))
+	notice := fmt.Sprintf("Collomia verification evidence was not recorded: %q exited zero, but it is not a recognized verification command, so the runtime cannot bind it to the workspace state as proof. Its output is still a valid tool result.", boundedVerificationCommand(command))
 	_, detected := tools.DetectVerificationCommands(workspace)
 	if len(detected) > 0 {
 		commands := make([]string, 0, len(detected))
@@ -612,6 +685,28 @@ func unrecognizedVerificationNotice(command, workspace string) string {
 		return notice + " This project's detected verification commands are " + strings.Join(commands, ", ") + "; run one of those directly."
 	}
 	return notice + " This project has no detected verification commands, because it has no recognized project manifest at its root. If creating one is within this node's scope, add the manifest your ecosystem uses to declare a test entry point (for a plain JavaScript project, a package.json whose scripts.test runs your test file), then run that entry point directly."
+}
+
+func refusedVerificationNotice(command, reason, workspace string) string {
+	notice := fmt.Sprintf("Collomia verification evidence was not recorded for %q: %s. Its output is still a valid tool result, but the runtime cannot use the shell's final status as proof.", boundedVerificationCommand(command), strings.TrimSpace(reason))
+	_, detected := tools.DetectVerificationCommands(workspace)
+	if len(detected) > 0 {
+		commands := make([]string, 0, len(detected))
+		for _, candidate := range detected {
+			commands = append(commands, strconv.Quote(candidate.Command))
+		}
+		return notice + " Run one detected verifier directly: " + strings.Join(commands, ", ") + "."
+	}
+	return notice + " No verifier was detected for this project. Add a conventional test entry point if that is in scope, or record a fresh, specific verification_note in update_plan when no meaningful automated check applies."
+}
+
+func boundedVerificationCommand(command string) string {
+	normalized := strings.Join(strings.Fields(command), " ")
+	const limit = 240
+	if len(normalized) <= limit {
+		return normalized
+	}
+	return clipUTF8(normalized, limit) + "…"
 }
 
 // nodeVerification recognizes Node's two ordinary check entry points: the

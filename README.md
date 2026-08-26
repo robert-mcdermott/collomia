@@ -39,8 +39,12 @@ and the terminal outcome.
   and broad tool grants cannot silently cover.
 - **Evidence-gated Standard mode.** A final-sounding response does not complete
   an active goal while plan work is open, verification is stale after a write,
-  or a tool failure remains unresolved. Standard mode stays fast and
-  model-directed while the runtime checks the evidence it can actually observe.
+  or a tool failure remains unresolved. A verification command Collomia cannot
+  accept is explained in its tool result, accepted proof receives an explicit
+  receipt, and work that is complete but still unverified is reported as
+  `needs_verification` rather than falsely `blocked`. Standard mode stays fast
+  and model-directed while the runtime checks the evidence it can actually
+  observe.
 - **Orchestrated Goal.** An explicit TUI-only workflow turns a proposed
   dependency graph into durable runtime state. Supported end-to-end graphs can
   fan out up to two governed read-only workers, then return to the serial
@@ -148,7 +152,9 @@ The top-level command surface is intentionally small:
 ## Execution modes
 
 **Standard mode** is the default: describe the task and Collomia works through
-its ordinary governed tool loop.
+its ordinary governed tool loop. `max_iterations` is a consecutive no-progress
+lease, so productive work can continue beyond it; a hard envelope at twice the
+configured value still bounds a turn.
 
 **Orchestrated Goal** is an explicit per-session option for work where a durable,
 inspectable graph and runtime-owned completion gates justify the additional

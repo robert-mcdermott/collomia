@@ -832,6 +832,13 @@ bound separately to its machine-observed Git workspace token. An unchanged
 token preserves earlier verification; a changed or unavailable token requires
 fresh proof. This distinction grants no new network, process, or write access.
 
+Standard mode uses the same no-progress meaning and a hard provider-turn
+envelope at twice `max_iterations`. The hard envelope is not renewed by writes,
+and token/cost budgets continue to take precedence when configured. A command
+the verifier cannot safely classify stays ordinary tool output: Collomia now
+explains the refusal after a named verification gap, but never promotes an ad
+hoc success string or a shell status that may have been masked into proof.
+
 An approved step may declare `execution: read_only`. Only independently
 dependency-ready nodes with that class are eligible for automatic assignment,
 in stable plan order, with at most two live workers. Omitted or `primary` work

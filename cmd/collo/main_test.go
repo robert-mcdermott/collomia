@@ -220,6 +220,7 @@ func TestRunResultEmitterDistinguishesGoalOutcomes(t *testing.T) {
 	}{
 		{name: "done", outcome: "done", status: "ok"},
 		{name: "blocked", outcome: "blocked", status: "error", err: agent.ErrGoalBlocked},
+		{name: "needs verification", outcome: "needs_verification", status: "error", err: agent.ErrGoalNeedsVerification},
 		{name: "budget", outcome: "budget_exhausted", status: "error", err: agent.ErrIterationBudgetExceeded},
 		{name: "cancelled", outcome: "cancelled", status: "cancelled", err: context.Canceled},
 	}

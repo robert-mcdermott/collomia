@@ -139,8 +139,8 @@ type FileChange struct {
 // contract, and Outcome for the goal-level terminal state.
 type RunResult struct {
 	Status string `json:"status"`
-	// Outcome is the goal-level terminal state: done, blocked, cancelled, or
-	// budget_exhausted. Status retains its schema-v1 process contract
+	// Outcome is the goal-level terminal state: done, blocked, needs_verification,
+	// cancelled, or budget_exhausted. Status retains its schema-v1 process contract
 	// (ok/error/cancelled); Outcome distinguishes why an error-status run
 	// stopped without making automation parse Error.
 	Outcome string   `json:"outcome,omitempty"`

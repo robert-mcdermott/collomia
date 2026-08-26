@@ -1286,7 +1286,7 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 
 | Field | Meaning |
 | --- | --- |
-| `max_iterations` | Maximum provider/model response cycles in one Standard turn, or consecutive cycles an Orchestrated Goal primary attempt may take without novel durable successful tool evidence; defaults to `24`. It is not a tool-call count. |
+| `max_iterations` | Consecutive provider/model response cycles Standard mode or an Orchestrated Goal primary attempt may take without novel progress; defaults to `24`. It is not a tool-call count. A Standard turn also has a hard envelope of twice this value (48 by default). |
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
@@ -3304,17 +3304,16 @@ the token, iteration, and active-wall limits—it does not pretend the dollar
 ceiling was observed.
 
 `options.max_iterations` counts provider/model response cycles, not individual
-tool calls: one response may contain several tool calls. In Standard mode it
-limits the whole turn. In Orchestrated Goal it is a consecutive no-progress
-lease inside one immutable primary node attempt. A novel successful tool
-result, newly observed workspace state, fresh verification, or resolution of a
-recoverable failure renews the lease; repeating equivalent evidence does not.
-This leaves room for the model to submit a completion proposal after a final
-productive action instead of stopping at the same boundary. The configured
-whole-graph iteration ceiling remains the outer limit across the proposal, all
-primary attempts, compaction, and automatic workers. This prevents a
-multi-node graph from exhausting an ordinary 24-iteration setting merely
-because earlier work was productive, without making the graph unbounded.
+tool calls: one response may contain several tool calls. In both Standard mode
+and Orchestrated Goal it is a consecutive no-progress lease. A novel successful
+tool result, plan revision, fresh verification, or resolution of a recoverable
+failure renews the lease; repeating equivalent evidence does not. Standard
+mode also has a non-renewable hard envelope of twice `max_iterations` (48
+provider cycles at the default), so productive work is not cut off at cycle 24
+but repeated writes cannot run forever. Token and estimated-cost budgets remain
+the tighter controls when configured. Orchestrated Goal instead uses its
+configured whole-graph iteration ceiling as the outer limit across proposal,
+primary attempts, compaction, and automatic workers.
 
 Potentially mutating and external actions still receive a durable write-ahead
 generation before they run. That is the recovery record used to prevent replay
@@ -3998,8 +3997,9 @@ The last line is always `run.result`:
 ```
 
 `status` is `ok`, `error`, or `cancelled`. The additive `outcome` field is
-`done`, `blocked`, `cancelled`, or `budget_exhausted`, separating goal progress
-from the established process-status contract. Schema v1 also carries optional
+`done`, `blocked`, `needs_verification`, `cancelled`, or `budget_exhausted`,
+separating goal progress from the established process-status contract. Schema
+v1 also carries optional
 structured `failure`, `partial`, and `refused` fields. Error results make
 `collo` exit non-zero after writing the final record. Exit codes are 0 for
 success, 1 for execution/provider/blocked/budget failure, 2 for
@@ -4263,8 +4263,16 @@ finished deliverable is not reported as a failed run.
 When a gap remains, Collomia adds a deterministic controller notice and gives
 the agent another iteration. It does this at most twice; the existing
 iteration, token, cost, cancellation, permission, and persistence limits still
-apply to every continuation. The resulting goal outcome is one of `done`,
-`blocked`, `cancelled`, or `budget_exhausted`.
+apply to every continuation. Once a verification gap has been named, a passing
+command that is not eligible for proof explains why in the same tool result
+and points to detected direct verifiers or to a fresh `verification_note` when
+no meaningful automated check exists. A recognized verifier returns an
+explicit receipt for the current tracked-write state. If verification alone
+still remains after both interventions, the result is `needs_verification`,
+not `blocked`; `blocked` is reserved for work that cannot be completed or for
+other unresolved completion failures. The resulting Standard goal outcome is
+one of `done`, `blocked`, `needs_verification`, `cancelled`, or
+`budget_exhausted`.
 
 Read-only planning mode is intentionally exempt: producing a plan whose
 implementation steps remain pending is the successful result of that mode. A

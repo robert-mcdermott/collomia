@@ -1148,7 +1148,8 @@ func TestCompletionControllerRequiresVerificationAfterWrite(t *testing.T) {
 		tools.Function{Def: provider.ToolDefinition{Name: "mutate"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "change file"}, Run: func(context.Context, json.RawMessage) (string, error) { return "changed", nil }},
 		tools.Function{Def: provider.ToolDefinition{Name: "run_command"}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests", Command: "go test ./..."}, Run: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }},
 	)
-	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+	receiptSeen := false
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
 		switch call {
 		case 1:
 			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "write", Name: "mutate", Arguments: json.RawMessage(`{}`)}}}, nil
@@ -1159,6 +1160,7 @@ func TestCompletionControllerRequiresVerificationAfterWrite(t *testing.T) {
 		case 4:
 			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "verify", Name: "run_command", Arguments: json.RawMessage(`{}`)}}}, nil
 		default:
+			receiptSeen = requestContains(request, "verification evidence: recorded for the current tracked-write state")
 			return provider.Response{Content: "changed and verified"}, nil
 		}
 	}}
@@ -1172,8 +1174,76 @@ func TestCompletionControllerRequiresVerificationAfterWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "changed and verified" || client.calls != 5 || warnings != 1 {
-		t.Fatalf("result=%q calls=%d warnings=%d", result, client.calls, warnings)
+	if result != "changed and verified" || client.calls != 5 || warnings != 1 || !receiptSeen {
+		t.Fatalf("result=%q calls=%d warnings=%d receipt_seen=%t", result, client.calls, warnings, receiptSeen)
+	}
+}
+
+// This is the Standard-mode shape of the real failure that motivated the
+// controller change: the work and an ad hoc smoke test succeeded, but the
+// recognizer silently declined the heredoc. The next model request must say
+// why and offer the bounded verification-note escape hatch, so one correction
+// closes the turn instead of two blind interventions and a false blocker.
+func TestStandardCompletionExplainsRefusedAdHocVerification(t *testing.T) {
+	board := plan.NewBoard()
+	registry := tools.NewRegistry(
+		plan.Tool(board),
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "write the site"}, Run: func(context.Context, json.RawMessage) (string, error) { return "site written", nil }},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command"}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run inline smoke checks", Command: "python3 - <<'PY'\nprint('ALL CHECKS PASSED')\nPY"}, Run: func(context.Context, json.RawMessage) (string, error) { return "ALL CHECKS PASSED", nil }},
+	)
+	explained := false
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("write", "mutate", `{}`), nil
+		case 2:
+			return graphToolResponse("plan", "update_plan", `{"goal":"build site","steps":[{"id":1,"title":"build","status":"done","evidence":"site files written"}]}`), nil
+		case 3:
+			return provider.Response{Content: "The site is complete and checks pass."}, nil
+		case 4:
+			return graphToolResponse("smoke", "run_command", `{}`), nil
+		case 5:
+			explained = requestContains(request, "shell composition or redirection") && requestContains(request, "verification_note")
+			return graphToolResponse("waive", "update_plan", `{"goal":"build site","steps":[{"id":1,"title":"build","status":"done","evidence":"site files written and inline smoke checks passed"}],"verification_note":"static site has no project test manifest; browser and link smoke checks passed in the prior command"}`), nil
+		default:
+			return provider.Response{Content: "The site is complete; inline smoke checks passed."}, nil
+		}
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), MaxIterations: 8, CompletionPlan: board})
+	result, err := a.Run(t.Context(), "build the site", nil)
+	if err != nil || result != "The site is complete; inline smoke checks passed." || client.calls != 6 || !explained {
+		t.Fatalf("result=%q calls=%d explained=%t error=%v", result, client.calls, explained, err)
+	}
+}
+
+func TestStandardVerificationGapHasItsOwnTerminalOutcome(t *testing.T) {
+	board := plan.NewBoard()
+	registry := tools.NewRegistry(
+		plan.Tool(board),
+		tools.Function{Def: provider.ToolDefinition{Name: "mutate"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "write the site"}, Run: func(context.Context, json.RawMessage) (string, error) { return "site written", nil }},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command"}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run inline smoke checks", Command: "node - <<'JS'\nconsole.log('PASS')\nJS"}, Run: func(context.Context, json.RawMessage) (string, error) { return "PASS", nil }},
+	)
+	client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("write", "mutate", `{}`), nil
+		case 2:
+			return graphToolResponse("plan", "update_plan", `{"goal":"build site","steps":[{"id":1,"title":"build","status":"done","evidence":"site files written"}]}`), nil
+		case 3:
+			return provider.Response{Content: "done"}, nil
+		case 4:
+			return graphToolResponse("smoke", "run_command", `{}`), nil
+		default:
+			return provider.Response{Content: "done; smoke checks passed"}, nil
+		}
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), MaxIterations: 10, CompletionPlan: board})
+	result, err := a.Run(t.Context(), "build the site", nil)
+	if !errors.Is(err, ErrGoalNeedsVerification) || GoalOutcomeFor(err) != GoalNeedsVerification || result != "done; smoke checks passed" || client.calls != 6 {
+		t.Fatalf("result=%q calls=%d outcome=%s error=%v", result, client.calls, GoalOutcomeFor(err), err)
+	}
+	if strings.Contains(err.Error(), "files changed after the last successful") || !strings.Contains(err.Error(), "no successful recognized verification") {
+		t.Fatalf("verification outcome is not truthful: %v", err)
 	}
 }
 
@@ -1325,9 +1395,56 @@ func TestCompletionControllerTreatsFailedWriteAsPotentialMutation(t *testing.T) 
 	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false)
 	controller.observe(toolObservation{Name: "edit_file", Action: tools.Action{Risk: tools.RiskWrite, Summary: "edit a file"}, Failed: true})
 	decision := controller.assess()
-	if decision.done || decision.blocked || !strings.Contains(decision.notice, "files changed") || !strings.Contains(decision.notice, "edit_file") {
+	if decision.done || decision.blocked || !strings.Contains(decision.notice, "no successful recognized verification") || !strings.Contains(decision.notice, "edit_file") {
 		t.Fatalf("decision=%+v", decision)
 	}
+}
+
+func TestStandardIterationBudgetExtendsOnlyForProgress(t *testing.T) {
+	if got := standardHardIterationLimit(24); got != 48 {
+		t.Fatalf("default hard iteration limit=%d, want 48", got)
+	}
+	t.Run("novel progress can exceed the old whole-turn ceiling", func(t *testing.T) {
+		attempt := 0
+		registry := tools.NewRegistry(tools.Function{Def: provider.ToolDefinition{Name: "inspect"}, Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect next file"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			attempt++
+			return fmt.Sprintf("new evidence %d", attempt), nil
+		}})
+		client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+			if call <= 4 {
+				return graphToolResponse(fmt.Sprintf("inspect-%d", call), "inspect", `{}`), nil
+			}
+			return provider.Response{Content: "finished after sustained progress"}, nil
+		}}
+		a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), MaxIterations: 2, MaxTurnIterations: 6})
+		if result, err := a.Run(t.Context(), "inspect", nil); err != nil || result != "finished after sustained progress" || client.calls != 5 {
+			t.Fatalf("result=%q calls=%d error=%v", result, client.calls, err)
+		}
+	})
+
+	t.Run("repeated evidence exhausts the no-progress lease", func(t *testing.T) {
+		registry := tools.NewRegistry(tools.Function{Def: provider.ToolDefinition{Name: "inspect"}, Action: tools.Action{Risk: tools.RiskRead, Summary: "inspect same file"}, Run: func(context.Context, json.RawMessage) (string, error) { return "same evidence", nil }})
+		client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+			return graphToolResponse(fmt.Sprintf("inspect-%d", call), "inspect", `{}`), nil
+		}}
+		a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), MaxIterations: 2, MaxTurnIterations: 8})
+		_, err := a.Run(t.Context(), "inspect", nil)
+		if !errors.Is(err, ErrIterationBudgetExceeded) || !strings.Contains(err.Error(), "no novel progress") || client.calls != 3 {
+			t.Fatalf("calls=%d error=%v", client.calls, err)
+		}
+	})
+
+	t.Run("hard envelope still bounds continuous writes", func(t *testing.T) {
+		registry := tools.NewRegistry(tools.Function{Def: provider.ToolDefinition{Name: "mutate"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "rewrite file"}, Run: func(context.Context, json.RawMessage) (string, error) { return "changed", nil }})
+		client := &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+			return graphToolResponse(fmt.Sprintf("write-%d", call), "mutate", `{}`), nil
+		}}
+		a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), MaxIterations: 2, MaxTurnIterations: 4})
+		_, err := a.Run(t.Context(), "keep rewriting", nil)
+		if !errors.Is(err, ErrIterationBudgetExceeded) || !strings.Contains(err.Error(), "hard limit") || client.calls != 4 {
+			t.Fatalf("calls=%d error=%v", client.calls, err)
+		}
+	})
 }
 
 func TestCompletionControllerReturnsExplicitPlanBlock(t *testing.T) {
@@ -1600,7 +1717,7 @@ func TestRunCommandExplainsWhyVerificationEvidenceWasRejected(t *testing.T) {
 		Run:    func(context.Context, json.RawMessage) (string, error) { return "12 passed", nil },
 	})
 	runtime := New(Options{Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil)})
-	result, observation, err := runtime.executeTool(t.Context(), provider.ToolCall{ID: "verify", Name: "run_command", Arguments: json.RawMessage(`{}`)}, false, func(event.Event) {})
+	result, observation, err := runtime.executeTool(t.Context(), provider.ToolCall{ID: "verify", Name: "run_command", Arguments: json.RawMessage(`{}`)}, false, nil, func(event.Event) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2810,7 +2927,7 @@ func TestExecuteToolAppliesContentOverride(t *testing.T) {
 	}
 	a := New(Options{Client: &fakeClient{}, ProviderName: "fake", Model: "m", Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, approver)})
 	call := provider.ToolCall{ID: "1", Name: "write_file", Arguments: json.RawMessage(`{"path":"x.txt","content":"original content"}`)}
-	result, _, err := a.executeTool(t.Context(), call, false, func(event.Event) {})
+	result, _, err := a.executeTool(t.Context(), call, false, nil, func(event.Event) {})
 	if err != nil {
 		t.Fatal(err)
 	}

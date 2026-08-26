@@ -32,6 +32,20 @@ an accurate one; their history is in the Git log and in
 
 ### Fixed
 
+- **Standard mode no longer burns its remediation attempts guessing why a
+  passing check did not count.** Once the completion controller has named a
+  verification gap, an ineligible heredoc, shell compound, or unrecognized
+  check explains the exact reason in its tool result and points to detected
+  direct verifiers or a fresh `verification_note`. A recognized verifier emits
+  a positive receipt for the current tracked-write state. If verification is
+  the only remaining gap after both bounded interventions, the result is now
+  `needs_verification` instead of the false claim `blocked`.
+- **Productive Standard turns are no longer cut off at cycle 24.**
+  `max_iterations` now measures consecutive provider cycles without novel
+  progress in Standard mode, matching its Orchestrated Goal meaning. Repeated
+  equivalent evidence still exhausts the lease, and a hard envelope at twice
+  the configured value bounds continuous write churn.
+
 - **A finished run could report itself as blocked.** The completion
   controller's notice offered one way to record an unfinished step — mark it
   `blocked` — and any blocked step ends the turn as blocked. A run that built

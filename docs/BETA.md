@@ -115,6 +115,15 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   [Orchestrated Goal guide](USER_GUIDE.md#orchestrated-goal) for operation and
   the [strategy](ORCHESTRATION_STRATEGY.md) for the durable authority and
   maturity contract.
+- Standard mode's `max_iterations` is a consecutive no-progress lease rather
+  than a whole-turn guillotine. Novel tool evidence renews it; equivalent
+  repeated output does not, and a hard envelope at twice the configured value
+  still stops continuous churn. After a verification gap is named, Collomia
+  explains why an ad hoc or composed passing command did not count and emits a
+  receipt when a recognized check does count. If proof alone remains missing,
+  the terminal outcome is `needs_verification`, not a claim that the work is
+  blocked. The recognizer remains deliberately conservative: arbitrary
+  always-passing shell commands do not become proof.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache

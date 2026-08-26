@@ -45,6 +45,41 @@ The guiding principle is unchanged: make Collomia **safe and recoverable before 
 
 ## Recent updates
 
+### 2026-08-25 — Standard completion stopped guessing and stopped calling proof gaps blocked
+
+- **The supplied session made the cost visible.** The site and its smoke checks
+  were complete before the first final answer. Ten later provider cycles
+  consumed about 300,000 additional input tokens while the agent inspected
+  verification detection, reran variants of the same passing ad hoc checks,
+  received no actionable classification feedback, and finally ended
+  `blocked`. The terminal reason also said files changed *after* a successful
+  recognized verifier even though no recognized verifier had run.
+- **The recognizer remains conservative; the silence is gone.** Arbitrary
+  heredocs and commands that merely print `PASS` still cannot become runtime
+  proof. Once Standard completion has named a verification gap, the next
+  ineligible passing command says why its shell status cannot count and points
+  to detected direct verifiers or to a fresh specific `verification_note` when
+  no meaningful automated check exists. A recognized direct verifier now
+  returns a positive receipt bound to the current tracked-write state.
+- **The terminal state is truthful.** When the plan is otherwise ready and
+  verification alone remains after two bounded interventions, the public
+  outcome is `needs_verification`. `blocked` is reserved for unfinished work,
+  explicit plan blockers, unrecovered tool failures, and other runtime
+  failures. The process status remains `error`, preserving automation and exit
+  behavior while letting users and JSONL consumers distinguish the cause.
+- **Progress no longer loses to a lifetime counter at 24.** In Standard mode,
+  `max_iterations` now counts consecutive provider cycles without novel tool
+  evidence or plan progress. Equivalent repeated results do not renew it. A
+  separate hard envelope at twice the configured value bounds continuous
+  writes, and configured token/cost limits remain independent tighter bounds.
+- **The exit evidence follows the report's shape.** Regression tests exercise
+  a tracked static-site write, a passing inline smoke check declined because of
+  shell composition, the actionable next-request explanation, and successful
+  closure through a specific verification note. Separate tests cover the
+  recognized receipt, `needs_verification` mapping and schema/replay contract,
+  sustained progress beyond the old cutoff, repeated-output exhaustion, and
+  the hard write envelope.
+
 ### 2026-08-07 — Standard mode reported a finished site as a failed run
 
 - **The blocked verdict was the controller's own instruction coming back.**

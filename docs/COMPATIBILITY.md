@@ -434,7 +434,7 @@ binary being run. Consumers should:
 
 - select process behavior using `schema`, `kind`, and `run.result.status`, and
   use the additive `run.result.outcome` when goal-level
-  done/blocked/cancelled/budget-exhausted behavior matters;
+  done/blocked/needs-verification/cancelled/budget-exhausted behavior matters;
 - tolerate unknown optional fields;
 - avoid inferring success from streamed text or an intermediate error;
 - require the final `run.result` for a complete run;
@@ -443,6 +443,14 @@ binary being run. Consumers should:
 Adding a new event kind is not treated like adding an optional field: existing
 strict replay clients reject unknown kinds, so the change requires an explicit
 compatibility decision.
+
+`needs_verification` was added to the optional schema-v1 `run.result.outcome`
+enum on 2026-08-25. Process compatibility is unchanged: it carries
+`status: "error"` and a non-zero exit just as an earlier unproven completion
+did. Consumers that enumerate outcomes should treat unknown error-status values
+conservatively rather than assuming the four original values are exhaustive;
+the embedded schema from `collo schema events` is the authority for the binary
+that produced a trace.
 
 The OG-1/OG-2 decision is deliberately narrow: `goal.graph.update` remains an
 additive schema-v1 kind. Standard-mode CLI/TUI streams and all headless streams

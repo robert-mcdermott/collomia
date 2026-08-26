@@ -258,7 +258,7 @@ var fieldDescriptions = map[fieldKey]string{
 	{"AgentDefinition", "instructions"}:    "Prepended to the system prompt to fix the profile's role.",
 	{"AgentDefinition", "tools"}:           "Restrict the profile to these tool names. Empty inherits every tool the parent has enabled.",
 	{"AgentDefinition", "skills"}:          "Restrict the profile's model-visible skill catalog. Empty inherits the parent's.",
-	{"AgentDefinition", "max_iterations"}:  "Iteration budget for a delegated task. Zero uses the default.",
+	{"AgentDefinition", "max_iterations"}:  "Consecutive provider cycles a delegated task may spend without novel progress. Zero uses the default; a hard envelope of twice this value still bounds the task.",
 	{"AgentDefinition", "token_budget"}:    "Bound on provider-reported input plus output tokens across the task. Zero leaves it bounded by iterations and timeout.",
 	{"AgentDefinition", "cost_budget_usd"}: "Bound on estimated spend, using the provider's explicitly configured pricing. Zero disables this bound.",
 	{"AgentDefinition", "timeout_seconds"}: "Bound on queueing plus execution. Zero uses ten minutes.",
@@ -277,7 +277,7 @@ var fieldDescriptions = map[fieldKey]string{
 	{"Hook", "timeout_seconds"}: "Bound on the hook run. Zero uses ten seconds.",
 
 	// Options
-	{"Options", "max_iterations"}:                        "Provider/model response cycles one Standard turn may take, or consecutive cycles an Orchestrated Goal primary attempt may take without novel durable progress; this is not a tool-call count.",
+	{"Options", "max_iterations"}:                        "Consecutive provider/model response cycles Standard or Orchestrated Goal may spend without novel progress; this is not a tool-call count. Standard turns also have a hard envelope of twice this value.",
 	{"Options", "max_tool_output_bytes"}:                 "Largest tool result passed to the model. Longer output is truncated with a marker.",
 	{"Options", "delegate_max_concurrency"}:              "Session-wide limit on concurrent delegated tasks. Zero uses four.",
 	{"Options", "orchestration_max_iterations"}:          "Provider iterations one approved Orchestrated Goal may use before pausing for the user. Zero uses 96.",
