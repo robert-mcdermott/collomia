@@ -56,11 +56,27 @@ func TestSchemaV1TypedConsumerToleratesAdditiveFields(t *testing.T) {
 	}
 }
 
+func TestToolEvidenceRoundTrips(t *testing.T) {
+	e := New(KindToolResult)
+	e.Tool = &Tool{Name: "validate_artifact", Output: "passed", Evidence: &Evidence{Kind: "artifact_validated", Subject: "report.md", Digest: "sha256:abc", Detail: "markdown parsed"}}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Tool == nil || decoded.Tool.Evidence == nil || decoded.Tool.Evidence.Kind != "artifact_validated" || decoded.Tool.Evidence.Subject != "report.md" || decoded.Tool.Evidence.Digest != "sha256:abc" {
+		t.Fatalf("tool evidence round trip=%+v", decoded.Tool)
+	}
+}
+
 func TestRunResultRoundTrips(t *testing.T) {
 	e := New(KindRunResult)
 	e.FailureID = "err-0123456789abcdef"
 	e.Result = &RunResult{
-		Status: "cancelled", Outcome: "cancelled", Error: "context canceled", Failure: &Failure{ID: e.FailureID, Kind: FailureCancelled}, Partial: true,
+		Status: "cancelled", Mode: "work", Outcome: "cancelled", Error: "context canceled", Failure: &Failure{ID: e.FailureID, Kind: FailureCancelled}, Partial: true,
 		Ephemeral: true, Refused: true, SessionID: "abc123", ChangedFiles: []string{"main.go"}, DurationMS: 1500,
 		Version: "0.1.9", Commit: "abc1234",
 	}
@@ -73,7 +89,7 @@ func TestRunResultRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" || decoded.Result.Outcome != "cancelled" ||
+	if decoded.Kind != KindRunResult || decoded.Result == nil || decoded.Result.Status != "cancelled" || decoded.Result.Mode != "work" || decoded.Result.Outcome != "cancelled" ||
 		decoded.FailureID != e.FailureID || decoded.Result.Failure == nil || decoded.Result.Failure.ID != e.FailureID || decoded.Result.Failure.Kind != FailureCancelled || !decoded.Result.Partial || !decoded.Result.Ephemeral || !decoded.Result.Refused ||
 		len(decoded.Result.ChangedFiles) != 1 || decoded.Usage == nil || decoded.Usage.InputTokens != 10 ||
 		decoded.Result.Version != "0.1.9" || decoded.Result.Commit != "abc1234" {

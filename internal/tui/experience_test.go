@@ -78,6 +78,22 @@ func TestSkillPickerWithoutSkills(t *testing.T) {
 	}
 }
 
+func TestModeCommandSwitchesAndExplainsTaskProfile(t *testing.T) {
+	m := newTestModel(t)
+	(&m).slash("/mode work")
+	if m.runtime.TaskMode.String() != "work" || m.runtime.Agent.TaskMode().String() != "work" || m.runtime.Session.Meta.TaskMode != "work" {
+		t.Fatalf("live=%q agent=%q persisted=%q", m.runtime.TaskMode, m.runtime.Agent.TaskMode(), m.runtime.Session.Meta.TaskMode)
+	}
+	if got := m.blocks[len(m.blocks)-1].content; !strings.Contains(got, "task-appropriate") || !strings.Contains(got, "permissions are unchanged") {
+		t.Fatalf("switch notice=%q", got)
+	}
+	(&m).slash("/mode")
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "panel" || last.title != "Task mode" || !strings.Contains(last.content, "Developer") || !strings.Contains(last.content, "Work") {
+		t.Fatalf("mode panel=%+v", last)
+	}
+}
+
 func TestAgentPickerShowsDelegatedOutcome(t *testing.T) {
 	m := newTestModel(t)
 	m.runtime.Team.Start("delegate-1", "security-audit", "Review authentication", false)

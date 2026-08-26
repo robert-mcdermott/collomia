@@ -27,6 +27,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/skills"
+	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -1216,6 +1217,109 @@ func TestStandardCompletionExplainsRefusedAdHocVerification(t *testing.T) {
 	}
 }
 
+func TestWorkModeAcceptsArtifactValidationWithoutDeveloperTestCeremony(t *testing.T) {
+	workspace := t.TempDir() // deliberately not a Git repository
+	path := filepath.Join(workspace, "report.md")
+	guard, err := tools.NewPathGuard(workspace, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	board := plan.NewBoard()
+	registry := tools.NewRegistry(
+		plan.Tool(board),
+		tools.Function{Def: provider.ToolDefinition{Name: "write_report"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "write report", Paths: []string{path}}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "written", os.WriteFile(path, []byte("# Findings\n\nSource-grounded result.\n"), 0o644)
+		}},
+		tools.ValidateArtifactTool{Guard: guard},
+	)
+	var receipt *event.Evidence
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if !strings.Contains(request.System, "Task profile: Work") || strings.Contains(request.System, "Task profile: Developer") {
+			t.Fatalf("work task profile missing from system prompt:\n%s", request.System)
+		}
+		switch call {
+		case 1:
+			return graphToolResponse("plan", "update_plan", `{"goal":"produce report","steps":[{"id":1,"title":"author and validate report","status":"in_progress"}]}`), nil
+		case 2:
+			return graphToolResponse("write", "write_report", `{}`), nil
+		case 3:
+			return graphToolResponse("validate", "validate_artifact", `{"path":"report.md","required_text":["Findings"]}`), nil
+		case 4:
+			return graphToolResponse("done", "update_plan", `{"goal":"produce report","steps":[{"id":1,"title":"author and validate report","status":"done","evidence":"validate_artifact recorded the final report digest and required Findings section"}]}`), nil
+		default:
+			return provider.Response{Content: "Report delivered at report.md."}, nil
+		}
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: workspace, Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), TaskMode: taskmode.Work, MaxIterations: 8, CompletionPlan: board})
+	result, err := a.Run(t.Context(), "produce the report", func(e event.Event) {
+		if e.Kind == event.KindToolResult && e.Tool != nil && e.Tool.Name == "validate_artifact" {
+			receipt = e.Tool.Evidence
+		}
+	})
+	if err != nil || result != "Report delivered at report.md." || client.calls != 5 {
+		t.Fatalf("result=%q calls=%d error=%v", result, client.calls, err)
+	}
+	if receipt == nil || receipt.Kind != "artifact_validated" || receipt.Subject != "report.md" || !strings.HasPrefix(receipt.Digest, "sha256:") {
+		t.Fatalf("typed artifact receipt=%+v", receipt)
+	}
+}
+
+func TestWorkModeArtifactValidationIsPathSpecific(t *testing.T) {
+	board := plan.NewBoard()
+	controller := newCompletionController(board, t.TempDir(), false, taskmode.Work)
+	first := filepath.Join(controller.workspace, "first.md")
+	second := filepath.Join(controller.workspace, "second.md")
+	controller.observe(toolObservation{Name: "apply_patch", Action: tools.Action{Risk: tools.RiskWrite, Paths: []string{first, second}}})
+	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{first}}, ArtifactValidation: true})
+	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, "task-appropriate validation") {
+		t.Fatalf("one validated path incorrectly completed both artifacts: %+v", decision)
+	}
+	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{second}}, ArtifactValidation: true})
+	if decision := controller.assess(); !decision.done {
+		t.Fatalf("both validated paths did not complete the gate: %+v", decision)
+	}
+}
+
+func TestWorkModeDirectQuestionNeedsNoPlanOrValidation(t *testing.T) {
+	client := &fakeClient{chat: func(_ int, request provider.Request) (provider.Response, error) {
+		if !strings.Contains(request.System, "Ordinary Q&A") {
+			t.Fatalf("work Q&A rule missing:\n%s", request.System)
+		}
+		return provider.Response{Content: "The answer is 42."}, nil
+	}}
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: tools.NewRegistry(), Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), TaskMode: taskmode.Work, CompletionPlan: plan.NewBoard()})
+	result, err := a.Run(t.Context(), "What is six times seven?", nil)
+	if err != nil || result != "The answer is 42." || client.calls != 1 {
+		t.Fatalf("result=%q calls=%d error=%v", result, client.calls, err)
+	}
+}
+
+func TestWorkModeEnforcesNoWriteCapableDelegates(t *testing.T) {
+	registry := tools.NewRegistry(tools.Function{
+		Def: provider.ToolDefinition{Name: "delegate"}, Action: tools.Action{Risk: tools.RiskWrite, Summary: "delegate a writer"},
+		Run: func(context.Context, json.RawMessage) (string, error) { return "must not run", nil },
+	})
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return graphToolResponse("writer", "delegate", `{"tasks":[{"task":"write report","write":true}]}`), nil
+		}
+		if !requestContains(request, "cannot delegate write-capable work") || !requestContains(request, "switch to Developer mode") {
+			t.Fatalf("delegate refusal missing from next request: %+v", request.Messages)
+		}
+		return provider.Response{Content: "I will continue without a write delegate."}, nil
+	}}
+	var starts int
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), TaskMode: taskmode.Work})
+	result, err := a.Run(t.Context(), "prepare report", func(e event.Event) {
+		if e.Kind == event.KindToolStart {
+			starts++
+		}
+	})
+	if err != nil || result != "I will continue without a write delegate." || starts != 0 {
+		t.Fatalf("result=%q starts=%d error=%v", result, starts, err)
+	}
+}
+
 func TestStandardVerificationGapHasItsOwnTerminalOutcome(t *testing.T) {
 	board := plan.NewBoard()
 	registry := tools.NewRegistry(
@@ -1253,11 +1357,14 @@ func TestStandardVerificationGapHasItsOwnTerminalOutcome(t *testing.T) {
 // model had abandoned one side attempt — read a reference it turned out not to
 // need — and was told the only way to record that was `blocked`.
 func TestCompletionNoticeDistinguishesSkippedFromBlocked(t *testing.T) {
-	notice := completionNotice([]string{"a failed tool has not been recovered or recorded as blocked: read_file"}, 1)
+	notice := completionNotice([]string{"unresolved tool failure failed-read: read_file"}, 1, "")
 	for _, want := range []string{
-		"`skipped` when the action proved unnecessary or you achieved it another way",
+		"update_plan.resolved_failures",
+		"`recovered_by_alternative`",
+		"`skipped_unnecessary` only when the action was not needed",
 		"`blocked` only when the work genuinely cannot be completed",
 		"a blocked step ends this turn as blocked",
+		"prose alone does not resolve a failed call",
 	} {
 		if !strings.Contains(notice, want) {
 			t.Fatalf("completion notice is missing %q:\n%s", want, notice)
@@ -1362,17 +1469,121 @@ func TestCompletionControllerRequiresRecoveryAfterToolFailure(t *testing.T) {
 }
 
 func TestCompletionControllerDoesNotTreatUnrelatedSuccessAsRecovery(t *testing.T) {
-	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false)
-	controller.observe(toolObservation{Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}, Failed: true})
-	controller.observe(toolObservation{Name: "read_file", Action: tools.Action{Risk: tools.RiskRead, Summary: "read a file"}})
+	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
+	controller.observe(toolObservation{CallID: "failed-tests", Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}, Failed: true})
+	controller.observe(toolObservation{CallID: "read-success", Name: "read_file", Action: tools.Action{Risk: tools.RiskRead, Summary: "read a file"}})
 	decision := controller.assess()
-	if decision.done || decision.blocked || !strings.Contains(decision.notice, "run_command") {
+	if decision.done || decision.blocked || !strings.Contains(decision.notice, "failed-tests: run_command") {
 		t.Fatalf("decision=%+v", decision)
 	}
 }
 
+func TestCompletionControllerDoesNotGuessCrossToolRecoveryFromRisk(t *testing.T) {
+	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
+	controller.observe(toolObservation{CallID: "failed-read", Name: "read_file", Action: tools.Action{Risk: tools.RiskRead, Summary: "read source"}, Failed: true})
+	controller.observe(toolObservation{CallID: "search-success", Name: "search_files", Action: tools.Action{Risk: tools.RiskRead, Summary: "search source"}})
+	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, "failed-read: read_file") {
+		t.Fatalf("same-risk alternative silently erased failure: %+v", decision)
+	}
+}
+
+func TestCompletionControllerAcceptsStructuredCrossToolRecovery(t *testing.T) {
+	board := plan.NewBoard()
+	controller := newCompletionController(board, t.TempDir(), false, taskmode.Work)
+	controller.observe(toolObservation{CallID: "edit-attempt", Name: "edit_file", Failed: true, FailureDetail: "outside workspace"})
+	controller.observe(toolObservation{CallID: "command-attempt", Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "patch and run analysis"}, ResultSummary: "period 11 years"})
+	if err := board.Set(plan.Plan{
+		Goal:             "analyze data",
+		Steps:            []plan.Step{{ID: 1, Title: "compute periodicity", Status: "done", Evidence: "command-attempt printed an 11-year peak"}},
+		ResolvedFailures: []plan.FailureResolution{{FailureID: "edit-attempt", Disposition: "recovered_by_alternative", StepID: 1, RecoveryToolCallID: "command-attempt", Evidence: "the successful command applied the correction and produced the result"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	controller.observe(toolObservation{CallID: "plan-update", Name: "update_plan", Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"}})
+	if decision := controller.assess(); !decision.done {
+		t.Fatalf("structured alternative was not accepted: %+v", decision)
+	}
+}
+
+func TestCompletionControllerRejectsRecoveryWithoutSuccessfulReceipt(t *testing.T) {
+	board := plan.NewBoard()
+	controller := newCompletionController(board, t.TempDir(), false, taskmode.Work)
+	controller.observe(toolObservation{CallID: "edit-attempt", Name: "edit_file", Failed: true, FailureDetail: "outside workspace"})
+	if err := board.Set(plan.Plan{
+		Goal:             "analyze data",
+		Steps:            []plan.Step{{ID: 1, Title: "compute periodicity", Status: "done", Evidence: "claimed complete"}},
+		ResolvedFailures: []plan.FailureResolution{{FailureID: "edit-attempt", Disposition: "recovered_by_alternative", StepID: 1, RecoveryToolCallID: "missing-command", Evidence: "claimed alternative"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	controller.observe(toolObservation{CallID: "plan-update", Name: "update_plan", Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"}})
+	decision := controller.assess()
+	if decision.done || !strings.Contains(decision.notice, "without a successful current-turn tool receipt") || !strings.Contains(decision.notice, "edit-attempt") {
+		t.Fatalf("unproven recovery was accepted: %+v", decision)
+	}
+}
+
+func TestCompletionControllerDoesNotReusePersistedFailureResolution(t *testing.T) {
+	board := plan.NewBoard()
+	if err := board.Set(plan.Plan{
+		Goal:             "old turn",
+		Steps:            []plan.Step{{ID: 1, Title: "old recovery", Status: "done", Evidence: "old command succeeded"}},
+		ResolvedFailures: []plan.FailureResolution{{FailureID: "edit-attempt", Disposition: "recovered_by_alternative", StepID: 1, RecoveryToolCallID: "command-attempt", Evidence: "old recovery"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	controller := newCompletionController(board, t.TempDir(), false, taskmode.Work)
+	controller.observe(toolObservation{CallID: "edit-attempt", Name: "edit_file", Failed: true, FailureDetail: "new failure"})
+	controller.observe(toolObservation{CallID: "command-attempt", Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute}, ResultSummary: "new command happened"})
+	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, "edit-attempt: edit_file") {
+		t.Fatalf("persisted resolution cleared a new-turn failure: %+v", decision)
+	}
+}
+
+func TestWorkModeTranscriptRecoveryReturnsOriginalAnswerOnce(t *testing.T) {
+	board := plan.NewBoard()
+	registry := tools.NewRegistry(
+		plan.Tool(board),
+		tools.Function{Def: provider.ToolDefinition{Name: "edit_file"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "", errors.New("path /tmp/period.py is outside workspace")
+		}},
+		tools.Function{Def: provider.ToolDefinition{Name: "run_command"}, Action: tools.Action{Risk: tools.RiskExecute, Summary: "patch and run /tmp/period.py", Command: "python3 /tmp/period.py"}, Run: func(context.Context, json.RawMessage) (string, error) { return "dominant period: 11 years", nil }},
+	)
+	const answer = "The average sunspot periodicity is about 11 years."
+	client := &fakeClient{chat: func(call int, request provider.Request) (provider.Response, error) {
+		switch call {
+		case 1:
+			return graphToolResponse("edit-attempt", "edit_file", `{}`), nil
+		case 2:
+			return graphToolResponse("command-attempt", "run_command", `{}`), nil
+		case 3:
+			return graphToolResponse("initial-plan", "update_plan", `{"goal":"analyze data","steps":[{"id":1,"title":"compute periodicity","status":"done","evidence":"command-attempt printed an 11-year dominant period"}]}`), nil
+		case 4:
+			return provider.Response{Content: answer}, nil
+		case 5:
+			if !requestContains(request, "edit-attempt") || !requestContains(request, "update_plan.resolved_failures") {
+				t.Fatalf("controller did not expose structured recovery instructions: %+v", request.Messages)
+			}
+			return graphToolResponse("resolution-plan", "update_plan", `{"goal":"analyze data","steps":[{"id":1,"title":"compute periodicity","status":"done","evidence":"command-attempt printed an 11-year dominant period"}],"resolved_failures":[{"failure_id":"edit-attempt","disposition":"recovered_by_alternative","step_id":1,"recovery_tool_call_id":"command-attempt","evidence":"the command applied the correction and produced the requested calculation"}]}`), nil
+		default:
+			t.Fatalf("completed answer was regenerated in provider call %d", call)
+			return provider.Response{}, nil
+		}
+	}}
+	var warnings int
+	a := New(Options{Client: client, ProviderName: "fake", Model: "model", ProviderConfig: appconfig.Provider{MaxTokens: 100}, Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), TaskMode: taskmode.Work, MaxIterations: 8, CompletionPlan: board})
+	result, err := a.Run(t.Context(), "analyze the sunspot data", func(e event.Event) {
+		if e.Kind == event.KindWarning && strings.Contains(e.Text, "completion controller") {
+			warnings++
+		}
+	})
+	if err != nil || result != answer || client.calls != 5 || warnings != 1 {
+		t.Fatalf("result=%q calls=%d warnings=%d error=%v", result, client.calls, warnings, err)
+	}
+}
+
 func TestCompletionControllerRetainsEveryUnresolvedFailure(t *testing.T) {
-	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false)
+	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
 	controller.observe(toolObservation{Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}, Failed: true})
 	controller.observe(toolObservation{Name: "external_lookup", Action: tools.Action{Risk: tools.RiskExternal, Summary: "look up dependency"}, Failed: true})
 	controller.observe(toolObservation{Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}})
@@ -1383,7 +1594,7 @@ func TestCompletionControllerRetainsEveryUnresolvedFailure(t *testing.T) {
 }
 
 func TestCompletionControllerAcceptsCorrectedPlanToolRetry(t *testing.T) {
-	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false)
+	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
 	controller.observe(toolObservation{Name: "update_plan", Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"}, Failed: true})
 	controller.observe(toolObservation{Name: "update_plan", Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"}})
 	if decision := controller.assess(); !decision.done {
@@ -1392,7 +1603,7 @@ func TestCompletionControllerAcceptsCorrectedPlanToolRetry(t *testing.T) {
 }
 
 func TestCompletionControllerTreatsFailedWriteAsPotentialMutation(t *testing.T) {
-	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false)
+	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
 	controller.observe(toolObservation{Name: "edit_file", Action: tools.Action{Risk: tools.RiskWrite, Summary: "edit a file"}, Failed: true})
 	decision := controller.assess()
 	if decision.done || decision.blocked || !strings.Contains(decision.notice, "no successful recognized verification") || !strings.Contains(decision.notice, "edit_file") {

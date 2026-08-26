@@ -2,16 +2,19 @@
 
 ![Collomia terminal interface](docs/collo-screenshot.png)
 
-Collomia is a local-first, provider-neutral coding agent for the terminal. It
-combines a polished interactive interface with repository-aware tools,
-language-server intelligence, durable sessions, governed sub-agents, MCP and
-skills support, and a headless JSONL interface for automation. It ships as one
-`collo` binary for macOS, Linux, and Windows.
+Collomia is a local-first, provider-neutral agent for the terminal. Its
+Developer profile combines a polished interactive interface with
+repository-aware tools and language-server intelligence; its Work profile
+supports research, analysis, automation, knowledge retrieval, document
+authoring, external actions, and direct questions in ordinary non-Git folders.
+Both use the same durable sessions, MCP and skills support, permission boundary,
+and headless JSONL interface. It ships as one `collo` binary for macOS, Linux,
+and Windows.
 
 The project is built around an unusually explicit trust boundary. Model-proposed
 actions pass through layered permissions, command analysis, OS sandboxing,
-network controls, audit, and evidence-based completion checks. Standard mode is
-the permanent default. For work that benefits from a visible dependency graph,
+network controls, audit, and evidence-based completion checks. Standard
+execution is the permanent default. For work that benefits from a visible dependency graph,
 Orchestrated Goal adds optional evidence-gated durable execution in which the
 runtime—not model prose—owns readiness, evidence freshness, recovery, budgets,
 and the terminal outcome.
@@ -45,6 +48,12 @@ and the terminal outcome.
   `needs_verification` rather than falsely `blocked`. Standard mode stays fast
   and model-directed while the runtime checks the evidence it can actually
   observe.
+- **General-purpose Work mode.** `--mode work` or `/mode work` changes the task
+  and evidence profile without changing permissions. Git becomes optional,
+  direct Q&A needs no synthetic ceremony, and document/data artifacts receive
+  path- and digest-bound structural validation while research, analysis, and
+  external actions retain sources, calculations, receipts, or safe read-back.
+  Developer remains the default.
 - **Orchestrated Goal.** An explicit TUI-only workflow turns a proposed
   dependency graph into durable runtime state. Supported end-to-end graphs can
   fan out up to two governed read-only workers, then return to the serial
@@ -112,11 +121,14 @@ configuration without storing an API key in the file. Running `collo` with no
 configured provider opens the same flow and continues directly into the first
 session after verification.
 
-Then start Collomia in a repository:
+Then start Collomia in a repository for development, or any folder for Work:
 
 ```sh
 cd /path/to/project
 collo
+
+cd /path/to/work-folder
+collo --mode work
 ```
 
 Useful checks:
@@ -149,9 +161,20 @@ The top-level command surface is intentionally small:
 | Sessions and extensions | `collo sessions`, `collo skills`, `collo mcp` |
 | Diagnostics and integration | `collo support`, `collo completion`, `collo schema` |
 
-## Execution modes
+## Task profiles and execution strategies
 
-**Standard mode** is the default: describe the task and Collomia works through
+**Developer** is the default task profile. It assumes software or repository
+work and prefers repository inspection, scoped edits, and build/lint/test
+evidence.
+
+**Work** is the general-purpose task profile. It does not require Git and
+matches evidence to the requested result: artifact validation, reproducible
+analysis, sourced research, external-action receipts/read-back, or a direct
+answer. Select it at startup with `collo --mode work`, in a session with
+`/mode work`, and in headless use with `collo run --mode work ...`. The choice
+is persisted per session. See the [Work mode contract](docs/WORK_MODE.md).
+
+**Standard execution** is the default: describe the task and Collomia works through
 its ordinary governed tool loop. `max_iterations` is a consecutive no-progress
 lease, so productive work can continue beyond it; a hard envelope at twice the
 configured value still bounds a turn.
@@ -177,6 +200,10 @@ for choosing the mode and operating it, and the
 [architecture strategy](docs/ORCHESTRATION_STRATEGY.md) for its evidence,
 authority, and recovery contracts.
 
+The initial Work profile uses Standard execution only. Orchestrated Goal and
+write-capable delegates remain Developer-only because their state and isolation
+contracts are Git-backed; Collomia refuses that combination explicitly.
+
 ## Documentation
 
 | Topic | Documentation |
@@ -188,6 +215,7 @@ authority, and recovery contracts.
 | Product feature overview | [Features](docs/FEATURES.md) |
 | Beta suitability and known limits | [Beta status](docs/BETA.md) |
 | Headless JSONL and CI/cron examples | [Automation](docs/AUTOMATION.md) |
+| General-purpose non-software tasks | [Work mode](docs/WORK_MODE.md) |
 | Orchestrated Goal design and evidence | [Orchestration strategy](docs/ORCHESTRATION_STRATEGY.md) |
 | Configuration, session, and event compatibility | [Compatibility policy](docs/COMPATIBILITY.md) |
 | Linux Landlock setup | [Linux sandbox guide](docs/LINUX_SANDBOX.md) |

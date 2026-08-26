@@ -100,6 +100,7 @@ func (m *Model) emptyStateCard(width int) string {
 
 	rows := [][2]string{
 		{"workspace", filepath.Base(m.runtime.Workspace)},
+		{"task mode", m.runtime.TaskMode.String()},
 		{"model", providerName + "/" + model},
 		{"autonomy", m.runtime.Permissions.Mode() + " · " + m.securityStance().Label},
 	}

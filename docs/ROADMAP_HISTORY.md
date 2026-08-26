@@ -13,6 +13,58 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-08-25 — Structured failed-tool recovery closes a Work false blocker
+
+- **The answer was complete; the ledger was not.** A Work transcript produced
+  and independently supported the requested analysis, recovered a refused
+  `/tmp` `edit_file` through `run_command`, and recorded the failed attempt as
+  skipped exactly as instructed. The controller still retained the failed
+  call through two interventions and reported `blocked`.
+- **Recovery is now referential, not textual or risk-based.** Every failed call
+  has a controller-visible ID. `update_plan.resolved_failures` connects it to a
+  terminal step and, for retry/alternative recovery, an exact successful
+  current-turn tool-call receipt. Unrelated tools with the same permission
+  risk no longer erase failures, and missing receipts fail closed.
+- **The bound measures unchanged gaps.** Plan or tool activity renews the
+  controller assessment only when the recorded completion gaps change. A
+  candidate answer intercepted solely for failure metadata is retained and
+  returned after resolution without another provider request; substantive
+  tools disable reuse so new evidence can change the answer.
+- **Sandbox recovery is actionable.** Sandboxed `uv` failures name the
+  `UV_CACHE_DIR="$PWD/.uv-cache"` form, while file-tool errors make clear that
+  command access to `/tmp` does not widen the workspace path guard.
+- **Regression evidence:** plan validation, missing-receipt refusal,
+  same-risk non-recovery, exact cross-tool recovery, cache guidance, and the
+  transcript-shaped single-answer lifecycle are covered in focused tests.
+
+### 2026-08-25 — Work mode makes non-software outcomes first-class
+
+- **A task profile, not a second scheduler.** Developer and Work now describe
+  the outcome and evidence contract independently of Standard/Orchestrated
+  execution, Plan/Execute state, and permission autonomy. Developer remains
+  the default; Work is explicit, visible, and persisted with the session.
+- **Ordinary folders are supported deliberately.** Work does not require Git,
+  initialize a repository, or turn missing repository metadata into a task
+  failure. Direct Q&A completes without a ceremonial plan or test run.
+- **Evidence follows the outcome.** `validate_artifact` emits a typed,
+  path-specific SHA-256 receipt after structural/content checks for common
+  text, data, Office, PDF, and binary artifacts. Analysis records inputs and
+  calculations; research records sources and inference; external mutations
+  require receipts/read-back and are not blindly retried when ambiguous.
+- **The claim stays narrow.** A receipt does not prove factual correctness,
+  source quality, or visual polish. Work's `validation_note` is labelled
+  model-authored disclosure, never machine proof.
+- **The existing authority boundary stays intact.** Permissions, sandboxing,
+  trust, hooks, redaction, audit, and autonomy are unchanged. The first Work
+  release uses Standard execution and refuses Orchestrated Goal or
+  write-capable delegation until those Git-backed mechanisms have a designed
+  non-Git state, isolation, recovery, and publication contract.
+- **Evaluation evidence:** persisted profile/resume and CLI/TUI controls,
+  non-Git Q&A, non-Git Markdown delivery with one accepted digest receipt and
+  no completion retry, path-specific staleness including macOS path aliases,
+  supported/malformed artifact formats, event-schema additions, and the
+  unsupported-combination refusal are covered offline.
+
 ## Executive summary
 
 *Original 2026-07-17 assessment:* Collomia was a credible **vertical-slice MVP** — one Go binary, a polished Bubble Tea interface, a provider-neutral tool-calling loop, approval prompts, workspace-aware tools, slash commands, skills, MCP tools, planning mode, and a bounded subagent — but not yet a production-grade agentic terminal.

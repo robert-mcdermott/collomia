@@ -18,15 +18,21 @@ import (
 )
 
 func TestParseFlagsBeforeSubcommandAndTerminator(t *testing.T) {
-	opts, err := parse([]string{"--cwd", "/tmp/work", "run", "--autopilot", "--", "prompt", "-with-dash"})
+	opts, err := parse([]string{"--cwd", "/tmp/work", "--mode", "work", "run", "--autopilot", "--", "prompt", "-with-dash"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.command != "run" || opts.cwd != "/tmp/work" || opts.autonomy != "autopilot" {
+	if opts.command != "run" || opts.cwd != "/tmp/work" || opts.autonomy != "autopilot" || opts.taskMode != "work" {
 		t.Fatalf("options=%+v", opts)
 	}
 	if len(opts.args) != 2 || opts.args[1] != "-with-dash" {
 		t.Fatalf("args=%v", opts.args)
+	}
+}
+
+func TestParseRejectsUnknownTaskMode(t *testing.T) {
+	if _, err := parse([]string{"run", "--mode", "assistant", "prompt"}); err == nil || !strings.Contains(err.Error(), "developer or work") {
+		t.Fatalf("unknown task mode error=%v", err)
 	}
 }
 

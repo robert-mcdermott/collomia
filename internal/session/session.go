@@ -27,11 +27,14 @@ import (
 )
 
 type Meta struct {
-	ID         string    `json:"id"`
-	Workspace  string    `json:"workspace"`
-	Title      string    `json:"title,omitempty"`
-	Provider   string    `json:"provider,omitempty"`
-	Model      string    `json:"model,omitempty"`
+	ID        string `json:"id"`
+	Workspace string `json:"workspace"`
+	Title     string `json:"title,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	// TaskMode is the user-selected Developer or Work profile. Empty on legacy
+	// sessions means Developer.
+	TaskMode   string    `json:"task_mode,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	Archived   bool      `json:"archived,omitempty"`
@@ -110,7 +113,13 @@ func (s *Store) attachmentDir(id string) string {
 
 // New creates and opens a fresh session.
 func (s *Store) New(providerName, model string) (*Session, error) {
-	meta := Meta{ID: newID(), Workspace: s.workspace, Provider: providerName, Model: model, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	return s.NewForTaskMode(providerName, model, "developer")
+}
+
+// NewForTaskMode creates a session whose task profile survives resume. The
+// value is validated by the application before reaching the session store.
+func (s *Store) NewForTaskMode(providerName, model, taskMode string) (*Session, error) {
+	meta := Meta{ID: newID(), Workspace: s.workspace, Provider: providerName, Model: model, TaskMode: taskMode, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	sess := &Session{Meta: meta, store: s}
 	if err := sess.open(); err != nil {
 		return nil, err
@@ -120,6 +129,23 @@ func (s *Store) New(providerName, model string) (*Session, error) {
 		return nil, err
 	}
 	return sess, nil
+}
+
+// SetTaskMode durably records an explicit between-turn mode switch before the
+// caller changes the live prompt. A failed append therefore cannot leave the
+// process behaving in a mode its resumed session would not remember.
+func (sess *Session) SetTaskMode(taskMode string) error {
+	meta := sess.Meta
+	meta.TaskMode = taskMode
+	meta.UpdatedAt = time.Now().UTC()
+	if err := sess.append(Record{Type: "meta", Meta: &meta}); err != nil {
+		return err
+	}
+	if err := sess.Sync(); err != nil {
+		return err
+	}
+	sess.Meta = meta
+	return nil
 }
 
 // List returns session metadata, most recently updated first.

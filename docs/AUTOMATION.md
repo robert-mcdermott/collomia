@@ -6,6 +6,9 @@ terminal UI:
 
 ```sh
 collo run --jsonl --plan "Inspect the repository and summarize its architecture"
+
+# A non-Git document or analysis task:
+collo run --jsonl --mode work --autopilot "Create and validate status.md"
 ```
 
 This document describes schema version 1. Print the exact schema embedded in
@@ -73,7 +76,7 @@ applicable public subset; rows below identify internal or TUI-only events:
 | `tool.call.delta` | `tool_call` | Incomplete provider tool-call fragments; never execute these directly. |
 | `tool.start` | `tool` | A validated, permitted tool started. |
 | `tool.output` | `tool` | Live bounded tool output. |
-| `tool.result` | `tool` | Completed tool result and error flag. |
+| `tool.result` | `tool` | Completed tool result and error flag; evidence-producing tools may attach a narrow typed `evidence` receipt. |
 | `permission.decision` | `permission` | Allow/deny decision, source, matched rule, and resources. |
 | `goal.graph.update` | `goal_graph` | Bounded runtime-owned graph transition: graph/generation identity, optional node/attempt, state, reason, ready node IDs, and terminal outcome. The TUI workflow reports automatic-read selection as `delegated_read` and cooperative controls as `pause_requested`, `paused`, `resumed`, or `retry_requested`. Emitted by internal evaluations and the explicit TUI-only Orchestrated Goal workflow; Standard-mode and headless runs do not emit it. |
 | `usage` | `usage` | Provider-reported input/output/cached/cache-write/reasoning tokens plus optional user-priced `cost_usd`, `cost_available`, and `cost_estimated`. `input_tokens` counts the whole prompt including cached tokens; see [final result](#final-result). |
@@ -90,6 +93,13 @@ headless or configuration switch for it. `delegate.update` carries the latest
 bounded manual or graph-selected child status used by durable interactive sessions; one-shot
 JSONL runs do not currently promise either internal lifecycle kind.
 Do not assume every reserved kind appears in every current CLI stream.
+
+Work mode's `validate_artifact` can add `tool.evidence` with kind
+`artifact_validated`, the validated path as `subject`, a `sha256:` digest, and
+a bounded structural `detail`. Recognized Developer or Work build/lint/test
+commands can similarly report kind `verification`. These receipts claim only
+what the originating tool observed. `file.change` is a durable path manifest
+for tracked file tools and `/undo`; replay never repeats the mutation.
 
 OG-2 aggregate accounting and enforcement are internal graph-snapshot and TUI
 status contracts, not new schema-v1 event contracts. The existing
@@ -152,6 +162,7 @@ readability):
   "kind": "run.result",
   "result": {
     "status": "ok",
+    "mode": "work",
     "outcome": "done",
     "answer": "...",
     "session_id": "20260721-120000-a1b2c3",
@@ -174,6 +185,7 @@ readability):
 | Field | Meaning |
 |---|---|
 | `status` | Stable schema-v1 status: `ok`, `error`, or `cancelled`. |
+| `mode` | Additive task profile: `developer` or `work`. New runs emit it; old schema-v1 traces may omit it. It is independent of permission autonomy and Standard/Orchestrated execution. |
 | `outcome` | Additive goal-level state: `done`, `blocked`, `needs_verification`, `cancelled`, or `budget_exhausted`. New Collomia runs always emit it; old schema-v1 traces may omit it. |
 | `answer` | Final answer, or provider-streamed partial text when a failed stream produced some. |
 | `error` | Human-readable failure message. Do not parse it for control flow. |

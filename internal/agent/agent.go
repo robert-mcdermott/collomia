@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/session"
 	"github.com/robert-mcdermott/collomia/internal/skills"
+	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -84,6 +86,7 @@ type Agent struct {
 	allowedSkills          map[string]bool
 	profileName            string
 	profileInstructions    string
+	taskMode               taskmode.Mode
 	planMode               bool
 	subagent               bool
 	onMessage              func(provider.Message)
@@ -135,6 +138,7 @@ type Options struct {
 	// pricing on the selected provider.
 	CostBudgetUSD      float64
 	DisabledTools      []string
+	TaskMode           taskmode.Mode
 	PlanMode, Subagent bool
 	// OnMessage observes every message appended to the conversation, for
 	// durable session persistence.
@@ -204,7 +208,10 @@ func New(opts Options) *Agent {
 	if opts.MaxToolOutput <= 0 {
 		opts.MaxToolOutput = 64 * 1024
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	if opts.TaskMode == "" {
+		opts.TaskMode = taskmode.Developer
+	}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, taskMode: opts.TaskMode, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 func standardHardIterationLimit(noProgressLimit int) int {
@@ -348,11 +355,17 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		return "", reportError(send, err)
 	}
 	a.mu.RLock()
-	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode)
+	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode, a.taskMode)
 	maxTurnIterations := a.maxTurnIterations
 	a.mu.RUnlock()
 	standardLastProgressIteration := 0
 	standardProgressVersion := completion.progressVersion
+	// A controller-intercepted final answer is already visible and already paid
+	// for. If the model repairs only completion metadata, retain that candidate
+	// and release it as soon as the controller is satisfied instead of asking the
+	// provider to generate the same answer again.
+	pendingFinal := ""
+	pendingFinalReusable := false
 	// Ordinary turns use max_iterations as a consecutive no-progress lease and
 	// a separate, larger hard envelope. An Orchestrated Goal applies the lease
 	// to each primary attempt while the graph's
@@ -683,6 +696,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				a.endTurn(ctx, send, iteration, GoalNeedsVerification)
 				return response.Content, verificationErr
 			default:
+				if pendingFinal == "" && decision.reuseCandidate && strings.TrimSpace(response.Content) != "" {
+					pendingFinal = response.Content
+					pendingFinalReusable = true
+				}
 				warning := event.New(event.KindWarning)
 				warning.Text = decision.notice
 				send(warning)
@@ -694,6 +711,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			}
 		}
 		for _, call := range response.ToolCalls {
+			if pendingFinal != "" && !completionMetaTool(call.Name) {
+				pendingFinalReusable = false
+			}
 			if err := a.checkPersistence(); err != nil {
 				return response.Content, reportError(send, err)
 			}
@@ -721,6 +741,30 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				}
 			} else {
 				completion.observe(observation)
+			}
+		}
+		if !a.graphEnabled() && pendingFinal != "" && pendingFinalReusable {
+			decision := completion.assess()
+			switch {
+			case decision.done:
+				a.endTurn(ctx, send, iteration, GoalDone)
+				return pendingFinal, nil
+			case decision.blocked:
+				blocked := reportError(send, fmt.Errorf("%w: %s", ErrGoalBlocked, decision.reason))
+				a.endTurn(ctx, send, iteration, GoalBlocked)
+				return pendingFinal, blocked
+			case decision.needsVerification:
+				verificationErr := reportError(send, fmt.Errorf("%w: %s", ErrGoalNeedsVerification, decision.reason))
+				a.endTurn(ctx, send, iteration, GoalNeedsVerification)
+				return pendingFinal, verificationErr
+			default:
+				warning := event.New(event.KindWarning)
+				warning.Text = decision.notice
+				send(warning)
+				a.appendMessage(provider.Message{Role: "user", Content: decision.notice})
+				if err := a.checkPersistence(); err != nil {
+					return pendingFinal, reportError(send, err)
+				}
 			}
 		}
 		if !a.graphEnabled() && completion.progressVersion != standardProgressVersion {
@@ -853,7 +897,7 @@ func reportError(send Emit, err error) error {
 
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, completion *completionController, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
-	observation := toolObservation{Name: call.Name}
+	observation := toolObservation{CallID: call.ID, Name: call.Name}
 	if hasItem && !a.toolAvailable(item, plan) {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -893,6 +937,13 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		return tools.Result{Content: "Tool error: " + err.Error()}, observation, nil
 	}
 	observation.Action = action
+	if call.Name == "delegate" && a.TaskMode() == taskmode.Work && action.Risk == tools.RiskWrite {
+		observation.Failed = true
+		observation.FailureKind = goalgraph.FailureTool
+		observation.FailureDetail = "Work mode does not support write-capable delegates"
+		observation.Retryable = true
+		return tools.Result{Content: "Tool blocked: Work mode currently uses Standard execution and cannot delegate write-capable work because delegate isolation requires a Git repository. Continue in the primary workspace, delegate only read-only investigation, or switch to Developer mode."}, observation, nil
+	}
 	if plan && action.Risk != tools.RiskRead {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -1010,6 +1061,9 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		assessment := assessVerificationCommand(action.Command, a.workspace)
 		observation.Verification = assessment.Recognized
 		observation.VerificationCheck = assessment
+		if err == nil && assessment.Recognized {
+			result.Evidence = &tools.Evidence{Kind: "verification", Subject: action.Command, Detail: "recognized verification command exited successfully"}
+		}
 		standardAwaitingVerification := completion != nil && completion.awaitingVerificationGuidance()
 		switch {
 		case err == nil && assessment.Recognized && standardAwaitingVerification:
@@ -1032,6 +1086,9 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		// saying so would be noise attached to work that is going fine.
 		case err == nil && assessment.Refused && (a.goalAwaitingVerification() || standardAwaitingVerification):
 			notice := refusedVerificationNotice(action.Command, assessment.Reason, a.workspace)
+			if a.TaskMode() == taskmode.Work && !a.graphEnabled() {
+				notice = workValidationNotice(action.Command, assessment.Reason)
+			}
 			a.recordUnrecognizedVerification(boundedVerificationCommand(action.Command))
 			if result.Content != "" {
 				result.Content += "\n\n"
@@ -1039,6 +1096,9 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += notice
 		case err == nil && assessment.Unrecognized && (a.goalAwaitingVerification() || standardAwaitingVerification):
 			notice := unrecognizedVerificationNotice(action.Command, a.workspace)
+			if a.TaskMode() == taskmode.Work && !a.graphEnabled() {
+				notice = workValidationNotice(action.Command, "the command is not a runtime-recognized build, lint, or test entry point")
+			}
 			a.recordUnrecognizedVerification(boundedVerificationCommand(action.Command))
 			if result.Content != "" {
 				result.Content += "\n\n"
@@ -1046,9 +1106,18 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += notice
 		}
 	}
+	if err == nil && call.Name == "validate_artifact" && result.Evidence != nil && result.Evidence.Kind == "artifact_validated" {
+		observation.ArtifactValidation = true
+		if completion != nil && completion.awaitingVerificationGuidance() {
+			if result.Content != "" {
+				result.Content += "\n\n"
+			}
+			result.Content += "Collomia validation evidence: recorded for this artifact and its current digest. A later write to the same tracked artifact makes this receipt stale."
+		}
+	}
 	observation.ResultSummary = result.Content
 	done := event.New(event.KindToolResult)
-	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil}
+	done.Tool = &event.Tool{Name: call.Name, Summary: action.Summary, Output: result.Content, IsError: err != nil, Evidence: eventEvidence(result.Evidence)}
 	send(done)
 	endPayload := hooks.Payload{Event: "tool_end", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: action.Summary, Detail: map[string]any{"output_bytes": len(result.Content), "image_parts": len(result.Parts)}}
 	if err != nil {
@@ -1073,9 +1142,39 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		observation.GraphRecorded = err == nil
 	}
 	if err == nil && action.Risk == tools.RiskWrite && len(action.Paths) > 0 {
+		if trackedFileMutationTool(call.Name) {
+			for _, path := range action.Paths {
+				operation := "edit"
+				if call.Name == "write_file" {
+					operation = "write"
+				}
+				if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+					operation = "delete"
+				}
+				changed := event.New(event.KindFileChange)
+				changed.File = &event.FileChange{Path: path, Operation: operation}
+				send(changed)
+			}
+		}
 		a.lifecycle.Fire(ctx, hooks.Payload{Event: "file_change", Workspace: a.workspace, Subject: call.Name, Tool: call.Name, Paths: action.Paths})
 	}
 	return result, observation, nil
+}
+
+func eventEvidence(value *tools.Evidence) *event.Evidence {
+	if value == nil {
+		return nil
+	}
+	return &event.Evidence{Kind: value.Kind, Subject: value.Subject, Digest: value.Digest, Detail: value.Detail}
+}
+
+func trackedFileMutationTool(name string) bool {
+	switch name {
+	case "write_file", "edit_file", "apply_patch", "format_file":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Agent) retainToolParts(toolName string, parts []provider.ContentPart, send Emit) []provider.ContentPart {
@@ -1224,11 +1323,16 @@ func (a *Agent) systemPrompt(plan bool) string {
 		}
 		sub = "\n" + prompts.Text(fragment)
 	}
+	task := prompts.TaskDeveloper
+	if a.taskMode == taskmode.Work {
+		task = prompts.TaskWork
+	}
 	return prompts.Agent(prompts.SystemView{
 		Workspace:           a.workspace,
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,
 		Mode:                prompts.Text(mode),
+		Task:                prompts.Text(task),
 		Subagent:            sub,
 		ProfileInstructions: profileInstructions(a.profileInstructions),
 		ProjectInstructions: a.projectInstructions,
@@ -1823,7 +1927,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 	a.mu.RLock()
 	client, providerName, model, providerConfig := a.client, a.providerName, a.model, a.providerConfig
 	workspace, parentRegistry := a.workspace, a.registry
-	catalog, instructions, maxOut, maxIter := a.catalog, a.projectInstructions, a.maxToolOutput, a.maxIterations
+	catalog, instructions, maxOut, maxIter, activeTaskMode := a.catalog, a.projectInstructions, a.maxToolOutput, a.maxIterations, a.taskMode
 	auditRedact, auditFailure, sessionID := a.auditRedact, a.auditFailure, a.sessionID
 	disabled := keys(a.disabled)
 	persistenceError := a.persistenceError
@@ -1961,6 +2065,7 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		Catalog: childCatalog, ProjectInstructions: instructions,
 		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
 		DisabledTools: disabled, PlanMode: childPlan, Subagent: true, GraphWorker: task.GraphNode,
+		TaskMode:         activeTaskMode,
 		PersistenceError: persistenceError,
 		// A child that delegates further must keep the same reporting route
 		// and the same session identity, or the grandchild is the unaudited
@@ -2220,6 +2325,16 @@ func (a *Agent) Profile() (name, reasoning string, tokenBudget int, costBudgetUS
 
 func (a *Agent) SetPlan(enabled bool) { a.mu.Lock(); a.planMode = enabled; a.mu.Unlock() }
 func (a *Agent) Plan() bool           { a.mu.RLock(); defer a.mu.RUnlock(); return a.planMode }
+func (a *Agent) SetTaskMode(mode taskmode.Mode) {
+	a.mu.Lock()
+	a.taskMode = mode
+	a.mu.Unlock()
+}
+func (a *Agent) TaskMode() taskmode.Mode {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.taskMode
+}
 func (a *Agent) SetProvider(name, model string, p appconfig.Provider, client provider.Client) {
 	a.mu.Lock()
 	a.providerName = name

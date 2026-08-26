@@ -2753,10 +2753,11 @@ assuming it is clean.
 
 ## Using the terminal interface
 
-Run `collo` from the repository root. The chosen working directory is the
-workspace boundary used by file tools, Git inspection, configuration, trust,
-skills, sessions, and hooks. Select a different directory without changing
-your shell's location:
+Run `collo` from the workspace folder. In Developer mode this is normally the
+repository root; Work mode also supports an ordinary non-Git folder. The
+chosen directory is the boundary used by file tools, Git inspection when
+available, configuration, trust, skills, sessions, and hooks. Select a
+different directory without changing your shell's location:
 
 ```sh
 collo --cwd /path/to/repository
@@ -2765,7 +2766,7 @@ collo --cwd /path/to/repository
 ### Main interface
 
 The first screen centres the mark and wordmark over the build line, an
-orientation card (workspace, branch, model, autonomy), and a few openers. It is
+orientation card (workspace, task mode, branch when available, model, autonomy), and a few openers. It is
 replaced by the transcript as soon as you send a prompt; from then on a compact
 wordmark with the version and the answering model heads the conversation. Build
 detail — the commit and the build date — is on the first screen, on the Session
@@ -2877,7 +2878,7 @@ Delegated agents are steered separately with `/agents steer` and `alt+a`.
 | `ctrl+c` | Cancel the active turn; press again to quit. |
 
 Typing `/` filters commands by prefix and substring. Known first arguments for
-`/theme`, `/autonomy`, `/plan`, `/orchestrate`, `/model`, and `/agent` are
+`/theme`, `/autonomy`, `/mode`, `/plan`, `/orchestrate`, `/model`, and `/agent` are
 completed fuzzily. These menus remain beside the composer; approvals and
 questions open as centered, theme-aware transient dialogs.
 
@@ -2903,6 +2904,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/status` | Show workspace, provider/model, capabilities, health, context, plan, autonomy, and configuration/trust state. |
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
 | `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
+| `/mode [developer\|work]` | Show or switch the task profile. The choice is persisted with the session and changes neither provider nor permissions. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
@@ -2937,11 +2939,64 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/restore [turn]` | Branch the conversation and reverse the agent's tracked file changes back to an earlier completed turn. Refuses the whole operation, naming every file, if any changed outside Collomia. |
 | `/restore integration [id [keep]]` | List integrations that were interrupted before recording an outcome, or put one back to the exact state recorded before it started. It restores rather than completes: a half-applied publication is never re-run. `keep` records that you inspected the workspace and are keeping it as it stands, changing no bytes. |
 | `/retry` | Load the previous prompt into the composer for review. It does not submit the prompt or repeat tools. |
-| `/new` | Start a new session while preserving the current one. |
+| `/new` | Start a new session while preserving the current one and its current task profile. |
 | `/compact [focus]` | Summarize older active context while preserving the durable transcript. |
 | `/config [all]` | Show what the configuration resolved to: layers in order, the effective safety stance, anything the containment clamp refused, and the layer that set each value. `all` lists every setting, including those no file mentions. Credential values are redacted. |
 | `/clear` | Clear active conversation context. It does not delete the durable session file or reset cumulative token/cost accounting and budgets. |
 | `/quit` or `/exit` | Exit. |
+
+### Task profiles: Developer and Work
+
+Task profile describes the outcome Collomia assumes and the evidence it seeks.
+It is independent of provider/model selection, Plan/Execute state, Standard or
+Orchestrated execution, and the `ask`/`workspace`/`autopilot` permission mode.
+
+**Developer** is the default and the behavior existing sessions used before
+task profiles were introduced. It assumes software or repository work,
+prefers structured repository and Git tools, and expects proportionate
+build/lint/test evidence after changes.
+
+**Work** is for general-purpose tasks: research, analysis, automation,
+knowledge retrieval, document authoring, external actions, direct Q&A, and
+other outcomes where code may be an aid rather than the deliverable. It treats
+the workspace as an ordinary governed folder and does not require or initialize
+Git. Select it when starting or during a session:
+
+```sh
+collo --mode work --cwd /path/to/work-folder
+```
+
+```text
+/mode work
+/status
+```
+
+The choice is append-only session metadata. Resume and `/sessions` restore the
+saved profile; `/new` inherits the current one; sessions created by older
+versions load as Developer. `/mode developer` changes only the task profile—
+conversation, usage, provider, model, plan state, autonomy, permissions,
+sandboxing, hooks, audit, and trust remain intact.
+
+Work matches evidence to the outcome. `validate_artifact` checks a completed
+file after its final write and emits a path- and SHA-256-bound typed receipt.
+Analysis should retain identified inputs and reproducible calculations;
+research should identify consulted sources and separate fact from inference;
+external actions should retain a receipt/identifier and safely read back the
+result where possible. An ambiguous mutating action is inspected or handed to
+the user rather than blindly retried. Direct Q&A with no mutation or unresolved
+tool error completes without a synthetic plan or verification step.
+
+Artifact validation proves only the structure/content it actually inspected,
+not factual correctness, source quality, accessibility, visual polish, or
+fitness for a human decision. When no meaningful machine check applies,
+Work's `validation_note` states what was checked and what remains subjective;
+the UI labels it model-authored rather than runtime proof. See the complete
+[Work mode contract](WORK_MODE.md).
+
+The initial Work profile uses Standard execution. `/orchestrate` is refused in
+Work, and Work does not start write-capable delegates, because those mechanisms
+currently depend on Git state tokens and isolated Git worktrees. Switch to
+Developer or use a separate session for those workflows.
 
 ### Orchestrated Goal
 
@@ -3931,6 +3986,7 @@ execution:
 ```sh
 collo run --plan "Inspect the repository and propose a plan"
 collo run --autopilot "Fix the failing tests and verify the result"
+collo run --mode work --autopilot "Create and validate status.md"
 ```
 
 Uninspectable commands still require interactive approval even in autopilot,
@@ -3983,6 +4039,7 @@ The last line is always `run.result`:
   "kind": "run.result",
   "result": {
     "status": "ok",
+    "mode": "work",
     "outcome": "done",
     "answer": "...",
     "session_id": "20260719-120000-a1b2c3",
@@ -4160,6 +4217,7 @@ Common flags:
 --provider <name>                    configured provider alias
 --model <id>                         model/deployment override
 --agent <name>                       named primary-agent profile
+--mode developer|work               task profile; default developer, persisted per session
 --autonomy ask|workspace|autopilot   permission policy override
 --autopilot                          shorthand for autopilot
 --workspace                          shorthand for workspace mode
@@ -4200,6 +4258,7 @@ question broker can make the model-visible subset smaller.
 | `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
 | `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |
 | `apply_patch` | Validate related create/update/delete operations before applying them through rooted atomic replacement and safe deletion, with rollback on a later publish failure. |
+| `validate_artifact` | Validate a non-empty completed file after its final write, record its SHA-256 digest, and parse bounded text/Markdown/JSON/CSV/DOCX/PPTX/PDF structure. Exact required text is supported where content is inspectable. The receipt does not prove factual or visual quality. |
 | `run_command` | Shell command in workspace; default timeout 120 seconds, maximum 1,800; bounded/live output; optional PTY on Unix or pseudoconsole on Windows 10 1809 and later. |
 | `git_status` | Read-only branch/ahead/behind/change status. |
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
@@ -4220,7 +4279,7 @@ question broker can make the model-visible subset smaller.
 | `format_file` | Format one file with the project's language server; an ordinary tracked, undoable write. |
 | `web_search` | Search the public web through DuckDuckGo; no API key or configuration. Default 5 results, maximum 15. |
 | `web_fetch` | Fetch one http(s) URL as readable text, markdown, or raw. Public internet only; 5 MiB response cap. |
-| `update_plan` | Maintain a structured plan persisted with the session; terminal steps require evidence/reasons, dependencies are validated, and `verification_note` records why no meaningful automated check applies. |
+| `update_plan` | Maintain a structured plan persisted with the session; terminal steps require evidence/reasons, dependencies are validated, and `resolved_failures` can bind controller-named failed calls to exact recovery receipts or matching skipped/blocked steps. Developer's `verification_note` and Work's `validation_note` are explicitly model-authored disclosures for cases with no meaningful machine check. |
 | `load_skill` | Load a relevant skill's full manifest and bundle map on demand. |
 | `delegate` | Run bounded parallel sub-agent tasks; omitted inside sub-agents. |
 | `ask_user` | Pause for a typed answer; interactive TUI only. |
@@ -4244,15 +4303,24 @@ against structured state it can observe:
 - `done` steps require evidence; `blocked` and `skipped` steps require a reason
   in the same `evidence` field. Dependencies must be known and acyclic, and a
   step cannot be active or done before its dependencies are done or skipped.
-- A successful tracked write makes earlier verification stale. A subsequent
-  direct, conventional build/lint/test command must succeed, or the plan must
-  carry a specific `verification_note` explaining why no meaningful automated
-  check applies. The note is model-authored disclosure, not machine-observed
-  proof.
-- After a tool failure, the agent must use another tool to recover or record
-  the relevant plan step with an exact reason: `skipped` when the action proved
-  unnecessary or was accomplished another way, `blocked` when the work
-  genuinely cannot be completed.
+- In Developer, a successful tracked write makes earlier verification stale. A
+  subsequent direct, conventional build/lint/test command must succeed, or the
+  plan must carry a specific `verification_note` explaining why no meaningful
+  automated check applies. The note is model-authored disclosure, not
+  machine-observed proof.
+- In Work, a final `validate_artifact` receipt clears the stale-write gate only
+  for the exact changed artifact paths it covers. Conventional test evidence is
+  still accepted when Work produces code. Analysis, research, and external
+  actions record their calculations, sources, receipts, or read-back in plan
+  evidence; a fresh `validation_note` covers a genuinely subjective remainder
+  without pretending to be runtime proof.
+- After a tool failure, the completion notice names the failed tool-call ID.
+  The agent records an exact `resolved_failures` entry in `update_plan`:
+  `recovered_by_retry` or `recovered_by_alternative` names the successful
+  `recovery_tool_call_id`; `skipped_unnecessary` points to a skipped step; and
+  `blocked` points to a blocked step. The runtime validates those current-turn
+  references, so prose and a merely similar permission-risk label cannot
+  silently clear a failure.
 
 The difference between those two statuses decides how the whole turn is
 reported. Any `blocked` step makes the turn end blocked; a `skipped` step with
@@ -4261,7 +4329,9 @@ to be needed, a tool call replaced by a better one — belongs in `skipped`, so 
 finished deliverable is not reported as a failed run.
 
 When a gap remains, Collomia adds a deterministic controller notice and gives
-the agent another iteration. It does this at most twice; the existing
+the agent another iteration. It permits at most two final attempts with the
+same unchanged gaps; a changed gap receives a fresh assessment while unrelated
+activity does not renew the allowance. The existing
 iteration, token, cost, cancellation, permission, and persistence limits still
 apply to every continuation. Once a verification gap has been named, a passing
 command that is not eligible for proof explains why in the same tool result
@@ -4274,12 +4344,17 @@ other unresolved completion failures. The resulting Standard goal outcome is
 one of `done`, `blocked`, `needs_verification`, `cancelled`, or
 `budget_exhausted`.
 
+If the only intercepted gap is failed-tool bookkeeping and the agent resolves
+it using completion metadata alone, Collomia returns the already-generated
+answer rather than paying the provider to repeat it. Any substantive follow-up
+tool disables that reuse so newly observed results can change the answer.
+
 Read-only planning mode is intentionally exempt: producing a plan whose
 implementation steps remain pending is the successful result of that mode. A
 terminal plan retained from an earlier turn is also historical rather than an
 eternal gate; it becomes active again only when the agent updates it. Purely
 informational work with no active plan, tracked write, or failed tool finishes
-normally.
+normally in either task profile.
 
 Delegated agents retain their existing isolated-worktree review and
 parent-verification flow. This first controller slice gates the primary agent,
@@ -5702,7 +5777,8 @@ markers, structured plan updates, bounded delegated-agent lifecycle/outcome
 snapshots, and complete versioned snapshots for approved Orchestrated Goal
 graphs. Graph attempts and evidence are restored as state, never
 replayed as work; an interrupted non-replayable action becomes a reconciliation
-blocker.
+blocker. Session metadata also stores the Developer/Work task profile; absence
+in a legacy record means Developer.
 
 ### Session commands
 

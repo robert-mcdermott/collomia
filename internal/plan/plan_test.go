@@ -50,6 +50,12 @@ func TestBoardValidation(t *testing.T) {
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", Execution: "read_only", WritePaths: []string{"docs/"}}}}); err == nil {
 		t.Fatal("read-only step with write scope must be rejected")
 	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "recovered"}}, ResolvedFailures: []FailureResolution{{FailureID: "failed", Disposition: "recovered_by_alternative", StepID: 1, Evidence: "used another tool"}}}); err == nil {
+		t.Fatal("recovered failure without a recovery tool-call id must be rejected")
+	}
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "not skipped"}}, ResolvedFailures: []FailureResolution{{FailureID: "failed", Disposition: "skipped_unnecessary", StepID: 1, Evidence: "not needed"}}}); err == nil {
+		t.Fatal("skipped disposition bound to a done step must be rejected")
+	}
 	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "done", Evidence: "go test passed", Acceptance: []string{"tests pass"}, Execution: "read_only"}, {ID: 2, Title: "b", Status: "in_progress", DependsOn: []int{1}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +92,7 @@ func TestPlanCompletionAssessment(t *testing.T) {
 func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
 	board := NewBoard()
 	_, before := board.Snapshot()
-	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}, Acceptance: []string{"observable"}, Execution: "isolated_write", WritePaths: []string{"docs/"}}, {ID: 2, Title: "b", Status: "done", Evidence: "observed"}}}); err != nil {
+	if err := board.Set(Plan{Goal: "g", Steps: []Step{{ID: 1, Title: "a", Status: "pending", DependsOn: []int{2}, Acceptance: []string{"observable"}, Execution: "isolated_write", WritePaths: []string{"docs/"}}, {ID: 2, Title: "b", Status: "done", Evidence: "observed"}}, ResolvedFailures: []FailureResolution{{FailureID: "failed-call", Disposition: "recovered_by_retry", StepID: 2, RecoveryToolCallID: "successful-call", Evidence: "retry succeeded"}}}); err != nil {
 		t.Fatal(err)
 	}
 	current, after := board.Snapshot()
@@ -96,6 +102,7 @@ func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
 	current.Steps[0].DependsOn[0] = 99
 	current.Steps[0].Acceptance[0] = "mutated"
 	current.Steps[0].WritePaths[0] = "mutated/"
+	current.ResolvedFailures[0].Evidence = "mutated"
 	if got := board.Current().Steps[0].DependsOn[0]; got != 2 {
 		t.Fatalf("snapshot aliased board dependency: %d", got)
 	}
@@ -104,6 +111,9 @@ func TestBoardSnapshotRevisionAndDeepCopy(t *testing.T) {
 	}
 	if got := board.Current().Steps[0].WritePaths[0]; got != "docs/" {
 		t.Fatalf("snapshot aliased board write scope: %q", got)
+	}
+	if got := board.Current().ResolvedFailures[0].Evidence; got != "retry succeeded" {
+		t.Fatalf("snapshot aliased failure resolution: %q", got)
 	}
 }
 
@@ -117,6 +127,28 @@ func TestToolAcceptsScopedIsolatedWriterIntent(t *testing.T) {
 	step := board.Current().Steps[0]
 	if step.Execution != "isolated_write" || len(step.WritePaths) != 1 || step.WritePaths[0] != "docs/" || !strings.Contains(out, "write paths: docs/") {
 		t.Fatalf("step=%+v out=%q", step, out)
+	}
+}
+
+func TestToolAcceptsAndLabelsWorkValidationNote(t *testing.T) {
+	board := NewBoard()
+	out, err := Tool(board).Execute(t.Context(), json.RawMessage(`{"goal":"answer","steps":[{"id":1,"title":"assess","status":"done","evidence":"sources compared"}],"validation_note":"source quality was reviewed manually"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if board.Current().ValidationNote != "source quality was reviewed manually" || !strings.Contains(out, "model-authored, not runtime proof") {
+		t.Fatalf("plan=%+v output=%q", board.Current(), out)
+	}
+}
+
+func TestToolAcceptsAndRendersStructuredFailureResolution(t *testing.T) {
+	board := NewBoard()
+	out, err := Tool(board).Execute(t.Context(), json.RawMessage(`{"goal":"answer","steps":[{"id":1,"title":"compute","status":"done","evidence":"alternative calculation succeeded"}],"resolved_failures":[{"failure_id":"edit-attempt","disposition":"recovered_by_alternative","step_id":1,"recovery_tool_call_id":"command-attempt","evidence":"the command produced the requested calculation"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(board.Current().ResolvedFailures) != 1 || !strings.Contains(out, "Failure edit-attempt: recovered_by_alternative") || !strings.Contains(out, "via tool call command-attempt") {
+		t.Fatalf("plan=%+v output=%q", board.Current(), out)
 	}
 }
 

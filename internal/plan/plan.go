@@ -35,15 +35,38 @@ type Step struct {
 	Evidence string `json:"evidence,omitempty"`
 }
 
+// FailureResolution is the model-authored disposition of one failed tool call
+// that the Standard completion controller has identified by ID. The runtime
+// validates the reference against observations from the current turn before
+// it clears the failure; merely writing this structure is not runtime proof.
+type FailureResolution struct {
+	FailureID          string `json:"failure_id"`
+	Disposition        string `json:"disposition"` // recovered_by_retry, recovered_by_alternative, skipped_unnecessary, blocked
+	StepID             int    `json:"step_id"`
+	RecoveryToolCallID string `json:"recovery_tool_call_id,omitempty"`
+	Evidence           string `json:"evidence"`
+}
+
 type Plan struct {
 	Goal  string `json:"goal"`
 	Steps []Step `json:"steps"`
+	// ResolvedFailures explicitly connects failed tool calls named by the
+	// completion controller to their disposition. It prevents a successful
+	// alternative tool from being missed merely because it has a different
+	// permission-risk classification, without letting unrelated successes
+	// silently erase failures.
+	ResolvedFailures []FailureResolution `json:"resolved_failures,omitempty"`
 	// VerificationNote is a model-authored explanation for the exceptional
 	// case where automated verification does not apply. It is not
 	// machine-observed evidence and never substitutes for a command that could
 	// meaningfully verify changed files.
-	VerificationNote string    `json:"verification_note,omitempty"`
-	Updated          time.Time `json:"updated"`
+	VerificationNote string `json:"verification_note,omitempty"`
+	// ValidationNote is the Work-profile counterpart: a model-authored
+	// disclosure for an outcome whose remaining quality or correctness cannot
+	// be established by a meaningful machine check. Runtime-observed artifact
+	// validation remains preferable and is labelled separately.
+	ValidationNote string    `json:"validation_note,omitempty"`
+	Updated        time.Time `json:"updated"`
 }
 
 type CompletionState string
@@ -89,6 +112,7 @@ func (b *Board) Snapshot() (*Plan, uint64) {
 	}
 	clone := *b.current
 	clone.Steps = append([]Step(nil), b.current.Steps...)
+	clone.ResolvedFailures = append([]FailureResolution(nil), b.current.ResolvedFailures...)
 	for i := range clone.Steps {
 		clone.Steps[i].DependsOn = append([]int(nil), b.current.Steps[i].DependsOn...)
 		clone.Steps[i].Acceptance = append([]string(nil), b.current.Steps[i].Acceptance...)
@@ -169,6 +193,36 @@ func Validate(p Plan) error {
 			return fmt.Errorf("steps[%d] with status %q needs evidence or a reason", i, step.Status)
 		}
 	}
+	seenFailures := map[string]bool{}
+	for i, resolution := range p.ResolvedFailures {
+		failureID := strings.TrimSpace(resolution.FailureID)
+		if failureID == "" {
+			return fmt.Errorf("resolved_failures[%d].failure_id must not be empty", i)
+		}
+		if seenFailures[failureID] {
+			return fmt.Errorf("resolved_failures repeats failure_id %q", failureID)
+		}
+		seenFailures[failureID] = true
+		if !seen[resolution.StepID] {
+			return fmt.Errorf("resolved_failures[%d].step_id refers to unknown step %d", i, resolution.StepID)
+		}
+		if strings.TrimSpace(resolution.Evidence) == "" {
+			return fmt.Errorf("resolved_failures[%d].evidence must not be empty", i)
+		}
+		recoveryID := strings.TrimSpace(resolution.RecoveryToolCallID)
+		switch resolution.Disposition {
+		case "recovered_by_retry", "recovered_by_alternative":
+			if recoveryID == "" {
+				return fmt.Errorf("resolved_failures[%d].recovery_tool_call_id is required for %s", i, resolution.Disposition)
+			}
+		case "skipped_unnecessary", "blocked":
+			if recoveryID != "" {
+				return fmt.Errorf("resolved_failures[%d].recovery_tool_call_id is not allowed for %s", i, resolution.Disposition)
+			}
+		default:
+			return fmt.Errorf("resolved_failures[%d] has invalid disposition %q", i, resolution.Disposition)
+		}
+	}
 	for i, step := range p.Steps {
 		dependencies := map[int]bool{}
 		for _, dep := range step.DependsOn {
@@ -198,6 +252,23 @@ func Validate(p Plan) error {
 		for _, dep := range step.DependsOn {
 			if states[dep] != "done" && states[dep] != "skipped" {
 				return fmt.Errorf("steps[%d] is %q but dependency %d is %q", i, step.Status, dep, states[dep])
+			}
+		}
+	}
+	for i, resolution := range p.ResolvedFailures {
+		status := states[resolution.StepID]
+		switch resolution.Disposition {
+		case "recovered_by_retry", "recovered_by_alternative":
+			if status != "done" && status != "skipped" {
+				return fmt.Errorf("resolved_failures[%d] recovery step %d must be done or skipped, got %q", i, resolution.StepID, status)
+			}
+		case "skipped_unnecessary":
+			if status != "skipped" {
+				return fmt.Errorf("resolved_failures[%d] skipped failure requires step %d to be skipped, got %q", i, resolution.StepID, status)
+			}
+		case "blocked":
+			if status != "blocked" {
+				return fmt.Errorf("resolved_failures[%d] blocked failure requires step %d to be blocked, got %q", i, resolution.StepID, status)
 			}
 		}
 	}
@@ -323,8 +394,18 @@ func (p *Plan) Render() string {
 			fmt.Fprintf(&b, "    acceptance: %s\n", criterion)
 		}
 	}
+	for _, resolution := range p.ResolvedFailures {
+		fmt.Fprintf(&b, "Failure %s: %s at step %d", resolution.FailureID, resolution.Disposition, resolution.StepID)
+		if resolution.RecoveryToolCallID != "" {
+			fmt.Fprintf(&b, " via tool call %s", resolution.RecoveryToolCallID)
+		}
+		fmt.Fprintf(&b, " — %s\n", resolution.Evidence)
+	}
 	if p.VerificationNote != "" {
-		fmt.Fprintf(&b, "Verification not applicable: %s\n", p.VerificationNote)
+		fmt.Fprintf(&b, "Verification note (not runtime-recognized proof): %s\n", p.VerificationNote)
+	}
+	if p.ValidationNote != "" {
+		fmt.Fprintf(&b, "Validation note (model-authored, not runtime proof): %s\n", p.ValidationNote)
 	}
 	return b.String()
 }
@@ -335,7 +416,7 @@ func Tool(board *Board) tools.Tool {
 	tool := tools.Function{
 		Def: provider.ToolDefinition{
 			Name:        "update_plan",
-			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only|isolated_write), optional write_paths, and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded readers or isolated_write nodes with explicit narrow write_paths to retained worktree candidates. Done steps require evidence; blocked and skipped steps require a reason in evidence. If files changed and no meaningful automated verification applies, set verification_note to the specific reason; it is an explicit model-authored exception, not machine-observed proof. Keep the plan current as work progresses; it is shown to the user.",
+			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only|isolated_write), optional write_paths, and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded readers or isolated_write nodes with explicit narrow write_paths to retained worktree candidates. Done steps require evidence; blocked and skipped steps require a reason in evidence. When the completion controller names a failed tool-call ID, use resolved_failures to bind it to a terminal plan step: recovered_by_retry or recovered_by_alternative references the successful recovery_tool_call_id, skipped_unnecessary requires a skipped step, and blocked requires a blocked step. The runtime validates these references; prose alone does not clear a failure. Developer mode uses verification_note for the specific reason no meaningful automated build/lint/test check applies. Work mode uses validation_note to disclose what was checked and what remains subjective when no meaningful machine validation applies. Both notes are model-authored rather than runtime proof. Keep the plan current as work progresses; it is shown to the user.",
 		},
 		Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"},
 		Run: func(_ context.Context, raw json.RawMessage) (string, error) {
@@ -376,7 +457,25 @@ var isolatedWriterPlanSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
-    "verification_note": {"type": "string", "description": "specific reason automated verification does not apply after changed files; not machine-observed evidence"}
+	"resolved_failures": {
+	  "type": "array",
+	  "maxItems": 32,
+	  "description": "Structured dispositions for failed tool-call IDs named by the completion controller; the runtime validates each reference before clearing the failure",
+	  "items": {
+		"type": "object",
+		"properties": {
+		  "failure_id": {"type": "string", "minLength": 1, "maxLength": 256},
+		  "disposition": {"type": "string", "enum": ["recovered_by_retry", "recovered_by_alternative", "skipped_unnecessary", "blocked"]},
+		  "step_id": {"type": "integer"},
+		  "recovery_tool_call_id": {"type": "string", "minLength": 1, "maxLength": 256},
+		  "evidence": {"type": "string", "minLength": 1, "maxLength": 4096}
+		},
+		"required": ["failure_id", "disposition", "step_id", "evidence"],
+		"additionalProperties": false
+	  }
+	},
+    "verification_note": {"type": "string", "description": "Developer-mode reason automated build/lint/test verification does not apply after changed files; not machine-observed evidence"},
+    "validation_note": {"type": "string", "description": "Work-mode disclosure of what was checked and what remains subjective when no meaningful machine validation applies; not runtime proof"}
   },
   "required": ["goal", "steps"],
   "additionalProperties": false

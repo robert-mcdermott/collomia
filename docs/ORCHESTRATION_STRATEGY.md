@@ -2656,6 +2656,13 @@ Every agent or contributor continuing this program must:
   evidence-gated goal completion. **This is permanent, not a staging state:**
   Orchestrated Goal will never be the default mode (decided 2026-08-04), so
   graduation can only mean leaving experimental status as an optional mode.
+- Task profile is a separate axis. Developer remains the default profile;
+  Work is the non-Git general-purpose profile. The initial Work release uses
+  Standard execution only and explicitly refuses Orchestrated Goal rather than
+  deriving a false state token or isolation claim from a folder with no Git
+  base. Supporting Work here requires a designed non-Git workspace token,
+  isolated-write substrate, recovery contract, and reviewed publication gate;
+  it must not weaken the existing graph authority boundary.
 - Preserved implementation constraint: only approved `read_only` and narrowly
   scoped `isolated_write` nodes may be automatically delegated; writers never
   touch the parent workspace, no candidate is ever selected or integrated
@@ -2671,6 +2678,10 @@ Every agent or contributor continuing this program must:
 
 ### 2026-08-25
 
+- Treat Developer/Work as a task-profile axis independent of
+  Standard/Orchestrated execution. Keep the first Work release on Standard
+  execution and refuse Work plus Orchestrated Goal until non-Git freshness,
+  isolation, recovery, and publication have explicit runtime-owned contracts.
 - Apply the progress-aware provider-cycle lease to Standard mode as well as
   Orchestrated Goal. Keep `max_iterations` as the configurable no-progress
   value and bound a Standard turn with a non-renewable hard envelope at twice

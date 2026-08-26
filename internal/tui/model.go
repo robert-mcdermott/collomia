@@ -1094,6 +1094,9 @@ func (m *Model) bannerArt() string {
 	art := gradient(compactLogoArt, m.theme.Primary, m.theme.Secondary)
 	providerName, model := m.runtime.Agent.Selection()
 	sub := fmt.Sprintf("✿ %s · %s/%s", version.Short(), providerName, model)
+	if m.runtime.TaskMode.String() == "work" {
+		sub = fmt.Sprintf("✿ %s · work · %s/%s", version.Short(), providerName, model)
+	}
 	return art + "\n" + m.styles.muted.Render(ansi.Truncate(sub, max(10, m.bodyWidth()), "…"))
 }
 
@@ -1192,6 +1195,7 @@ func (m *Model) sessionSections(width int) string {
 		b.WriteString(kv("session", id) + "\n")
 	}
 	b.WriteString(kv("provider", providerName+"/"+model) + "\n")
+	b.WriteString(kv("task mode", m.runtime.TaskMode.String()) + "\n")
 	b.WriteString(kv("agent", activeProfile) + "\n")
 	b.WriteString(kv("reasoning", reasoningEffort) + "\n")
 	b.WriteString(kv("autonomy", m.runtime.Permissions.Mode()) + "\n")
@@ -1619,6 +1623,9 @@ func (m Model) renderStatusBar() string {
 		segments = append(segments, statusSegment{text: badge(m.runtime.ActiveAgent, m.theme.Accent), drop: 15})
 	}
 	segments = append(segments, statusSegment{text: badge(provider+"/"+model, m.theme.Border), drop: 10})
+	if m.runtime.TaskMode.String() == "work" {
+		segments = append(segments, statusSegment{text: badge("WORK", m.theme.Accent), drop: 20})
+	}
 	// Autonomy and containment are one statement about risk, so the shield
 	// rides along in the mode badge: always visible, two columns, and it
 	// cannot be pushed off by a crowded bar. A louder named form is offered

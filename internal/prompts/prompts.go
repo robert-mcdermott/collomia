@@ -36,6 +36,8 @@ const (
 	System                = "system"
 	ModeExecution         = "mode.execution"
 	ModePlanning          = "mode.planning"
+	TaskDeveloper         = "task.developer"
+	TaskWork              = "task.work"
 	SubagentResearch      = "subagent.research"
 	SubagentImplement     = "subagent.implementation"
 	ProfileInstructions   = "profile.instructions"
@@ -63,6 +65,9 @@ type SystemView struct {
 	Arch      string
 	// Mode is a rendered ModeExecution or ModePlanning fragment.
 	Mode string
+	// Task is a rendered Developer or Work task-profile fragment. Task profile
+	// is orthogonal to execution/planning state and permission autonomy.
+	Task string
 	// Subagent is a rendered subagent fragment including its leading
 	// newline, or empty for a top-level agent.
 	Subagent string
@@ -79,8 +84,14 @@ type SystemView struct {
 	SkillsSummary       string
 }
 
-// Agent renders the main agent system prompt.
-func Agent(view SystemView) string { return Render(System, view) }
+// Agent renders the main agent system prompt. A zero Task preserves the
+// Developer behavior of embedders compiled before task profiles existed.
+func Agent(view SystemView) string {
+	if view.Task == "" {
+		view.Task = Text(TaskDeveloper)
+	}
+	return Render(System, view)
+}
 
 // Text renders a fragment that takes no substitutions.
 func Text(name string) string { return Render(name, nil) }

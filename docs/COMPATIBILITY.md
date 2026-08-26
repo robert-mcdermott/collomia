@@ -427,6 +427,30 @@ by a newer release even when the newer release can still read the older data.
 Use the previous binary with a backup made before the upgrade rather than
 pointing it at state already updated by a newer version.
 
+### Work task-profile additions
+
+Work mode is additive within the existing session and event versions:
+
+- session metadata may contain `task_mode: "developer"|"work"`; omission in a
+  legacy session means Developer;
+- `run.result` may contain `mode` with the same values;
+- a `tool.result` tool object may contain `evidence` with required `kind` and
+  `subject` plus optional `digest` and `detail`;
+- a persisted structured plan may contain `validation_note`, Work's explicitly
+  model-authored counterpart to Developer's `verification_note`.
+
+No new event kind was required. Existing `file.change` records now also cover
+tracked file-tool and `/undo` manifests, and their established replay rule
+remains unchanged: they are observations, never instructions to repeat a
+mutation. Schema-v1 consumers must tolerate the optional fields. A consumer
+that cares about task semantics should branch on `result.mode`; one that does
+not can retain its existing process-status/outcome handling.
+
+The Work/Orchestrated combination is rejected by this release rather than
+encoded into goal snapshots. Orchestrated Goal's Git-derived state token and
+worktree contracts therefore keep their existing meaning, and a legacy graph
+cannot acquire non-Git execution behavior during normalization.
+
 ## Automation consumers
 
 Use `collo schema events` to retrieve the JSON Schema embedded in the exact

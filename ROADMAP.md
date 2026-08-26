@@ -9,9 +9,10 @@ summarized here only when it affects the next decision.
 
 ## Product direction
 
-Collomia is a cross-platform, provider-neutral terminal coding agent built
-around explicit trust, enforceable permissions, durable recovery, structured
-tool use, and a polished terminal experience.
+Collomia is a cross-platform, provider-neutral local terminal agent for
+software development and general knowledge work, built around explicit trust,
+enforceable permissions, durable recovery, structured tool use, and a polished
+terminal experience.
 
 The guiding principle remains:
 
@@ -47,6 +48,10 @@ also shipped:
 - atomic patching, tracked diffs, hunk review, undo, Git inspection, planning,
   verification, LSP diagnostics/definitions/references/formatting, repository
   indexing, PTY commands, and background processes;
+- persisted Developer and Work task profiles: Developer retains the
+  repository/build-test default, while Work supports non-Git folders, direct
+  Q&A, research, analysis, external actions, and document/artifact outcomes
+  with task-appropriate evidence and path-bound validation receipts;
 - normalized provider capabilities, streaming, retries, health, contracts,
   Azure Entra refresh, Bedrock SigV4/bearer authentication, optional macOS/
   Windows keychain credential storage, opt-in provider-safe reasoning controls,
@@ -90,6 +95,28 @@ no-progress lease, with a non-renewable hard envelope at twice its value. The
 regression suite covers the reported static-site sequence, accepted proof,
 terminal classification, repeated-output exhaustion, sustained progress, and
 continuous-write bounding.
+
+The Work-mode wave generalizes that evidence controller without weakening it.
+Task profile is now independent of Standard/Orchestrated execution, planning,
+and permission autonomy. Developer remains the compatibility default; Work is
+persisted per session, treats ordinary non-Git folders as first-class, avoids
+ceremony for direct questions, and matches completion evidence to artifacts,
+analysis, research, or external actions. A bounded `validate_artifact` tool
+emits path- and digest-bound typed receipts for common document/data formats;
+later writes stale only the affected artifact. The initial release deliberately
+keeps Work on Standard execution because Orchestrated Goal and write-capable
+delegates still rely on Git state and isolation contracts.
+
+A follow-up Work transcript exposed a second false-block path: the requested
+analysis and answer were complete, but a refused `edit_file` remained in an
+internal ledger after a successful `run_command` alternative and even after
+the plan recorded the attempt as skipped. Recovery is now explicit rather than
+inferred: controller-issued failure IDs are resolved through structured plan
+entries bound to successful current-turn tool-call receipts or to matching
+skipped/blocked steps. Intervention bounds follow unchanged gaps, and an answer
+held only for metadata repair is released without a duplicate provider call.
+The same slice gives sandboxed `uv` an actionable workspace-cache recovery
+form and explains the separate file-tool boundary around OS temp directories.
 
 The preceding wave took the first sustained beta report at its word. It was
 not about a missing capability: it was about having to hand-write JSON, and in
@@ -217,6 +244,42 @@ as structurally false. That is decisively past the bar, so the wave stays
 experimental. See the
 [Orchestrated Goal strategy](docs/ORCHESTRATION_STRATEGY.md) for the contract,
 the clause-by-clause verdict, and the reasoning behind that ordering.
+
+## Completed wave — Work as a general-purpose task profile
+
+**Goal:** make non-software outcomes first-class without forcing documents,
+analysis, research, external actions, or direct answers through Git and
+development-test assumptions, while preserving every existing authority and
+safety boundary.
+
+- [x] Define task profile as an axis independent of Standard/Orchestrated
+  execution, Plan/Execute state, and ask/workspace/autopilot permissions.
+  Preserve Developer as the default and record the full contract in
+  [`docs/WORK_MODE.md`](docs/WORK_MODE.md).
+- [x] Add `--mode developer|work` and `/mode [developer|work]`, visible mode
+  status, append-only session persistence, resume/session-switch/new-session
+  behavior, and a `mode` field on headless `run.result`. Legacy sessions load
+  as Developer.
+- [x] Give Work a dedicated prompt contract for non-Git folders, research,
+  analysis, artifacts, external-action receipts/read-back, ambiguous-mutation
+  safety, and direct Q&A without synthetic verification ceremony.
+- [x] Add bounded `validate_artifact` evidence for text/Markdown, JSON,
+  CSV/TSV, DOCX, PPTX, PDF, and binary deliverables. Emit a typed
+  `artifact_validated` tool-result receipt bound to path and SHA-256 digest;
+  invalidate it only when that artifact changes.
+- [x] Add Work's `validation_note` as explicitly model-authored disclosure for
+  outcomes with no meaningful machine check. It does not masquerade as runtime
+  proof, factual correctness, source quality, or visual review.
+- [x] Preserve durable `file.change` manifests for tracked file tools and
+  `/undo`, and publish additive schema-v1 evidence/mode fields for automation.
+- [x] Keep initial authority boundaries narrow: Work uses Standard execution,
+  refuses Orchestrated Goal, and does not delegate write-capable work while
+  those paths require Git-backed state tokens and worktree isolation.
+- [x] Add unit, regression, and credential-free product evaluations for
+  defaulting/persistence, CLI/TUI switching, non-Git Q&A, non-Git document
+  delivery with one accepted validation receipt and no controller retry,
+  path-specific staleness, supported artifact formats, schema compatibility,
+  and the Work/Orchestrated refusal.
 
 ## Completed wave — evidence-gated goal completion
 

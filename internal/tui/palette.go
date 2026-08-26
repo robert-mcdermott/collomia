@@ -21,6 +21,7 @@ var slashCommands = []commandInfo{
 	{name: "/status", args: "", desc: "workspace, provider, model, and autonomy"},
 	{name: "/model", args: "[provider[/model]]", desc: "show or switch the active provider/model"},
 	{name: "/agent", args: "[name]", desc: "show or switch the named primary agent profile"},
+	{name: "/mode", args: "[developer|work]", desc: "show or switch the task profile"},
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "", desc: "token usage and estimated context size"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
@@ -93,6 +94,11 @@ func (m *Model) argumentMatches(command, partial string) []commandInfo {
 			{"ask", "confirm every write, command, and MCP call"},
 			{"workspace", "auto-approve workspace writes; commands still ask"},
 			{"autopilot", "auto-approve workspace actions (hard denials remain)"},
+		}
+	case "/mode":
+		candidates = []candidate{
+			{"developer", "software and repository work with build/lint/test evidence"},
+			{"work", "general work in any folder with task-appropriate evidence"},
 		}
 	case "/plan":
 		off := "execution mode"

@@ -24,6 +24,23 @@ background processes started with `start_process`: they run under the same
 policy and sandbox as `run_command`, just detached from the turn that
 started them.
 
+## Task profiles do not grant authority
+
+Developer and Work are prompt/evidence profiles, not autonomy modes. Switching
+with `--mode` or `/mode` does not approve a tool, widen a path, expose an MCP
+server, relax project trust, change the sandbox, inherit more environment, or
+permit publication. Both profiles pass actions through the same permission,
+hook, redaction, audit, and containment layers described here.
+
+Work makes Git optional, not safety optional. Its artifact receipts establish
+only bounded structure/content at one path and SHA-256 digest; they do not prove
+facts, source quality, accessibility, visual polish, or the success of an
+external side effect. Ambiguous external mutations must be read back or handed
+to the user rather than retried blindly. The initial Work release refuses
+Orchestrated Goal and write-capable delegation because their state and
+isolation boundaries are Git-backed; it does not weaken those boundaries for a
+non-Git folder.
+
 ## Autonomy modes: exact properties
 
 | Mode | Reads (workspace) | Writes (workspace) | Commands | Outside workspace | Network |

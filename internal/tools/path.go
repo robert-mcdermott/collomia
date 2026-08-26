@@ -161,7 +161,7 @@ func (g *PathGuard) resolve(requested string, read bool) (resolved string, outsi
 		if read && g.readableOutside(resolved) {
 			return resolved, true, nil
 		}
-		return "", true, fmt.Errorf("path %q is outside workspace %s; set permissions.allow_outside_workspace to grant access", requested, g.Workspace)
+		return "", true, fmt.Errorf("path %q is outside workspace %s; keep scratch files inside the workspace (for example under .collomia-tmp/) or set permissions.allow_outside_workspace to grant file-tool access; command-sandbox access to an OS temp directory does not grant file tools access there", requested, g.Workspace)
 	}
 	return resolved, outside, nil
 }

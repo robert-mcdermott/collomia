@@ -5,9 +5,24 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-## v0.3.1
+## v0.4.0
 
 ### Added
+
+- **Work mode makes non-software outcomes first-class.** `--mode work` and
+  `/mode work` select a persisted task profile for direct Q&A, research,
+  analysis, automation, knowledge retrieval, document/data artifacts, and
+  governed external actions in ordinary non-Git folders. Developer remains the
+  default, and switching profiles changes neither provider nor permissions.
+  Work matches evidence to the result instead of demanding a development test:
+  the new `validate_artifact` tool emits a typed path- and SHA-256-bound receipt
+  for bounded text, Markdown, JSON, CSV/TSV, DOCX, PPTX, PDF, and binary
+  structure/content checks; calculations, sources, external receipts/read-back,
+  and an explicitly model-authored `validation_note` cover other outcomes.
+  Structural validation does not claim factual correctness or visual polish.
+  The initial profile uses Standard execution and refuses Orchestrated Goal and
+  write-capable delegation while their state/isolation contracts remain
+  Git-backed. See [the Work contract](docs/WORK_MODE.md).
 
 - **`/orchestrate done` ends a goal that has finished.** A terminal graph stays
   attached so it remains inspectable, which also means it keeps owning the
@@ -31,6 +46,18 @@ an accurate one; their history is in the Git log and in
   record of a worktree nobody has reconciled.
 
 ### Fixed
+
+- **Work no longer reports a completed answer as blocked because an abandoned
+  tool call used a different recovery mechanism.** Failed calls now carry
+  controller-visible IDs, and `update_plan.resolved_failures` binds a retry or
+  alternative to its exact successful tool-call receipt while retaining
+  distinct unnecessary-skipped and genuinely-blocked dispositions. The
+  controller no longer guesses cross-tool recovery from permission-risk
+  labels, counts interventions against unchanged gaps, and reuses an answer
+  intercepted solely for metadata repair instead of paying the provider to
+  repeat it. Sandboxed `uv` failures now receive the concrete
+  `UV_CACHE_DIR="$PWD/.uv-cache"` recovery form, and file-tool errors explain
+  why command access to `/tmp` does not grant `edit_file` access there.
 
 - **Standard mode no longer burns its remediation attempts guessing why a
   passing check did not count.** Once the completion controller has named a

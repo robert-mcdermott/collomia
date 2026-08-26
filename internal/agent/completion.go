@@ -14,6 +14,7 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/goalgraph"
 	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -82,6 +83,7 @@ func GoalOutcomeFor(err error) GoalOutcome {
 }
 
 type toolObservation struct {
+	CallID             string
 	Name               string
 	Action             tools.Action
 	Failed             bool
@@ -94,42 +96,57 @@ type toolObservation struct {
 	GraphRecorded      bool
 	IgnoreGraphFailure bool
 	Verification       bool
+	ArtifactValidation bool
 	VerificationCheck  verificationAssessment
 }
 
 type completionController struct {
-	board           *plan.Board
-	workspace       string
-	enabled         bool
-	initialRevision uint64
-	initialOpen     bool
-	interventions   int
-	dirty           bool
-	waived          bool
-	recognizedEver  bool
-	noteAtMutation  string
-	failures        []unresolvedToolFailure
-	progressVersion uint64
-	seenProgress    map[[sha256.Size]byte]struct{}
-	lastRevision    uint64
+	board                  *plan.Board
+	workspace              string
+	taskMode               taskmode.Mode
+	enabled                bool
+	initialRevision        uint64
+	initialOpen            bool
+	interventions          int
+	dirty                  bool
+	dirtyUnknown           bool
+	dirtyPaths             map[string]struct{}
+	waived                 bool
+	recognizedEver         bool
+	validatedEver          bool
+	noteAtMutation         string
+	failures               []unresolvedToolFailure
+	successes              map[string]toolObservation
+	resolutionIssues       []string
+	nextFailureID          int
+	failureIDCounts        map[string]int
+	progressVersion        uint64
+	seenProgress           map[[sha256.Size]byte]struct{}
+	lastRevision           uint64
+	lastInterventionIssues string
 }
 
 type unresolvedToolFailure struct {
-	tool   string
-	risk   tools.Risk
-	detail string
+	id           string
+	tool         string
+	detail       string
+	planRevision uint64
 }
 
 type completionDecision struct {
 	done              bool
 	blocked           bool
 	needsVerification bool
+	reuseCandidate    bool
 	reason            string
 	notice            string
 }
 
-func newCompletionController(board *plan.Board, workspace string, planning bool) *completionController {
-	controller := &completionController{board: board, workspace: workspace, enabled: board != nil && !planning, seenProgress: make(map[[sha256.Size]byte]struct{})}
+func newCompletionController(board *plan.Board, workspace string, planning bool, mode taskmode.Mode) *completionController {
+	if mode == "" {
+		mode = taskmode.Developer
+	}
+	controller := &completionController{board: board, workspace: workspace, taskMode: mode, enabled: board != nil && !planning, seenProgress: make(map[[sha256.Size]byte]struct{}), dirtyPaths: make(map[string]struct{}), successes: make(map[string]toolObservation), failureIDCounts: make(map[string]int)}
 	if !controller.enabled {
 		return controller
 	}
@@ -154,25 +171,32 @@ func (c *completionController) observe(observation toolObservation) {
 		// A write tool may fail after making a partial mutation. Conservatively
 		// stale verification even when the tool reports failure.
 		if observation.Action.Risk == tools.RiskWrite {
-			c.markDirty()
+			c.markDirty(observation.Action.Paths)
 		}
 		c.recordFailure(observation)
 		return
 	}
-	// A same-tool success is a retry. A different successful tool with the
-	// same assessed risk is the narrow deterministic proxy for an alternative;
-	// an unrelated read must not erase a failed test or write.
+	if strings.TrimSpace(observation.CallID) != "" {
+		c.successes[observation.CallID] = observation
+	}
+	// A same-tool success is an unambiguous retry. Cross-tool recovery is never
+	// guessed from permission-risk labels; update_plan must bind that alternative
+	// to the exact failed and successful call IDs.
 	c.recoverFailures(observation)
+	c.resolveFailuresFromPlan()
 	if observation.Action.Risk == tools.RiskWrite {
-		c.markDirty()
+		c.markDirty(observation.Action.Paths)
 	}
 	if observation.Name == "run_command" && observation.Verification {
-		c.dirty = false
-		c.waived = false
+		c.clearDirty()
 		c.recognizedEver = true
 	}
+	if c.taskMode == taskmode.Work && observation.ArtifactValidation {
+		c.acceptArtifactValidation(observation.Action.Paths)
+		c.validatedEver = true
+	}
 	if observation.Name == "update_plan" && c.dirty && c.board != nil {
-		if current := c.board.Current(); current != nil && strings.TrimSpace(current.VerificationNote) != "" && strings.TrimSpace(current.VerificationNote) != c.noteAtMutation {
+		if current := c.board.Current(); current != nil && completionDisclosure(current, c.taskMode) != "" && completionDisclosure(current, c.taskMode) != c.noteAtMutation {
 			c.waived = true
 		}
 	}
@@ -217,9 +241,23 @@ func (c *completionController) awaitingVerificationGuidance() bool {
 }
 
 func (c *completionController) recordFailure(observation toolObservation) {
-	failure := unresolvedToolFailure{tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary)}
+	id := strings.TrimSpace(observation.CallID)
+	if id == "" {
+		c.nextFailureID++
+		id = fmt.Sprintf("tool-failure-%d", c.nextFailureID)
+	} else {
+		c.failureIDCounts[id]++
+		if c.failureIDCounts[id] > 1 {
+			id = fmt.Sprintf("%s#%d", id, c.failureIDCounts[id])
+		}
+	}
+	var revision uint64
+	if c.board != nil {
+		_, revision = c.board.Snapshot()
+	}
+	failure := unresolvedToolFailure{id: id, tool: observation.Name, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision}
 	for i := range c.failures {
-		if c.failures[i].tool == failure.tool {
+		if c.failures[i].id == failure.id {
 			c.failures[i] = failure
 			return
 		}
@@ -231,27 +269,171 @@ func (c *completionController) recoverFailures(observation toolObservation) {
 	remaining := c.failures[:0]
 	for _, failure := range c.failures {
 		sameTool := observation.Name == failure.tool
-		comparableAlternative := !completionMetaTool(observation.Name) && !completionMetaTool(failure.tool) && failure.risk != "" && observation.Action.Risk == failure.risk
-		if !sameTool && !comparableAlternative {
+		if !sameTool {
 			remaining = append(remaining, failure)
 		}
 	}
 	c.failures = remaining
 }
 
+// resolveFailuresFromPlan validates model-authored dispositions against the
+// controller's current-turn receipts. The plan gives semantic intent (this
+// alternative really replaced that failed attempt); the successful tool-call
+// receipt proves only that the referenced alternative actually ran.
+func (c *completionController) resolveFailuresFromPlan() {
+	c.resolutionIssues = nil
+	if c.board == nil || len(c.failures) == 0 {
+		return
+	}
+	current, revision := c.board.Snapshot()
+	if current == nil || len(current.ResolvedFailures) == 0 {
+		return
+	}
+	resolutions := make(map[string]plan.FailureResolution, len(current.ResolvedFailures))
+	for _, resolution := range current.ResolvedFailures {
+		resolutions[strings.TrimSpace(resolution.FailureID)] = resolution
+	}
+	remaining := c.failures[:0]
+	for _, failure := range c.failures {
+		if revision <= failure.planRevision {
+			remaining = append(remaining, failure)
+			continue
+		}
+		resolution, ok := resolutions[failure.id]
+		if !ok {
+			remaining = append(remaining, failure)
+			continue
+		}
+		if issue := c.validateFailureResolution(current, failure, resolution); issue != "" {
+			c.resolutionIssues = append(c.resolutionIssues, issue)
+			remaining = append(remaining, failure)
+		}
+	}
+	c.failures = remaining
+}
+
+func (c *completionController) validateFailureResolution(current *plan.Plan, failure unresolvedToolFailure, resolution plan.FailureResolution) string {
+	prefix := fmt.Sprintf("failure %s (%s)", failure.id, failure.tool)
+	var step *plan.Step
+	for i := range current.Steps {
+		if current.Steps[i].ID == resolution.StepID {
+			step = &current.Steps[i]
+			break
+		}
+	}
+	if step == nil {
+		return prefix + fmt.Sprintf(" references unknown plan step %d", resolution.StepID)
+	}
+	switch resolution.Disposition {
+	case "recovered_by_retry", "recovered_by_alternative":
+		recoveryID := strings.TrimSpace(resolution.RecoveryToolCallID)
+		recovery, ok := c.successes[recoveryID]
+		if !ok {
+			return prefix + " references recovery_tool_call_id " + recoveryID + " without a successful current-turn tool receipt"
+		}
+		if completionMetaTool(recovery.Name) {
+			return prefix + " cannot use completion metadata tool " + recovery.Name + " as recovery evidence"
+		}
+		if resolution.Disposition == "recovered_by_retry" && recovery.Name != failure.tool {
+			return prefix + " says recovered_by_retry but successful tool " + recovery.Name + " is not the failed tool"
+		}
+		if resolution.Disposition == "recovered_by_alternative" && recoveryID == failure.id {
+			return prefix + " says recovered_by_alternative but references the failed call itself"
+		}
+		if step.Status != "done" && step.Status != "skipped" {
+			return prefix + fmt.Sprintf(" recovery step %d is %s rather than done or skipped", step.ID, step.Status)
+		}
+	case "skipped_unnecessary":
+		if step.Status != "skipped" {
+			return prefix + fmt.Sprintf(" says skipped_unnecessary but plan step %d is %s", step.ID, step.Status)
+		}
+	case "blocked":
+		if step.Status != "blocked" {
+			return prefix + fmt.Sprintf(" says blocked but plan step %d is %s", step.ID, step.Status)
+		}
+	default:
+		return prefix + " has unsupported disposition " + resolution.Disposition
+	}
+	return ""
+}
+
 func completionMetaTool(name string) bool {
 	return name == "update_plan" || name == "detect_verification"
 }
 
-func (c *completionController) markDirty() {
+func (c *completionController) markDirty(paths []string) {
 	c.dirty = true
 	c.waived = false
+	if len(paths) == 0 {
+		c.dirtyUnknown = true
+	}
+	for _, path := range paths {
+		if cleaned := completionPath(path); cleaned != "" {
+			c.dirtyPaths[cleaned] = struct{}{}
+		}
+	}
 	c.noteAtMutation = ""
 	if c.board != nil {
 		if current := c.board.Current(); current != nil {
-			c.noteAtMutation = strings.TrimSpace(current.VerificationNote)
+			c.noteAtMutation = completionDisclosure(current, c.taskMode)
 		}
 	}
+}
+
+func (c *completionController) clearDirty() {
+	c.dirty = false
+	c.dirtyUnknown = false
+	clear(c.dirtyPaths)
+	c.waived = false
+}
+
+func (c *completionController) acceptArtifactValidation(paths []string) {
+	for _, path := range paths {
+		delete(c.dirtyPaths, completionPath(path))
+	}
+	c.dirty = c.dirtyUnknown || len(c.dirtyPaths) > 0
+	if !c.dirty {
+		c.waived = false
+	}
+}
+
+// completionPath gives mutation and validation receipts one stable identity.
+// macOS commonly exposes /var through /private/var, and an artifact written
+// through one spelling must not remain dirty after the path guard validates
+// the other. Resolve the path itself when it exists; for deletions, resolve
+// the parent and retain the final component.
+func completionPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	parent, base := filepath.Dir(path), filepath.Base(path)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		return filepath.Join(resolved, base)
+	}
+	cleaned := filepath.Clean(path)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func completionDisclosure(current *plan.Plan, mode taskmode.Mode) string {
+	if current == nil {
+		return ""
+	}
+	if mode == taskmode.Work {
+		if note := strings.TrimSpace(current.ValidationNote); note != "" {
+			return note
+		}
+	}
+	return strings.TrimSpace(current.VerificationNote)
 }
 
 func (c *completionController) assess() completionDecision {
@@ -272,30 +454,48 @@ func (c *completionController) assess() completionDecision {
 	}
 	verificationGap := c.dirty && !c.waived
 	if verificationGap {
-		if c.recognizedEver {
+		if c.taskMode == taskmode.Work {
+			if c.validatedEver || c.recognizedEver {
+				issues = append(issues, "one or more artifacts changed after their last successful task-appropriate validation")
+			} else {
+				issues = append(issues, "one or more changed artifacts have no current task-appropriate validation")
+			}
+		} else if c.recognizedEver {
 			issues = append(issues, "files changed after the last successful recognized verification command")
 		} else {
 			issues = append(issues, "no successful recognized verification has run since the latest tracked file change")
 		}
 	}
 	for _, failure := range c.failures {
-		detail := failure.tool
+		detail := failure.id + ": " + failure.tool
 		if failure.detail != "" {
 			detail += " (" + failure.detail + ")"
 		}
-		issues = append(issues, "a failed tool has not been recovered or recorded as blocked: "+detail)
+		issues = append(issues, "unresolved tool failure "+detail)
 	}
+	issues = append(issues, c.resolutionIssues...)
 	if len(issues) == 0 {
 		return completionDecision{done: true}
+	}
+	// The bounded count applies to the same unchanged completion gaps. A plan
+	// revision or tool result earns a fresh assessment only when it actually
+	// changes those gaps; unrelated output cannot buy more controller retries.
+	issueKey := strings.Join(issues, "\x00")
+	if c.interventions > 0 && issueKey != c.lastInterventionIssues {
+		c.interventions = 0
 	}
 	if c.interventions >= maxCompletionInterventions {
 		if verificationGap && len(c.failures) == 0 && planIssueCount == 0 {
 			return completionDecision{needsVerification: true, reason: "completion still needs verification after two controller interventions: " + strings.Join(issues, "; ")}
 		}
-		return completionDecision{blocked: true, reason: "completion remained unproven after two controller interventions: " + strings.Join(issues, "; ")}
+		return completionDecision{blocked: true, reason: "completion remained unproven after two controller interventions without corrective progress: " + strings.Join(issues, "; ")}
 	}
 	c.interventions++
-	return completionDecision{notice: completionNotice(issues, c.interventions)}
+	c.lastInterventionIssues = issueKey
+	return completionDecision{
+		notice:         completionNotice(issues, c.interventions, c.taskMode),
+		reuseCandidate: planIssueCount == 0 && !verificationGap && len(c.failures) > 0 && len(c.resolutionIssues) == 0,
+	}
 }
 
 func blockedPlanReason(current *plan.Plan) string {
@@ -311,7 +511,7 @@ func blockedPlanReason(current *plan.Plan) string {
 	return "the active plan is blocked — " + strings.Join(reasons, "; ")
 }
 
-func completionNotice(issues []string, intervention int) string {
+func completionNotice(issues []string, intervention int, mode taskmode.Mode) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Collomia completion controller (intervention %d of %d): this response cannot finish the turn yet.\nRecorded gaps:\n", intervention, maxCompletionInterventions)
 	for _, issue := range issues {
@@ -324,7 +524,13 @@ func completionNotice(issues []string, intervention int) string {
 	// the model only about `blocked` produced exactly that: finished
 	// deliverables reported as failures because an abandoned side attempt was
 	// recorded with the only word on offer.
-	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence; recover safely from a failed tool by retrying or choosing an alternative; or record the relevant plan step with an exact reason — `skipped` when the action proved unnecessary or you achieved it another way, `blocked` only when the work genuinely cannot be completed, since a blocked step ends this turn as blocked. If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. Do not repeat the final answer until the recorded state supports done or blocked. This notice does not grant permission or change the user's requested scope.")
+	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence. For each named failure ID, add an update_plan.resolved_failures entry tied to a terminal step: use `recovered_by_retry` or `recovered_by_alternative` with the successful `recovery_tool_call_id`; use `skipped_unnecessary` only when the action was not needed and its step is `skipped`; use `blocked` only when the work genuinely cannot be completed and its step is `blocked`, since a blocked step ends this turn as blocked. Include the exact failure_id, step_id, and evidence; prose alone does not resolve a failed call. ")
+	if mode == taskmode.Work {
+		b.WriteString("Validate each changed deliverable with validate_artifact after its final write. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
+	} else {
+		b.WriteString("If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. ")
+	}
+	b.WriteString("Do not repeat the final answer until the recorded state supports done or blocked. This notice does not grant permission or change the user's requested scope.")
 	return b.String()
 }
 
@@ -698,6 +904,10 @@ func refusedVerificationNotice(command, reason, workspace string) string {
 		return notice + " Run one detected verifier directly: " + strings.Join(commands, ", ") + "."
 	}
 	return notice + " No verifier was detected for this project. Add a conventional test entry point if that is in scope, or record a fresh, specific verification_note in update_plan when no meaningful automated check applies."
+}
+
+func workValidationNotice(command, reason string) string {
+	return fmt.Sprintf("Collomia task-appropriate validation was not recorded for %s: %s. For a file deliverable, run validate_artifact on the final artifact. For analysis, research, retrieval, or an external action with no meaningful machine validator, update the completed plan step with the observed calculation, source, receipt, or read-back and add a fresh specific validation_note describing what was checked and what remains a matter of judgment.", boundedVerificationCommand(command), reason)
 }
 
 func boundedVerificationCommand(command string) string {
