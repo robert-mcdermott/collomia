@@ -104,6 +104,11 @@ func RunAppContainer(policy Policy, argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("empty AppContainer command")
 	}
+	restorePath, err := canonicalizeAppContainerPathEnvironment()
+	if err != nil {
+		return err
+	}
+	defer restorePath()
 	workspace, err := filepath.Abs(policy.WorkspaceRoot)
 	if err != nil {
 		return fmt.Errorf("resolve workspace: %w", err)
@@ -192,6 +197,44 @@ func RunAppContainer(policy Policy, argv []string) error {
 	}
 	defer nullDevice.Close()
 	return createAppContainerProcess(appSID, target, argv, workspace, policy.AllowNetwork, nullDevice)
+}
+
+// canonicalizeAppContainerPathEnvironment resolves directory junctions and
+// symlinks in absolute PATH entries before the sandboxed process inherits the
+// environment. Windows-hosted toolchains commonly expose a C: junction to
+// bytes stored on D:. Extra readable roots are resolved to the D: target when
+// their ACLs are granted; leaving the child PATH on the C: alias makes cmd.exe
+// report the executable as missing even though the target is authorized.
+//
+// This changes no executable authority and grants no additional root. It only
+// makes process lookup use the same resolved spelling as the sandbox ACL.
+func canonicalizeAppContainerPathEnvironment() (func(), error) {
+	original, ok := os.LookupEnv("PATH")
+	if !ok {
+		return func() {}, nil
+	}
+	canonical := canonicalAppContainerPath(original, filepath.EvalSymlinks)
+	if canonical == original {
+		return func() {}, nil
+	}
+	if err := os.Setenv("PATH", canonical); err != nil {
+		return nil, fmt.Errorf("canonicalize AppContainer PATH: %w", err)
+	}
+	return func() { _ = os.Setenv("PATH", original) }, nil
+}
+
+func canonicalAppContainerPath(value string, resolve func(string) (string, error)) string {
+	entries := filepath.SplitList(value)
+	for i, entry := range entries {
+		candidate := strings.Trim(strings.TrimSpace(entry), `"`)
+		if candidate == "" || !filepath.IsAbs(candidate) {
+			continue
+		}
+		if real, err := resolve(candidate); err == nil && strings.TrimSpace(real) != "" {
+			entries[i] = filepath.Clean(real)
+		}
+	}
+	return strings.Join(entries, string(os.PathListSeparator))
 }
 
 func pathWithin(path, root string) bool {

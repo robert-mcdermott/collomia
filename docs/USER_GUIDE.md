@@ -178,7 +178,7 @@ rollback guidance in [Installing Collomia](INSTALLING.md).
 
 ### Build from source
 
-Building requires Go 1.26.5 or later. Collomia pins the patch-level minimum
+Building requires Go 1.26.6 or later. Collomia pins the patch-level minimum
 because Go standard-library security fixes are shipped in patch releases:
 
 ```sh
@@ -2458,15 +2458,18 @@ Platform behavior:
   and access to other processes. A kill-on-close Job Object owns the complete
   child tree. The workspace, temp directory, and `sandbox_writable_roots` are
   writable; `sandbox_readable_roots` and user-local PATH directories are
-  read/execute only. AppContainer always confines user-data reads even though
-  the compatibility switch defaults to broad reads on macOS/Linux. This uses
-  inbox Windows APIs and requires no Windows Sandbox feature, Hyper-V, driver,
-  service, administrator setup, or additional installation. Collomia also
-  applies a private `NUL` compatibility device to every sandboxed descendant
-  before it executes, so nested compilers and test runners can use their
-  ordinary process-launch code without granting the AppContainer access to
-  the host device. Windows provides that pre-execution notification through
-  its debug-event lifecycle, so tools can observe an attached debugger; use an
+  read/execute only. Directory-junction and symlink aliases in absolute `PATH`
+  entries are resolved before launch, so a toolchain authorized through its
+  resolved `sandbox_readable_roots` path is found under the same spelling.
+  AppContainer always confines user-data reads even though the compatibility
+  switch defaults to broad reads on macOS/Linux. This uses inbox Windows APIs
+  and requires no Windows Sandbox feature, Hyper-V, driver, service,
+  administrator setup, or additional installation. Collomia also applies a
+  private `NUL` compatibility device to every sandboxed descendant before it
+  executes, so nested compilers and test runners can use their ordinary
+  process-launch code without granting the AppContainer access to the host
+  device. Windows provides that pre-execution notification through its
+  debug-event lifecycle, so tools can observe an attached debugger; use an
   explicit `sandbox: "off"` exception for a workflow that must own the Windows
   debugging relationship itself.
 

@@ -9,6 +9,22 @@ an accurate one; their history is in the Git log and in
 
 ### Fixed
 
+- **The minimum Go toolchain now includes the current standard-library
+  security fixes.** The build baseline moves from Go 1.26.5 to Go 1.26.6,
+  resolving six reachable `govulncheck` findings in `net/url`, `crypto/tls`,
+  `net/http`, `encoding/xml`, and `encoding/asn1`. CI and release builds both
+  consume the version from `go.mod`, so the quality gate and shipped binaries
+  now use the corrected standard library.
+
+- **Windows AppContainer commands can execute junction-backed toolchains.**
+  GitHub Actions exposes Go on a `C:` directory junction whose bytes live on
+  `D:`. The sandbox correctly granted the resolved SDK target but left the
+  child `PATH` on the inaccessible alias, so `cmd.exe` reported that `go` did
+  not exist and every command-backed evaluation failed downstream. The
+  AppContainer shim now resolves absolute `PATH` entries before launch, making
+  executable lookup use the same spelling as the existing read-only ACL
+  without granting any additional root.
+
 - **Work completion notices now name the artifact that is actually still
   outstanding.** A transcript changed an analysis script and a Markdown
   report, successfully validated the report, then received only the generic

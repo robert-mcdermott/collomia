@@ -610,7 +610,10 @@ troubleshooting.
 - Collomia grants that SID access to the workspace, the user temp directory,
   explicit `permissions.sandbox_readable_roots` (read/execute), and explicit
   `permissions.sandbox_writable_roots` (read/write). User-local executable
-  directories on `PATH` receive read/execute access, not write access. The
+  directories on `PATH` receive read/execute access, not write access.
+  Absolute `PATH` entries are resolved through directory junctions and
+  symlinks before launch so executable lookup and the ACL granted to a resolved
+  readable root identify the same target; no additional root is opened. The
   normal user's existing access checks still apply as well. AppContainer
   always restricts user-data reads even though the compatibility read switch
   defaults to broad reads on macOS/Linux; granting the whole user profile is

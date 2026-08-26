@@ -226,7 +226,7 @@ contracts are Git-backed; Collomia refuses that combination explicitly.
 
 ## Build from source
 
-Building requires the Go version declared in `go.mod` (currently Go 1.26.5):
+Building requires the Go version declared in `go.mod` (currently Go 1.26.6):
 
 ```sh
 git clone https://github.com/robert-mcdermott/collomia.git

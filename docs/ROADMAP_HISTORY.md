@@ -13,6 +13,28 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-08-26 — Windows AppContainer resolves junction-backed toolchains
+
+- **The failures shared one missing executable, not fourteen graph defects.**
+  The Windows evaluation matrix reported Standard verification failures and a
+  cascade of blocked Orchestrated writer nodes because every nested `go`
+  command returned “not recognized.” GitHub Actions installed Go behind a
+  `C:` junction to a `D:` hosted-tool-cache target.
+- **The sandbox authorized one spelling and executed another.** Explicit
+  readable roots are intentionally resolved before the AppContainer receives
+  a read/execute ACL, so the Go SDK target on `D:` was accessible. The minimal
+  child environment retained the lexical `C:` entry in `PATH`; `cmd.exe`
+  searched that inaccessible alias and never reached the authorized target.
+- **Lookup now follows the existing authority.** The Windows shim resolves
+  absolute `PATH` entries before launching the AppContainer. This makes lookup
+  use the same canonical target already authorized by the sandbox policy; it
+  grants no additional readable or writable root and leaves unresolved or
+  relative entries unchanged.
+- **Regression evidence:** a Windows-focused path test covers the exact
+  hosted-tool-cache junction shape, while the existing cross-platform
+  evaluation matrix exercises Standard and isolated-writer verification
+  through the production AppContainer path.
+
 ### 2026-08-25 — Work validation notices identify the outstanding artifact
 
 - **The gate was right, but its explanation hid the useful state.** A Work
