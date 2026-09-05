@@ -12,13 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/safefile"
 )
 
 const maxArtifactValidationBytes = 64 << 20
@@ -54,7 +54,7 @@ func (t ValidateArtifactTool) Execute(ctx context.Context, raw json.RawMessage) 
 	return result.Content, err
 }
 
-func (t ValidateArtifactTool) ExecuteResultStream(_ context.Context, raw json.RawMessage, _ func(string)) (Result, error) {
+func (t ValidateArtifactTool) ExecuteResultStream(ctx context.Context, raw json.RawMessage, _ func(string)) (Result, error) {
 	args, err := parseValidateArtifactArgs(raw)
 	if err != nil {
 		return Result{}, err
@@ -63,7 +63,16 @@ func (t ValidateArtifactTool) ExecuteResultStream(_ context.Context, raw json.Ra
 	if err != nil {
 		return Result{}, err
 	}
-	info, err := os.Stat(path)
+	target, err := safefile.Open(filepath.Dir(path), path)
+	if err != nil {
+		return Result{}, err
+	}
+	defer target.Close()
+	rootID, err := target.RootIdentity()
+	if err != nil {
+		return Result{}, err
+	}
+	info, err := target.Lstat()
 	if err != nil {
 		return Result{}, err
 	}
@@ -79,9 +88,20 @@ func (t ValidateArtifactTool) ExecuteResultStream(_ context.Context, raw json.Ra
 	if info.Size() > maxArtifactValidationBytes {
 		return Result{}, fmt.Errorf("artifact is %d bytes; structural validation is bounded at %d bytes", info.Size(), maxArtifactValidationBytes)
 	}
-	data, err := os.ReadFile(path)
+	file, err := target.OpenFile()
 	if err != nil {
 		return Result{}, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(artifactContextReader{ctx, file}, maxArtifactValidationBytes+1))
+	if err != nil {
+		return Result{}, err
+	}
+	if len(data) > maxArtifactValidationBytes {
+		return Result{}, errors.New("artifact grew beyond the validation size limit")
+	}
+	if len(data) == 0 || int64(len(data)) < args.MinBytes {
+		return Result{}, errors.New("artifact became empty or smaller than min_bytes during validation")
 	}
 	format := artifactFormat(args.Format, path)
 	inspection, searchable, err := inspectArtifact(format, data)
@@ -117,7 +137,7 @@ func (t ValidateArtifactTool) ExecuteResultStream(_ context.Context, raw json.Ra
 		content += fmt.Sprintf("\nrequired text: %d/%d present", len(args.RequiredText), len(args.RequiredText))
 	}
 	content += "\nscope: structural and requested-text validation only; factual correctness, source quality, and visual polish were not established"
-	return Result{Content: content, Evidence: &Evidence{Kind: "artifact_validated", Subject: display, Digest: "sha256:" + digest, Detail: detail}}, nil
+	return Result{Content: content, Evidence: &Evidence{Kind: "artifact_validated", Subject: display, Digest: "sha256:" + digest, Detail: detail, ArtifactRoot: rootID}}, nil
 }
 
 func parseValidateArtifactArgs(raw json.RawMessage) (validateArtifactArgs, error) {

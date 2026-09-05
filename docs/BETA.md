@@ -23,6 +23,15 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
 
 ## Important limitations
 
+- Work's final-artifact gate checks current-turn validated files and declared
+  deliverables, not every file a script might create or every remote effect.
+  Artifact roles are model-authored task intent. Rechecks are bounded to 64
+  receipt paths and 64 declarations per turn, with at most 64 MiB per file;
+  they are point-in-time checks, not locks against later edits. They establish
+  byte/target freshness, not factual or visual quality. Receipts are not trusted
+  across restart; open-plan deliverables need fresh validation. External
+  response loss remains uncertain until safe read-back or user clarification;
+  this gate does not add connector-specific reconciliation or automatic replay.
 - Rejected terminal provider responses stop explicitly rather than continuing
   automatically. Partial text and prior workspace effects remain; inspect them
   before continuing. Legacy compatible endpoints with nonempty payloads and no

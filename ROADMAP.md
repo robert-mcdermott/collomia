@@ -2397,8 +2397,8 @@ status.
 
 ## Recommended next sequence
 
-The user selected **W3 — truthful completion and usable inputs** from
-[`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) ahead of W2 on
+The user accepted W1 and W3, then selected **W4 — effects and deliverable
+acceptance** from [`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) on
 2026-09-04. That plan owns the implementation and user-testing handoff for
 this maintenance work; wave numbers do not impose a strict execution order.
 

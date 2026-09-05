@@ -101,20 +101,54 @@ following format checks:
 Callers may require exact text in formats whose content can be inspected. A
 successful validation emits a typed `artifact_validated` receipt on the
 `tool.result` event. Validation is path-specific: writing one artifact cannot
-invalidate or satisfy another, and a later write to the same artifact makes
-its prior receipt stale. If a completion attempt still has dirty tracked
+invalidate or satisfy another. At completion, the runtime rehashes validated
+deliverables and checks the original path target and parent identity. Script
+mutations, deletion, external edits, and retargeted symlinks cannot leave a
+stale receipt accepted. Rewriting identical bytes at the same target preserves
+the receipt. If a completion attempt still has dirty tracked
 artifacts, the controller lists only those remaining paths relative to the
 workspace and omits paths with accepted current receipts, so remediation does
 not repeat validation of an already-cleared deliverable. Mutations whose tools
 did not report paths remain an explicit unknown-path gap. Conventional
-build/lint/test commands remain valid evidence when Work happens to produce
-code.
+build/lint/test commands remain evidence when Work produces code, but do not
+replace a file deliverable's artifact receipt.
+
+For file-producing tasks, the optional `artifacts` field in `update_plan`
+serves as a small task brief:
+
+```json
+"artifacts": [
+  {"path": "report.md", "role": "deliverable"},
+  {"path": "analysis.sh", "role": "scratch"}
+]
+```
+
+Declare requested outputs, including files created by shell commands, and keep
+the declarations in subsequent complete plan updates. Declared deliverables
+require current successful `validate_artifact` receipts even if no file-write
+tool observed their creation. Scratch files do not need deliverable acceptance.
+Without a declaration, tracked writes retain the previous validation behavior;
+validating an unclassified file makes it an implicit deliverable for this turn.
+A declared deliverable cannot be silently removed or demoted during the turn.
+Roles express model-authored intent, grant no permissions, and do not prove that
+every user-requested output was identified. Direct Q&A needs no task brief.
+
+Execution effects are tracked separately from permission risk. Known file
+operations identify possible affected paths, including partial failures;
+commands and opaque tools have unknown effect scope. Unknown scope does not
+mean a command failed or every file changed: final digest checks determine
+whether registered artifacts remain current. This is not a workspace-wide
+mutation scanner. Failed opaque executions include a read-back/uncertainty
+notice. External receipt IDs and command success do not prove remote state;
+use safe read-back where available, and disclose uncertainty or block when it
+cannot be resolved. No external action is automatically replayed by this gate.
 
 Structural validation does **not** establish factual correctness, source
 quality, accessibility, visual polish, or fitness for a human decision. When
 no meaningful machine validation applies, a fresh `validation_note` records
 what was checked and what remains subjective. It is visibly labelled as
 model-authored disclosure, not runtime proof.
+It cannot waive a missing declared deliverable or a stale digest receipt.
 
 When the controller intercepts a completed answer solely for unresolved
 tool-failure bookkeeping, Collomia retains that answer. A valid metadata-only
@@ -126,6 +160,11 @@ unrelated tool activity neither clears a failure nor purchases more retries.
 ## Durable and automation contracts
 
 - Session metadata adds optional `task_mode`; omission means Developer.
+- Session plans and `update_plan` accept optional `artifacts` entries with
+  `path` and `role` (`deliverable` or `scratch`). Older plans remain readable.
+  Roles persist; runtime digest receipts are current-turn evidence and are not
+  trusted across restart. The first resumed turn of an open plan must validate
+  its deliverables again. Completed historical plans do not gate unrelated Q&A.
 - Headless `run.result` adds optional `mode` (`developer` or `work`).
 - A successful evidence-producing tool result may add `tool.evidence` with a
   narrow `kind`, `subject`, optional `digest`, and optional `detail`.

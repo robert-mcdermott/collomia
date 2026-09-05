@@ -1269,15 +1269,20 @@ func TestWorkModeArtifactValidationIsPathSpecific(t *testing.T) {
 	controller := newCompletionController(board, t.TempDir(), false, taskmode.Work)
 	first := filepath.Join(controller.workspace, "first.md")
 	second := filepath.Join(controller.workspace, "second.md")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("validated text"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	controller.observe(toolObservation{Name: "apply_patch", Action: tools.Action{Risk: tools.RiskWrite, Paths: []string{first, second}}})
 	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, `"first.md"`) || !strings.Contains(decision.notice, `"second.md"`) || !strings.Contains(decision.notice, "intervention 1 of 2") {
 		t.Fatalf("initial outstanding paths were not rendered: %+v", decision)
 	}
-	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{first}}, ArtifactValidation: true})
+	controller.observe(artifactObservation(t, controller.workspace, first))
 	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, `"second.md"`) || strings.Contains(decision.notice, `"first.md"`) || !strings.Contains(decision.notice, "accepted current receipts are omitted") || !strings.Contains(decision.notice, "intervention 1 of 2") {
 		t.Fatalf("one validated path incorrectly completed both artifacts: %+v", decision)
 	}
-	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{second}}, ArtifactValidation: true})
+	controller.observe(artifactObservation(t, controller.workspace, second))
 	if decision := controller.assess(); !decision.done {
 		t.Fatalf("both validated paths did not complete the gate: %+v", decision)
 	}

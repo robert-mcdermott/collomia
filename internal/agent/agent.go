@@ -356,6 +356,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	}
 	a.mu.RLock()
 	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode, a.taskMode)
+	completion.ctx = ctx
 	maxTurnIterations := a.maxTurnIterations
 	a.mu.RUnlock()
 	standardLastProgressIteration := 0
@@ -920,7 +921,7 @@ func reportError(send Emit, err error) error {
 
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, completion *completionController, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
-	observation := toolObservation{CallID: call.ID, Name: call.Name, RetryKey: toolRetryKey(call)}
+	observation := toolObservation{CallID: call.ID, Name: call.Name, RetryKey: toolRetryKey(call), ExecutionPrevented: true}
 	if hasItem && !a.toolAvailable(item, plan) {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -1045,6 +1046,8 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		send(e)
 	}
 	observation.Started = time.Now().UTC()
+	observation.ExecutionPrevented = false
+	observation.Effects = executionEffects(call.Name, action)
 	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
 	observation.Finished = time.Now().UTC()
 	a.permissions.RecordOutcome(permissionTool, action, err)
@@ -1079,6 +1082,9 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += "\n"
 		}
 		result.Content += "Tool error: " + err.Error()
+		if observation.Effects.Unknown {
+			result.Content += "\nEffect status: this executed tool may have changed local or external state before failing. Inspect outputs or use a safe read-back before another write; do not blindly replay an external action with an uncertain outcome."
+		}
 	}
 	if call.Name == "run_command" {
 		assessment := assessVerificationCommand(action.Command, a.workspace)
@@ -1131,11 +1137,18 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	}
 	if err == nil && call.Name == "validate_artifact" && result.Evidence != nil && result.Evidence.Kind == "artifact_validated" {
 		observation.ArtifactValidation = true
+		observation.ArtifactEvidence = result.Evidence
+		var artifactArgs struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(args, &artifactArgs) == nil {
+			observation.ArtifactPath = artifactArgs.Path
+		}
 		if completion != nil && completion.awaitingVerificationGuidance() {
 			if result.Content != "" {
 				result.Content += "\n\n"
 			}
-			result.Content += "Collomia validation evidence: recorded for this artifact and its current digest. A later write to the same tracked artifact makes this receipt stale."
+			result.Content += "Collomia validation evidence: recorded for this artifact and its current digest. Work completion rechecks the final bytes, including changes made by shell commands or outside the agent."
 		}
 	}
 	observation.ResultSummary = result.Content

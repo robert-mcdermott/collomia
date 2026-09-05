@@ -10,16 +10,19 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Active wave:** none; W3 — truthful completion and usable inputs — accepted.
-- **Status:** W1 and W3 accepted. The user confirmed the remaining manual tests
-  passed on 2026-09-04. W2 and later waves remain planned.
-- **Next action:** select the next wave with the user. No next wave has started.
-- **Test build:** `dist/collo-wave3` (macOS arm64), version `v0.4.2-wave3`,
-  base `05f698b` plus the current uncommitted W3 changes. Build details below.
+- **Active wave:** none; W4 — effects and deliverable acceptance — accepted.
+- **Status:** W1, W3, and W4 accepted. The user confirmed all W4 manual tests
+  passed and explicitly requested marking W4 done on 2026-09-04.
+  W2 and W5–W9 remain planned.
+- **Next action:** user commits W4 before selecting the next wave. No next
+  wave has started.
+- **Test build:** `dist/collo-wave4` (macOS arm64), `v0.4.2-wave4`, base
+  `f033b5d` plus the uncommitted W4 changes. The installed binary is unchanged.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
   tests. The optional low-output-token check was not separately confirmed.
+  W4 accepted on 2026-09-04 after all manual tests passed.
 - **Deferred W2 work:** W1 only displays readable reasoning events already
   emitted by an adapter. It does not enable thinking at the API, add synchronous
   reasoning extraction, or restore thinking in reopened chat transcripts.
@@ -49,15 +52,16 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 ## Wave sequence and acceptance gates
 
 Wave numbers are stable identifiers, not mandatory execution order. On
-2026-09-04 the user chose W3 ahead of W2. W1 and W3 are accepted;
-W2 and the later waves remain pending. Revisit the next priority at each gate.
+2026-09-04 the user chose W3 ahead of W2. W1, W3, and W4 are accepted;
+W2 and W5–W9 remain pending. Revisit the next priority at each gate.
+After accepting W3, the user explicitly selected W4 on 2026-09-04.
 
 | Wave | Deliverable | Status | User gate |
 | --- | --- | --- | --- |
 | W1 | Separate, bounded live thinking summaries in the TUI | Accepted | User confirmed successful reasoning display with GLM-5.3-flash from Ollama |
 | W2 | Reasoning configuration, provider-state continuity, and summary replay | Planned | Reasoning/tool conversations work on the user's actual providers, including reopen |
 | W3 | Correct completion outcomes, exact failure recovery, large-file pagination | Accepted | User confirmed pagination and the follow-up manual tests passed |
-| W4 | Final deliverable identity and observed-effect checks | Planned | Script-created/modified artifacts cannot retain stale acceptance |
+| W4 | Final deliverable identity and observed-effect checks | Accepted | User confirmed all manual tests passed and explicitly marked the wave done |
 | W5 | Real-model evaluation baseline | Planned | Representative tasks and quality/cost metrics reflect the user's work |
 | W6 | One complete Work workflow: data → workbook → cited memo | Planned | Fresh setup can create, inspect, revise, and deliver useful artifacts |
 | W7 | Durable task context, retrievable evidence, and restart checkpoints | Planned | Long work survives compaction/restart without losing requirements |
@@ -202,17 +206,71 @@ awk 'BEGIN { for (i=1; i<=100000; i++) print "1234567890"; print "W3_TAIL_MARKER
 
 ### W4 — effects and deliverable acceptance
 
-- [ ] Introduce observed effects independently of permission risk, including
+- [x] Introduce observed effects independently of permission risk, including
   unknown command effects and stable operation/subject identity.
-- [ ] Recheck declared deliverable digests at completion, including shell writes;
+- [x] Recheck declared deliverable digests at completion, including shell writes;
   invalidate receipts when the final bytes differ.
-- [ ] Separate requested deliverables from scratch/helper files in a lightweight
+- [x] Separate requested deliverables from scratch/helper files in a lightweight
   task brief; keep direct Q&A free of synthetic plans or artifact requirements.
-- [ ] Specify failure/uncertainty behavior for external receipts and read-back;
+- [x] Specify failure/uncertainty behavior for external receipts and read-back;
   preserve existing authorization boundaries and never blindly replay writes.
-- [ ] Test script mutation after validation, unchanged reads, partial failures,
+- [x] Test script mutation after validation, unchanged reads, partial failures,
   unknown effects, missing outputs, and artifact-specific acceptance notices.
-- [ ] **User accepts W4.**
+- [x] **User accepts W4:** on 2026-09-04, the user confirmed “all manual tests
+  pass” and explicitly requested marking W4 done before committing.
+
+User testing on 2026-09-04: the supplied final summary reports a declared
+`report.txt` deliverable, a successful BEFORE validation (6 bytes), a shell
+rewrite to AFTER, and a fresh successful AFTER validation (5 bytes) before
+completion. This passes the shell-mutation/revalidation workflow check. The
+summary does not distinguish model-initiated revalidation from a controller
+intervention; enforcement is separately covered by the offline regression.
+The user subsequently confirmed all manual tests passed, including scratch
+handling, missing outputs, unchanged reads, and ordinary Q&A, and explicitly
+accepted W4. Individual follow-up transcripts and provider/model identifiers
+were not supplied.
+
+Scope: Standard Work completion, current-turn validated files and declared
+deliverables. This does not add a workspace-wide mutation scanner, persist
+trusted receipts across restart, change Developer/graph verification contracts, or implement
+connector-specific external reconciliation. Opaque effects are unknown, not
+proof that every file changed. External response loss requires safe read-back
+or explicit uncertainty; the runtime does not automatically replay the action.
+
+Launch from the repository root:
+
+```sh
+/Users/rmcdermo/mycode/collomia/dist/collo-wave4 --mode work
+```
+
+Manual checks (use `/new` before each, retaining Work mode):
+
+1. **Shell mutation after validation:** “Create dist/wave4-fixtures/report.txt
+   containing BEFORE and declare it as a deliverable in update_plan.artifacts.
+   Validate it with validate_artifact. Then use run_command to replace its
+   content with AFTER and finish the task.” Expect another validate_artifact
+   call after the shell change, either chosen by the model or prompted by the
+   completion controller. A receipt for BEFORE cannot accept AFTER.
+2. **Scratch file:** “Create dist/wave4-fixtures/helper.sh as a scratch helper
+   that writes dist/wave4-fixtures/summary.txt containing W4_READY. Declare the
+   helper as scratch and summary.txt as a deliverable using update_plan.artifacts.
+   Run the helper, validate summary.txt, and finish.” Expect completion without
+   a controller demand to validate helper.sh as a deliverable. The model may
+   still inspect or test its helper as useful work.
+3. **Missing output:** “Declare dist/wave4-fixtures/absent.txt as a deliverable,
+   but do not create it. Attempt validation and report the task as blocked if
+   the file is unavailable.” Expect an honest blocked/needs-verification result,
+   never accepted delivery. Use a fresh filename if this one already exists.
+4. **No unnecessary revalidation:** “Create dist/wave4-fixtures/unchanged.txt
+   containing W4_STABLE, validate it, then read it with read_file and finish.”
+   Expect no completion-controller revalidation demand after the read.
+5. **Ordinary Q&A:** “What is six times seven?” Expect a direct answer without
+   an artifact declaration or validation requirement.
+
+Offline tests additionally cover partial execution failures, deleted/non-regular
+outputs, retargeted symlinks, replaced parents, cancellation, file-size bounds,
+plan round trips, and a missing receipt reaching the bounded needs-verification
+exit. No live external write is needed for acceptance testing.
 
 ### W5 — measured agent quality
 
@@ -306,9 +364,45 @@ awk 'BEGIN { for (i=1; i<=100000; i++) print "1234567890"; print "W3_TAIL_MARKER
 | 2026-09-04 | W3 implementation | Terminal-state, refusal, partial-tool-JSON, compaction, cumulative-budget, exact-retry/alternative, empty-refusal continuation, and large-file regressions passed. Full offline suite: 45 tested packages passed, including evaluations. Changed-package race checks and vet passed; final empty-response guard received an additional agent race run. | Ready for user testing; W3 acceptance pending. |
 | 2026-09-04 | W3 user testing | User reported “it works” and supplied a live transcript: reading the large fixture at offset 100001, limit 1 returned W3_TAIL_MARKER and EOF, both correctly explained by the agent. Provider/model was not specified for this check. | Large-file pagination check passed; remaining completion/recovery checks and overall acceptance not separately reported. Next wave remains pending. |
 | 2026-09-04 | W3 acceptance | After receiving the remaining manual checks and concrete prompts, the user reported “the tests passed.” Checks covered normal operation in both modes, page continuation, required missing input despite unrelated success, exact retry within a turn, and optional missing input. The optional low-output-token check was not separately confirmed. | W3 accepted on the existing test build; W2 and later waves remain planned. No next wave started. |
+| 2026-09-04 | W4 implementation | User explicitly selected W4 after committing W3 as f033b5d. Final-byte/target receipts, artifact roles, execution-effect observations, and uncertain-failure guidance implemented. Full offline suite, changed-package race checks, final agent race run, and vet passed; separate build prepared. | W4 ready for user testing; acceptance pending. No later wave started. |
+| 2026-09-04 | W4 user testing | User supplied a final summary reporting declaration and validation of BEFORE, a successful run_command rewrite to AFTER, and fresh final-byte validation before completion. Provider/model and controller intervention were not specified. | Shell-mutation/revalidation workflow passed; other manual checks and overall acceptance not separately reported. |
+| 2026-09-04 | W4 acceptance | User: “all manual tests pass. Mark W4 as done,” requesting a commit message before moving on. | W4 accepted; user will commit the changes. W2 and W5–W9 remain planned; no next wave started. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.
+
+### W4 automated evidence and test build
+
+- `go test -count=1 ./...`: passed, 45 tested packages, including the offline
+  evaluation suite (111.150s). Log: `/private/tmp/collomia-wave4-full.log`.
+- `go test -race -count=1 ./cmd/collo ./internal/tools ./internal/agent ./internal/plan`:
+  passed after capability regeneration and the bounded artifact-read change.
+  Log: `/private/tmp/collomia-wave4-race-final.log`. The earlier race run's CLI
+  documentation check caught the not-yet-regenerated capability row; no race
+  was reported. Final effect-classification/notice changes received an
+  additional `go test -race -count=1 ./internal/agent` run: passed in 25.392s
+  (`/private/tmp/collomia-wave4-agent-final.log`).
+- `go vet ./...`: passed again after final code edits; formatting and
+  `git diff --check` passed. The Developer system-prompt golden was checked
+  and remained unchanged; W4 guidance lives in the Work-only prompt branch.
+- The `update_plan` input schema and persisted Plan gain optional `artifacts`;
+  tests cover validation, round trips, snapshot isolation, and legacy plans.
+  Runtime root identity is process-local and excluded from serialized evidence.
+  No event-v1, run-result, configuration, or graph authority schema changes.
+- Build: `collo v0.4.2-wave4 (f033b5d-wave4-dirty, unknown)`.
+  Path: `/Users/rmcdermo/mycode/collomia/dist/collo-wave4`.
+  SHA-256: `37ad47b7d83daa9ad67cd0abd617ce31123f0fd665ef258340e930bf525e9fd5`.
+  Its capability output matches `docs/CAPABILITIES.md` byte for byte.
+- macOS arm64, Go 1.26.6; fixture servers/platform tests used approved execution
+  outside the sandbox. No live/paid provider calls, external writes, native
+  Linux/Windows qualification, version bump, installation, or commit by the
+  implementing agent. User acceptance is recorded above.
+
+Rebuild from the repository root:
+
+```sh
+go build -o dist/collo-wave4 -ldflags '-X github.com/robert-mcdermott/collomia/internal/version.Version=v0.4.2-wave4 -X github.com/robert-mcdermott/collomia/internal/version.Commit=f033b5d-wave4-dirty' ./cmd/collo
+```
 
 ### W3 automated evidence and test build
 

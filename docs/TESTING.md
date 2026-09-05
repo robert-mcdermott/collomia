@@ -22,6 +22,13 @@ screens. They do not establish live provider enablement or state continuity.
 
 ## Standard local checks
 
+W4 adds final-artifact digest and target/parent identity checks, real shell
+mutation followed by required revalidation, unchanged-byte retention, missing
+and non-regular outputs, cancellation/size bounds, declared deliverable versus
+scratch roles, non-waivable missing receipts, legacy plan compatibility, and
+opaque partial-failure uncertainty. These are offline tests; user-model
+acceptance is recorded separately in the improvement plan.
+
 W3 adds provider terminal-state/refusal/stream-ending fixtures, real agent
 probes in Developer and Work, a graph failure-compatibility probe, compaction
 retention and cumulative-budget checks, exact versus alternative recovery, and

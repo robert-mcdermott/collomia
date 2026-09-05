@@ -13,6 +13,24 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-04 — W4 final-deliverable acceptance
+
+- After accepting and committing W3, the user selected W4. Work completion
+  now retains typed validation digests and rechecks final bytes, original path
+  target, and parent identity, including shell and out-of-band edits.
+- Optional plan `artifacts` entries distinguish deliverables from scratch
+  files. Declared outputs require current receipts even when shell-created;
+  notes, unrelated test commands, and silent demotion cannot waive those gaps.
+- Execution observations carry possible file effects or unknown scope apart
+  from permission risk. Denied executions do not count as writes; failed opaque
+  executions disclose uncertainty and request inspection before another write.
+- W4 regression tests exercise real shell mutation/revalidation, missing and
+  replaced files, unchanged bytes, scratch intent, bounded reads, and backward
+  compatible plans. The user confirmed all manual tests passed and accepted
+  W4 on 2026-09-04. Full evidence and the acceptance record live in the
+  [improvement plan](IMPROVEMENT_PLAN.md). No orchestration milestone, permission
+  grant, external reconciliation, or automatic action replay was added.
+
 ### 2026-09-04 — W3 completion and large-input maintenance
 
 - User reprioritized W3 ahead of W2 after accepting the live-thinking display.

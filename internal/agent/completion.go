@@ -98,6 +98,10 @@ type toolObservation struct {
 	IgnoreGraphFailure bool
 	Verification       bool
 	ArtifactValidation bool
+	ArtifactEvidence   *tools.Evidence
+	ArtifactPath       string
+	Effects            toolEffects
+	ExecutionPrevented bool
 	VerificationCheck  verificationAssessment
 }
 
@@ -112,6 +116,8 @@ type completionController struct {
 	dirty                bool
 	dirtyUnknown         bool
 	dirtyPaths           map[string]struct{}
+	artifacts            artifactTracker
+	ctx                  context.Context
 	waived               bool
 	recognizedEver       bool
 	noteAtMutation       string
@@ -158,6 +164,9 @@ func newCompletionController(board *plan.Board, workspace string, planning bool,
 	controller.lastRevision = revision
 	if current != nil {
 		controller.initialOpen = current.AssessCompletion().State == plan.CompletionIncomplete
+		if controller.initialOpen {
+			controller.syncArtifactBrief(current)
+		}
 	}
 	return controller
 }
@@ -170,12 +179,20 @@ func (c *completionController) observe(observation toolObservation) {
 	if !c.enabled {
 		return
 	}
-	if observation.Failed {
-		// A write tool may fail after making a partial mutation. Conservatively
-		// stale verification even when the tool reports failure.
+	if observation.Name == "update_plan" && !observation.Failed {
+		c.syncArtifactBrief(c.board.Current())
+	}
+	if !observation.ExecutionPrevented {
 		if observation.Action.Risk == tools.RiskWrite {
 			c.markDirty(observation.Action.Paths)
 		}
+		if len(observation.Effects.Paths) > 0 {
+			c.markDirty(observation.Effects.Paths)
+		}
+	}
+	if observation.Failed {
+		// A write tool may fail after making a partial mutation. Conservatively
+		// stale verification even when the tool reports failure.
 		c.recordFailure(observation)
 		return
 	}
@@ -190,15 +207,12 @@ func (c *completionController) observe(observation toolObservation) {
 	// to the exact failed and successful call IDs.
 	c.recoverFailures(observation)
 	c.resolveFailuresFromPlan()
-	if observation.Action.Risk == tools.RiskWrite {
-		c.markDirty(observation.Action.Paths)
-	}
-	if observation.Name == "run_command" && observation.Verification {
+	if observation.Name == "run_command" && observation.Verification && c.taskMode != taskmode.Work {
 		c.clearDirty()
 		c.recognizedEver = true
 	}
 	if c.taskMode == taskmode.Work && observation.ArtifactValidation {
-		c.acceptArtifactValidation(observation.Action.Paths)
+		c.recordArtifactReceipt(observation)
 	}
 	if observation.Name == "update_plan" && c.dirty && c.board != nil {
 		if current := c.board.Current(); current != nil && completionDisclosure(current, c.taskMode) != "" && completionDisclosure(current, c.taskMode) != c.noteAtMutation {
@@ -212,7 +226,7 @@ func (c *completionController) observe(observation toolObservation) {
 // a successful write always does because its content is intentionally absent
 // from toolObservation. The separate hard turn envelope still bounds churn.
 func (c *completionController) observeProgress(observation toolObservation) {
-	if observation.Action.Risk == tools.RiskWrite {
+	if !observation.ExecutionPrevented && (observation.Action.Risk == tools.RiskWrite || len(observation.Effects.Paths) > 0) {
 		c.progressVersion++
 		return
 	}
@@ -578,6 +592,11 @@ func (c *completionController) assess() completionDecision {
 		issues = append(issues, assessment.Issues...)
 		planIssueCount = len(assessment.Issues)
 	}
+	// Recheck final bytes even when the last operation was a read, a shell
+	// command, a failed write, or an out-of-band edit. Permission risk is not
+	// evidence that a previously validated artifact stayed unchanged.
+	artifactIssues := c.checkArtifacts(current, activePlan)
+	issues = append(issues, artifactIssues...)
 	verificationGap := c.dirty && !c.waived
 	if verificationGap {
 		if c.taskMode == taskmode.Work {
@@ -604,7 +623,7 @@ func (c *completionController) assess() completionDecision {
 	// deliberately excluded: changing one guessed receipt ID into another is
 	// not corrective progress, and adding then resolving a new failure cannot
 	// buy an unlimited sequence of fresh controller retries.
-	gapCount := planIssueCount + len(c.failures)
+	gapCount := planIssueCount + len(c.failures) + len(artifactIssues)
 	if verificationGap {
 		if c.taskMode == taskmode.Work {
 			validationGaps := len(c.dirtyPaths)
@@ -623,7 +642,7 @@ func (c *completionController) assess() completionDecision {
 		c.interventions = 0
 	}
 	if c.interventions >= maxCompletionInterventions {
-		if verificationGap && len(c.failures) == 0 && planIssueCount == 0 {
+		if (verificationGap || len(artifactIssues) > 0) && len(c.failures) == 0 && planIssueCount == 0 {
 			return completionDecision{needsVerification: true, reason: "completion still needs verification after two controller interventions: " + strings.Join(issues, "; ")}
 		}
 		return completionDecision{blocked: true, reason: "completion remained unproven after two controller interventions without corrective progress: " + strings.Join(issues, "; ")}
@@ -634,7 +653,7 @@ func (c *completionController) assess() completionDecision {
 	}
 	return completionDecision{
 		notice:         completionNotice(issues, c.interventions, c.taskMode, c.recoveryReceipts()),
-		reuseCandidate: planIssueCount == 0 && !verificationGap && len(c.failures) > 0 && len(c.resolutionIssues) == 0,
+		reuseCandidate: planIssueCount == 0 && !verificationGap && len(artifactIssues) == 0 && len(c.failures) > 0 && len(c.resolutionIssues) == 0,
 	}
 }
 
@@ -678,7 +697,7 @@ func completionNotice(issues []string, intervention int, mode taskmode.Mode, rec
 	// recorded with the only word on offer.
 	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence. For each named failure ID, add an update_plan.resolved_failures entry tied to a terminal step: use `recovered_by_retry` or `recovered_by_alternative` with the successful `recovery_tool_call_id`; use `skipped_unnecessary` only when the action was not needed and its step is `skipped`; use `blocked` only when the work genuinely cannot be completed and its step is `blocked`, since a blocked step ends this turn as blocked. Include the exact failure_id, step_id, and evidence; prose alone does not resolve a failed call. ")
 	if mode == taskmode.Work {
-		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Validate each listed file deliverable with validate_artifact after its final write. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
+		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Validate each listed file deliverable with validate_artifact after its final write. Declared deliverables and stale digest receipts require fresh validate_artifact evidence; a validation_note or general test command cannot waive them. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
 	} else {
 		b.WriteString("If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. ")
 	}

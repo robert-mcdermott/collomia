@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/safefile"
 )
 
 type Risk string
@@ -125,6 +126,9 @@ type Evidence struct {
 	Subject string
 	Digest  string
 	Detail  string
+	// ArtifactRoot is process-local identity from the actual validation read.
+	// It is not serialized into events or accepted from model-authored text.
+	ArtifactRoot safefile.RootIdentity `json:"-"`
 }
 
 // Streamer is an optional Tool capability: tools that produce output

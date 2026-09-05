@@ -50,6 +50,9 @@ type FailureResolution struct {
 type Plan struct {
 	Goal  string `json:"goal"`
 	Steps []Step `json:"steps"`
+	// Artifacts is the optional Work task brief. Roles describe deliverable
+	// intent, never permission grants or proof that a file was validated.
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 	// ResolvedFailures explicitly connects failed tool calls named by the
 	// completion controller to their disposition. It prevents a successful
 	// alternative tool from being missed merely because it has a different
@@ -112,6 +115,7 @@ func (b *Board) Snapshot() (*Plan, uint64) {
 	}
 	clone := *b.current
 	clone.Steps = append([]Step(nil), b.current.Steps...)
+	clone.Artifacts = append([]Artifact(nil), b.current.Artifacts...)
 	clone.ResolvedFailures = append([]FailureResolution(nil), b.current.ResolvedFailures...)
 	for i := range clone.Steps {
 		clone.Steps[i].DependsOn = append([]int(nil), b.current.Steps[i].DependsOn...)
@@ -142,6 +146,9 @@ func (b *Board) Restore(p Plan) {
 // Validate checks the complete plan contract without mutating a board. It is
 // shared by new plan writes and completion assessment of restored legacy data.
 func Validate(p Plan) error {
+	if err := validateArtifacts(p.Artifacts); err != nil {
+		return err
+	}
 	if strings.TrimSpace(p.Goal) == "" {
 		return fmt.Errorf("goal must not be empty")
 	}
@@ -371,6 +378,9 @@ func (p *Plan) Render() string {
 	marks := map[string]string{"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "blocked": "[!]", "skipped": "[-]"}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", p.Goal)
+	for _, artifact := range p.Artifacts {
+		fmt.Fprintf(&b, "Artifact (%s): %s\n", artifact.Role, artifact.Path)
+	}
 	for _, step := range p.Steps {
 		fmt.Fprintf(&b, "%s %d. %s", marks[step.Status], step.ID, step.Title)
 		if len(step.DependsOn) > 0 {
@@ -438,6 +448,7 @@ var isolatedWriterPlanSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "goal": {"type": "string", "minLength": 1},
+    "artifacts": {"type":"array","maxItems":64,"description":"Optional Work task brief: declare final deliverables and scratch/helper files before writing, including shell-created outputs. Retain declarations in complete plan updates. Roles grant no permissions; deliverables require current validate_artifact receipts and cannot be silently demoted during a turn.","items":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":1024},"role":{"type":"string","enum":["deliverable","scratch"]}},"required":["path","role"],"additionalProperties":false}},
     "steps": {
       "type": "array",
       "minItems": 1,

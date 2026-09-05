@@ -2556,6 +2556,13 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
+- Runtime maintenance (2026-09-04): W4 adds Standard Work final-artifact
+  rechecks and optional plan `artifacts` intent metadata. Developer and
+  Orchestrated Goal acceptance still use their existing contracts; artifact
+  roles grant no graph execution or write authority. The shared plan schema is
+  additive and keeps older plans readable. W4 evidence and its user-testing
+  gate are in [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md); no orchestration
+  milestone or supported/experimental classification changes.
 - Runtime maintenance (2026-09-04): improvement-plan W3 adds a shared provider
   terminal-state check before primary tool execution or completion assessment.
   A truncated/refused/incomplete response records a non-retryable provider

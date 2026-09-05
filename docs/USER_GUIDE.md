@@ -3002,6 +3002,13 @@ sandboxing, hooks, audit, and trust remain intact.
 
 Work matches evidence to the outcome. `validate_artifact` checks a completed
 file after its final write and emits a path- and SHA-256-bound typed receipt.
+Work completion rechecks those final bytes and path identity, including shell
+and external edits. For file-producing tasks, `update_plan.artifacts` may list
+`{"path":"report.md","role":"deliverable"}` and
+`{"path":"helper.sh","role":"scratch"}`. Declared deliverables need current
+receipts; scratch files are excluded from deliverable acceptance. Keep the
+declarations in subsequent complete plan updates. A validation note or general
+test command cannot waive a missing declared output or a stale receipt.
 Analysis should retain identified inputs and reproducible calculations;
 research should identify consulted sources and separate fact from inference;
 external actions should retain a receipt/identifier and safely read back the

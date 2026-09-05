@@ -9,6 +9,12 @@ an accurate one; their history is in the Git log and in
 
 ### Fixed
 
+- Work completion rechecks the final bytes and target identity of validated
+  artifacts, catching script mutations, deletion, and external edits. Stale or
+  missing declared-deliverable receipts cannot be waived by a validation note
+  or a general test command. Optional `update_plan.artifacts` declarations
+  distinguish deliverables from scratch files; failed opaque executions report
+  uncertain effects without changing permissions or replaying actions.
 - Truncated, refused, failed, and incomplete provider responses cannot finish
   a task successfully or execute their proposed tools. Partial text and usage
   remain available; incomplete compaction cannot replace conversation context.
