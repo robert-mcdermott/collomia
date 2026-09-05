@@ -119,6 +119,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		} else {
 			m.addSystem("Developer mode enabled. Standard execution now prefers repository tools and build, lint, and test evidence; permissions are unchanged.")
 		}
+	case "/recovery":
+		if len(args) == 0 {
+			status, err := m.runtime.RecoveryStatus()
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.addPanel("Recovery", status)
+			}
+			break
+		}
+		if m.busy || len(args) < 2 || (args[0] != "acknowledge" && args[0] != "keep") {
+			m.addSystem("Use /recovery, /recovery acknowledge REASON, or /recovery keep REASON between turns. Reconciliation keeps current files and discards earlier workspace checkpoints; completion obligations remain.")
+			break
+		}
+		if err := m.runtime.ReconcileRecovery(args[0] == "acknowledge", strings.Join(args[1:], " ")); err != nil {
+			m.addError(err)
+		} else {
+			m.addSystem("Recovery inspection recorded. Current files kept; prior workspace checkpoint history discarded. Completion obligations still require fresh evidence. No action was replayed.")
+		}
 	case "/context":
 		if len(args) > 0 {
 			if len(args) != 1 || (args[0] == "clear" && m.busy) {
@@ -742,7 +761,7 @@ func busySlashAllowed(line string) bool {
 	switch strings.ToLower(fields[0]) {
 	case "/context":
 		return len(fields) == 1 || (len(fields) == 2 && fields[1] == "task")
-	case "/help", "/status", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
+	case "/recovery", "/help", "/status", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
 	case "/orchestrate":
 		return len(fields) == 1 || (len(fields) == 2 && (strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "pause") || strings.EqualFold(fields[1], "cancel"))) || (len(fields) == 3 && strings.EqualFold(fields[1], "status"))

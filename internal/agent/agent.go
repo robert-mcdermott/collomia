@@ -93,6 +93,7 @@ type Agent struct {
 	onCompaction           func(summary provider.Message, replaced int)
 	pinnedContext          func() string
 	onUserPrompt           func()
+	completionStore        CompletionStore
 	completionPlan         *plan.Board
 	goalGraph              *goalgraph.Graph
 	graphWorker            bool
@@ -146,7 +147,8 @@ type Options struct {
 	OnMessage func(provider.Message)
 	// OnUserPrompt observes genuine primary prompt/steering entry points,
 	// after OnMessage persisted them. Runtime role=user notices do not call it.
-	OnUserPrompt func()
+	OnUserPrompt    func()
+	CompletionStore CompletionStore
 	// OnCompaction observes context compactions (summary + replaced count).
 	OnCompaction func(summary provider.Message, replaced int)
 	// PinnedContext returns authoritative session state that must survive
@@ -215,7 +217,7 @@ func New(opts Options) *Agent {
 	if opts.TaskMode == "" {
 		opts.TaskMode = taskmode.Developer
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, taskMode: opts.TaskMode, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onUserPrompt: opts.OnUserPrompt, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, taskMode: opts.TaskMode, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onUserPrompt: opts.OnUserPrompt, completionStore: opts.CompletionStore, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 func standardHardIterationLimit(noProgressLimit int) int {
@@ -372,7 +374,16 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode, a.taskMode)
 	completion.ctx = ctx
 	maxTurnIterations := a.maxTurnIterations
+	store := a.completionStore
 	a.mu.RUnlock()
+	if !a.graphEnabled() {
+		if err := completion.restoreCompletion(store); err != nil {
+			return "", reportError(send, err)
+		}
+		if notice := completion.recoveryNotice(); notice != "" {
+			a.appendMessage(provider.Message{Role: "user", Content: notice})
+		}
+	}
 	standardLastProgressIteration := 0
 	standardProgressVersion := completion.progressVersion
 	// A controller-intercepted final answer is already visible and already paid
@@ -723,6 +734,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			decision := completion.assess()
 			switch {
 			case decision.done:
+				if err := completion.saveRecovery(true); err != nil {
+					return "", reportError(send, err)
+				}
 				a.endTurn(ctx, send, iteration, GoalDone)
 				return response.Content, nil
 			case decision.blocked:
@@ -779,12 +793,18 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				}
 			} else {
 				completion.observe(observation)
+				if err := completion.finishEffect(observation); err != nil {
+					return response.Content, reportError(send, err)
+				}
 			}
 		}
 		if !a.graphEnabled() && pendingFinal != "" && pendingFinalReusable {
 			decision := completion.assess()
 			switch {
 			case decision.done:
+				if err := completion.saveRecovery(true); err != nil {
+					return "", reportError(send, err)
+				}
 				a.endTurn(ctx, send, iteration, GoalDone)
 				return pendingFinal, nil
 			case decision.blocked:
@@ -1061,6 +1081,11 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		e := event.New(event.KindToolOutput)
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
+	}
+	if !a.graphEnabled() {
+		if err := completion.beginEffect(call.Name, action, observation.RetryKey); err != nil {
+			return tools.Result{}, observation, err
+		}
 	}
 	observation.Started = time.Now().UTC()
 	observation.ExecutionPrevented = false

@@ -1,6 +1,6 @@
 # Agent improvement plan
 
-Updated: 2026-09-04. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
+Updated: 2026-09-05. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
 
 This is the durable implementation and user-testing plan for the September
 review. It supplements the [roadmap](../ROADMAP.md). The existing
@@ -10,22 +10,23 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Latest completed slice:** W7a — retained task context and retrievable session evidence.
-- **Status:** W7a accepted; W1, W3, W4, and W5 are also accepted. W5 was committed
-  as `0c72f04`; the user explicitly directed the next wave on 2026-09-04.
-  W2, W6, W7b, W8, and W9 remain planned.
-- **Next action:** W7a is ready to commit. W7b (durable completion obligations
-  and workspace checkpoints) is unblocked and remains the next proposed slice;
-  await the user's direction to begin it.
-- **Test build:** `dist/collo-wave7`, version `v0.4.2-wave7a`, base commit
-  `0c72f04-wave7a-dirty`. Preserve `dist/collo-wave5` and the 24-trial baseline
-  for later comparisons. The installed binary and `VERSION` are unchanged.
+- **Completed slice:** W7b — durable Standard obligations and workspace checkpoints.
+- **Status:** accepted. W1, W3, W4, W5, and full W7 (W7a and W7b) are accepted.
+  W7a was committed as `0f618aa`; W7b passed user manual testing on 2026-09-05.
+  W2, W6, W8, and W9 remain planned.
+- **Next action:** commit W7b. W6's complete Work artifact workflow is the
+  proposed next wave; wait for the user's direction before starting it.
+- **Test build:** `dist/collo-wave7b`, version `v0.4.2-wave7b`, base commit
+  `0f618aa-wave7b-dirty`. Preserve W5's baseline/build and W7a's test binary.
+  The installed binary and `VERSION` are unchanged.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
   tests. The optional low-output-token check was not separately confirmed.
   W4 accepted on 2026-09-04 after all manual tests passed.
   W7a accepted on 2026-09-04: user reported “manual testing passes.”
+  W7b and full W7 accepted on 2026-09-05: user reported manual testing was
+  complete and successful. Provider/model was not specified.
 - **Deferred W2 work:** W1 only displays readable reasoning events already
   emitted by an adapter. It does not enable thinking at the API, add synchronous
   reasoning extraction, or restore thinking in reopened chat transcripts.
@@ -56,7 +57,8 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 Wave numbers are stable identifiers, not mandatory execution order. On
 2026-09-04 the user chose W3 ahead of W2. W1, W3, and W4 are accepted;
-W5 and W7a are accepted. W2, W6, W7b, W8, and W9 remain planned. Revisit the next priority at each gate.
+W5 and full W7 are accepted. W2, W6, W8, and W9 remain planned.
+Revisit the next priority at each gate.
 After accepting W3, the user explicitly selected W4 on 2026-09-04.
 After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 
@@ -68,7 +70,7 @@ After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 | W4 | Final deliverable identity and observed-effect checks | Accepted | User confirmed all manual tests passed and explicitly marked the wave done |
 | W5 | Real-model evaluation baseline | Accepted | Representative tasks and quality/cost metrics reflect the user's work |
 | W6 | One complete Work workflow: data → workbook → cited memo | Planned | Fresh setup can create, inspect, revise, and deliver useful artifacts |
-| W7 | Durable task context, retrievable evidence, and restart checkpoints | W7a accepted; W7b planned | Long work survives compaction/restart without losing requirements |
+| W7 | Durable task context, retrievable evidence, and restart checkpoints | Accepted (W7a and W7b) | User confirmed successful manual testing of both slices |
 | W8 | Lazy tool discovery and measured independent-read concurrency | Planned | Connected tools are discoverable and parallel reads improve latency |
 | W9 | Scoped autonomy mandates and durable delayed continuation | Planned; design gate required | Authorized work resumes predictably with clear wait/cancel controls |
 
@@ -506,14 +508,50 @@ changes recovery behavior only after the first slice is accepted.
 - [x] **User accepts W7a**: “manual testing passes,” 2026-09-04, following
   [the manual guide](TASK_CONTEXT.md#manual-acceptance-checks).
 
-**W7b — durable obligations and recovery (planned; W7a gate passed):**
+**W7b — durable obligations and recovery (accepted):**
 
-- [ ] Persist Standard completion obligations and bounded recoverable workspace
+- [x] Persist Standard completion obligations and bounded recoverable workspace
   checkpoints across restart, including non-Git Work folders.
-- [ ] Test cancellation/restart, external edits, and uncertain mutations;
+- [x] Test cancellation/restart, external edits, and uncertain mutations;
   do not replay ambiguous external effects or reuse stale validation receipts.
-- [ ] **User accepts W7b / full W7.** Workspace memory is optional future scope,
+- [x] **User accepts W7b / full W7:** manual testing complete and successful,
+  2026-09-05. Workspace memory is optional future scope,
   with provenance/edit/delete controls; unrelated-project semantic memory is deferred.
+
+**W7b implementation — 2026-09-05:**
+
+- Runtime completion state persists dirty paths, non-waivable deliverables,
+  unresolved failures, and a synced pre-execution uncertainty marker. Fresh
+  turns restore obligations, never old validation receipts, waivers, or grants.
+- Tracked file checkpoints retain bounded binary bytes/existence/modes with a
+  directory identity and coverage floor. Append-only deltas avoid duplicating
+  unchanged file entries. Resume/fork/rewind follow session history; new/switch
+  replace the live tracker rather than leaking another session's changes.
+- `/restore` and `/undo` journal their own application; interrupted restores
+  block continuation and further restore until explicit inspection/keep.
+  `/recovery` inspects state; user-only acknowledge/keep commands retain current
+  files and discard incomplete checkpoint coverage without validating work.
+- Command/external effects are never rolled back or automatically replayed.
+  Crash gaps and retention limits remain explicit. This is Standard recovery;
+  Orchestrated Goal authority and integration recovery are unchanged.
+- Focused offline tests pass, including cancellation/restart, original binary
+  bytes, mode/drift guards, fresh receipts, plan-drop resistance, failed-tool
+  identity collisions, pre-effect sync failure, bounded retention, replaced
+  roots, delta replay, interrupted restore reconciliation, task-mode bypass
+  rejection, and permitted read-only inspection while effects remain uncertain.
+- `go test ./...` and `go vet ./...` passed. Affected agent/app/session/diffmodel/
+  TUI/safefile/CLI packages passed with `-race`; final affected-package race
+  checks also passed after inspection and coverage refinements.
+- Built the separate `dist/collo-wave7b` binary: `v0.4.2-wave7b`
+  (`0f618aa-wave7b-dirty`). Its generated capability output matched the matrix
+  before the acceptance status update. `git diff --check` passed. Linux amd64 and Windows amd64 cross-builds
+  passed; this is compile evidence, not native runtime qualification.
+- No live provider calls were made by the implementation/test work. The user
+  subsequently confirmed successful manual testing on 2026-09-05, accepting
+  W7b and full W7; provider/model was not specified. The W5 sessionless quality harness does
+  not measure this new recovery behavior or its persistence overhead.
+- See [Standard recovery](RECOVERY.md) for exact controls, limits, compatibility,
+  and manual checks retained for regression testing. Full W7 is accepted.
 
 W7a uses additive session records (`task_context` payload schema 1 and explicit
 `user_request` references). Its working notes are claims, never permission or
@@ -599,6 +637,8 @@ the four context tools. No background continuation or workspace restore changes.
 | 2026-09-04 | W4 acceptance | User: “all manual tests pass. Mark W4 as done,” requesting a commit message before moving on. | W4 accepted; user will commit the changes. W2 and W5–W9 remain planned; no next wave started. |
 | 2026-09-04 | W5 acceptance / W7a implementation | User directed the next wave after commit `0c72f04`. Added retained context and evidence retrieval; offline test/race/vet gates passed and separate `v0.4.2-wave7a` build produced. | W5 accepted; W7a ready for manual testing. W7b remains planned behind that gate. |
 | 2026-09-04 | W7a acceptance | User reported “manual testing passes” after receiving the W7a test build and manual guide. Provider/model was not specified. | W7a accepted; W7b unblocked but not started. Full W7 remains incomplete. |
+| 2026-09-05 | W7b implementation | User explicitly selected W7b after W7a commit `0f618aa`. Durable Standard obligations and bounded checkpoint recovery passed offline tests, affected-package race checks, vet, and cross-build checks. Separate `v0.4.2-wave7b` binary and manual guide prepared. | W7b ready for user testing; full W7 acceptance and later waves remain pending. |
+| 2026-09-05 | W7b / full W7 acceptance | User confirmed manual testing was complete and successful and requested that W7b be marked complete. Provider/model was not specified. | W7b and full W7 accepted; ready to commit. W6 remains proposed, not started. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.

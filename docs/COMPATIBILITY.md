@@ -21,6 +21,26 @@ without rewriting it.
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
+W7b adds runtime-owned `completion_state` and `workspace_checkpoint_delta`
+records under session record schema 1. Both payloads use `schema_version: 1`.
+Completion state carries task profile, dirty/unknown flags, bounded paths and
+artifact roles, unresolved operation identities, pending effect metadata, and
+an optional user acknowledgement. No validation receipts or grants are restored.
+Checkpoint deltas carry header state (directory identity, coverage floor,
+interrupted-restore flag, optional keep reason), a dropped prefix, a kept prefix,
+and appended binary-safe entries. Invalid delta references, incompatible versions,
+retention bounds, or an incompatible workspace root fail closed. A full
+`workspace_checkpoint` payload is also understood for compatibility with the
+projection representation. See the typed definitions in `internal/agent/recovery.go`,
+`internal/diffmodel/checkpoint.go`, and `internal/session/recovery.go`.
+
+Fork preserves these records; rewind replays only its selected prefix. A coupled
+restore writes its own checkpoint journal into the new branch before workspace
+mutation. Legacy sessions get no invented obligations or file history; their new
+checkpoint coverage begins at resume. Downgrades can ignore additive record types,
+so using an older build does not preserve the new recovery guarantees.
+[Standard recovery](RECOVERY.md) defines the current limits and operator controls.
+
 W7a adds `task_context` and `user_request` record types within session record
 schema 1. The task-context payload has `schema_version: 1`, a revision, and
 bounded model-authored notes. Invalid/unsupported payloads and invalid request

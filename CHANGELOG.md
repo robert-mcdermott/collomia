@@ -9,11 +9,17 @@ an accurate one; their history is in the Git log and in
 
 ### Added
 
+- W7b Standard recovery: persisted unfinished completion obligations, synced
+  in-flight markers, fresh validation after restart, bounded workspace
+  checkpoint deltas, durable undo/restore interruption handling, and user-only
+  `/recovery` inspection/reconciliation. External effects are never replayed
+  or rolled back. Passed offline and user manual-testing gates, completing W7.
+  See [Standard recovery](docs/RECOVERY.md).
+
 - W7a session task context: bounded, revisioned working notes retained across
   compaction/resume; separate original user-request previews; session-local
   history search/read; `/context task` and `/context clear`. Model notes do not
-  grant permission or validate artifacts. W7b recovery checkpoints remain
-  planned. W7a passed offline and user manual-testing gates. See
+  grant permission or validate artifacts. W7b recovery is described above. W7a passed offline and user manual-testing gates. See
   [Task context](docs/TASK_CONTEXT.md) for usage and testing.
 
 - Opt-in `collo eval` quality evaluations: 12 balanced coding/Work tasks,

@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-09-04
+**Status updated:** 2026-09-05
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -19,8 +19,8 @@ W1, W3, W4, and W5 are user-accepted. W5's balanced 12-task baseline passed
 24/24 machine checks, with prose quality and efficiency findings recorded
 separately. W7a retained task context and retrievable session evidence passed
 manual testing and is accepted. W7b's durable obligations and workspace
-checkpoints are unblocked but not started.
-W6's complete Work artifact workflow remains the proposed following wave.
+checkpoints passed manual testing on 2026-09-05, completing full W7.
+W6's complete Work artifact workflow remains the proposed next wave, not started.
 Wave numbers identify work rather than a mandatory execution order.
 
 Collomia is a cross-platform, provider-neutral local terminal agent for

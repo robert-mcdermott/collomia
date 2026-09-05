@@ -13,6 +13,20 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-05 — W7b durable Standard recovery
+
+- Following W7a acceptance and commit `0f618aa`, the user selected W7b.
+- Added persisted completion obligations, write-ahead uncertain-action markers,
+  fresh-evidence requirements, bounded durable workspace checkpoints, delta
+  replay, and explicit user inspection/keep controls. Restore/undo journal their
+  own interruption; no command or external action is replayed automatically.
+- Full tests, affected-package race checks, vet, and Linux/Windows cross-builds
+  passed. A separate `v0.4.2-wave7b` binary was delivered for the user gate in
+  [the improvement plan](IMPROVEMENT_PLAN.md). The user subsequently confirmed
+  successful manual testing on 2026-09-05, accepting W7b and full W7.
+  Provider/model was not specified. Orchestration milestones and integration
+  authority are unchanged; W6 remains proposed, not started.
+
 ### 2026-09-04 — W5 accepted; W7a retained context
 
 - After committing W5 as `0c72f04`, the user directed the next wave. The

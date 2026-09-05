@@ -4,6 +4,7 @@
 package diffmodel
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -154,13 +155,14 @@ func splitLines(s string) []string {
 // Snapshot is one recorded mutation: the state of a file before and after.
 // Before/After of nil mean the file did not exist on that side.
 type Snapshot struct {
-	Path       string
-	Op         string // write, edit, patch, delete
-	Before     *string
-	After      *string
-	BeforeMode os.FileMode
-	AfterMode  os.FileMode
-	Time       time.Time
+	Unavailable bool // content exceeded durable checkpoint retention
+	Path        string
+	Op          string // write, edit, patch, delete
+	Before      *string
+	After       *string
+	BeforeMode  os.FileMode
+	AfterMode   os.FileMode
+	Time        time.Time
 	// Turn is the 1-based conversational turn the mutation happened during,
 	// so a checkpoint restore can select exactly the mutations that followed a
 	// completed turn. Zero means the tracker was never told about turns, which
@@ -188,12 +190,18 @@ type AlignedLine struct {
 // Tracker records mutations, keeps each file's base (first-seen) content for
 // session-level diffs, and supports undoing the most recent mutation.
 type Tracker struct {
-	mu      sync.Mutex
-	root    string
-	rootID  safefile.RootIdentity
-	rootErr error
-	base    map[string]*string
-	history []Snapshot
+	checkpointSave    func(json.RawMessage) error
+	checkpointErr     error
+	checkpointRoot    string
+	checkpointReason  string
+	checkpointFloor   int
+	checkpointPending bool
+	mu                sync.Mutex
+	root              string
+	rootID            safefile.RootIdentity
+	rootErr           error
+	base              map[string]*string
+	history           []Snapshot
 	// completedTurns is how many conversational turns have finished. A
 	// mutation recorded now belongs to the turn after them.
 	completedTurns int
@@ -230,6 +238,7 @@ func (t *Tracker) RecordWithMode(path, op string, before, after *string, beforeM
 		t.base[path] = before
 	}
 	t.history = append(t.history, Snapshot{Path: path, Op: op, Before: before, After: after, BeforeMode: beforeMode.Perm(), AfterMode: afterMode.Perm(), Time: time.Now().UTC(), Turn: t.completedTurns + 1})
+	_ = t.persistCheckpointLocked()
 }
 
 // CompleteTurn records that a conversational turn finished, so later mutations
@@ -241,12 +250,8 @@ func (t *Tracker) CompleteTurn() {
 	t.completedTurns++
 }
 
-// SetCompletedTurns aligns the tracker's turn numbering with a session that
-// already has completed turns — a resume, a rewind, or a switch to another
-// session. Mutations recorded before the call keep the turn they were made in,
-// which is what keeps a restore honest: only this process's own writes are
-// reversible, and a restore to a turn from an earlier process finds nothing to
-// reverse rather than claiming to have undone it.
+// SetCompletedTurns aligns standalone/in-memory trackers with their caller.
+// Durable session switches use BindCheckpoint to replace history and numbering.
 func (t *Tracker) SetCompletedTurns(turns int) {
 	if turns < 0 {
 		turns = 0
@@ -363,6 +368,9 @@ func (t *Tracker) Undo() (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("nothing to undo")
 	}
 	last := t.history[len(t.history)-1]
+	if err := t.checkpointRestoreGuard(last.Turn - 1); err != nil {
+		return Snapshot{}, err
+	}
 	target, err := t.mutationTarget(last.Path)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("undo blocked: secure target: %w", err)
@@ -382,6 +390,21 @@ func (t *Tracker) Undo() (Snapshot, error) {
 	case string(current) != *last.After:
 		return Snapshot{}, fmt.Errorf("undo blocked: %s changed outside the agent since the last operation", last.Path)
 	}
+	if last.After != nil {
+		info, err := target.Stat()
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if info.Mode().Perm() != last.AfterMode.Perm() {
+			return Snapshot{}, errors.New("undo blocked: file mode changed outside the agent")
+		}
+	}
+	if t.checkpointSave != nil {
+		t.checkpointPending = true
+		if err := t.persistCheckpointLocked(); err != nil {
+			return Snapshot{}, err
+		}
+	}
 	if last.Before == nil {
 		if err := target.Remove(); err != nil {
 			return Snapshot{}, err
@@ -396,7 +419,8 @@ func (t *Tracker) Undo() (Snapshot, error) {
 		}
 	}
 	t.history = t.history[:len(t.history)-1]
-	return last, nil
+	t.checkpointPending = false
+	return last, t.persistCheckpointLocked()
 }
 
 // Restore reports what a checkpoint restore reversed. Files are listed in the
@@ -425,11 +449,12 @@ func (e *DriftError) Error() string {
 // than replaying each mutation backwards means one write per file instead of
 // one per mutation, so a file touched twenty times cannot be left halfway.
 type reversal struct {
-	path       string
-	expected   *string
-	target     *string
-	targetMode os.FileMode
-	mutations  int
+	path         string
+	expected     *string
+	expectedMode os.FileMode
+	target       *string
+	targetMode   os.FileMode
+	mutations    int
 }
 
 // PendingSince reports how many files and mutations a restore to the given
@@ -456,6 +481,9 @@ func (t *Tracker) VerifyRestore(turn int) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if err := t.checkpointRestoreGuard(turn); err != nil {
+		return err
+	}
 	targets, err := t.verifyLocked(t.planReversals(turn), turn)
 	for _, target := range targets {
 		if target != nil {
@@ -497,6 +525,16 @@ func (t *Tracker) verifyLocked(plan []reversal, turn int) ([]*safefile.Target, e
 			return targets, fmt.Errorf("restore blocked: cannot read %s: %v", r.path, readErr)
 		case string(current) != *r.expected:
 			drifted = append(drifted, r.path)
+		default:
+			if r.expected != nil {
+				info, err := target.Stat()
+				if err != nil {
+					return targets, err
+				}
+				if info.Mode().Perm() != r.expectedMode.Perm() {
+					drifted = append(drifted, r.path)
+				}
+			}
 		}
 	}
 	if len(drifted) > 0 {
@@ -512,10 +550,10 @@ func (t *Tracker) verifyLocked(plan []reversal, turn int) ([]*safefile.Target, e
 // It verifies the whole plan before writing anything and refuses outright if
 // any file changed outside the agent, because a restore that half-applied and
 // then stopped leaves a workspace in a state neither the user nor the
-// conversation describes. Only mutations this process recorded are reversible:
-// the tracker is in-memory, so a restore to a turn from an earlier process
-// finds nothing to reverse rather than pretending otherwise, and shell,
-// network, and other external side effects are never reversed at all.
+// conversation describes. Only retained tracked mutations are reversible:
+// durable history has explicit retention/coverage bounds. Shell, network, and
+// other external side effects are never reversed. Interrupted application
+// remains marked until explicit inspection and reconciliation.
 func (t *Tracker) RestoreTo(turn int) (Restore, error) {
 	if turn < 0 {
 		return Restore{}, errors.New("restore turn must not be negative")
@@ -523,6 +561,9 @@ func (t *Tracker) RestoreTo(turn int) (Restore, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	if err := t.checkpointRestoreGuard(turn); err != nil {
+		return Restore{}, err
+	}
 	plan := t.planReversals(turn)
 	if len(plan) == 0 {
 		t.completedTurns = turn
@@ -541,6 +582,12 @@ func (t *Tracker) RestoreTo(turn int) (Restore, error) {
 		return Restore{}, err
 	}
 
+	if t.checkpointSave != nil {
+		t.checkpointPending = true
+		if err := t.persistCheckpointLocked(); err != nil {
+			return Restore{}, err
+		}
+	}
 	// Apply. Verification has already ruled out the failure this operation
 	// exists to avoid, so what remains is ordinary I/O.
 	result := Restore{Turn: turn}
@@ -570,7 +617,8 @@ func (t *Tracker) RestoreTo(turn int) (Restore, error) {
 	}
 	t.history = kept
 	t.completedTurns = turn
-	return result, nil
+	t.checkpointPending = false
+	return result, t.persistCheckpointLocked()
 }
 
 // planReversals collapses the mutations recorded after a completed turn into
@@ -589,6 +637,7 @@ func (t *Tracker) planReversals(turn int) []reversal {
 			order = append(order, r)
 		}
 		r.expected = snapshot.After
+		r.expectedMode = snapshot.AfterMode
 		r.mutations++
 	}
 	plan := make([]reversal, 0, len(order))

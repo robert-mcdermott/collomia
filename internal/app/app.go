@@ -523,10 +523,16 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	steering := agent.NewSteeringQueue()
 	agentOptions.TakeSteering = steering.Take
 	if sess != nil {
+		agentOptions.CompletionStore = sess
 		agentOptions.OnMessage = sess.AppendMessage
 		agentOptions.OnUserPrompt = taskContext.RecordUserRequest
 		agentOptions.OnCompaction = sess.AppendCompaction
-		agentOptions.PersistenceError = sess.Err
+		agentOptions.PersistenceError = func() error {
+			if err := sess.Err(); err != nil {
+				return err
+			}
+			return tracker.CheckpointError()
+		}
 	}
 	agentOptions.SessionID = sessionID
 	agentOptions.AuditFailure = auditFailure
@@ -552,7 +558,10 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	agentRuntime.SetGoalWriterVerifier(func(verifyCtx context.Context, id string) ([]agent.DelegateVerification, error) {
 		return runtime.VerifyDelegateSuite(verifyCtx, id, nil)
 	})
-	runtime.alignChangeTurns()
+	if err := runtime.alignChangeTurns(); err != nil {
+		runtime.Close()
+		return nil, err
+	}
 	// An integration that never recorded an outcome is the one workspace state
 	// nothing else can explain, so it is surfaced at startup rather than
 	// waiting for the user to wonder why a file looks half-changed.
@@ -564,21 +573,25 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	return runtime, nil
 }
 
-// alignChangeTurns points the change tracker's turn numbering at the active
-// session's completed turns, so a checkpoint the user picks from the session's
-// history means the same turn to both halves of a restore. A resumed session
-// carries turns whose file mutations this process never recorded; the tracker
-// keeps an empty history for them, which is what makes a restore report that it
-// reversed nothing instead of implying it reversed everything.
-func (r *Runtime) alignChangeTurns() {
+// alignChangeTurns binds both recovery projections to the active durable session.
+// Rebinding replaces history; legacy sessions start coverage at resume.
+func (r *Runtime) alignChangeTurns() error {
 	if r == nil || r.Changes == nil {
-		return
+		return nil
 	}
-	turns := 0
-	if r.Session != nil {
-		turns = r.Session.Meta.Turns
+	if r.Session == nil {
+		r.Changes.SetCompletedTurns(0)
+		return nil
 	}
-	r.Changes.SetCompletedTurns(turns)
+	r.Agent.SetCompletionStore(r.Session)
+	sess := r.Session
+	r.Agent.SetPersistenceGuard(func() error {
+		if err := sess.Err(); err != nil {
+			return err
+		}
+		return r.Changes.CheckpointError()
+	})
+	return r.Changes.BindCheckpoint(sess.LoadWorkspaceCheckpoint(), sess.Meta.Turns, sess.SaveWorkspaceCheckpoint)
 }
 
 // OrchestratedProposalPrompt begins the read-only design half of the explicit
@@ -1756,8 +1769,7 @@ func (r *Runtime) SwitchSession(id string) error {
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
-	r.alignChangeTurns()
-	return nil
+	return r.alignChangeTurns()
 }
 
 // NewSession starts a fresh session, leaving the previous one saved.
@@ -1794,8 +1806,7 @@ func (r *Runtime) NewSession() error {
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
-	r.alignChangeTurns()
-	return nil
+	return r.alignChangeTurns()
 }
 
 // RewindSession creates and switches to a non-destructive branch ending at a
@@ -1829,7 +1840,9 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
-	r.alignChangeTurns()
+	if err := r.alignChangeTurns(); err != nil {
+		return sourceID, sess.Meta.ID, err
+	}
 	return sourceID, sess.Meta.ID, nil
 }
 
@@ -1845,14 +1858,13 @@ type CheckpointRestore struct {
 
 // RestoreCheckpoint returns the conversation and the workspace together to a
 // completed turn: it creates the same non-destructive conversation branch
-// `/rewind` does, and reverses every file mutation this process recorded after
-// that turn.
+// `/rewind` does, and reverses retained tracked file mutations after that turn.
 //
 // The workspace is verified before the conversation branches, so the failure
 // this is guarded against — a file edited outside Collomia since the checkpoint
 // — leaves both halves untouched and names the files. Command, network, and
 // other external side effects are never reversed; only tracked file mutations
-// are, and only those recorded by this process.
+// are, within the durable retention and workspace identity bounds.
 func (r *Runtime) RestoreCheckpoint(turn int) (CheckpointRestore, error) {
 	if r.Sessions == nil || r.Session == nil {
 		return CheckpointRestore{}, fmt.Errorf("session persistence is unavailable")
@@ -1867,12 +1879,26 @@ func (r *Runtime) RestoreCheckpoint(turn int) (CheckpointRestore, error) {
 	if err := r.Changes.VerifyRestore(turn); err != nil {
 		return result, err
 	}
+	uncertain, err := agent.CompletionUncertain(r.Session)
+	if err != nil {
+		return result, err
+	}
+	if uncertain {
+		return result, errors.New("an action has an uncertain outcome; inspect /recovery before restoring workspace history")
+	}
+	saved := r.Session.LoadWorkspaceCheckpoint()
 	sourceID, sessionID, err := r.RewindSession(turn)
 	result.SourceID = sourceID
 	if err != nil {
 		return result, err
 	}
 	result.SessionID = sessionID
+	if err := r.Changes.BindCheckpoint(saved, turn, r.Session.SaveWorkspaceCheckpoint); err != nil {
+		return result, err
+	}
+	if err := r.Changes.PersistCheckpoint(); err != nil {
+		return result, err
+	}
 	restored, err := r.Changes.RestoreTo(turn)
 	result.Files = restored.Files
 	result.Mutations = restored.Mutations

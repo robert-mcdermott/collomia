@@ -22,6 +22,17 @@ screens. They do not establish live provider enablement or state continuity.
 
 ## Standard local checks
 
+W7b adds `recovery_test.go` in agent/app/session and `checkpoint_test.go` in
+diffmodel. Production-app fixtures cover non-Git Work restart, cancellation
+after a real write, retained validation obligations, fresh proof, durable
+restore/branch resume, and external-edit refusal. Controller fixtures cover
+pre-execution sync failure, uncertain replay refusal, deliverable retention,
+stale-receipt rejection, and cross-turn failure-ID collisions. Checkpoint
+fixtures cover binary bytes, mode checks, replaced roots, caps/coverage floors,
+interrupted multi-file application, explicit keep, delta reconstruction, and
+invalid references. Existing full suites remain the graph/permission regression
+gate; live manual acceptance is separate in [Standard recovery](RECOVERY.md).
+
 W7a adds `internal/session/task_context_test.go` and
 `internal/app/task_context_test.go`. Scripted providers drive production-app
 Work sessions through two compactions, close/reopen, and exact earlier source

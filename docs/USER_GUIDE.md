@@ -2929,7 +2929,8 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/mode [developer\|work]` | Show or switch the task profile. The choice is persisted with the session and changes neither provider nor permissions. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
-| `/context [task|clear]` | `task` inspects retained notes and request previews; `clear` clears only notes between turns. Without arguments, show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
+| `/recovery` | Inspect durable obligations and checkpoint availability. Between turns, `acknowledge REASON` reconciles an uncertain action; `keep REASON` keeps files and discards prior checkpoints. Neither validates work nor grants permission. |
+| `/context [task\|clear]` | `task` inspects retained notes and request previews; `clear` clears only notes between turns. Without arguments, show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
 | `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|done\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, release a graph that has finished (`done`, also spelled `release`), or cancel Orchestrated Goal. |
 | `/tasks` | Show the structured plan. |
@@ -5907,7 +5908,7 @@ changes across how many files each choice would reverse; a turn number on its
 own does not tell you what restoring to it costs.
 
 **It fails closed.** The workspace is verified before the conversation
-branches, so a restore that cannot complete leaves *both* halves untouched. If
+branches, so a drift refusal leaves *both* halves untouched. If
 any file changed outside Collomia since the checkpoint, the operation is
 refused and every affected file is named:
 
@@ -5924,6 +5925,10 @@ would discard those edits. Save or revert them, then run /restore again —
 or use /rewind to branch the conversation alone.
 ```
 
+I/O failure or process termination after application starts can still leave a
+partial restore. W7b journals this state and blocks continuation until inspection
+and `/recovery keep REASON`; see [Standard recovery](RECOVERY.md).
+
 A partially applied restore would leave a tree that neither the conversation
 nor the user describes, and silently overwriting your own edits would be worse
 than either. Naming every file rather than the first one found is deliberate:
@@ -5931,10 +5936,10 @@ acting on one file and then discovering a second is the same trap.
 
 Two limits are real and stated rather than hidden:
 
-- **Only this process's file changes are reversible.** Change tracking lives in
-  memory, so restoring to a turn belonging to a session you resumed reports
-  that no tracked file changes needed reversing. It does not claim to have
-  rewound writes it never observed.
+- **Only retained tracked file changes are reversible.** W7b persists bounded
+  binary bytes, existence, and modes across restart. Retention gaps, unavailable
+  large entries, replaced workspace roots, and external byte/mode edits refuse
+  restoration. Legacy sessions have no retroactive checkpoint coverage.
 - **External effects are never reversed.** Shell commands, package installs,
   network calls, deployments, and remote MCP effects are outside the tracked
   filesystem. `/restore` moves the conversation and the files; it does not move
@@ -6003,7 +6008,11 @@ Model notes are fallible claims, not permission or validation receipts. Later
 user corrections take precedence; historical observations need fresh checks
 before being described as current. See [Task context](TASK_CONTEXT.md) for
 arguments, size limits, provenance, restart behavior, and W7a manual checks.
-W7b durable completion obligations and workspace checkpoints remain planned.
+W7b adds [Standard recovery](RECOVERY.md): unfinished completion obligations
+survive turns/restart and require fresh validation. `/recovery` inspects them;
+`/restore` and `/undo` use bounded durable checkpoints. Uncertain actions and
+interrupted restores need explicit inspection/reconciliation. No external
+effect is automatically replayed or undone.
 
 ### Context estimation and compaction
 

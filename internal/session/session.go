@@ -69,7 +69,8 @@ type Record struct {
 	IntegrationCheckpoint json.RawMessage `json:"integration_checkpoint,omitempty"`
 	TaskContext           *TaskContext    `json:"task_context,omitempty"`
 	// UserRequest references a genuine primary user prompt in Transcript (1-based).
-	UserRequest int `json:"user_request,omitempty"`
+	UserRequest int             `json:"user_request,omitempty"`
+	Recovery    json.RawMessage `json:"recovery,omitempty"`
 }
 
 type Store struct {
@@ -223,6 +224,20 @@ func (s *Store) Load(id string) (*Session, error) {
 		}
 		if record.Type == "user_request" && (record.UserRequest < 1 || record.UserRequest > len(sess.Transcript) || sess.Transcript[record.UserRequest-1].Role != "user") {
 			return nil, fmt.Errorf("session %s has an invalid user request reference", id)
+		}
+		if record.Type == "completion_state" || record.Type == "workspace_checkpoint" {
+			limit := 128 << 10
+			if record.Type == "workspace_checkpoint" {
+				limit = 16 << 20
+			}
+			if err := validateRecoveryRecord(record.Recovery, limit); err != nil {
+				return nil, fmt.Errorf("session %s recovery: %w", id, err)
+			}
+		}
+		if record.Type == "workspace_checkpoint_delta" {
+			if _, err := applyCheckpointDelta(sess.workspaceCheckpointRaw, record.Recovery); err != nil {
+				return nil, fmt.Errorf("session %s checkpoint delta: %w", id, err)
+			}
 		}
 		sess.replay(record)
 	}
@@ -640,12 +655,14 @@ type Session struct {
 	// with their summary while Transcript keeps everything.
 	active []provider.Message
 	// PlanRaw is the latest persisted structured plan, if any.
-	PlanRaw         json.RawMessage
-	taskContext     TaskContext
-	userRequests    []int
-	userRequestIDs  map[int]bool
-	omittedRequests bool
-	contextMu       sync.Mutex
+	PlanRaw                json.RawMessage
+	taskContext            TaskContext
+	completionRaw          json.RawMessage
+	workspaceCheckpointRaw json.RawMessage
+	userRequests           []int
+	userRequestIDs         map[int]bool
+	omittedRequests        bool
+	contextMu              sync.Mutex
 	// GoalGraphRaw is the latest persisted runtime-owned graph snapshot, if
 	// this session used the internal OG-1 path or explicit OG-2A TUI preview.
 	GoalGraphRaw json.RawMessage
@@ -691,6 +708,12 @@ func (sess *Session) open() error {
 
 func (sess *Session) replay(record Record) {
 	switch record.Type {
+	case "completion_state":
+		sess.completionRaw = append(json.RawMessage(nil), record.Recovery...)
+	case "workspace_checkpoint_delta":
+		sess.workspaceCheckpointRaw, _ = applyCheckpointDelta(sess.workspaceCheckpointRaw, record.Recovery)
+	case "workspace_checkpoint":
+		sess.workspaceCheckpointRaw = append(json.RawMessage(nil), record.Recovery...)
 	case "task_context":
 		if record.TaskContext != nil {
 			sess.taskContext = cloneTaskContext(*record.TaskContext)

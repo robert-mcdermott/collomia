@@ -24,20 +24,20 @@ type toolEffects struct {
 
 func executionEffects(name string, action tools.Action) toolEffects {
 	switch name {
-	case "write_file", "edit_file", "apply_patch":
+	case "write_file", "edit_file", "apply_patch", "format_file":
 		return toolEffects{Paths: slices.Clone(action.Paths), Unknown: len(action.Paths) == 0}
 	case "run_command":
 		// Command Paths include inputs and working directories, not a reliable
 		// write set. Never interpret them as final deliverables.
 		return toolEffects{Unknown: true}
 	case "read_file", "list_files", "search_files", "validate_artifact", "update_plan", "detect_verification", "read_tool_result",
-		"web_fetch", "web_search", "search_symbols", "find_definition", "find_references", "diagnostics", "list_processes", "process_output":
+		"read_task_context", "update_task_context", "read_session", "search_session", "git_status", "git_diff", "git_log", "git_blame", "load_skill", "ask_user", "inspect_delegate_changes", "compare_delegate_changes", "web_fetch", "web_search", "search_symbols", "find_definition", "find_references", "diagnostics", "list_processes", "process_output":
 		return toolEffects{}
 	default:
 		// Compatibility for tools without an effect contract: writes remain
 		// conservatively tracked; other opaque tools cannot attest no effects.
 		if action.Risk == tools.RiskWrite {
-			return toolEffects{Paths: slices.Clone(action.Paths), Unknown: len(action.Paths) == 0}
+			return toolEffects{Paths: slices.Clone(action.Paths), Unknown: true}
 		}
 		return toolEffects{Unknown: true}
 	}

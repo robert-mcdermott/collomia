@@ -106,6 +106,9 @@ type toolObservation struct {
 }
 
 type completionController struct {
+	store                CompletionStore
+	pending              *pendingEffect
+	effectStarted        bool
 	board                *plan.Board
 	workspace            string
 	taskMode             taskmode.Mode
@@ -275,11 +278,18 @@ func (c *completionController) recordFailure(observation toolObservation) {
 		_, revision = c.board.Snapshot()
 	}
 	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey}
-	for i := range c.failures {
-		if c.failures[i].id == failure.id {
-			c.failures[i] = failure
-			return
+	for suffix := 2; ; suffix++ {
+		collision := false
+		for _, existing := range c.failures {
+			if existing.id == failure.id {
+				collision = true
+				break
+			}
 		}
+		if !collision {
+			break
+		}
+		failure.id = fmt.Sprintf("%s#%d", id, suffix)
 	}
 	c.failures = append(c.failures, failure)
 }
@@ -380,7 +390,7 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 }
 
 func completionMetaTool(name string) bool {
-	return name == "update_plan" || name == "detect_verification"
+	return name == "update_plan" || name == "detect_verification" || name == "update_task_context" || name == "read_task_context" || name == "read_session" || name == "search_session"
 }
 
 // receiptForOutputMarker recognizes the exact mistake that opaque external
@@ -579,6 +589,12 @@ func completionDisclosure(current *plan.Plan, mode taskmode.Mode) string {
 func (c *completionController) assess() completionDecision {
 	if c == nil || !c.enabled {
 		return completionDecision{done: true}
+	}
+	if c.store != nil && c.artifacts.overflow {
+		return completionDecision{blocked: true, reason: "durable completion tracking exceeded its bound; split the work into a new session rather than treating omitted obligations as complete"}
+	}
+	if c.pending != nil {
+		return completionDecision{blocked: true, reason: "uncertain outcome from " + c.pending.Tool + "; inspect current state, then /recovery acknowledge REASON; no automatic replay"}
 	}
 	var issues []string
 	planIssueCount := 0

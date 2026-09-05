@@ -4,7 +4,8 @@ W7a gives Developer and Work sessions a small durable working record and tools
 for retrieving evidence that has left the active conversation through compaction.
 The model can retain constraints and decisions without repeatedly rereading the
 workspace. The offline gate passed, and the user accepted W7a after successful
-manual testing on 2026-09-04. W7b recovery checkpoints remain a planned slice.
+manual testing on 2026-09-04. W7b adds [Standard recovery](RECOVERY.md), accepted
+after its separate manual-testing gate on 2026-09-05. Full W7 is complete.
 
 ## Everyday use
 
@@ -78,9 +79,10 @@ expanded binary attachments. They retrieve old observations, which can differ
 from today's files. Recheck current bytes and validation receipts before claiming
 current correctness. Retrieval never executes a historical tool call.
 
-Ephemeral runs omit these tools. W7a does not persist Standard completion
+Ephemeral runs omit these tools. W7a itself does not persist Standard completion
 obligations or add workspace restoration, cross-project memory, delayed work,
-or automatic replay of interrupted external effects.
+or automatic replay of interrupted external effects. For W7b obligations and
+checkpoint controls, see [Standard recovery](RECOVERY.md).
 
 ## Manual acceptance checks
 
@@ -157,5 +159,6 @@ printf 'W7_ORIGINAL: 30 successes out of 40 requests\n' > dist/wave7-fixtures/so
    note, inspect it with `/context task`, and retrieve its original request.
    Expect the same context behavior. No repository modification is needed.
 
-Report failures with the provider/model, step, and tool output. Accepting W7a
-unblocks W7b implementation; it does not mark the full W7 recovery wave complete.
+Report failures with the provider/model, step, and tool output. These checks cover
+W7a; W7b recovery checks are documented in [Standard recovery](RECOVERY.md).
+Both slices have passed their user gates.

@@ -9,8 +9,10 @@ execution is risk-free or that every roadmap feature is complete.
 W7a retained task context passed its offline and user manual-testing gates.
 Bounded model notes and original evidence survive compaction/resume, but notes
 can be stale, long/older requests require retrieval, and model use is not
-guaranteed. This does not yet persist Standard completion obligations or add
-recoverable Work workspace checkpoints (W7b). See [Task context](TASK_CONTEXT.md).
+guaranteed. W7b adds durable Standard obligations and bounded workspace
+checkpoints; it passed its offline and user manual-testing gates. Interrupted actions require
+inspection, retained history has explicit limits, and external effects cannot
+be restored. See [Task context](TASK_CONTEXT.md) and [Standard recovery](RECOVERY.md).
 
 ## Appropriate beta use
 
