@@ -35,6 +35,8 @@ import (
 type block struct {
 	role, title, content string
 	tool, summary        string
+	// Reasoning is display-only provider text, bounded independently of answers.
+	reasoningTruncated bool
 	// status and elapsed are set on "tool" header blocks as the turn runs.
 	// Replayed sessions leave both zero: the transcript records what a tool
 	// did but not how long it took, and inventing a duration there would be
@@ -788,6 +790,8 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 	wasActivityBottom := m.activityView != nil && m.activityView.cursor == len(m.activities)-1
 	m.activities = activity.Append(m.activities, e, activity.DefaultLimit)
 	switch e.Kind {
+	case runtimeevent.KindReasoningDelta:
+		m.appendReasoning(e.Text)
 	case runtimeevent.KindTextDelta:
 		if len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "assistant" {
 			m.blocks = append(m.blocks, block{role: "assistant"})
@@ -1011,6 +1015,8 @@ func (m *Model) chatContent() string {
 				m.styles.muted.Render(m.wrapProse("↳ delivered at the agent's next step; grants no permissions", 0)) + "\n\n")
 		case "assistant":
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
+		case "reasoning":
+			b.WriteString(m.renderReasoning(i) + "\n\n")
 		case "tool":
 			b.WriteString(m.renderToolHeader(block) + "\n")
 		case "tool-result":
@@ -1466,7 +1472,7 @@ func (m *Model) helpContent() string {
 		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
 		{m.binding("session_picker"), "open saved sessions without replacing the draft"},
 		{m.binding("agent_control"), "inspect active agents; use /agents to steer, verify, compare, stop, or apply"},
-		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
+		{m.binding("toggle_tool_output"), "expand / collapse tool output and thinking summaries"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
 		{m.binding("context_rail"), "show / hide the context rail (automatic above " + fmt.Sprintf("%d", railAutoWidth) + " columns)"},

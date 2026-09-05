@@ -5,6 +5,21 @@ protocol tests use in-process HTTP fixtures, MCP tests use the official SDK's
 in-memory transports, and agent evaluations use a scripted provider while
 driving the real permission and built-in tool pipeline.
 
+## Improvement-wave acceptance
+
+[The improvement plan](IMPROVEMENT_PLAN.md) records the active wave, automated
+evidence, manual checks, and explicit user acceptance before the next wave.
+For W1 thinking display, run:
+
+```sh
+go test -count=1 ./internal/tui -run '^TestReasoning'
+```
+
+These offline fixtures exercise readable reasoning through
+the TUI event path, tool/answer ordering, collapse/expand, search/copy text,
+UTF-8 truncation, custom bindings, narrow screens, and live/finished golden
+screens. They do not establish live provider enablement or state continuity.
+
 ## Standard local checks
 
 Run from the repository root:

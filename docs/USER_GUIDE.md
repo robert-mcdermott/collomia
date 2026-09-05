@@ -2850,6 +2850,26 @@ that is safe mid-turn is accepted, and the rest stay in the composer.
 
 Delegated agents are steered separately with `/agents steer` and `alt+a`.
 
+### Thinking summaries
+
+When a provider emits readable reasoning, the Chat tab shows it in a separate
+**THINKING SUMMARY** block. The live preview shows the latest six wrapped lines;
+finished summaries collapse when the agent moves on to tools or an answer.
+Press `ctrl+o` to expand or collapse summaries and tool output together. The
+control follows your configured `toggle_tool_output` binding.
+
+The current `/transcript` view includes summaries for search and copy, separately
+labelled from answers. Each contiguous summary retains up to 64 KiB of display
+text; excess text is explicitly marked as truncated, including when copied.
+
+This displays only text the provider actually sends. It does not enable thinking
+at the API or promise access to the model's full internal reasoning. Some models
+reason without emitting readable text, and current adapters have additional
+configuration/state limitations. Reopened chat transcripts do not yet restore
+these summaries, although reasoning events continue to use the existing event
+log path. Provider configuration, continuation state, and summary restoration
+are tracked in Wave 2 of the [improvement plan](IMPROVEMENT_PLAN.md).
+
 ### Keyboard reference
 
 | Key | Action |
@@ -2864,7 +2884,7 @@ Delegated agents are steered separately with `/agents steer` and `alt+a`.
 | `ctrl+t` | Cycle Chat, Session, and Help. |
 | `alt+s` | Open the saved-session picker without replacing the current draft. |
 | `alt+a` | Inspect an active delegated agent, prepare steering guidance, or explicitly stop it without stopping siblings or the parent. |
-| `ctrl+o` | Expand or collapse finished tool output. |
+| `ctrl+o` | Expand or collapse tool output and thinking summaries. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
 | `alt+r` | Show or hide the context rail. It appears on its own at 146 columns and is unavailable below 116. |

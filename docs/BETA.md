@@ -23,6 +23,12 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
 
 ## Important limitations
 
+- Live thinking summaries display only readable `reasoning.delta` text emitted
+  by the selected adapter/model. They do not enable provider thinking, preserve
+  signed/opaque reasoning state, or restore summaries in reopened chat
+  transcripts. Current-chat retention is capped at 64 KiB per contiguous
+  summary, with explicit truncation. Follow the gated
+  [improvement plan](IMPROVEMENT_PLAN.md) for provider/state follow-up work.
 - Sandboxing defaults to capability-aware `auto`, while command network access
   and broad command reads remain available for compatibility. External caches
   may need narrow writable grants, sandboxed commands receive the minimal

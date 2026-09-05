@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-08-25
+**Status updated:** 2026-09-04
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -8,6 +8,12 @@ the dependency order. The detailed dated implementation record has moved to
 summarized here only when it affects the next decision.
 
 ## Product direction
+
+The September review improvements are tracked in
+[`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md), with implementation waves
+and explicit user-testing gates. Read its current handoff before continuing
+that work. It supplements this roadmap and preserves the orchestration
+strategy's existing authority boundaries and milestone status.
 
 Collomia is a cross-platform, provider-neutral local terminal agent for
 software development and general knowledge work, built around explicit trust,

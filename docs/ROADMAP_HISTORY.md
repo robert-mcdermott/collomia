@@ -13,6 +13,17 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-04 — Improvement waves and live thinking display
+
+- Added the [improvement plan](IMPROVEMENT_PLAN.md) as the current queue for
+  review-driven work, with per-wave checklists, evidence, handoff, and explicit
+  user acceptance before advancing to the next major item.
+- W1 consumes existing reasoning events in a separate, bounded TUI summary;
+  live preview, details expansion, and current-transcript search/copy are covered
+  by regression tests and terminal snapshots. TUI/CLI race suites and vet passed.
+- Status is ready for user testing. Provider enablement, opaque/signed state,
+  and reopened summary display remain W2; orchestration contracts are unchanged.
+
 ### 2026-08-26 — Windows AppContainer resolves junction-backed toolchains
 
 - **The failures shared one missing executable, not fourteen graph defects.**

@@ -5,6 +5,22 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
+## Unreleased
+
+### Fixed
+
+- Provider-emitted reasoning now appears in a separate live thinking-summary
+  block in the TUI. The preview is bounded, finished summaries collapse, and
+  the existing tool-output key (default `ctrl+o`) reveals retained text.
+  Current-transcript search/copy includes summaries, with explicit UTF-8-safe
+  truncation at 64 KiB per summary. Provider enablement, reasoning-state
+  continuation, and restored-session display remain separate follow-up work.
+
+### Documentation
+
+- Added a durable [improvement plan](docs/IMPROVEMENT_PLAN.md) with small
+  implementation waves, regression evidence, and user acceptance gates.
+
 ## v0.4.1
 
 ### Fixed

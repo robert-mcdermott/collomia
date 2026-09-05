@@ -1,0 +1,18 @@
+ ✿ collomia  Chat  Session  Help
+────────────────────────────────────────────────────────────────────────────────
+╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
+║  ║ ║║  ║  ║ ║║║║║╠═╣
+╚═╝╚═╝╩═╝╩═╝╚═╝╩ ╩╩╩ ╩
+✿ collo dev · ollama/qwen3-coder
+type a prompt · / commands · ctrl+t tabs · ctrl+o tool output
+
+ YOU
+Check the report totals.
+
+THINKING SUMMARY
+I will check the inputs, reconcile the totals, and inspect the report.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│❯ Ask Collomia to build, debug, explain…  (/ for commands)                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▎░░░░░░░░░ 3%               ∙∙∙ esc cancel

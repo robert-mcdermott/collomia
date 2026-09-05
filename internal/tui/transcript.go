@@ -87,6 +87,8 @@ func transcriptBlockTitle(entry block) string {
 		return "YOU · STEERING"
 	case "assistant":
 		return "COLLOMIA"
+	case "reasoning":
+		return "THINKING SUMMARY"
 	case "tool":
 		name, _, _ := strings.Cut(entry.content, "\x00")
 		return "TOOL · " + name
@@ -105,6 +107,9 @@ func transcriptBlockTitle(entry block) string {
 }
 
 func rawBlockText(entry block) string {
+	if entry.role == "reasoning" && entry.reasoningTruncated {
+		return entry.content + "\n" + reasoningTruncationNotice
+	}
 	if entry.role == "tool" {
 		_, summary, _ := strings.Cut(entry.content, "\x00")
 		return summary
