@@ -4275,7 +4275,7 @@ question broker can make the model-visible subset smaller.
 
 | Tool | Purpose and important bounds |
 | --- | --- |
-| `read_file` | UTF-8 text with line numbers; defaults to 400 lines, maximum 5,000; files over 1 MiB must be read in chunks. |
+| `read_file` | Text with line numbers; defaults to 400 lines, maximum 5,000; the 1 MiB content cap applies per page, with additional EOF/next-offset metadata. Offsets can reach beyond the first MiB. A returned line must fit within the page; oversized lines have explicit skip guidance. |
 | `list_files` | Directory tree including hidden source files; skips VCS metadata, dependency trees, build output, caches, virtual environments, and session data; depth 1-8; maximum 5,000 entries. |
 | `search_files` | Go-regular-expression search with path/glob and result limits. |
 | `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
@@ -4318,6 +4318,22 @@ that an unseen operation succeeded—narrow the request or inspect the reference
 
 ### Evidence-gated completion
 
+Before accepting an answer or executing its proposed tool calls, Collomia checks
+the provider's machine-reported terminal state. Output/context-limit truncation,
+refusal/filtering, incomplete/failed responses, and explicit unrecognized stop
+states stop the turn with an error. Partial text and reported usage are retained;
+the rejected response's tools are not executed or saved as pending calls. Prior
+tool effects remain in the workspace. There is no automatic continuation for
+these cases: inspect the partial work before requesting continuation, a shorter
+answer, or an appropriate token-limit adjustment. A refused response also sets
+`run.result.refused`; these responses do not produce a successful `done` result.
+Token/cost budget exhaustion retains its own outcome when the budget is exceeded.
+
+An incomplete compaction summary cannot replace the original context. Known
+stream endings are checked by adapters; compatible endpoints that omit a stop
+reason but return a nonempty completed payload retain their legacy behavior.
+Refusal is detected from provider fields, not guessed from answer prose.
+
 In primary execution mode, a model response with no tool calls is a proposed
 finish, not automatically a completed turn. Collomia checks the proposal
 against structured state it can observe:
@@ -4340,9 +4356,16 @@ against structured state it can observe:
   completion notice names a bounded, sorted, workspace-relative list of those
   paths and omits artifacts whose current receipts were accepted. A mutation
   that did not report paths remains a separate explicit unknown-path gap.
-- After a tool failure, the completion notice names the failed tool-call ID.
+- A successful retry of the same tool with the same complete arguments clears
+  its failed operation automatically, without a plan update solely for recovery.
+  JSON object key order and spacing do not matter; different paths, commands,
+  or other arguments are different operations. Default/explicit arguments and
+  alternative path spellings are conservatively distinct. A valid corrected
+  `update_plan` repairs its own task-local board update.
+- After an unresolved tool failure, the completion notice names the failed tool-call ID.
   The agent records an exact `resolved_failures` entry in `update_plan`:
-  `recovered_by_retry` or `recovered_by_alternative` names the successful
+  `recovered_by_retry` (matching operation) or `recovered_by_alternative` (an
+  explicitly justified changed operation) names the successful
   `recovery_tool_call_id`; `skipped_unnecessary` points to a skipped step; and
   `blocked` points to a blocked step. The runtime validates those current-turn
   references, so prose and a merely similar permission-risk label cannot

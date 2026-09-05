@@ -479,6 +479,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 }
 
 func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options, answer string, refused, progressed bool, runErr error, started time.Time) {
+	refused = refused || errors.Is(runErr, provider.ErrResponseRefused)
 	mode := string(taskmode.Developer)
 	if parsed, err := taskmode.Parse(opts.taskMode); err == nil {
 		mode = parsed.String()

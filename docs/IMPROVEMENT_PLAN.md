@@ -10,16 +10,17 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Next wave:** W2 — provider reasoning configuration and continuation.
-- **Status:** W1 accepted following positive user testing; W2 not started.
-- **Next action:** define the W2 provider/state contract and split provider
-  coverage into smaller user-tested increments if needed. Preserve normal
-  operation for models that emit no readable reasoning.
-- **Test build:** `dist/collo-wave1` (macOS arm64), version `v0.4.1-wave1`,
-  base `f523696` plus the current uncommitted W1 changes. Build details below.
+- **Active wave:** none; W3 — truthful completion and usable inputs — accepted.
+- **Status:** W1 and W3 accepted. The user confirmed the remaining manual tests
+  passed on 2026-09-04. W2 and later waves remain planned.
+- **Next action:** select the next wave with the user. No next wave has started.
+- **Test build:** `dist/collo-wave3` (macOS arm64), version `v0.4.2-wave3`,
+  base `05f698b` plus the current uncommitted W3 changes. Build details below.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
-- **Current limitation:** W1 only displays readable reasoning events already
+  W3 accepted on 2026-09-04 after successful pagination and follow-up manual
+  tests. The optional low-output-token check was not separately confirmed.
+- **Deferred W2 work:** W1 only displays readable reasoning events already
   emitted by an adapter. It does not enable thinking at the API, add synchronous
   reasoning extraction, or restore thinking in reopened chat transcripts.
   Those are W2 work. A silent summary area does not prove absent computation.
@@ -47,11 +48,15 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Wave sequence and acceptance gates
 
+Wave numbers are stable identifiers, not mandatory execution order. On
+2026-09-04 the user chose W3 ahead of W2. W1 and W3 are accepted;
+W2 and the later waves remain pending. Revisit the next priority at each gate.
+
 | Wave | Deliverable | Status | User gate |
 | --- | --- | --- | --- |
 | W1 | Separate, bounded live thinking summaries in the TUI | Accepted | User confirmed successful reasoning display with GLM-5.3-flash from Ollama |
 | W2 | Reasoning configuration, provider-state continuity, and summary replay | Planned | Reasoning/tool conversations work on the user's actual providers, including reopen |
-| W3 | Correct completion outcomes, exact failure recovery, large-file pagination | Planned | Real failed/recovered tasks and large inputs finish accurately |
+| W3 | Correct completion outcomes, exact failure recovery, large-file pagination | Accepted | User confirmed pagination and the follow-up manual tests passed |
 | W4 | Final deliverable identity and observed-effect checks | Planned | Script-created/modified artifacts cannot retain stale acceptance |
 | W5 | Real-model evaluation baseline | Planned | Representative tasks and quality/cost metrics reflect the user's work |
 | W6 | One complete Work workflow: data → workbook → cited memo | Planned | Fresh setup can create, inspect, revise, and deliver useful artifacts |
@@ -118,18 +123,82 @@ Manual checks (using a provider that emits readable reasoning):
 
 ### W3 — truthful completion and usable inputs
 
-- [ ] Normalize stop reasons; truncated, refused, and failed output must not
+Chosen ahead of W2 by the user on 2026-09-04. Scope is the three confirmed
+reliability defects and their directly related boundary cases. Rejected provider
+responses stop explicitly; automatic continuation is deliberately excluded from
+this slice to avoid repeating effects or resetting budgets. The completion
+interface improvement is incremental: automatic exact recovery and clearer
+notices/prompt guidance, preserving the existing typed alternative/skip/block
+dispositions. No new completion tool or plan schema is introduced.
+
+- [x] Normalize stop reasons; truncated, refused, and failed output must not
   silently become successful completion. Bound any continuation without
   duplicating tool effects or resetting budgets.
-- [ ] Match recovery to the failed operation and subject. An unrelated success
+- [x] Match recovery to the failed operation and subject. An unrelated success
   from the same tool must not clear it; preserve explicit alternative recovery.
-- [ ] Simplify the completion interface incrementally: expose exact gaps and
+- [x] Simplify the completion interface incrementally: expose exact gaps and
   evidence while keeping plans focused on work, not bookkeeping.
-- [ ] Fix `read_file` pagination beyond the first MiB and return honest
+- [x] Fix `read_file` pagination beyond the first MiB and return honest
   continuation/truncation information.
-- [ ] Convert the review probes to permanent regressions; check Developer and
+- [x] Convert the review probes to permanent regressions; check Developer and
   Work, failed then recovered work, harmless exploration, and budget stops.
-- [ ] **User accepts W3.**
+- [x] **User accepts W3:** on 2026-09-04, after the pagination transcript and
+  follow-up manual instructions, the user reported “the tests passed.”
+
+User testing on 2026-09-04 confirmed that `read_file` with offset `100001` and
+limit `1` returned `100001 W3_TAIL_MARKER` followed by `[read_file: EOF]`; the
+agent correctly reported the exact line and EOF. User feedback: “it works.”
+The user subsequently reported “the tests passed” after receiving concrete
+checks for normal operation in both modes, page continuation, required missing
+inputs despite unrelated success, exact retry within one turn, and optional
+missing inputs. W3 is accepted. No individual follow-up transcripts or model
+identifiers were supplied; the optional low-output-token test was not separately
+confirmed and remains covered by automated fixtures.
+
+Manual checks for the W3 test build:
+
+1. Repeat a normal GLM/Ollama task in Work and Developer. Thinking and ordinary
+   answers should work as in W1; no reasoning support is required.
+2. From the repository workspace, ask: “Use read_file with offset 100001 and
+   limit 1 on dist/wave3-fixtures/large.txt. Report the exact line.” The fixture
+   is 1,100,015 bytes; the result should be `W3_TAIL_MARKER` and EOF, not
+   `(no lines)`. Try a shorter page near the beginning and inspect its next-offset
+   hint in the tool output.
+3. Ask for two required inputs with one deliberately absent, then provide the
+   missing file and continue. Reading an unrelated file or running a different
+   successful command must not silently satisfy the missing input. A successful
+   retry of the same read should clear that failure without a recovery-only
+   plan update within the turn. Existing completion obligations are per-turn;
+   durable cross-turn obligations remain W7 scope.
+4. Try an optional exploratory lookup that can be skipped when absent. The
+   model should distinguish an unnecessary attempt from a genuinely required
+   missing input; the existing structured skipped disposition remains usable.
+5. Optional: with a temporary provider configuration using a small supported
+   `max_tokens`, request a longer answer. Expect retained partial output and a
+   clear stop, with no successful `done` result or automatic continuation.
+   Inspect before deliberately continuing. Do not change the usual provider
+   configuration just to exercise this: the offline termination fixtures cover
+   truncation, refusal, missing stream endings, and partial tool JSON.
+
+The prepared binary uses ordinary Collomia configuration/sessions; it is separate
+from the installed `collo`. Launch from the repository root for the fixture:
+
+```sh
+/Users/rmcdermo/mycode/collomia/dist/collo-wave3 --mode work
+```
+
+Rebuild the binary from the repository root if needed:
+
+```sh
+go build -o dist/collo-wave3 -ldflags '-X github.com/robert-mcdermott/collomia/internal/version.Version=v0.4.2-wave3 -X github.com/robert-mcdermott/collomia/internal/version.Commit=05f698b-wave3-dirty' ./cmd/collo
+```
+
+Recreate the ignored pagination fixture if needed:
+
+```sh
+mkdir -p dist/wave3-fixtures
+awk 'BEGIN { for (i=1; i<=100000; i++) print "1234567890"; print "W3_TAIL_MARKER" }' > dist/wave3-fixtures/large.txt
+```
 
 ### W4 — effects and deliverable acceptance
 
@@ -233,9 +302,41 @@ Manual checks (using a provider that emits readable reasoning):
 | 2026-09-04 | Planning | User requested tracked implementation waves with personal testing between major items. Review contains five reproduced gaps and passing baseline suites. | W1 active; W2–W9 pending. |
 | 2026-09-04 | W1 | Seven offline reasoning tests (including live/finished golden snapshots) passed. TUI and CLI suites passed with race detection; targeted vet passed. Review links converted to the reviewed commit's permalinks after the documentation checker caught app-local paths. | Ready for user testing; acceptance pending. |
 | 2026-09-04 | W1 user testing | User: “worked great with GLM-5.3-flash from Ollama,” with visible reasoning. Asked about models without reasoning; W1 requires no reasoning events and its absent-summary regression covers ordinary answers. No provider request settings were changed. | W1 accepted; W2 next, not started. |
+| 2026-09-04 | W3 priority | User explicitly selected W3 ahead of W2 after discussing the waves' dependencies. | W3 active; W2 deferred. |
+| 2026-09-04 | W3 implementation | Terminal-state, refusal, partial-tool-JSON, compaction, cumulative-budget, exact-retry/alternative, empty-refusal continuation, and large-file regressions passed. Full offline suite: 45 tested packages passed, including evaluations. Changed-package race checks and vet passed; final empty-response guard received an additional agent race run. | Ready for user testing; W3 acceptance pending. |
+| 2026-09-04 | W3 user testing | User reported “it works” and supplied a live transcript: reading the large fixture at offset 100001, limit 1 returned W3_TAIL_MARKER and EOF, both correctly explained by the agent. Provider/model was not specified for this check. | Large-file pagination check passed; remaining completion/recovery checks and overall acceptance not separately reported. Next wave remains pending. |
+| 2026-09-04 | W3 acceptance | After receiving the remaining manual checks and concrete prompts, the user reported “the tests passed.” Checks covered normal operation in both modes, page continuation, required missing input despite unrelated success, exact retry within a turn, and optional missing input. The optional low-output-token check was not separately confirmed. | W3 accepted on the existing test build; W2 and later waves remain planned. No next wave started. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.
+
+### W3 automated evidence and test build
+
+- `go test -count=1 ./...`: passed, 45 tested packages. The offline evaluation
+  suite passed in 229.967s while other validation ran concurrently; this timing
+  is test-run evidence, not a performance comparison.
+- `go test -race -count=1 ./internal/provider ./internal/agent ./internal/tools ./cmd/collo`:
+  passed. After the final empty-refusal history guard, the full agent package
+  was rerun with `go test -race -count=1 ./internal/agent` and passed (56.342s).
+- `go vet ./...`: passed; `go vet ./internal/agent` reran after that final guard
+  and passed. `git diff --check` and formatting checks passed.
+- Provider fixtures cover all four adapter families, including truncated tool
+  arguments and Responses refusal/incomplete state. Two older assertions were
+  corrected to supply exact retry identity and to reject tool calls from an
+  incomplete response while retaining its diagnostics/usage.
+- Capability Markdown regenerated and compared with the built binary; prompt
+  golden updated deliberately. No persisted event/session/plan or configuration
+  schema changes. Existing graph authority and graduation status are unchanged.
+- Build smoke check: `collo v0.4.2-wave3 (05f698b-wave3-dirty, unknown)`.
+  Binary: `/Users/rmcdermo/mycode/collomia/dist/collo-wave3`.
+  SHA-256: `bb79ef33b178a7448982393063b0774db222af672e559fed90ece605c5d9773e`.
+- Pagination fixture: `dist/wave3-fixtures/large.txt`, 100,001 lines and
+  1,100,015 bytes; final line `W3_TAIL_MARKER`.
+- Validation ran on macOS arm64 with Go 1.26.6 and a temporary build cache.
+  HTTP/platform fixtures used approved execution outside the sandbox. No paid
+  or live model calls, native Windows/Linux qualification, or release/version
+  bump was performed by the implementing agent for W3. User live testing and
+  acceptance are recorded above and in the feedback log.
 
 ### W1 automated evidence and test build
 

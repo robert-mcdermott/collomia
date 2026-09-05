@@ -26,7 +26,7 @@ func readFileDefinition() json.RawMessage {
 type ReadFileTool struct{ Guard *PathGuard }
 
 func (t ReadFileTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "read_file", Description: "Read a UTF-8 text file with line numbers. Use offset and limit for large files. Files larger than 1 MiB must be read in chunks.", InputSchema: readFileDefinition()}
+	return provider.ToolDefinition{Name: "read_file", Description: "Read a UTF-8 text file with line numbers. Use offset and limit for large files; the 1 MiB output cap applies to each page, not to the input file. Follow the returned next offset when a page is limited. A single returned line must fit within 1 MiB.", InputSchema: readFileDefinition()}
 }
 func (t ReadFileTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -38,7 +38,7 @@ func (t ReadFileTool) Assess(raw json.RawMessage) (Action, error) {
 	p, o, e := t.Guard.ResolveRead(a.Path)
 	return Action{Risk: RiskRead, Summary: "read " + p, Outside: o, Paths: []string{p}}, e
 }
-func (t ReadFileTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
+func (t ReadFileTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -65,29 +65,7 @@ func (t ReadFileTool) Execute(_ context.Context, raw json.RawMessage) (string, e
 	if a.Limit > 5000 {
 		a.Limit = 5000
 	}
-	s := bufio.NewScanner(io.LimitReader(f, maxReadBytes+1))
-	s.Buffer(make([]byte, 64*1024), maxReadBytes+1)
-	var b strings.Builder
-	line := 0
-	shown := 0
-	for s.Scan() {
-		line++
-		if line < a.Offset {
-			continue
-		}
-		if shown >= a.Limit {
-			break
-		}
-		fmt.Fprintf(&b, "%6d\t%s\n", line, s.Text())
-		shown++
-	}
-	if err := s.Err(); err != nil {
-		return "", err
-	}
-	if shown == 0 {
-		return "(no lines)", nil
-	}
-	return b.String(), nil
+	return readFilePage(ctx, f, a.Offset, a.Limit)
 }
 
 type ListFilesTool struct{ Guard *PathGuard }

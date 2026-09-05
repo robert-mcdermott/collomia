@@ -13,6 +13,22 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-04 — W3 completion and large-input maintenance
+
+- User reprioritized W3 ahead of W2 after accepting the live-thinking display.
+  The improvement plan remains the current queue and user-testing handoff.
+- Added a shared terminal-response check before tools or completion, retained
+  partial text/usage, rejected incomplete compaction, and preserved explicit
+  provider refusal in headless results. Rejected responses stop without an
+  automatic retry; no provider reasoning settings or permissions change.
+- Standard retry recovery now binds the complete operation arguments. Corrected
+  board updates retain their own recovery path; alternatives and unnecessary
+  exploration remain explicit, distinct dispositions.
+- File reads now bound each output page independently of the input offset,
+  report EOF/continuation, and can skip oversized lines with bounded memory.
+- W3 adds provider, agent, graph-compatibility, CLI, and real-file regressions.
+  Its validation evidence and pending user gate are tracked in the plan.
+
 ### 2026-09-04 — Improvement waves and live thinking display
 
 - Added the [improvement plan](IMPROVEMENT_PLAN.md) as the current queue for

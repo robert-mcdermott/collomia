@@ -2556,6 +2556,14 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
+- Runtime maintenance (2026-09-04): improvement-plan W3 adds a shared provider
+  terminal-state check before primary tool execution or completion assessment.
+  A truncated/refused/incomplete response records a non-retryable provider
+  failure and cannot accept a node; incomplete compaction preserves its source
+  context. `TestGoalGraphRejectsTruncatedCompletion` covers the compatibility
+  boundary. This adds no orchestration milestone or authority; existing
+  supported/experimental status and non-goals remain unchanged. The W3 test
+  evidence and user-acceptance gate are in [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
 - Last completed slice: **the second writer-wave audit pass**. It found and
   fixed the restart validator's rejection of integrated and waived graphs,
   made waiver-backed completion explicit, and confirmed budget-exhaustion

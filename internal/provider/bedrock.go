@@ -481,6 +481,9 @@ func parseBedrockStream(r io.Reader, label, requestID string, onDelta func(Delta
 	if !terminal {
 		return Response{}, fmt.Errorf("Bedrock stream ended without messageStop")
 	}
+	if !out.acceptsToolCalls() {
+		return out, nil
+	}
 	indexes := make([]int, 0, len(tools))
 	for index := range tools {
 		indexes = append(indexes, index)

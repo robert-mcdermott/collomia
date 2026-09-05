@@ -53,7 +53,10 @@ Standard execution do not require Git.
   require observed evidence; `blocked` is reserved for a genuine impasse;
   `skipped` records an unnecessary or superseded action.
 - Failed tool calls named by the completion controller carry stable
-  current-turn IDs. `update_plan.resolved_failures` binds each relevant ID to
+  current-turn IDs. A successful retry with the same tool and complete arguments
+  clears that operation automatically, without a recovery-only plan update.
+  A different file, command, or argument does not clear it just because the tool
+  name matches. `update_plan.resolved_failures` binds each remaining relevant ID to
   a terminal step and, for a retry or alternative, the exact successful tool
   call that recovered it. A skipped unnecessary attempt and a genuine blocker
   remain distinct structured dispositions; plan prose alone cannot erase a
@@ -63,6 +66,14 @@ Standard execution do not require Git.
   preventing a duplicate submission from being mistaken for recovery.
 
 ## Evidence contract
+
+The provider must also report a usable completed answer or tool request.
+Truncation, filtering/refusal, and incomplete/failed output stop with retained
+partial text and usage, without executing that response's proposed tools or
+claiming `done`. This is shared runtime behavior, including direct Q&A; no
+synthetic plan is required to detect it. Rejected responses are not automatically
+continued. Existing workspace changes remain for inspection and deliberate
+continuation.
 
 Evidence is matched to the requested outcome rather than forced through a
 software test framework:

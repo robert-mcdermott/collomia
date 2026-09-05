@@ -2397,6 +2397,11 @@ status.
 
 ## Recommended next sequence
 
+The user selected **W3 — truthful completion and usable inputs** from
+[`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) ahead of W2 on
+2026-09-04. That plan owns the implementation and user-testing handoff for
+this maintenance work; wave numbers do not impose a strict execution order.
+
 The Orchestrated Goal program has no open milestone: OG-1 through OG-5 are
 complete, all nine graduation clauses are met, governed read fan-out is a
 supported optional capability, and the isolated-writer candidate wave remains

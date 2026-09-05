@@ -9,6 +9,18 @@ an accurate one; their history is in the Git log and in
 
 ### Fixed
 
+- Truncated, refused, failed, and incomplete provider responses cannot finish
+  a task successfully or execute their proposed tools. Partial text and usage
+  remain available; incomplete compaction cannot replace conversation context.
+  These responses stop explicitly without automatic continuation.
+- Standard failure recovery now matches a tool's complete operation arguments.
+  An unrelated successful command or file read cannot erase an earlier failure.
+  Exact retries require no recovery-only plan update; explicit alternatives and
+  unnecessary exploratory attempts retain their existing structured resolution.
+- `read_file` can paginate beyond the first MiB, with a separate per-page output
+  bound, EOF/next-offset metadata, cancellable skipping, and oversized-line
+  guidance that still permits access to later lines.
+
 - Provider-emitted reasoning now appears in a separate live thinking-summary
   block in the TUI. The preview is bounded, finished summaries collapse, and
   the existing tool-output key (default `ctrl+o`) reveals retained text.

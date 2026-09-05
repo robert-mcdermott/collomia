@@ -1772,9 +1772,10 @@ func TestWorkModeTranscriptRecoveryReturnsOriginalAnswerOnce(t *testing.T) {
 
 func TestCompletionControllerRetainsEveryUnresolvedFailure(t *testing.T) {
 	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
-	controller.observe(toolObservation{Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}, Failed: true})
+	retryKey := toolRetryKey(provider.ToolCall{Name: "run_command", Arguments: json.RawMessage(`{"command":"go test ./..."}`)})
+	controller.observe(toolObservation{Name: "run_command", RetryKey: retryKey, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}, Failed: true})
 	controller.observe(toolObservation{Name: "external_lookup", Action: tools.Action{Risk: tools.RiskExternal, Summary: "look up dependency"}, Failed: true})
-	controller.observe(toolObservation{Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}})
+	controller.observe(toolObservation{Name: "run_command", RetryKey: retryKey, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}})
 	decision := controller.assess()
 	if decision.done || decision.blocked || !strings.Contains(decision.notice, "external_lookup") || strings.Contains(decision.notice, "run_command (run tests)") {
 		t.Fatalf("decision=%+v", decision)

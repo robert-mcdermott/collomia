@@ -22,6 +22,15 @@ screens. They do not establish live provider enablement or state continuity.
 
 ## Standard local checks
 
+W3 adds provider terminal-state/refusal/stream-ending fixtures, real agent
+probes in Developer and Work, a graph failure-compatibility probe, compaction
+retention and cumulative-budget checks, exact versus alternative recovery, and
+real large-file pagination. `internal/agent/wave3_test.go`,
+`internal/provider/termination_test.go`, `internal/tools/filepage_test.go`, and
+the CLI refusal-result regression exercise the new behavior. These are offline
+runtime checks, not evidence of live model quality. The wave's actual commands,
+results, and manual checks are recorded in the improvement plan.
+
 Run from the repository root:
 
 ```sh

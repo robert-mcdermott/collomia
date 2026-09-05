@@ -586,7 +586,16 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		if onUsage != nil {
 			onUsage(usage)
 		}
-		a.appendMessage(provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls})
+		terminationErr := response.CompletionError(a.providerName)
+		assistant := provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls}
+		if terminationErr != nil {
+			// Keep partial prose, but never persist unaccepted calls as pending
+			// execution that session recovery would need to reconcile later.
+			assistant.ToolCalls = nil
+		}
+		if terminationErr == nil || strings.TrimSpace(assistant.Content) != "" {
+			a.appendMessage(assistant)
+		}
 		if err := a.checkPersistence(); err != nil {
 			return response.Content, reportError(send, err)
 		}
@@ -612,6 +621,20 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				a.exhaustGoalGraph(err.Error(), send)
 				return response.Content, reportError(send, err)
 			}
+		}
+		if terminationErr != nil {
+			a.appendMessage(provider.Message{Role: "user", Content: "[Runtime response status] " + terminationErr.Error()})
+			if err := a.checkPersistence(); err != nil {
+				return response.Content, reportError(send, err)
+			}
+			if a.graphEnabled() {
+				if _, graphErr := a.recordProviderFailure(context.WithoutCancel(ctx), terminationErr, send); graphErr != nil {
+					terminationErr = errors.Join(terminationErr, graphErr)
+				}
+			}
+			terminationErr = reportError(send, terminationErr)
+			a.endTurn(ctx, send, iteration, GoalBlocked)
+			return response.Content, terminationErr
 		}
 		if len(response.ToolCalls) == 0 {
 			if a.graphEnabled() {
@@ -897,7 +920,7 @@ func reportError(send Emit, err error) error {
 
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, completion *completionController, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
-	observation := toolObservation{CallID: call.ID, Name: call.Name}
+	observation := toolObservation{CallID: call.ID, Name: call.Name, RetryKey: toolRetryKey(call)}
 	if hasItem && !a.toolAvailable(item, plan) {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -2833,6 +2856,12 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 		return 0, fmt.Errorf("%w: estimated spend $%.6f exceeded or could not be verified against $%.6f", ErrCostBudgetExceeded, usage.CostUSD, costBudget)
 	}
 	failures := recentFailureEvidence(messages[:cut])
+	if err := response.CompletionError(client.Name()); err != nil {
+		return 0, err
+	}
+	if response.Termination() != provider.TerminationCompleted {
+		return 0, errors.New("compaction returned tool calls instead of a summary; original context retained")
+	}
 	summaryContent := "[Context summary — earlier conversation compressed to save space]\n" + response.Content
 	if failures != "" {
 		summaryContent += "\n\n[Recent failure evidence retained verbatim]\n" + failures

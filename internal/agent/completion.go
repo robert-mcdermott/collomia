@@ -84,6 +84,7 @@ func GoalOutcomeFor(err error) GoalOutcome {
 
 type toolObservation struct {
 	CallID             string
+	RetryKey           string
 	Name               string
 	Action             tools.Action
 	Failed             bool
@@ -132,6 +133,7 @@ type unresolvedToolFailure struct {
 	risk         tools.Risk
 	detail       string
 	planRevision uint64
+	retryKey     string
 }
 
 type completionDecision struct {
@@ -183,8 +185,8 @@ func (c *completionController) observe(observation toolObservation) {
 		}
 		c.successes[observation.CallID] = observation
 	}
-	// A same-tool success is an unambiguous retry. Cross-tool recovery is never
-	// guessed from permission-risk labels; update_plan must bind that alternative
+	// An exact operation retry recovers automatically. Other recovery is never
+	// guessed from tool names or permission-risk labels; update_plan binds it
 	// to the exact failed and successful call IDs.
 	c.recoverFailures(observation)
 	c.resolveFailuresFromPlan()
@@ -258,7 +260,7 @@ func (c *completionController) recordFailure(observation toolObservation) {
 	if c.board != nil {
 		_, revision = c.board.Snapshot()
 	}
-	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision}
+	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey}
 	for i := range c.failures {
 		if c.failures[i].id == failure.id {
 			c.failures[i] = failure
@@ -271,8 +273,7 @@ func (c *completionController) recordFailure(observation toolObservation) {
 func (c *completionController) recoverFailures(observation toolObservation) {
 	remaining := c.failures[:0]
 	for _, failure := range c.failures {
-		sameTool := observation.Name == failure.tool
-		if !sameTool {
+		if !matchesRetry(failure, observation) {
 			remaining = append(remaining, failure)
 		}
 	}
@@ -341,8 +342,8 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 		if completionMetaTool(recovery.Name) {
 			return prefix + " cannot use completion metadata tool " + recovery.Name + " as recovery evidence"
 		}
-		if resolution.Disposition == "recovered_by_retry" && recovery.Name != failure.tool {
-			return prefix + " says recovered_by_retry but successful tool " + recovery.Name + " is not the failed tool"
+		if resolution.Disposition == "recovered_by_retry" && !matchesRetry(failure, recovery) {
+			return prefix + " says recovered_by_retry but the successful receipt is not the same operation and arguments; use recovered_by_alternative with evidence if the changed operation replaced it"
 		}
 		if resolution.Disposition == "recovered_by_alternative" && recoveryID == failure.id {
 			return prefix + " says recovered_by_alternative but references the failed call itself"
@@ -656,6 +657,7 @@ func completionNotice(issues []string, intervention int, mode taskmode.Mode, rec
 	for _, issue := range issues {
 		b.WriteString("- " + issue + "\n")
 	}
+	b.WriteString("A successful retry of the same tool with the same arguments clears its failure automatically; no plan update is needed solely to record that retry. A different path, command, or other argument is a different operation even when the tool name is unchanged. ")
 	if len(receipts) > 0 {
 		b.WriteString("Successful current-turn tool receipts available for an explicit recovery:\n")
 		for _, receipt := range receipts {

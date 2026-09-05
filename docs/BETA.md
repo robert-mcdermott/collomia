@@ -23,6 +23,15 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
 
 ## Important limitations
 
+- Rejected terminal provider responses stop explicitly rather than continuing
+  automatically. Partial text and prior workspace effects remain; inspect them
+  before continuing. Legacy compatible endpoints with nonempty payloads and no
+  stop reason remain supported, and natural-language refusals without a provider
+  refusal field cannot be identified reliably. Standard retry recovery requires
+  the same tool and complete arguments; changed operations need an explicit
+  alternative receipt. `read_file` can page through large inputs, but a single
+  returned line must fit within its 1 MiB page and scanning to a late line takes
+  time proportional to the preceding input.
 - Live thinking summaries display only readable `reasoning.delta` text emitted
   by the selected adapter/model. They do not enable provider thinking, preserve
   signed/opaque reasoning state, or restore summaries in reopened chat
