@@ -22,6 +22,16 @@ screens. They do not establish live provider enablement or state continuity.
 
 ## Standard local checks
 
+W7a adds `internal/session/task_context_test.go` and
+`internal/app/task_context_test.go`. Scripted providers drive production-app
+Work sessions through two compactions, close/reopen, and exact earlier source
+and correction retrieval. Session tests cover revision conflict, write/sync
+failure, bounds, redaction, UTF-8 paging, cancellation, session switches,
+ephemeral omission, fork, and rewind. [Task context](TASK_CONTEXT.md) provides
+the live user gate, including external source edits and historical/current
+separation. W5's controlled sessionless runner does not measure W7a retention;
+its previous baseline is preserved and is not claimed as evidence of this slice.
+
 W5 adds offline runner regressions in `internal/quality` and CLI tests in
 `cmd/collo/eval_test.go`: isolated repeated trials, independent acceptance
 failures, missing-usage stop before proposed tools, budget reservation, sandbox

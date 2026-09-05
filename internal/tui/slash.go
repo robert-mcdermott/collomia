@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
+	"github.com/robert-mcdermott/collomia/internal/session"
 )
 
 func (m *Model) slash(line string) (bool, tea.Cmd) {
@@ -119,6 +120,30 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 			m.addSystem("Developer mode enabled. Standard execution now prefers repository tools and build, lint, and test evidence; permissions are unchanged.")
 		}
 	case "/context":
+		if len(args) > 0 {
+			if len(args) != 1 || (args[0] == "clear" && m.busy) {
+				m.addSystem("Use /context [task|clear]; clear is available between turns.")
+				break
+			}
+			if m.runtime.Context == nil || m.runtime.Session == nil {
+				m.addSystem("Session task context is unavailable.")
+				break
+			}
+			switch args[0] {
+			case "task":
+				m.addPanel("Task context", m.runtime.Context.Pinned())
+			case "clear":
+				current := m.runtime.Session.TaskContext()
+				if _, err := m.runtime.Session.ReplaceTaskContext(current.Revision, session.TaskContext{}); err != nil {
+					m.addSystem(err.Error())
+				} else {
+					m.addSystem("Working notes cleared. Original user requests and session history are retained.")
+				}
+			default:
+				m.addSystem("Usage: /context [task|clear]")
+			}
+			break
+		}
 		usage := m.runtime.Agent.Usage()
 		estimate, window := m.runtime.Agent.ContextEstimate()
 		// "unknown" is not a neutral report. A zero window makes automatic
@@ -715,7 +740,9 @@ func busySlashAllowed(line string) bool {
 		return false
 	}
 	switch strings.ToLower(fields[0]) {
-	case "/help", "/status", "/context", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
+	case "/context":
+		return len(fields) == 1 || (len(fields) == 2 && fields[1] == "task")
+	case "/help", "/status", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
 	case "/orchestrate":
 		return len(fields) == 1 || (len(fields) == 2 && (strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "pause") || strings.EqualFold(fields[1], "cancel"))) || (len(fields) == 3 && strings.EqualFold(fields[1], "status"))

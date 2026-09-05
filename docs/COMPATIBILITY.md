@@ -21,6 +21,19 @@ without rewriting it.
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
+W7a adds `task_context` and `user_request` record types within session record
+schema 1. The task-context payload has `schema_version: 1`, a revision, and
+bounded model-authored notes. Invalid/unsupported payloads and invalid request
+references fail loading before opening for append. `user_request` identifies a
+1-based transcript message explicitly observed at the genuine prompt/steering
+entry point; legacy user-role messages are not inferred to have that provenance.
+Sessions without these records remain readable. Fork copies notes/history;
+rewind copies only the selected prefix. Clearing notes appends an empty next
+revision, leaving prior records intact. These records confer no permissions or
+artifact validation, and do not change graph or workspace restore contracts.
+Older builds may ignore the additive records; do not assume downgrade preserves
+new context behavior. See [Task context](TASK_CONTEXT.md) for fields and limits.
+
 OG-3A.6 does not change either schema version. Ending a graph's role as the
 session's current resumable graph appends a `goal_graph` record with no graph
 payload. Replay already applies the latest record, so that tombstone clears

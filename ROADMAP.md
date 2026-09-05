@@ -15,12 +15,13 @@ and explicit user-testing gates. Read its current handoff before continuing
 that work. It supplements this roadmap and preserves the orchestration
 strategy's existing authority boundaries and milestone status.
 
-W1, W3, and W4 are user-accepted. W5 now provides an opt-in, balanced 12-task
-quality runner; the initial baseline passed 24/24 machine checks, with prose
-quality and efficiency findings recorded separately. Its user gate remains pending. After that
-gate, the proposed priority is W7 durable context/recovery, then W6's complete
-Work artifact workflow, with a separate user test gate for each. Wave numbers
-are identifiers rather than a required execution order.
+W1, W3, W4, and W5 are user-accepted. W5's balanced 12-task baseline passed
+24/24 machine checks, with prose quality and efficiency findings recorded
+separately. W7a retained task context and retrievable session evidence passed
+manual testing and is accepted. W7b's durable obligations and workspace
+checkpoints are unblocked but not started.
+W6's complete Work artifact workflow remains the proposed following wave.
+Wave numbers identify work rather than a mandatory execution order.
 
 Collomia is a cross-platform, provider-neutral local terminal agent for
 software development and general knowledge work, built around explicit trust,

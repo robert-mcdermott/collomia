@@ -23,7 +23,7 @@ var slashCommands = []commandInfo{
 	{name: "/agent", args: "[name]", desc: "show or switch the named primary agent profile"},
 	{name: "/mode", args: "[developer|work]", desc: "show or switch the task profile"},
 	{name: "/models", args: "", desc: "list configured providers and default models"},
-	{name: "/context", args: "", desc: "token usage and estimated context size"},
+	{name: "/context", args: "[task|clear]", desc: "token usage; inspect or clear retained task notes"},
 	{name: "/plan", args: "[on|off]", desc: "toggle read-only planning mode"},
 	{name: "/orchestrate", args: "[goal|approve|status [node]|pause|resume|retry node|extend|integrate node|verify|waive reason|reconcile|discard node [confirm]|done|cancel]", desc: "explicit experimental goal proposal and execution"},
 	{name: "/autonomy", args: "[mode]", desc: "set ask, workspace, or autopilot"},

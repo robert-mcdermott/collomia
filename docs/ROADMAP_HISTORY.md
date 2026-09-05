@@ -13,6 +13,20 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-04 — W5 accepted; W7a retained context
+
+- After committing W5 as `0c72f04`, the user directed the next wave. The
+  baseline remains preserved; individual artifact review decisions stay separate.
+- Split W7 at a user gate: W7a adds durable, bounded model notes, genuine user
+  request previews, session evidence search/read, and inspect/clear controls.
+  W7b completion obligations and workspace checkpoints remain planned.
+- Session/app regressions cover repeated compaction and restart, history
+  provenance, revision/storage failures, pagination, fork/rewind, and isolation.
+  Full tests, race tests, vet, and the separate test build passed. The user
+  subsequently reported “manual testing passes,” accepting W7a on 2026-09-04.
+  Provider/model was not specified; W7b is unblocked but has not started.
+  Orchestration scheduling, restore authority, and milestones are unchanged.
+
 ### 2026-09-04 — W5 quality runner, awaiting live baseline
 
 - The user's first Ollama / GLM-5.3-flash smoke produced correct coding and
@@ -34,8 +48,8 @@ agents, provider platforms, and the Model Context Protocol specification.
   scorecards, and matched comparisons. Result schema v1 is published by
   `collo schema eval`; runtime traces retain the existing event contract.
 - Offline regression evidence and the manual gate are tracked in the
-  [improvement plan](IMPROVEMENT_PLAN.md). No live baseline has been run and
-  W5 is not yet user-accepted. W7 and W6 remain behind that gate; no
+  [improvement plan](IMPROVEMENT_PLAN.md). The live baseline and subsequent
+  W5 acceptance are recorded above and in the improvement plan; no
   orchestration authority or milestone status changes.
 
 ### 2026-09-04 — W4 final-deliverable acceptance

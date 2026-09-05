@@ -2929,7 +2929,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/mode [developer\|work]` | Show or switch the task profile. The choice is persisted with the session and changes neither provider nor permissions. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
-| `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
+| `/context [task|clear]` | `task` inspects retained notes and request previews; `clear` clears only notes between turns. Without arguments, show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
 | `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|done\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, release a graph that has finished (`done`, also spelled `release`), or cancel Orchestrated Goal. |
 | `/tasks` | Show the structured plan. |
@@ -5989,6 +5989,21 @@ the session for appending. Back up the global `.collomia` directory before a
 major upgrade when its sessions are important. Downgrading a state directory
 already used by a newer release is not guaranteed; see the
 [compatibility and migration policy](COMPATIBILITY.md).
+
+### Retained task context and earlier evidence
+
+Durable Developer and Work sessions expose `update_task_context`,
+`read_task_context`, `search_session`, and `read_session`. The model can save
+bounded, revisioned working notes and retrieve original evidence after
+compaction or resume. `/context task` inspects notes and genuine user-request
+previews; `/context clear` clears the notes, retaining original history.
+`/new` starts a separate session. Ephemeral runs omit these tools.
+
+Model notes are fallible claims, not permission or validation receipts. Later
+user corrections take precedence; historical observations need fresh checks
+before being described as current. See [Task context](TASK_CONTEXT.md) for
+arguments, size limits, provenance, restart behavior, and W7a manual checks.
+W7b durable completion obligations and workspace checkpoints remain planned.
 
 ### Context estimation and compaction
 

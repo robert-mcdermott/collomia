@@ -227,6 +227,7 @@ the two-task smoke test and repeated baseline workflow.
 | Linux Landlock setup | [Linux sandbox guide](docs/LINUX_SANDBOX.md) |
 | MCP protocol coverage | [MCP protocol](docs/MCP_PROTOCOL.md) |
 | Testing and evaluation | [Testing](docs/TESTING.md) |
+| Retained task notes and earlier evidence | [Task context](docs/TASK_CONTEXT.md) |
 | Real-model quality scorecards | [Quality evaluations](docs/QUALITY_EVALUATIONS.md) |
 | Release process and verification | [Releasing](docs/RELEASING.md) |
 | Current priorities and implementation history | [Roadmap](ROADMAP.md) · [history](docs/ROADMAP_HISTORY.md) |

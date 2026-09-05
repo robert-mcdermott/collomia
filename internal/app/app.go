@@ -48,6 +48,7 @@ type Runtime struct {
 	Sessions    *session.Store
 	Session     *session.Session
 	Artifacts   *session.ArtifactManager
+	Context     *session.ContextManager
 	Attachments *session.AttachmentManager
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
@@ -474,11 +475,16 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	}
 	artifacts := session.NewArtifactManager()
 	artifacts.Use(sess)
+	taskContext := session.NewContextManager(redactor.Redact)
+	taskContext.Use(sess)
 	attachments := session.NewAttachmentManager()
 	attachments.Use(sess)
 	var artifactSink *session.ArtifactManager
 	if sess != nil {
 		registry.Add(session.ArtifactTool(artifacts))
+		for _, tool := range session.ContextTools(taskContext) {
+			registry.Add(tool)
+		}
 		artifactSink = artifacts
 		// Commands historically captured only the model-preview limit. Keep live
 		// output at that size, but retain enough returned data for the agent layer
@@ -507,9 +513,9 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, TaskMode: activeTaskMode, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
-			return ""
+			return taskContext.Pinned()
 		}
-		return "Active structured plan:\n" + current.Render()
+		return "Active structured plan:\n" + current.Render() + "\n\n" + taskContext.Pinned()
 	}}
 	// The primary agent reaches the same iteration-boundary hook delegated
 	// children use, so guidance typed mid-turn lands where the conversation
@@ -518,6 +524,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	agentOptions.TakeSteering = steering.Take
 	if sess != nil {
 		agentOptions.OnMessage = sess.AppendMessage
+		agentOptions.OnUserPrompt = taskContext.RecordUserRequest
 		agentOptions.OnCompaction = sess.AppendCompaction
 		agentOptions.PersistenceError = sess.Err
 	}
@@ -541,7 +548,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime = &Runtime{Workspace: workspace, TaskMode: activeTaskMode, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
+	runtime = &Runtime{Workspace: workspace, TaskMode: activeTaskMode, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Context: taskContext, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
 	agentRuntime.SetGoalWriterVerifier(func(verifyCtx context.Context, id string) ([]agent.DelegateVerification, error) {
 		return runtime.VerifyDelegateSuite(verifyCtx, id, nil)
 	})
@@ -1731,6 +1738,9 @@ func (r *Runtime) SwitchSession(id string) error {
 		r.Session.Close()
 	}
 	r.Session = sess
+	if r.Context != nil {
+		r.Context.Use(sess)
+	}
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}
@@ -1770,6 +1780,9 @@ func (r *Runtime) NewSession() error {
 		r.Session.Close()
 	}
 	r.Session = sess
+	if r.Context != nil {
+		r.Context.Use(sess)
+	}
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}
@@ -1801,6 +1814,9 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	}
 	r.Session.Close()
 	r.Session = sess
+	if r.Context != nil {
+		r.Context.Use(sess)
+	}
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}

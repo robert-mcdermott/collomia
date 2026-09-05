@@ -67,6 +67,9 @@ type Record struct {
 	// the parent workspace, appended before the first byte changes and again
 	// with its outcome.
 	IntegrationCheckpoint json.RawMessage `json:"integration_checkpoint,omitempty"`
+	TaskContext           *TaskContext    `json:"task_context,omitempty"`
+	// UserRequest references a genuine primary user prompt in Transcript (1-based).
+	UserRequest int `json:"user_request,omitempty"`
 }
 
 type Store struct {
@@ -209,6 +212,17 @@ func (s *Store) Load(id string) (*Session, error) {
 		}
 		if err := validateRecordVersion(id, i+1, record); err != nil {
 			return nil, err
+		}
+		if record.Type == "task_context" {
+			if record.TaskContext == nil {
+				return nil, fmt.Errorf("session %s has an empty task_context record", id)
+			}
+			if err := record.TaskContext.Validate(); err != nil {
+				return nil, fmt.Errorf("session %s task context: %w", id, err)
+			}
+		}
+		if record.Type == "user_request" && (record.UserRequest < 1 || record.UserRequest > len(sess.Transcript) || sess.Transcript[record.UserRequest-1].Role != "user") {
+			return nil, fmt.Errorf("session %s has an invalid user request reference", id)
 		}
 		sess.replay(record)
 	}
@@ -626,7 +640,12 @@ type Session struct {
 	// with their summary while Transcript keeps everything.
 	active []provider.Message
 	// PlanRaw is the latest persisted structured plan, if any.
-	PlanRaw json.RawMessage
+	PlanRaw         json.RawMessage
+	taskContext     TaskContext
+	userRequests    []int
+	userRequestIDs  map[int]bool
+	omittedRequests bool
+	contextMu       sync.Mutex
 	// GoalGraphRaw is the latest persisted runtime-owned graph snapshot, if
 	// this session used the internal OG-1 path or explicit OG-2A TUI preview.
 	GoalGraphRaw json.RawMessage
@@ -672,6 +691,12 @@ func (sess *Session) open() error {
 
 func (sess *Session) replay(record Record) {
 	switch record.Type {
+	case "task_context":
+		if record.TaskContext != nil {
+			sess.taskContext = cloneTaskContext(*record.TaskContext)
+		}
+	case "user_request":
+		sess.retainUserRequest(record.UserRequest)
 	case "meta":
 		if record.Meta != nil {
 			sess.Meta = *record.Meta

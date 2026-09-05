@@ -6,6 +6,12 @@ Beta means the core permission, session, provider, editing, Work, MCP, and
 multi-agent paths are usable and heavily tested; it does not mean unattended
 execution is risk-free or that every roadmap feature is complete.
 
+W7a retained task context passed its offline and user manual-testing gates.
+Bounded model notes and original evidence survive compaction/resume, but notes
+can be stale, long/older requests require retrieval, and model use is not
+guaranteed. This does not yet persist Standard completion obligations or add
+recoverable Work workspace checkpoints (W7b). See [Task context](TASK_CONTEXT.md).
+
 ## Appropriate beta use
 
 - Interactive repository work with `permissions.mode: "ask"`.

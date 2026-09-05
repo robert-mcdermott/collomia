@@ -92,6 +92,7 @@ type Agent struct {
 	onMessage              func(provider.Message)
 	onCompaction           func(summary provider.Message, replaced int)
 	pinnedContext          func() string
+	onUserPrompt           func()
 	completionPlan         *plan.Board
 	goalGraph              *goalgraph.Graph
 	graphWorker            bool
@@ -143,6 +144,9 @@ type Options struct {
 	// OnMessage observes every message appended to the conversation, for
 	// durable session persistence.
 	OnMessage func(provider.Message)
+	// OnUserPrompt observes genuine primary prompt/steering entry points,
+	// after OnMessage persisted them. Runtime role=user notices do not call it.
+	OnUserPrompt func()
 	// OnCompaction observes context compactions (summary + replaced count).
 	OnCompaction func(summary provider.Message, replaced int)
 	// PinnedContext returns authoritative session state that must survive
@@ -211,7 +215,7 @@ func New(opts Options) *Agent {
 	if opts.TaskMode == "" {
 		opts.TaskMode = taskmode.Developer
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, taskMode: opts.TaskMode, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, taskMode: opts.TaskMode, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onUserPrompt: opts.OnUserPrompt, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 func standardHardIterationLimit(noProgressLimit int) int {
@@ -255,6 +259,15 @@ func (a *Agent) appendMessage(message provider.Message) {
 	a.mu.Unlock()
 	if observe != nil {
 		observe(message)
+	}
+}
+
+func (a *Agent) recordUserPrompt() {
+	a.mu.RLock()
+	hook := a.onUserPrompt
+	a.mu.RUnlock()
+	if hook != nil {
+		hook()
 	}
 }
 
@@ -351,6 +364,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		return "", wrapped
 	}
 	a.appendMessage(provider.Message{Role: "user", Content: prompt, Parts: retainedParts})
+	a.recordUserPrompt()
 	if err := a.checkPersistence(); err != nil {
 		return "", reportError(send, err)
 	}
@@ -828,6 +842,9 @@ func (a *Agent) applySteering() {
 		}
 		message := provider.Message{Role: "user", Content: source + " steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance}
 		a.appendMessage(message)
+		if source == "User" {
+			a.recordUserPrompt()
+		}
 		// Under a graph, the next accepted node replaces the whole active
 		// context. Guidance the user was told applies to the remaining task has
 		// to survive that boundary, so it is retained separately and bounded to
@@ -1319,7 +1336,7 @@ func graphOwnedTool(name string) bool {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
+	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "read_task_context", "update_task_context", "read_session", "search_session", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
 		"find_definition", "find_references",
 		// Research is most of what planning is. The web tools change nothing
 		// on the machine, and a plan written without checking a library's

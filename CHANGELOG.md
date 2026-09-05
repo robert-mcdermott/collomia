@@ -9,12 +9,19 @@ an accurate one; their history is in the Git log and in
 
 ### Added
 
+- W7a session task context: bounded, revisioned working notes retained across
+  compaction/resume; separate original user-request previews; session-local
+  history search/read; `/context task` and `/context clear`. Model notes do not
+  grant permission or validate artifacts. W7b recovery checkpoints remain
+  planned. W7a passed offline and user manual-testing gates. See
+  [Task context](docs/TASK_CONTEXT.md) for usage and testing.
+
 - Opt-in `collo eval` quality evaluations: 12 balanced coding/Work tasks,
   independent checks, fresh workspaces, required command containment, bounded
   live runs, replayable local traces, manual acceptance reviews, and matched
   before/after comparisons. `collo schema eval` publishes result schema v1.
   Offline tests cover the runner; an initial 24-trial live baseline is recorded
-  with separate prose-quality findings. W5 user acceptance remains pending.
+  with separate prose-quality findings. W5 was accepted by explicit continuation.
   See [Quality evaluations](docs/QUALITY_EVALUATIONS.md).
 
 ### Fixed
