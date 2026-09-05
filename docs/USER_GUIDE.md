@@ -4022,6 +4022,17 @@ collo run --mode work --autopilot "Create and validate status.md"
 Uninspectable commands still require interactive approval even in autopilot,
 so they fail headlessly. This is intentional.
 
+### Quality evaluations
+
+`collo eval list` lists the balanced coding/Work suite without model calls.
+`collo eval run --live --provider NAME --output NEW_DIRECTORY` runs controlled
+Standard-mode trials with explicit budgets, independent checks, and local
+scorecards. `report`, `review`, and `compare` inspect results, record your
+acceptance decision, and compare builds with matching model settings and limits.
+See [Quality evaluations](QUALITY_EVALUATIONS.md) for a two-task smoke test,
+repeated baseline, result schema, and interpretation limits. Live baseline and
+W5 acceptance are separate from the offline test suite.
+
 ### JSONL event stream
 
 `--jsonl` emits one schema-versioned JSON object per line on stdout:
@@ -4235,7 +4246,7 @@ collo sessions list|show|fork|rewind|rename|archive|unarchive|delete
 collo skills list|show|new|install|update|remove|enable|disable
 collo mcp list|show|add|remove|enable|disable|test
 collo completion bash|zsh|fish|powershell
-collo schema events|config
+collo schema events|config|eval
 collo replay [--check] <trace|->
 collo version
 ```

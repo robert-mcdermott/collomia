@@ -7,6 +7,7 @@ import (
 
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/quality"
 )
 
 func runSchemaCommand(opts options) error {
@@ -14,13 +15,16 @@ func runSchemaCommand(opts options) error {
 }
 
 // schemaContracts are the published contracts this build can print.
-var schemaContracts = []string{"events", "config"}
+var schemaContracts = []string{"events", "config", "eval"}
 
 func writeSchema(out io.Writer, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("schema requires exactly one contract: %s", englishList(schemaContracts))
 	}
 	switch args[0] {
+	case "eval":
+		_, err := out.Write(quality.JSONSchema())
+		return err
 	case "events":
 		_, err := out.Write(event.JSONSchema())
 		return err

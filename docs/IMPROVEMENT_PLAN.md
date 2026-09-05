@@ -10,14 +10,17 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Active wave:** none; W4 — effects and deliverable acceptance — accepted.
-- **Status:** W1, W3, and W4 accepted. The user confirmed all W4 manual tests
-  passed and explicitly requested marking W4 done on 2026-09-04.
-  W2 and W5–W9 remain planned.
-- **Next action:** user commits W4 before selecting the next wave. No next
-  wave has started.
-- **Test build:** `dist/collo-wave4` (macOS arm64), `v0.4.2-wave4`, base
-  `f033b5d` plus the uncommitted W4 changes. The installed binary is unchanged.
+- **Active wave:** W5 — measured agent quality.
+- **Status:** ready for user testing. W1, W3, and W4 are accepted; W4 was committed as
+  `ab9d5ca`. The user selected a balanced coding/Work task set. W2 and W6–W9
+  remain planned.
+- **Next action:** obtain the user's W5 acceptance after reviewing the completed
+  baseline below. `dist/quality-baseline` passed 24/24 machine checks across
+  12 tasks and two trials; all traces validate. Prose review identified issues
+  that machine checks missed. No further baseline run is required for this gate.
+  Stop at the W5 user gate before W7 or W6.
+- **Test build:** `dist/collo-wave5`, version `v0.4.2-wave5.1`, base commit
+  `ab9d5ca-wave5.1-dirty`. The installed binary and `VERSION` are unchanged.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
@@ -53,8 +56,9 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 Wave numbers are stable identifiers, not mandatory execution order. On
 2026-09-04 the user chose W3 ahead of W2. W1, W3, and W4 are accepted;
-W2 and W5–W9 remain pending. Revisit the next priority at each gate.
+W5 is active; W2 and W6–W9 remain planned. Revisit the next priority at each gate.
 After accepting W3, the user explicitly selected W4 on 2026-09-04.
+After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 
 | Wave | Deliverable | Status | User gate |
 | --- | --- | --- | --- |
@@ -62,7 +66,7 @@ After accepting W3, the user explicitly selected W4 on 2026-09-04.
 | W2 | Reasoning configuration, provider-state continuity, and summary replay | Planned | Reasoning/tool conversations work on the user's actual providers, including reopen |
 | W3 | Correct completion outcomes, exact failure recovery, large-file pagination | Accepted | User confirmed pagination and the follow-up manual tests passed |
 | W4 | Final deliverable identity and observed-effect checks | Accepted | User confirmed all manual tests passed and explicitly marked the wave done |
-| W5 | Real-model evaluation baseline | Planned | Representative tasks and quality/cost metrics reflect the user's work |
+| W5 | Real-model evaluation baseline | Ready for user testing | Representative tasks and quality/cost metrics reflect the user's work |
 | W6 | One complete Work workflow: data → workbook → cited memo | Planned | Fresh setup can create, inspect, revise, and deliver useful artifacts |
 | W7 | Durable task context, retrievable evidence, and restart checkpoints | Planned | Long work survives compaction/restart without losing requirements |
 | W8 | Lazy tool discovery and measured independent-read concurrency | Planned | Connected tools are discoverable and parallel reads improve latency |
@@ -274,16 +278,199 @@ exit. No live external write is needed for acceptance testing.
 
 ### W5 — measured agent quality
 
-- [ ] Select an initial representative task set with the user; expand toward
-  30–50 tasks across coding, Work, recovery, and long-task behavior.
-- [ ] Add an opt-in real-model runner with explicit budgets and local traces;
+- [x] Select an initial representative task set with the user: 12 tasks,
+  balanced six coding / six Work. The user selected this balance on 2026-09-04.
+- [ ] Expand toward 30–50 tasks after reviewing this initial baseline; add
+  real restart/forced-compaction tasks when W7 supplies those mechanisms.
+- [x] Add an opt-in real-model runner with explicit budgets and local traces;
   keep deterministic runtime tests as the offline gate.
-- [ ] Define independent checks/rubrics and repeated trials. Record accepted
+- [x] Define independent checks/rubrics and repeated trials. Record accepted
   outcomes, false done/blocked, unnecessary questions, interventions, repeated
   work, latency, and cost per accepted task.
-- [ ] Establish a versioned baseline before changing the Work toolkit. Compare
+- [x] Establish a versioned baseline before changing the Work toolkit. Compare
   harness changes with the same model/budgets before comparing providers.
 - [ ] **User accepts the task set, runner, and baseline interpretation.**
+
+Implementation: [quality evaluations](QUALITY_EVALUATIONS.md),
+`internal/quality`, and `cmd/collo/eval.go`. The runner uses the production
+Standard loop with a controlled built-in subset, not the user's complete
+MCP/skills/hooks configuration. All task data is synthetic. Machine checks
+and human acceptance are distinct; cost is unknown without configured pricing,
+and incomplete usage stops further model work. Work correction/handoff tasks
+do not claim to test durable restart or forced compaction.
+
+**W5 manual gate (smoke and full baseline complete; user acceptance pending):**
+
+1. Run `./dist/collo-wave5 eval list` and `./dist/collo-wave5 schema eval`.
+   Expect 12 tasks, six per profile, and result schema v1; neither calls a model.
+2. Use your configured provider/model for a two-task live smoke test:
+
+   ```sh
+   ./dist/collo-wave5 eval run --live --provider YOUR_PROVIDER \
+     --tasks code_boundary,work_totals --total-token-budget 80000 \
+     --output dist/quality-smoke
+   ```
+
+   Add `--model YOUR_MODEL` if overriding the configured model. Expect a new
+   scorecard and two separate task workspaces/traces. A failed model task is
+   useful baseline evidence; investigate infrastructure errors separately.
+3. Inspect `dist/quality-smoke/report.md`, the resulting source/JSON, and
+   `./dist/collo-wave5 replay --check dist/quality-smoke/code_boundary-01/events.jsonl`.
+   Check whether the machine verdict agrees with the submitted output and
+   usage/cost availability agrees with your provider configuration.
+4. Record one real decision with `eval review` as documented in the guide;
+   confirm the report updates human acceptance without changing machine checks.
+5. After the smoke test, run all 12 tasks with two trials, using identical
+   per-task limits throughout. The guide's 40000-token example uses 960000
+   total; if retaining 100000 per task after calibration, use 2400000 total.
+   Review the six Work and six coding rubrics,
+   including repeated work and unnecessary questions. Record the provider,
+   model, result directory, and interpretation here before accepting W5.
+   A later comparison requires a fresh directory and identical recorded limits.
+
+W5's offline gate passed; it is not accepted until the
+user confirms the live workflow and baseline interpretation. Do not start W7
+or W6 merely because the runner's implementation passes tests.
+
+**W5 automated evidence — 2026-09-04:**
+
+- `go build ./...`, `go test ./...`, `go test -race ./...`, and `go vet ./...`
+  passed with `GOCACHE=/private/tmp/collomia-review-go-cache`. The full test
+  and race suites required execution outside the outer Codex sandbox for
+  process/OS-containment fixtures. An initial documentation guard caught the
+  missing README command mention; it was fixed before the passing runs.
+- Focused fixtures also verify actual macOS sandboxed Go compilation before
+  model calls, independently rejected incorrect code, a successful Work
+  write/validation/receipt pipeline, exact large-integer trace retention,
+  configured-secret redaction, missing-usage refusal before proposed tools,
+  and cancellation of workspace inspection.
+- The separate binary's `eval list`, `eval --help`, and `schema eval` work
+  without model calls. Its generated capability matrix matches the
+  documentation output byte for byte. `git diff --check` passed.
+- Test binary: `dist/collo-wave5`, `v0.4.2-wave5` / `ab9d5ca-wave5-dirty`,
+  SHA-256 `145d6a66b9c64f93069aa4c91113be1757369c1fa5512f05a817934d3bf12bd9`.
+  Logs: `/private/tmp/collomia-wave5-tests-final.log`,
+  `/private/tmp/collomia-wave5-race-all.log`, and
+  `/private/tmp/collomia-wave5-vet.log`. These are local scratch evidence;
+  this checked-in account is the durable handoff.
+- At the end of initial implementation, no live requests had been made.
+  The user's subsequent smoke run is recorded below; W5 is not yet accepted.
+
+**W5 first live smoke review — 2026-09-04:**
+
+- User ran `dist/quality-smoke` with `ollama` / `glm-5.3-flash:cloud`, one trial
+  each of `code_boundary` and `work_totals`, at 40000 tokens per task and 80000
+  total. Batch complete, 0/2 task passes, both `budget_exhausted`, no false done.
+  Reported usage: 73549 tokens; agent time: 61.9 seconds; cost unavailable.
+- The coding output correctly uses `age >= 18` and passed independent Go
+  tests. It spent 36056 tokens before the next request could no longer fit;
+  it did not finish its plan/final answer. The Work JSON correctly contains
+  net revenue 39 and 3 rows, but it exhausted its allowance at 37493 tokens
+  before producing a validation receipt.
+- Traces reveal avoidable work: a repeated vet command after harmless shell
+  profile stderr, two inline-Python attempts requiring interactive approval
+  before recovery with awk, and planning that classified the source CSV as a
+  deliverable. Exact-repeat counts remain zero because the arguments differed;
+  they do not establish that no work was repeated. These are follow-up quality
+  findings, not grounds to weaken permission policy.
+- Found and fixed an evaluator bug: non-success `run.result` events lacked
+  failure metadata, so `replay --check` rejected both original traces. New
+  traces include correlated usage/provider/timeout/cancellation/runtime
+  classifications plus partial/refusal indicators. Offline replay regressions
+  cover budget, blocked, timeout, cancellation, and provider-error outcomes.
+  The original result directory is preserved as evidence; its traces still
+  carry the original writer's defect. The table now says **Task pass** to avoid
+  implying that a correct artifact alone means the agent finished.
+- Next diagnostic run: use the same tasks/model with `--token-budget 100000`
+  and `--total-token-budget 200000` into `dist/quality-smoke-100k`. This tests
+  whether extra allowance permits completion; it is not a matched-budget
+  improvement comparison with the first run. Choose final full-suite limits
+  after this check. No additional live requests were made by Codex.
+- Fix validation: `go test -race ./internal/quality ./cmd/collo` passed, as did
+  the rebuilt CLI and `git diff --check`. Rebuilt `dist/collo-wave5` reports
+  `v0.4.2-wave5.1` / `ab9d5ca-wave5.1-dirty`; SHA-256
+  `03020c5d585689ec58c38a569355b4032881951cfe7b59bcf3363be643f9fe81`.
+  Offline logs: `/private/tmp/collomia-wave5-smoke-fix-tests.log` and
+  `/private/tmp/collomia-wave5-smoke-fix-build.log`.
+
+**W5 higher-budget smoke review — 2026-09-04:**
+
+- User ran `dist/quality-smoke-100k` with the same Ollama model and settings
+  except 100000 tokens per task / 200000 total, using build
+  `v0.4.2-wave5.1`. Both tasks returned `done` and passed every independent
+  check. Zero false-done flags, zero questions, and complete token accounting.
+  Human review fields remain pending; this review does not record user acceptance.
+- `code_boundary`: 56420 tokens, 23.8 seconds, 12 provider calls, 12 tool
+  requests, one exact repeat, and one controller intervention. Final code uses
+  `age >= 18`; independent acceptance tests passed. The controller required
+  fresh verification after scratch-file cleanup, and the agent complied.
+- `work_totals`: 89240 tokens, 33.4 seconds, 14 provider calls, 17 tool
+  requests (16 executed), three exact repeats, one permission denial, and one
+  controller intervention. Final JSON is net revenue 39.0 / rows 3; its
+  SHA-256 matches the final validation receipt. The trace supports the stated
+  arithmetic and input preservation. The agent recovered from a denied inline
+  Python check using awk and explicitly resolved the failure.
+- Total: 145660 tokens and 57.2 seconds of agent time. Of those tokens,
+  134947 are reported input and 10713 output. The high call/context overhead,
+  redundant validation, shell-profile warning noise, and cleanup-triggered
+  verification are efficiency targets for later measured improvements.
+  Required fresh verification and permission enforcement remain valid gates.
+- Both original new-run traces pass `collo replay --check` (2692 and 4011
+  events respectively). Outputs and receipts were inspected read-only; no
+  runtime changes or additional model calls were made during this review.
+- The increased allowance permitted completion on this run. This is budget
+  calibration with model variance, not proof of a harness quality improvement.
+  Keep this build and the 100000-token allowance fixed for the full baseline;
+  do not change the agent merely to improve a score before recording it.
+
+**W5 full baseline review — 2026-09-04:**
+
+- Baseline: `dist/quality-baseline`, `standard-balanced-v1`, build
+  `v0.4.2-wave5.1` / `ab9d5ca-wave5.1-dirty`, `ollama` /
+  `glm-5.3-flash:cloud`, darwin/arm64, started `2026-09-05T05:40:09.667681Z`.
+  Two trials per task, 100000 tokens per task / 2400000 total, 180 seconds per
+  task, 16 iterations per turn. Full-suite digest:
+  `5d183c43e8090bf582b920ce192558b434608016c1e47f3378744ffcd58f0e2f`;
+  model-settings digest:
+  `62b768428f42fbda4dc2d9b409a854e510ccfae036a623ee47f36c73cc26be30`.
+- **24/24 machine passes:** 22 done outcomes and two expected required-input
+  blockers. No false-done or possible false-blocker flags, no budget/time
+  exhaustion, and no typed ask-user requests. All 24 original event traces
+  pass `replay --check`, including blocked outcomes and two-turn corrections.
+- Reported usage: **954082 tokens** (874973 input / 79109 output), **476.1
+  seconds** of agent time, **186 provider calls**, **201 tool requests**,
+  **15 exact repeats**, **10 controller interventions across 8 trials**, and
+  **4 permission denials**. Accounting is complete; dollar cost is unavailable.
+  Input represents about 91.7% of reported tokens. Repeats/interventions are
+  observations, not automatic judgments that the work was wasted.
+- Targeted qualitative checks: both source memos accurately distinguish
+  observed 75% from the future 90% target and cite the source dates; both
+  correction memos use volunteers and $250; both handoffs produce 25; both
+  large-file tasks use read_file offset 100001 / limit 1; both optional reads
+  were attempted; both artifact tasks declare scratch/deliverable roles and
+  validate BEFORE, run the shell rewrite, then validate AFTER.
+- **Quality findings beyond the graders:** `work_correction-02/workspace/memo.md`
+  invents an unsupported `2025-06-01` memo date. The first correction proposal
+  asserts a free venue without labelling that as an assumption. The second
+  code-review answer calls `age > 17` an overcorrection even though it is
+  equivalent to `age >= 18` for the integer signature. These are reasons to
+  keep subjective review distinct from a machine pass; 24/24 is not perfect
+  factual quality or a SOTA ranking.
+- Efficiency findings: both standalone JSON edits needed two controller
+  interventions, first for missing recognized verification and then a denied
+  inline Python check. Both optional missing-file cases needed a structured
+  skip after a controller intervention. Shell-profile stderr remains noisy;
+  other interventions include a mistyped cache path and a failed patch.
+- Preserve the baseline and test binary. Before/after runs should retain this
+  model, task selection, two-trial design, and limits. Do not raise budgets or
+  weaken acceptance/permissions merely to improve the next score. Prioritize
+  task-appropriate completion evidence, clearer recovery guidance, and lower
+  context/call overhead, while retaining W7 durable context as the proposed
+  next major wave. Date/assumption discipline and harder held-out tasks are
+  additional follow-ups now that this suite's machine score is saturated.
+- Review was read-only apart from documentation. The 24 human-review fields
+  remain pending, not automatically accepted on the user's behalf. W5 has an
+  established baseline and is recommended for acceptance; W7 has not started.
 
 ### W6 — a useful Work vertical slice
 

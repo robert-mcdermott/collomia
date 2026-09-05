@@ -206,6 +206,12 @@ contracts are Git-backed; Collomia refuses that combination explicitly.
 
 ## Documentation
 
+`collo eval list` previews the balanced coding/Work quality tasks without model
+calls. Use `collo eval run --live --provider NAME --output NEW_DIRECTORY` for
+bounded trials, then `report`, `review`, and `compare` to inspect scorecards and
+record acceptance. See [Quality evaluations](docs/QUALITY_EVALUATIONS.md) for
+the two-task smoke test and repeated baseline workflow.
+
 | Topic | Documentation |
 | --- | --- |
 | Install, upgrade, rollback, uninstall | [Installing](docs/INSTALLING.md) |
@@ -221,6 +227,7 @@ contracts are Git-backed; Collomia refuses that combination explicitly.
 | Linux Landlock setup | [Linux sandbox guide](docs/LINUX_SANDBOX.md) |
 | MCP protocol coverage | [MCP protocol](docs/MCP_PROTOCOL.md) |
 | Testing and evaluation | [Testing](docs/TESTING.md) |
+| Real-model quality scorecards | [Quality evaluations](docs/QUALITY_EVALUATIONS.md) |
 | Release process and verification | [Releasing](docs/RELEASING.md) |
 | Current priorities and implementation history | [Roadmap](ROADMAP.md) · [history](docs/ROADMAP_HISTORY.md) |
 

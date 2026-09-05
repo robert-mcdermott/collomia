@@ -22,6 +22,17 @@ screens. They do not establish live provider enablement or state continuity.
 
 ## Standard local checks
 
+W5 adds offline runner regressions in `internal/quality` and CLI tests in
+`cmd/collo/eval_test.go`: isolated repeated trials, independent acceptance
+failures, missing-usage stop before proposed tools, budget reservation, sandbox
+preflight, protected inputs, contained grader reads, trace redaction/replay,
+published result-schema validation, review decisions, and comparison controls.
+Failed-run replay fixtures cover budget exhaustion, blockers, timeouts,
+cancellation, and provider failures, including failure-ID correlation.
+They make no model requests. [Quality evaluations](QUALITY_EVALUATIONS.md)
+documents the separate opt-in live suite and human review; passing runtime
+tests does not establish model quality or complete W5 acceptance.
+
 W4 adds final-artifact digest and target/parent identity checks, real shell
 mutation followed by required revalidation, unchanged-byte retention, missing
 and non-regular outputs, cancellation/size bounds, declared deliverable versus

@@ -130,6 +130,20 @@ func run(args []string) error {
 		return withCommandError(err, exitUsage, event.FailureUsage)
 	}
 	runStarted := time.Now()
+	switch opts.command {
+	case "eval":
+		evalArgs := opts.args
+		if len(evalArgs) > 0 && evalArgs[0] == "run" {
+			forwarded := []string{"run"}
+			for _, pair := range [][2]string{{"--cwd", opts.cwd}, {"--provider", opts.provider}, {"--model", opts.model}} {
+				if pair[1] != "" {
+					forwarded = append(forwarded, pair[0], pair[1])
+				}
+			}
+			evalArgs = append(forwarded, evalArgs[1:]...)
+		}
+		return runEvalCommand(evalArgs)
+	}
 	if opts.help {
 		fmt.Print(helpText)
 		return nil
@@ -567,6 +581,11 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if opts.command == "tui" && len(opts.args) == 0 && arg == "eval" {
+			opts.command = "eval"
+			opts.args = append(opts.args, args[i+1:]...)
+			return opts, nil
+		}
 		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "setup" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "support" || arg == "policy" || arg == "auth" || arg == "audit" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
 			opts.command = arg
 			continue
@@ -868,6 +887,7 @@ Usage:
   collo [flags] [initial prompt]      start the interactive TUI
   collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
   collo run [flags] <prompt>          run once (or read the prompt from stdin)
+  collo eval list|run|report|compare|review  opt-in real-model quality scorecards; see collo eval --help
   collo setup [--provider <name>]     find, verify, and configure a provider interactively
   collo init [--with-reference]       write project .collomia.json
   collo init --global [--with-reference]  write the user-wide .collomia/config.json

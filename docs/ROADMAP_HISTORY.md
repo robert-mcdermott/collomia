@@ -13,6 +13,31 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-04 — W5 quality runner, awaiting live baseline
+
+- The user's first Ollama / GLM-5.3-flash smoke produced correct coding and
+  arithmetic outputs but exhausted both 40000-token task allowances before
+  finishing. Review exposed missing final failure metadata in error traces;
+  the writer now emits replay-compatible classifications and correlation IDs.
+  Focused evaluator/CLI race tests passed. Original results are preserved and
+  a higher-budget diagnostic smoke then passed both tasks with validated
+  traces. The full repeated baseline then passed 24/24 machine checks, and all
+  24 traces validated. Prose review found an invented memo date and an incorrect
+  explanation of an equivalent integer comparison. Context/call overhead and
+  controller friction remain measured efficiency targets; user acceptance is
+  pending. See the improvement plan for exact build, model, limits, and evidence.
+- Following W4 acceptance and commit `ab9d5ca`, the user approved proceeding
+  with the quality baseline and selected balanced coding/Work tasks.
+- Added 12 versioned synthetic tasks, independent graders and human rubrics,
+  repeated fresh-workspace trials, bounded opt-in provider calls, local traces,
+  usage completeness, false-done/blocker signals, reviewable acceptance/cost
+  scorecards, and matched comparisons. Result schema v1 is published by
+  `collo schema eval`; runtime traces retain the existing event contract.
+- Offline regression evidence and the manual gate are tracked in the
+  [improvement plan](IMPROVEMENT_PLAN.md). No live baseline has been run and
+  W5 is not yet user-accepted. W7 and W6 remain behind that gate; no
+  orchestration authority or milestone status changes.
+
 ### 2026-09-04 — W4 final-deliverable acceptance
 
 - After accepting and committing W3, the user selected W4. Work completion

@@ -58,6 +58,7 @@ var completionCommands = []completionCommand{
 	// subcommand list that cannot drift even in principle.
 	{name: "schema", subcommands: schemaContracts},
 	{name: "replay", files: true},
+	{name: "eval", subcommands: []string{"list", "run", "report", "compare", "review"}},
 	{name: "version"},
 }
 

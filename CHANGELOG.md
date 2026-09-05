@@ -7,8 +7,22 @@ an accurate one; their history is in the Git log and in
 
 ## Unreleased
 
+### Added
+
+- Opt-in `collo eval` quality evaluations: 12 balanced coding/Work tasks,
+  independent checks, fresh workspaces, required command containment, bounded
+  live runs, replayable local traces, manual acceptance reviews, and matched
+  before/after comparisons. `collo schema eval` publishes result schema v1.
+  Offline tests cover the runner; an initial 24-trial live baseline is recorded
+  with separate prose-quality findings. W5 user acceptance remains pending.
+  See [Quality evaluations](docs/QUALITY_EVALUATIONS.md).
+
 ### Fixed
 
+- Evaluation error traces now include failure classification and correlation
+  metadata required by offline replay, including budget exhaustion and
+  cancellation. Scorecard tables label overall task passes separately from
+  per-artifact checks.
 - Work completion rechecks the final bytes and target identity of validated
   artifacts, catching script mutations, deletion, and external edits. Stale or
   missing declared-deliverable receipts cannot be waived by a validation note

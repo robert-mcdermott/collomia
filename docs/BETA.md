@@ -23,6 +23,15 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
 
 ## Important limitations
 
+- `collo eval` is an experimental, controlled Standard-mode quality harness
+  with 12 synthetic coding/Work tasks. Machine checks and human acceptance are
+  separate; source-writing rubrics need review. It does not measure live web
+  research, the user's full MCP/skills environment, durable restart, forced
+  compaction, or Orchestrated Goal. Live calls are opt-in and missing usage
+  stops a batch. The initial GLM baseline passed 24/24 machine checks but prose
+  review found unsupported details and a technical explanation error; these fixtures do
+  not establish a SOTA ranking. See [Quality evaluations](QUALITY_EVALUATIONS.md).
+
 - Work's final-artifact gate checks current-turn validated files and declared
   deliverables, not every file a script might create or every remote effect.
   Artifact roles are model-authored task intent. Rechecks are bounded to 64
