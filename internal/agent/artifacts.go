@@ -43,10 +43,12 @@ func executionEffects(name string, action tools.Action) toolEffects {
 }
 
 type artifactReceipt struct {
-	path   string // original, absolute spelling: detects a retargeted symlink
-	target string // canonical path authorized for the successful validation
-	digest string
-	root   safefile.RootIdentity
+	path    string // original, absolute spelling: detects a retargeted symlink
+	target  string // canonical path authorized for the successful validation
+	digest  string
+	tree    bool
+	members map[string]bool
+	root    safefile.RootIdentity
 }
 
 type artifactTracker struct {
@@ -148,7 +150,7 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 		if c.scratchPath(receipt.path) && !deliverables[receipt.target] {
 			continue
 		}
-		digest, err := tools.RecheckArtifactDigest(ctx, receipt.path, receipt.target, receipt.root)
+		digest, err := recheckReceipt(ctx, receipt)
 		if err != nil || digest != receipt.digest {
 			reason := "contents changed since validation"
 			if err != nil {
@@ -158,6 +160,10 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 			continue
 		}
 		valid[receipt.target] = true
+		for path := range receipt.members {
+			valid[path] = true
+			c.acceptArtifactValidation([]string{path})
+		}
 		c.acceptArtifactValidation([]string{receipt.target})
 	}
 	for path, role := range c.artifacts.roles {

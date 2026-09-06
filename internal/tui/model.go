@@ -288,15 +288,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
 			if msg.err != nil {
-				switch agent.GoalOutcomeFor(msg.err) {
-				case agent.GoalBudgetExhausted:
-					m.alert("Turn stopped: budget exhausted")
-				case agent.GoalNeedsVerification:
-					m.alert("Verification incomplete")
-				case agent.GoalCancelled:
-					m.alert("Turn cancelled")
-				default:
-					m.alert("Turn blocked: " + failureid.Display(msg.err))
+				if errors.Is(msg.err, provider.ErrResponseEmpty) {
+					m.alert("Provider response unavailable; work retained")
+				} else {
+					switch agent.GoalOutcomeFor(msg.err) {
+					case agent.GoalBudgetExhausted:
+						m.alert("Turn stopped: budget exhausted")
+					case agent.GoalNeedsVerification:
+						m.alert("Verification incomplete")
+					case agent.GoalCancelled:
+						m.alert("Turn cancelled")
+					default:
+						m.alert("Turn blocked: " + failureid.Display(msg.err))
+					}
 				}
 			} else if elapsed > 10*time.Second {
 				m.alert(fmt.Sprintf("Turn finished after %s", elapsed))
@@ -304,7 +308,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.err != nil {
 				label := "Blocked"
 				role := "error"
-				if agent.GoalOutcomeFor(msg.err) == agent.GoalNeedsVerification {
+				if errors.Is(msg.err, provider.ErrResponseEmpty) {
+					label, role = "Provider response unavailable", "system"
+				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalNeedsVerification {
 					label = "Verification incomplete"
 					role = "system"
 				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {

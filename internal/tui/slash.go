@@ -732,6 +732,28 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		estimate, window := m.runtime.Agent.ContextEstimate()
 		m.addSystem(fmt.Sprintf("Compacted %d messages into a summary. Estimated context is now ~%d tokens (window %d). The full transcript remains in the session log.", count, estimate, window))
+	case "/limits":
+		if len(args) != 0 && len(args) != 1 && len(args) != 2 {
+			m.addError(fmt.Errorf("usage: /limits [total [no-progress]]"))
+			break
+		}
+		noProgress, total := m.runtime.Agent.ExecutionLimits()
+		if len(args) > 0 {
+			var err error
+			total, err = strconv.Atoi(args[0])
+			if err == nil && len(args) == 2 {
+				noProgress, err = strconv.Atoi(args[1])
+			}
+			if err != nil {
+				m.addError(fmt.Errorf("limits must be integers"))
+				break
+			}
+			if err = m.runtime.Agent.SetExecutionLimits(noProgress, total); err != nil {
+				m.addError(err)
+				break
+			}
+		}
+		m.addSystem(fmt.Sprintf("Standard execution: %d total provider cycles per user turn; %d consecutive cycles without novel progress. Changes take effect at the next cycle and last until profile switch or restart. Continue a paused task with another message.", total, noProgress))
 	case "/config":
 		showAll := len(args) == 1 && strings.EqualFold(args[0], "all")
 		if len(args) > 0 && !showAll {
@@ -761,6 +783,8 @@ func busySlashAllowed(line string) bool {
 	switch strings.ToLower(fields[0]) {
 	case "/context":
 		return len(fields) == 1 || (len(fields) == 2 && fields[1] == "task")
+	case "/limits":
+		return len(fields) <= 3
 	case "/recovery", "/help", "/status", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
 	case "/orchestrate":

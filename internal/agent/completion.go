@@ -83,9 +83,11 @@ func GoalOutcomeFor(err error) GoalOutcome {
 }
 
 type toolObservation struct {
+	ObservedSequence     uint64
 	CallID               string
 	RetryKey             string
 	LegacyRetryKey       string
+	PriorScopedRetryKey  string
 	RejectedVerification *tools.CommandVerification
 	VerificationPurpose  string
 	Name                 string
@@ -106,12 +108,14 @@ type toolObservation struct {
 	ValidationRequest    *tools.ArtifactValidationRequirement
 	ScopedFiles          []artifactReceipt
 	Effects              toolEffects
+	ArgumentRejected     bool // native assessment rejected before permission/execution
 	ExecutionPrevented   bool
 	CommandExited        bool // native runner observed an ordinary nonzero exit
 	VerificationCheck    verificationAssessment
 }
 
 type completionController struct {
+	observationSequence  uint64
 	store                CompletionStore
 	pending              *pendingEffect
 	effectStarted        bool
@@ -143,6 +147,7 @@ type completionController struct {
 }
 
 type unresolvedToolFailure struct {
+	observedSequence     uint64
 	id                   string
 	tool                 string
 	risk                 tools.Risk
@@ -152,6 +157,7 @@ type unresolvedToolFailure struct {
 	validationRequest    *tools.ArtifactValidationRequirement
 	repairPaths          []string
 	repairReady          bool
+	argumentRejected     bool
 	rejectedVerification *tools.CommandVerification
 }
 
@@ -192,6 +198,8 @@ func (c *completionController) observe(observation toolObservation) {
 	if !c.enabled {
 		return
 	}
+	c.observationSequence++
+	observation.ObservedSequence = c.observationSequence
 	if observation.Name == "update_plan" && !observation.Failed {
 		c.syncArtifactBrief(c.board.Current())
 	}
@@ -204,13 +212,16 @@ func (c *completionController) observe(observation toolObservation) {
 		}
 	}
 	if observation.Failed {
+		// A provider may reuse an ID after restart; an older success with that
+		// ID cannot stand in for the new failed operation.
+		delete(c.successes, observation.CallID)
 		// A write tool may fail after making a partial mutation. Conservatively
 		// stale verification even when the tool reports failure.
 		c.recordFailure(observation)
 		return
 	}
 	if strings.TrimSpace(observation.CallID) != "" {
-		if _, exists := c.successes[observation.CallID]; !exists {
+		if !slices.Contains(c.successOrder, observation.CallID) {
 			c.successOrder = append(c.successOrder, observation.CallID)
 		}
 		c.successes[observation.CallID] = observation
@@ -294,7 +305,7 @@ func (c *completionController) recordFailure(observation toolObservation) {
 	if c.board != nil {
 		_, revision = c.board.Snapshot()
 	}
-	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey, validationRequest: observation.ValidationRequest, rejectedVerification: observation.RejectedVerification}
+	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey, validationRequest: observation.ValidationRequest, rejectedVerification: observation.RejectedVerification, argumentRejected: observation.ArgumentRejected, observedSequence: observation.ObservedSequence}
 	if observation.FailureKind == goalgraph.FailureTool && !observation.ExecutionPrevented && !observation.Effects.Unknown && len(observation.Effects.Paths) <= 64 {
 		switch observation.Name {
 		case "write_file", "edit_file", "apply_patch", "format_file":
@@ -382,11 +393,14 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 		recoveryID := strings.TrimSpace(resolution.RecoveryToolCallID)
 		recovery, ok := c.successes[recoveryID]
 		if !ok {
-			issue := prefix + " references recovery_tool_call_id " + recoveryID + " without a successful current-turn tool receipt"
+			issue := prefix + " references recovery_tool_call_id " + recoveryID + " without a successful retained tool receipt"
 			if actualID, actual := c.receiptForOutputMarker(recoveryID); actual {
 				issue += "; that value is embedded in the output of successful tool call " + actualID + " and is not its receipt ID"
 			}
 			return issue
+		}
+		if failure.observedSequence > 0 && recovery.ObservedSequence <= failure.observedSequence {
+			return prefix + " references a success that predates the failure; use a later successful recovery operation"
 		}
 		if completionMetaTool(recovery.Name) {
 			return prefix + " cannot use completion metadata tool " + recovery.Name + " as recovery evidence"
@@ -712,10 +726,10 @@ func completionNotice(issues []string, intervention int, mode taskmode.Mode, rec
 		b.WriteString("- " + issue + "\n")
 	}
 	if len(failed) == 0 || failed[0] {
-		b.WriteString("A successful retry of the same tool with the same arguments clears its failure automatically; no plan update is needed solely to record that retry. A different path, command, or other argument is a different operation even when the tool name is unchanged. ")
+		b.WriteString("A successful retry of the same executed operation clears its failure automatically (command timeout and verification metadata may change); no plan update is needed solely to record that retry. A different path, command, or other argument is a different operation even when the tool name is unchanged. ")
 		b.WriteString("Native artifact validation also recovers a corrected check of the same file when every required text, minimum-size, and format check is preserved or strengthened. Dropping a requirement does not recover its failure. A successful native file edit/replacement followed by current verification of all affected paths also recovers an earlier executed file-edit failure automatically. ")
 		if len(receipts) > 0 {
-			b.WriteString("Successful current-turn tool receipts available for an explicit recovery:\n")
+			b.WriteString("Successful retained tool receipts available for an explicit recovery:\n")
 			for _, receipt := range receipts {
 				fmt.Fprintf(&b, "- `%s`: %s", receipt.callID, receipt.tool)
 				if receipt.summary != "" {
@@ -737,7 +751,7 @@ func completionNotice(issues []string, intervention int, mode taskmode.Mode, rec
 		b.WriteString("Finish the listed requirements and update any active plan with observed evidence. ")
 	}
 	if mode == taskmode.Work || mode == taskmode.Developer {
-		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Verify each listed file using a meaningful run_command check with verification.paths and verification.purpose, or use validate_artifact for structural/content checks. Either can satisfy current file evidence; do not run both for bookkeeping. A validation_note or unscoped command cannot waive declared deliverables or stale receipts. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific verification_note (Developer) or validation_note (Work) describing what was checked and what remains a matter of judgment. ")
+		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. For an application, scope a meaningful run_command check to its source directories instead of checking every file separately. Verify each listed file or directory using a meaningful run_command check with verification.paths and verification.purpose, or use validate_artifact for structural/content checks. Either can satisfy current file evidence; do not run both for bookkeeping. A validation_note or unscoped command cannot waive declared deliverables or stale receipts. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific verification_note (Developer) or validation_note (Work) describing what was checked and what remains a matter of judgment. ")
 	} else {
 		b.WriteString("If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. ")
 	}

@@ -10,20 +10,20 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Current work:** Standard task-scoped completion reliability (Developer and Work).
-- **Status:** implemented; automated checks and the live Developer rerun passed.
-  The corresponding Work-mode rerun remains pending.
-  The September 6 live tests exposed false-blocked completion; this follow-up
-  supersedes the earlier candidate. The earlier
-  selective cleanup is retained. The bundled
-  workflow was not accepted. W1, W3, W4, W5, and full W7 remain accepted;
-  W2, W8, and W9 remain planned. Base commit is `d39ee78`.
-- **Next action:** run the Work-mode [task-scoped completion check](#task-scoped-completion-checks) and
-  retain [general capability regressions](#retained-capability-checks).
-  Do not restart the bundled workflow or begin another feature wave by default.
-- **Test build:** `dist/collo-task-completion`, version `v0.4.3-task-completion.1`,
-  based on `d39ee78`. Prior test binaries and user sessions are preserved. The
-  installed binary and user's `VERSION` remain unchanged.
+- **Current work:** Larger-project Standard completion and continuation reliability (Developer and Work).
+- **Status:** implementation, automated verification, and the candidate build
+  are complete; live user acceptance is pending. The small Developer rerun remains accepted as a small-task
+  result; it did not establish larger-project reliability. Overall live acceptance
+  and the Work-mode rerun remain pending. W1, W3, W4, W5, and full W7 remain
+  accepted; W2, W8, and W9 remain planned. The withdrawn reporting workflow stays
+  withdrawn.
+- **Next action:** obtain user acceptance on a larger Developer task and a Work
+  task using the candidate and manual checks below.
+  Do not begin another feature wave by default.
+- **Test build:** `dist/collo-standard-reliability`, version
+  `v0.4.3-standard-reliability.1`, based on `b7abf6d`.
+  Prior binaries and user sessions are preserved. The installed binary and
+  user's `VERSION` are unchanged.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
@@ -36,6 +36,95 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   emitted by an adapter. It does not enable thinking at the API, add synchronous
   reasoning extraction, or restore thinking in reopened chat transcripts.
   Those are W2 work. A silent summary area does not prove absent computation.
+
+## Larger-project candidate — September 6
+
+Implementation checklist:
+
+- [x] Directory-scoped project checks cover included source files and directory
+  declarations, including declarations retained by older sessions.
+- [x] Snapshot freshness detects edits, additions, deletions, file-mode changes,
+  symlink retargeting, and directory replacement; child read policy/hooks apply.
+  Dependency/cache/build outputs are excluded, never silently accepted as
+  standalone deliverables.
+- [x] Command execution identity ignores timeout and verification metadata.
+  Successful corrected calls recover pre-execution assessment rejections of the
+  same tool; permission denials and uncertain effects keep their safeguards.
+- [x] Retain up to 64 bounded historical successful-operation facts across a
+  pause/restart for explicit recovery, without restoring fresh validation or
+  permissions.
+- [x] Independent Standard total limit (256 by default), startup
+  `--max-turns` / `--max-no-progress`, and live `/limits`.
+- [x] At most two counted retries for completed-but-empty responses; no tool
+  replay, no retry of refusal/truncation/partial tool payloads, clear provider
+  unavailability label.
+- [x] Kanban-shaped native-tool regression in Developer and Work: over 40 nested
+  project files, malformed patch correction, failing check repaired, retry with
+  added scope, budget pause, new agent instance, two empty responses, a fresh
+  project check, and explicit recovery using a retained earlier success.
+- [x] Full suite, race checks, vet, candidate build, and cross-build results
+  recorded below.
+- [ ] User acceptance of the larger Developer retest.
+- [ ] User acceptance of the Work-mode retest.
+
+Manual checks for this candidate:
+
+1. Start a normal multi-file Developer task with the candidate. You do not need
+   special verification wording in the task prompt. Confirm that normal project
+   tests/builds can finish with directory scopes and no per-source-file validation
+   loop. Inspect the summary for the checks actually performed.
+2. Enter `/limits`, then `/limits 500 24` while it runs; verify that the displayed
+   limits change. These are provider response cycles, not tool calls. A deliberate
+   small total (for example `/limits 3` on a task requiring more work) should pause
+   as budget exhausted, retain work, and allow `/limits 500` followed by
+   `continue`. Lowering a running total below cycles already spent stops at the
+   next boundary.
+3. Repeat a meaningful Work task involving inputs, a disposable helper, and a
+   requested output. Confirm that the output gets a relevant check and scratch
+   helpers do not create independent completion obligations.
+4. Optional existing Kanban recovery: resume with the candidate and request a
+   fresh backend test and frontend build, followed by resolution of remaining
+   historical failures. Older sessions did not save historical success facts,
+   so they need fresh recovery operations. No old transcript text is imported
+   as proof. If the proxy still returns empty responses, expect two retries and
+   a clear provider-unavailable stop; switch/check the provider before continuing.
+
+Candidate invocation from this repository:
+
+```sh
+./dist/collo-standard-reliability --cwd /path/to/project --mode developer --max-turns 500
+```
+
+For the existing Kanban session:
+
+```sh
+./dist/collo-standard-reliability --cwd /Users/rmcdermo/mycode/kanban20 --resume 20260906-201718-711ba7 --max-turns 500
+```
+
+Automated evidence on the final candidate source:
+
+- `go test ./...` passed, including the existing agent, application, evaluation,
+  provider, tool, and graph regression suites.
+- Targeted `go test -race` passed across agent/app/TUI/config/safefile/CLI:
+  project and file scopes, pause/resume, recovery ordering, child-path denial,
+  symlink boundaries, live limits, and empty-response handling.
+- `go vet ./...` passed.
+- Native macOS candidate built; Linux and Windows amd64 cross-builds passed.
+  Cross-builds do not establish native runtime testing on those systems.
+- Generated capabilities match the candidate. Markdown link targets and code
+  fences were checked across the README, roadmap, and 23 docs pages;
+  `git diff --check` passed.
+- Local verification logs: `/private/tmp/collo-reliability-verified.log`,
+  `/private/tmp/collo-reliability-race-final.log`, and
+  `/private/tmp/collo-reliability-vet-final.log`.
+
+The Kanban-shaped regression finishes without completion interventions in both
+profiles after a pause and a new agent instance. Negative cases retain genuine
+failure/verification gaps. Historical recovery facts are ordered: an old pass
+cannot erase a newer failure, including when a provider reuses an ID.
+Scripted success does not establish live provider behavior or replace user
+acceptance. No user session, application output, installed binary, or provider
+configuration was modified to obtain these results.
 
 ## Active follow-up — Task-scoped completion reliability
 
@@ -112,6 +201,45 @@ moving files, and obtain fresh evidence where restart requires it.
   checks, not browser execution or an independent audit of analysis correctness.
 - A second session file in that directory (`20260906-164723-c3085e`) contained
   only initialization records and no attempted user turn.
+
+### Live evidence — larger Developer project, September 6 (not accepted)
+
+Session `kanban20-2edc407ef8c0/20260906-201718-711ba7` exposed remaining defects:
+
+- The first user turn hit the 48-provider-request hard limit despite progress.
+  The tested build defaulted `options.max_iterations` to 24 and also set the
+  hard limit to twice that value, without independent CLI/live controls.
+- Application checks had already reported 47 passing pytest tests, a successful
+  Vite production build, and 26 passing API/static-serving smoke checks.
+- Plan declarations retained directories (`app`, `frontend`, `tests`, later
+  `frontend/src`) as deliverables, but scoped verification accepts regular files
+  only. The directories remained impossible-to-satisfy receipt obligations even
+  after later file scopes were checked. The 16-file limit caused extra splitting
+  and duplicate verification. Project verification needs a distinct contract
+  from standalone file artifacts; invalid declarations need correction/migration.
+- Pre-execution patch argument errors and changed-command retries remained
+  failures after successful alternatives. After the iteration stop, dispositions
+  referring to previous-turn receipts were rejected as not current-turn proof.
+- During the next ~14 minutes, recorded file mutations were confined to two
+  scratch verification scripts. The agent was mainly satisfying controller
+  requirements and repairing assertions in its own extra checks.
+- The final failure and two additional `continue` attempts each produced
+  `fh-kiro` protocol errors: stop `stop`, zero reported output tokens, and no
+  usable assistant text/tool calls. No output-limit stop or refusal was recorded.
+  The transcript cannot distinguish upstream empty output from proxy/adapter
+  loss. Diagnostics and bounded safe recovery are needed; empty output is not
+  evidence that the task failed or completed.
+- Priorities identified during diagnosis (implemented in the candidate above,
+  awaiting live acceptance): project-level verification scope and directory
+  correction; recovery identities that separate never-executed validation errors
+  from actual failed operations and preserve evidence across budget pauses;
+  independent total/no-progress limits with live controls; actionable empty-response
+  diagnostics and bounded provider recovery. Preserve fresh evidence for changed
+  files and do not replay uncertain external effects.
+
+This does not revoke the smaller dashboard result. It shows that the larger
+application workflow has not passed acceptance. No session, project output,
+provider configuration, or runtime code was changed during this diagnosis.
 
 ### Automated evidence — task-scoped follow-up
 

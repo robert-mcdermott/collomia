@@ -30,10 +30,12 @@ func canonicalRetryKey(call provider.ToolCall, normalizeTimeout bool) string {
 		return ""
 	}
 	// The timeout is an execution allowance, not a different operation. A
-	// successful retry still needs identical command, PTY and check scope.
+	// successful retry still needs identical command and PTY. Verification
+	// metadata describes evidence scope, not the executed operation.
 	if normalizeTimeout && call.Name == "run_command" {
 		if object, ok := args.(map[string]any); ok {
 			delete(object, "timeout_seconds")
+			delete(object, "verification")
 		}
 	}
 	canonical, err := json.Marshal(args)
@@ -44,17 +46,31 @@ func canonicalRetryKey(call provider.ToolCall, normalizeTimeout bool) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func priorScopedRetryKey(call provider.ToolCall) string {
+	var args map[string]json.RawMessage
+	if json.Unmarshal(call.Arguments, &args) != nil {
+		return ""
+	}
+	delete(args, "timeout_seconds")
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return ""
+	}
+	call.Arguments = raw
+	return canonicalRetryKey(call, false)
+}
+
 func matchesRetry(failure unresolvedToolFailure, success toolObservation) bool {
 	if failure.tool != success.Name {
 		return false
 	}
 	// update_plan replaces one task-local board. A valid corrected update
 	// repairs an invalid update; it never stands in for a workspace/tool effect.
-	if success.Name == "update_plan" {
+	if success.Name == "update_plan" || failure.argumentRejected {
 		return true
 	}
 	if success.Name == "validate_artifact" && !success.Failed && success.ArtifactValidation && success.ArtifactEvidence != nil && tools.ValidArtifactDigest(success.ArtifactEvidence.Digest) && success.ArtifactEvidence.ArtifactRoot.Valid() && success.ValidationRequest.Covers(failure.validationRequest) {
 		return true
 	}
-	return failure.retryKey != "" && (failure.retryKey == success.RetryKey || failure.retryKey == success.LegacyRetryKey)
+	return failure.retryKey != "" && (failure.retryKey == success.RetryKey || failure.retryKey == success.LegacyRetryKey || failure.retryKey == success.PriorScopedRetryKey)
 }

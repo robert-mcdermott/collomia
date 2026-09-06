@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,7 +21,7 @@ type scopedVerification struct {
 	files   []artifactReceipt
 }
 
-func prepareScopedVerification(ctx context.Context, raw json.RawMessage, action tools.Action, workspace string) (*scopedVerification, error) {
+func prepareScopedVerification(ctx context.Context, raw json.RawMessage, action tools.Action, workspace string, authorize func([]string) error) (*scopedVerification, error) {
 	v, err := tools.ParseCommandVerification(raw)
 	if err != nil || v == nil {
 		return nil, err
@@ -37,6 +38,22 @@ func prepareScopedVerification(ctx context.Context, raw json.RawMessage, action 
 			path = filepath.Join(workspace, path)
 		}
 		target := action.Paths[i]
+		info, statErr := os.Stat(target)
+		if statErr != nil {
+			return nil, fmt.Errorf("verification scope %q: %w", path, statErr)
+		}
+		if info.IsDir() {
+			identity, err := safefile.CaptureRootIdentity(target)
+			if err != nil {
+				return nil, err
+			}
+			digest, members, err := snapshotProject(ctx, path, target, identity, authorize)
+			if err != nil {
+				return nil, fmt.Errorf("verification scope %q: %w", path, err)
+			}
+			check.files = append(check.files, artifactReceipt{path: path, target: target, digest: digest, root: identity, tree: true, members: members})
+			continue
+		}
 		root, err := safefile.Open(filepath.Dir(target), target)
 		if err != nil {
 			return nil, fmt.Errorf("verification scope %q: %w", path, err)
@@ -57,7 +74,7 @@ func prepareScopedVerification(ctx context.Context, raw json.RawMessage, action 
 
 func (v *scopedVerification) finish(ctx context.Context) error {
 	for _, file := range v.files {
-		digest, err := tools.RecheckArtifactDigest(ctx, file.path, file.target, file.root)
+		digest, err := recheckReceipt(ctx, file)
 		if err != nil || digest != file.digest {
 			return fmt.Errorf("verification command finished, but %q changed or became inaccessible during the check; inspect it and rerun the check on the final files", file.path)
 		}
@@ -67,9 +84,9 @@ func (v *scopedVerification) finish(ctx context.Context) error {
 
 func (v *scopedVerification) summary() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "\nVerification recorded: %s\nScope: command exited zero; listed file bytes matched before and after the check. Test coverage is determined by the command, not by this receipt.", v.purpose)
+	fmt.Fprintf(&b, "\nVerification recorded: %s\nScope: command exited zero; scoped file/project input bytes matched before and after the check. Test coverage is determined by the command, not by this receipt.", v.purpose)
 	for _, file := range v.files {
-		fmt.Fprintf(&b, "\n%s %s", file.path, file.digest)
+		fmt.Fprintf(&b, "\n%s %s", file.description(), file.digest)
 	}
 	return b.String()
 }
@@ -98,6 +115,15 @@ func (c *completionController) recordScopedVerification(files []artifactReceipt)
 			c.artifacts.overflow = true
 			continue
 		}
+		// A fresh project check supersedes old file receipts within its observed
+		// input set. Excluded outputs and paths outside the scope retain theirs.
+		if file.tree {
+			for path, prior := range c.artifacts.receipts {
+				if file.covers(prior.target) {
+					delete(c.artifacts.receipts, path)
+				}
+			}
+		}
 		c.artifacts.receipts[file.path] = file
 		// Scope survives restart as an obligation, never as a passing receipt.
 		if !c.scratchPath(file.target) {
@@ -108,6 +134,9 @@ func (c *completionController) recordScopedVerification(files []artifactReceipt)
 			}
 		}
 		c.acceptArtifactValidation([]string{file.target})
+		for path := range file.members {
+			c.acceptArtifactValidation([]string{path})
+		}
 	}
 	c.recognizedEver = true
 }
@@ -123,10 +152,10 @@ func (c *completionController) recoverVerifiedFileFailures() {
 		for _, path := range failure.repairPaths {
 			found := false
 			for _, receipt := range c.artifacts.receipts {
-				if receipt.target != path {
+				if !receipt.covers(path) {
 					continue
 				}
-				digest, err := tools.RecheckArtifactDigest(c.ctxOrBackground(), receipt.path, receipt.target, receipt.root)
+				digest, err := recheckReceipt(c.ctxOrBackground(), receipt)
 				if err == nil && digest == receipt.digest {
 					found = true
 					break
@@ -192,7 +221,7 @@ func (c *completionController) recoversRejectedVerification(f unresolvedToolFail
 	for _, path := range v.Paths {
 		found := false
 		for _, file := range o.ScopedFiles {
-			if completionPath(c.artifactPath(path)) == file.target {
+			if file.covers(completionPath(c.artifactPath(path))) {
 				found = true
 				break
 			}

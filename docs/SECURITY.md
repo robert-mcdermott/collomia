@@ -858,8 +858,10 @@ bound separately to its machine-observed Git workspace token. An unchanged
 token preserves earlier verification; a changed or unavailable token requires
 fresh proof. This distinction grants no new network, process, or write access.
 
-Standard mode uses the same no-progress meaning and a hard provider-turn
-envelope at twice `max_iterations`. The hard envelope is not renewed by writes,
+Standard mode uses the same no-progress meaning and an independent
+`max_turn_iterations` provider-turn ceiling (256 by default). User-only CLI
+and `/limits` controls can adjust Standard limits without changing permissions
+or Orchestrated Goal budgets. The hard envelope is not renewed by writes,
 and token/cost budgets continue to take precedence when configured. A command
 the verifier cannot safely classify stays ordinary tool output: Collomia now
 explains the refusal after a named verification gap, but never promotes an ad

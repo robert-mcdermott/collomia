@@ -18,6 +18,7 @@ const (
 var (
 	ErrResponseTruncated  = errors.New("provider response truncated")
 	ErrResponseRefused    = errors.New("provider response refused")
+	ErrResponseEmpty      = errors.New("provider returned an empty completed response")
 	ErrResponseIncomplete = errors.New("provider response did not complete")
 )
 
@@ -70,6 +71,9 @@ func (r Response) CompletionError(name string) error {
 		message = "the provider refused or filtered the response; this response's tools were not executed and the task is not complete"
 	default:
 		cause = ErrResponseIncomplete
+		if r.EmptyCompleted() {
+			cause = errors.Join(ErrResponseIncomplete, ErrResponseEmpty)
+		}
 		message = "the provider did not report a usable completed response; this response's tools were not executed and the task is not complete"
 	}
 	if stop := sanitizeProviderText(r.Stop, 128); stop != "" {
@@ -84,4 +88,18 @@ func (r Response) CompletionError(name string) error {
 func (r Response) acceptsToolCalls() bool {
 	r.ToolCalls = []ToolCall{{}}
 	return r.Termination() == TerminationTools
+}
+
+// EmptyCompleted identifies a complete but unusable response with no pending
+// tool calls. Retrying this request cannot replay a tool invocation. Refusals,
+// truncation, unknown status, and missing tool-use payloads are not eligible.
+func (r Response) EmptyCompleted() bool {
+	if r.Refused || strings.TrimSpace(r.Content) != "" || len(r.ToolCalls) != 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Stop)) {
+	case "", "stop", "end_turn", "stop_sequence", "completed":
+		return true
+	}
+	return false
 }

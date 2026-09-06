@@ -108,6 +108,7 @@ type options struct {
 	auditSession, auditActor, auditTool                      string
 	auditSince                                               string
 	auditLimit                                               int
+	maxIterations, maxTurns                                  int
 	webPort, mcpTimeout                                      int
 	plan, global, help, version, jsonl, ephemeral            bool
 	strict, revoke, status, debug, markdown, yes             bool
@@ -301,7 +302,7 @@ func run(args []string) error {
 		}
 	}
 	broker := tui.NewApprovalBroker()
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, ProviderCredential: setupCredential, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
+	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, ProviderCredential: setupCredential, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, MaxIterations: opts.maxIterations, MaxTurnIterations: opts.maxTurns, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
 		return broker.Ask(ctx, tui.Question{Text: question, Options: options})
 	}})
 	if err != nil {
@@ -438,7 +439,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 	}
 
 	var err error
-	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
+	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, MaxIterations: opts.maxIterations, MaxTurnIterations: opts.maxTurns, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
 	if err != nil {
 		return classifyCommandError(err)
 	}
@@ -600,6 +601,24 @@ func parse(args []string) (options, error) {
 			opts.help = true
 		case arg == "-v" || arg == "--version":
 			opts.version = true
+		case arg == "--max-turns" || arg == "--max-no-progress" || strings.HasPrefix(arg, "--max-turns=") || strings.HasPrefix(arg, "--max-no-progress="):
+			name, value, hasValue := strings.Cut(arg, "=")
+			if !hasValue {
+				if i+1 >= len(args) {
+					return opts, fmt.Errorf("%s requires an integer from 1 to 10000", name)
+				}
+				i++
+				value = args[i]
+			}
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 || n > 10000 {
+				return opts, fmt.Errorf("%s requires an integer from 1 to 10000", name)
+			}
+			if name == "--max-turns" {
+				opts.maxTurns = n
+			} else {
+				opts.maxIterations = n
+			}
 		case arg == "--plan":
 			opts.plan = true
 		case arg == "--jsonl":
@@ -840,6 +859,12 @@ func parse(args []string) (options, error) {
 
 func tuiChildArgs(opts options) []string {
 	args := []string{"tui", "--cwd", opts.cwd}
+	if opts.maxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(opts.maxTurns))
+	}
+	if opts.maxIterations > 0 {
+		args = append(args, "--max-no-progress", strconv.Itoa(opts.maxIterations))
+	}
 	if opts.provider != "" {
 		args = append(args, "--provider", opts.provider)
 	}
@@ -919,6 +944,8 @@ Flags:
   --model <id>                         model or deployment ID
   --agent <name>                       named primary agent profile
   --mode developer|work                task profile (default: developer; persisted per session)
+  --max-turns N                      Standard provider cycles per user turn (default 256)
+  --max-no-progress N                 consecutive cycles without novel progress (default 24)
   --autonomy ask|workspace|autopilot   permission policy
   --autopilot                          shorthand for --autonomy autopilot
   --workspace                          shorthand for --autonomy workspace

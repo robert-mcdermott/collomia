@@ -53,7 +53,7 @@ Standard execution do not require Git.
   require observed evidence; `blocked` is reserved for a genuine impasse;
   `skipped` records an unnecessary or superseded action.
 - Failed tool calls named by the completion controller carry stable
-  current-turn IDs. A successful retry with the same tool and complete arguments
+  runtime IDs. A successful retry with the same tool and executed operation
   clears that operation automatically, without a recovery-only plan update.
   Native artifact validation also recognizes a corrected check of the same
   file when it preserves all required text, does not lower the minimum size,

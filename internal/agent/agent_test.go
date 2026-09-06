@@ -1664,7 +1664,7 @@ func TestCompletionControllerRejectsRecoveryWithoutSuccessfulReceipt(t *testing.
 	}
 	controller.observe(toolObservation{CallID: "plan-update", Name: "update_plan", Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"}})
 	decision := controller.assess()
-	if decision.done || !strings.Contains(decision.notice, "without a successful current-turn tool receipt") || !strings.Contains(decision.notice, "edit-attempt") {
+	if decision.done || !strings.Contains(decision.notice, "without a successful retained tool receipt") || !strings.Contains(decision.notice, "edit-attempt") {
 		t.Fatalf("unproven recovery was accepted: %+v", decision)
 	}
 }

@@ -13,6 +13,25 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-06 — Larger-project Standard continuation reliability
+
+- The Kanban test delivered useful work but exhausted the coupled 48-cycle
+  ceiling, retained impossible directory-file obligations and old failures,
+  then received repeated empty provider responses.
+- Project-directory scopes now cover bounded input trees and retained directory
+  declarations with native freshness checks. Child read policy and hooks apply;
+  build/cache/dependency outputs are excluded and nested symlinks are not followed.
+- Command execution identity excludes timeout and verification metadata.
+  Corrected native assessment rejections recover on a successful call of the
+  same tool. Bounded historical success facts support explicit alternative
+  recovery after pauses; current file verification remains fresh.
+- Standard total cycles default to 256 independently of the 24-cycle no-progress
+  lease. CLI flags and live `/limits` expose user controls.
+- Empty completed provider responses get at most two counted retries, without
+  tool replay. Exhaustion is labeled provider unavailability.
+- Tests and live acceptance: [improvement plan](IMPROVEMENT_PLAN.md).
+  This is Standard reliability work; graph authority and budgets are unchanged.
+
 ### 2026-09-06 — Task-scoped Standard completion reliability
 
 - A live Developer dashboard run passed its scoped check but ended as

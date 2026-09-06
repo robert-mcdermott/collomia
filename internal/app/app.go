@@ -236,8 +236,9 @@ type Options struct {
 	// into the session opened immediately afterwards. It is never persisted and
 	// avoids putting the value in the process environment on platforms without
 	// an OS credential store.
-	ProviderCredential     string
-	Plan, Debug, Ephemeral bool
+	MaxIterations, MaxTurnIterations int
+	ProviderCredential               string
+	Plan, Debug, Ephemeral           bool
 	// Resume loads an existing session ID; Continue resumes the most
 	// recently updated session. Otherwise a new session is created.
 	Resume   string
@@ -510,7 +511,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if profile.MaxIterations > 0 {
 		maxIterations = profile.MaxIterations
 	}
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, TaskMode: activeTaskMode, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxTurnIterations: cfg.Options.MaxTurnIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, TaskMode: activeTaskMode, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
 			return taskContext.Pinned()
@@ -543,8 +544,20 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	agentRuntime.ApplyProfile(agent.ProfileSettings{
 		Name: activeAgent, Instructions: profile.Instructions, Catalog: activeCatalog,
 		Tools: profile.Tools, DisabledTools: cfg.Options.DisabledTools, Skills: profile.Skills,
-		MaxIterations: maxIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
+		MaxIterations: maxIterations, MaxTurnIterations: cfg.Options.MaxTurnIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
 	})
+	if opts.MaxIterations > 0 || opts.MaxTurnIterations > 0 {
+		noProgress, total := agentRuntime.ExecutionLimits()
+		if opts.MaxIterations > 0 {
+			noProgress = opts.MaxIterations
+		}
+		if opts.MaxTurnIterations > 0 {
+			total = opts.MaxTurnIterations
+		}
+		if err := agentRuntime.SetExecutionLimits(noProgress, total); err != nil {
+			return nil, err
+		}
+	}
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
 		agentRuntime.SetUsage(sess.Usage())
@@ -2054,7 +2067,7 @@ func (r *Runtime) SelectAgent(name string) error {
 	r.Agent.ApplyProfile(agent.ProfileSettings{
 		Name: name, Instructions: profile.Instructions, Catalog: catalog,
 		Tools: profile.Tools, DisabledTools: r.Config.Options.DisabledTools, Skills: profile.Skills,
-		MaxIterations: maxIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
+		MaxIterations: maxIterations, MaxTurnIterations: r.Config.Options.MaxTurnIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
 	})
 	r.ActiveAgent = name
 	return nil

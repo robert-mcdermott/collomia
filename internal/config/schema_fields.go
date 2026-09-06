@@ -91,7 +91,7 @@ func boundFor(key fieldKey) (map[string]any, bool) {
 		return map[string]any{"minimum": 0, "maximum": 3600}, true
 	case fieldKey{"Options", "delegate_max_concurrency"}:
 		return map[string]any{"minimum": 0, "maximum": 6}, true
-	case fieldKey{"Options", "orchestration_max_iterations"}:
+	case fieldKey{"Options", "max_turn_iterations"}, fieldKey{"Options", "orchestration_max_iterations"}:
 		return map[string]any{"minimum": 0, "maximum": 10000}, true
 	case fieldKey{"Options", "orchestration_max_tokens"}:
 		return map[string]any{"minimum": 0, "maximum": 100000000}, true
@@ -277,7 +277,8 @@ var fieldDescriptions = map[fieldKey]string{
 	{"Hook", "timeout_seconds"}: "Bound on the hook run. Zero uses ten seconds.",
 
 	// Options
-	{"Options", "max_iterations"}:                        "Consecutive provider/model response cycles Standard or Orchestrated Goal may spend without novel progress; this is not a tool-call count. Standard turns also have a hard envelope of twice this value.",
+	{"Options", "max_turn_iterations"}:                   "Maximum provider response cycles per Standard user turn, including empty-response retries. Zero uses 256. Progress does not reset this limit; independent of the no-progress lease. Does not change Orchestrated Goal budgets.",
+	{"Options", "max_iterations"}:                        "Consecutive provider/model response cycles Standard or Orchestrated Goal may spend without novel progress; this is not a tool-call count. Standard total cycles are independently limited by max_turn_iterations.",
 	{"Options", "max_tool_output_bytes"}:                 "Largest tool result passed to the model. Longer output is truncated with a marker.",
 	{"Options", "delegate_max_concurrency"}:              "Session-wide limit on concurrent delegated tasks. Zero uses four.",
 	{"Options", "orchestration_max_iterations"}:          "Provider iterations one approved Orchestrated Goal may use before pausing for the user. Zero uses 96.",

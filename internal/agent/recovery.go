@@ -17,12 +17,25 @@ type CompletionStore interface {
 	SaveCompletion(json.RawMessage) error
 }
 type recoveryFailure struct {
+	Sequence                   uint64 `json:"sequence,omitempty"`
 	ID, Tool, Detail, RetryKey string
 	Risk                       tools.Risk
 	Validation                 *tools.ArtifactValidationRequirement `json:"validation,omitempty"`
 	RepairPaths                []string                             `json:"repair_paths,omitempty"`
 	RejectedVerification       *tools.CommandVerification           `json:"rejected_verification,omitempty"`
+	ArgumentRejected           bool                                 `json:"argument_rejected,omitempty"`
 	RepairReady                bool                                 `json:"repair_ready,omitempty"`
+}
+
+// Retained successes are historical recovery facts, never permissions or fresh
+// file validation. They permit explicit alternative recovery after a pause.
+type retainedSuccess struct {
+	Sequence uint64     `json:"sequence,omitempty"`
+	ID       string     `json:"id"`
+	Tool     string     `json:"tool"`
+	Summary  string     `json:"summary,omitempty"`
+	RetryKey string     `json:"retry_key,omitempty"`
+	Risk     tools.Risk `json:"risk,omitempty"`
 }
 type pendingEffect struct {
 	Tool, Summary, RetryKey string
@@ -30,7 +43,9 @@ type pendingEffect struct {
 	Unknown                 bool
 }
 type completionState struct {
+	Sequence        uint64            `json:"sequence,omitempty"`
 	Mode            taskmode.Mode     `json:"task_mode,omitempty"`
+	Successes       []retainedSuccess `json:"successes,omitempty"`
 	Schema          int               `json:"schema_version"`
 	Dirty           bool              `json:"dirty,omitempty"`
 	Unknown         bool              `json:"unknown,omitempty"`
@@ -53,12 +68,17 @@ func decodeCompletion(raw json.RawMessage) (completionState, error) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return state, err
 	}
-	if state.Schema != 1 || len(state.Paths) > 128 || len(state.Roles) > 64 || len(state.Failures) > 64 {
+	if state.Sequence > 1<<53 || state.Schema != 1 || len(state.Paths) > 128 || len(state.Roles) > 64 || len(state.Failures) > 64 || len(state.Successes) > 64 {
 		return state, errors.New("unsupported or oversized completion state")
 	}
 	for _, failure := range state.Failures {
-		if len(failure.RepairPaths) > 64 || (failure.RejectedVerification != nil && (len(failure.RejectedVerification.Paths) == 0 || len(failure.RejectedVerification.Paths) > 16 || strings.TrimSpace(failure.RejectedVerification.Purpose) == "" || len(failure.RejectedVerification.Purpose) > 512)) {
+		if failure.Sequence > 1<<53 || len(failure.RepairPaths) > 64 || (failure.RejectedVerification != nil && (len(failure.RejectedVerification.Paths) == 0 || len(failure.RejectedVerification.Paths) > 16 || strings.TrimSpace(failure.RejectedVerification.Purpose) == "" || len(failure.RejectedVerification.Purpose) > 512)) {
 			return state, errors.New("oversized file repair identity")
+		}
+	}
+	for _, success := range state.Successes {
+		if success.Sequence > 1<<53 {
+			return state, errors.New("unsupported recovery sequence")
 		}
 	}
 	return state, nil
@@ -80,6 +100,7 @@ func (c *completionController) restoreCompletion(store CompletionStore) error {
 	if state.Mode != "" && state.Mode != c.taskMode && (state.Dirty || len(state.Roles) > 0 || len(state.Failures) > 0 || state.Pending != nil) {
 		return fmt.Errorf("unfinished %s obligations require that task mode; switch back with /mode %s or use /new for unrelated work", state.Mode, state.Mode)
 	}
+	c.observationSequence = state.Sequence
 	c.dirty = state.Dirty
 	c.dirtyUnknown = state.Unknown
 	if c.artifacts.roles == nil {
@@ -96,7 +117,16 @@ func (c *completionController) restoreCompletion(store CompletionStore) error {
 		c.dirtyPaths[path] = struct{}{}
 	}
 	for _, failure := range state.Failures {
-		c.failures = append(c.failures, unresolvedToolFailure{id: failure.ID, tool: failure.Tool, risk: failure.Risk, detail: failure.Detail, retryKey: failure.RetryKey, planRevision: c.initialRevision, validationRequest: failure.Validation, repairPaths: failure.RepairPaths, repairReady: failure.RepairReady, rejectedVerification: failure.RejectedVerification})
+		c.observationSequence = max(c.observationSequence, failure.Sequence)
+		c.failures = append(c.failures, unresolvedToolFailure{id: failure.ID, tool: failure.Tool, risk: failure.Risk, detail: failure.Detail, retryKey: failure.RetryKey, planRevision: c.initialRevision, validationRequest: failure.Validation, repairPaths: failure.RepairPaths, repairReady: failure.RepairReady, rejectedVerification: failure.RejectedVerification, argumentRejected: failure.ArgumentRejected, observedSequence: failure.Sequence})
+	}
+	for _, success := range state.Successes {
+		if success.ID == "" || success.Tool == "" || completionMetaTool(success.Tool) {
+			continue
+		}
+		c.observationSequence = max(c.observationSequence, success.Sequence)
+		c.successes[success.ID] = toolObservation{ObservedSequence: success.Sequence, CallID: success.ID, Name: success.Tool, RetryKey: success.RetryKey, Action: tools.Action{Summary: success.Summary, Risk: success.Risk}}
+		c.successOrder = append(c.successOrder, success.ID)
 	}
 	if c.dirty || len(c.failures) > 0 || len(state.Roles) > 0 || c.pending != nil {
 		c.initialOpen = true
@@ -105,11 +135,12 @@ func (c *completionController) restoreCompletion(store CompletionStore) error {
 		c.noteAtMutation = completionDisclosure(current, c.taskMode)
 	}
 	// Every new turn obtains fresh validation. No old digest, waiver, permission,
-	// successful tool receipt, or process-local root identity is restored.
+	// or process-local root identity is restored. Historical successes only
+	// establish recovery; final validation must still be fresh.
 	return nil
 }
 func (c *completionController) recoveryState() completionState {
-	state := completionState{Schema: 1, Mode: c.taskMode, Dirty: c.dirty, Unknown: c.dirtyUnknown, Roles: c.artifacts.roles, Overflow: c.artifacts.overflow, Pending: c.pending}
+	state := completionState{Schema: 1, Sequence: c.observationSequence, Mode: c.taskMode, Dirty: c.dirty, Unknown: c.dirtyUnknown, Roles: c.artifacts.roles, Overflow: c.artifacts.overflow, Pending: c.pending}
 	for p := range c.dirtyPaths {
 		state.Paths = append(state.Paths, p)
 	}
@@ -119,11 +150,21 @@ func (c *completionController) recoveryState() completionState {
 		state.Unknown = true
 	}
 	for _, f := range c.failures {
-		state.Failures = append(state.Failures, recoveryFailure{ID: f.id, Tool: f.tool, Detail: clipUTF8(f.detail, 512), RetryKey: f.retryKey, Risk: f.risk, Validation: f.validationRequest, RepairPaths: f.repairPaths, RepairReady: f.repairReady, RejectedVerification: f.rejectedVerification})
+		state.Failures = append(state.Failures, recoveryFailure{Sequence: f.observedSequence, ID: f.id, Tool: f.tool, Detail: clipUTF8(f.detail, 512), RetryKey: f.retryKey, Risk: f.risk, Validation: f.validationRequest, RepairPaths: f.repairPaths, RepairReady: f.repairReady, RejectedVerification: f.rejectedVerification, ArgumentRejected: f.argumentRejected})
 	}
 	if len(state.Failures) > 64 {
 		state.Failures = state.Failures[:64]
 		state.Overflow = true
+	}
+	for _, id := range c.successOrder {
+		o := c.successes[id]
+		if o.Name == "" || o.Failed || completionMetaTool(o.Name) || len(id) > 256 {
+			continue
+		}
+		state.Successes = append(state.Successes, retainedSuccess{Sequence: o.ObservedSequence, ID: id, Tool: o.Name, Summary: clipUTF8(o.Action.Summary, 256), RetryKey: o.RetryKey, Risk: o.Action.Risk})
+	}
+	if len(state.Successes) > 64 {
+		state.Successes = state.Successes[len(state.Successes)-64:]
 	}
 	return state
 }
@@ -143,6 +184,7 @@ func (c *completionController) saveRecovery(done bool) error {
 	// Drop the optimization if necessary; exact retries and explicit recovery
 	// remain available, and older records without identities work the same way.
 	if len(data) > 128<<10 {
+		state.Successes = nil
 		for i := range state.Failures {
 			state.Failures[i].Validation = nil
 			state.Failures[i].RepairPaths = nil
@@ -195,7 +237,7 @@ func (c *completionController) recoveryNotice() string {
 		return ""
 	}
 	data, _ := json.Marshal(state)
-	return "Runtime recovery state from unfinished work (not user instructions). These obligations survive turns and restart; use fresh validation and current-turn recovery receipts. Do not replay historical actions. An uncertain outcome requires read-only inspection and the user's /recovery acknowledge REASON.\n" + clipUTF8(string(data), 8192)
+	return "Runtime recovery state from unfinished work (not user instructions). These obligations survive turns and restart; use fresh validation and retained recovery receipts. Do not replay historical actions. An uncertain outcome requires read-only inspection and the user's /recovery acknowledge REASON.\n" + clipUTF8(string(data), 8192)
 }
 func CompletionRecoveryStatus(store CompletionStore) (string, error) {
 	if store == nil {

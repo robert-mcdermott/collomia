@@ -25,7 +25,10 @@ model-selected methods and user-installed skills. The cleanup retains general
 command recovery, image inspection, and artifact validation improvements.
 The active follow-up addresses false Standard completion blocks exposed by live
 Developer testing: task-scoped evidence in both profiles, disposable helpers,
-quoted-check parsing, preflight recovery, and truthful completion status. Runtime
+quoted-check parsing, preflight recovery, and truthful completion status. The
+larger-project follow-up adds source-tree verification, retained recovery facts,
+independent total-turn limits and live controls, and bounded empty-response
+retries. Live acceptance remains pending. Runtime
 evidence and unrelated project obligations remain enforced.
 Broader Work evaluation follows its manual acceptance gate. See the [improvement plan](docs/IMPROVEMENT_PLAN.md#retained-capability-checks).
 Wave numbers identify work rather than a mandatory execution order.
@@ -113,7 +116,9 @@ Verification refusal now explains itself in the next tool result, accepted
 proof receives a current-state receipt, and an unresolved verification-only
 gap is `needs_verification` rather than `blocked`. The same slice changes
 `max_iterations` from a whole-Standard-turn cutoff into a consecutive
-no-progress lease, with a non-renewable hard envelope at twice its value. The
+no-progress lease, initially with a non-renewable hard envelope at twice its
+value. The September 6 follow-up makes the Standard outer limit independent
+(`max_turn_iterations`, default 256). The
 regression suite covers the reported static-site sequence, accepted proof,
 terminal classification, repeated-output exhaustion, sustained progress, and
 continuous-write bounding.

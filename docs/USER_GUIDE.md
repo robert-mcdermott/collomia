@@ -1286,7 +1286,8 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 
 | Field | Meaning |
 | --- | --- |
-| `max_iterations` | Consecutive provider/model response cycles Standard mode or an Orchestrated Goal primary attempt may take without novel progress; defaults to `24`. It is not a tool-call count. A Standard turn also has a hard envelope of twice this value (48 by default). |
+| `max_iterations` | Consecutive provider/model response cycles Standard mode or an Orchestrated Goal primary attempt may take without novel progress; defaults to `24`. It is not a tool-call count. Standard total cycles are limited independently by `max_turn_iterations`. |
+| `max_turn_iterations` | Total provider response cycles per Standard user turn; default `256`, `0` uses the default, maximum `10000`. Use `--max-turns N` or live `/limits N` to override. |
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
@@ -3397,9 +3398,12 @@ tool calls: one response may contain several tool calls. In both Standard mode
 and Orchestrated Goal it is a consecutive no-progress lease. A novel successful
 tool result, plan revision, fresh verification, or resolution of a recoverable
 failure renews the lease; repeating equivalent evidence does not. Standard
-mode also has a non-renewable hard envelope of twice `max_iterations` (48
-provider cycles at the default), so productive work is not cut off at cycle 24
-but repeated writes cannot run forever. Token and estimated-cost budgets remain
+mode also has an independent `max_turn_iterations` ceiling (256 by default),
+so productive work is not cut off at cycle 24 but cannot run forever. Use
+`--max-turns 500` at startup or `/limits 500` while running. `/limits 500 30`
+also changes the no-progress lease; `--max-no-progress 30` does so at startup.
+Overrides last until profile switch or restart. Continue a budget-paused task
+with another message. See [the full contract](COMPLETION.md#long-tasks-and-provider-interruptions). Token and estimated-cost budgets remain
 the tighter controls when configured. Orchestrated Goal instead uses its
 configured whole-graph iteration ceiling as the outer limit across proposal,
 primary attempts, compaction, and automatic workers.
@@ -4388,8 +4392,9 @@ against structured state it can observe:
   JSON object key order and spacing do not matter; different paths, commands,
   or other arguments are different operations. Default/explicit arguments and
   alternative path spellings are conservatively distinct, except equivalent
-  native artifact checks. Command timeout changes alone do not change retry
-  identity. An executed native file-edit failure also recovers after a successful
+  native artifact checks. Command timeout and verification metadata changes do not change executed-operation
+  identity. Successful corrected calls also recover native argument/preflight rejections
+  of the same tool; permission and hook denials remain separate. An executed native file-edit failure also recovers after a successful
   native edit/replacement covers all its paths and fresh verification passes.
   Unrelated successes, permission denials, and opaque external effects do not
   qualify. See [automatic recovery](COMPLETION.md#recovery-without-unnecessary-bookkeeping). A valid corrected
@@ -4399,8 +4404,8 @@ against structured state it can observe:
   `recovered_by_retry` (matching operation) or `recovered_by_alternative` (an
   explicitly justified changed operation) names the successful
   `recovery_tool_call_id`; `skipped_unnecessary` points to a skipped step; and
-  `blocked` points to a blocked step. The runtime validates those current-turn
-  references, so prose and a merely similar permission-risk label cannot
+  `blocked` points to a blocked step. The runtime validates those retained
+  references (up to 64 successful facts survive a pause or restart; fresh file checks remain required), so prose and a merely similar permission-risk label cannot
   silently clear a failure. When successful recovery candidates exist, the
   notice lists their exact provider-envelope call IDs. An identifier printed
   inside a tool's content, such as a `COLLOMIA_EXTERNAL_WEB_DATA` provenance

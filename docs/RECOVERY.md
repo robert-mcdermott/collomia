@@ -26,7 +26,8 @@ the same file is checked with all original required text, at least the original
 minimum size, and equivalent or stronger format checks. Changing argument order,
 using an equivalent format, or fixing an unsupported format does not require a
 separate plan resolution when those conditions hold. Other commands and external actions still require matching operations; a
-command timeout adjustment alone is compatible with a successful retry.
+command timeout or verification-metadata adjustment is compatible with a
+successful retry of the same executed command.
 Existing final-byte checks still apply.
 New failure records retain bounded hashes of the path/text requirements and the
 format/size requirements across resume, never old validation receipts. Older
@@ -39,7 +40,10 @@ and ordinary warnings remain visible.
 
 Saved state is **not a validation receipt or permission grant**. New turns require
 fresh scoped-command or artifact validation where deliverables remain unfinished, and successful
-recovery receipts must come from the current turn. A later plan cannot silently
+recovery references may use up to 64 bounded successful tool facts retained
+across pauses and restart. Historical facts establish that a recovery operation
+ran; they cannot attest current file bytes or grant permissions. Legacy sessions
+without these facts require a fresh successful alternative. A later plan cannot silently
 drop a retained deliverable. Finish in the original task profile; switching modes
 cannot bypass unfinished obligations. Ephemeral runs retain their existing
 in-process behavior and do not offer durable recovery.

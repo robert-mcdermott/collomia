@@ -67,6 +67,16 @@ func (id RootIdentity) Same(other RootIdentity) bool {
 	return id.info != nil && other.info != nil && os.SameFile(id.info, other.info)
 }
 
+// MatchesOpenRoot binds a retained identity to the handle that will perform
+// reads, rather than to another lookup of a replaceable directory path.
+func (id RootIdentity) MatchesOpenRoot(root *os.Root) bool {
+	if id.info == nil || root == nil {
+		return false
+	}
+	info, err := root.Stat(".")
+	return err == nil && os.SameFile(id.info, info)
+}
+
 // Open anchors path beneath rootPath. Both paths are made absolute before the
 // lexical containment check; symlink containment is enforced by os.Root when
 // an operation is performed.

@@ -373,7 +373,6 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	a.mu.RLock()
 	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode, a.taskMode)
 	completion.ctx = ctx
-	maxTurnIterations := a.maxTurnIterations
 	store := a.completionStore
 	a.mu.RUnlock()
 	if !a.graphEnabled() {
@@ -390,6 +389,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	// for. If the model repairs only completion metadata, retain that candidate
 	// and release it as soon as the controller is satisfied instead of asking the
 	// provider to generate the same answer again.
+	emptyResponseRetries := 0
 	pendingFinal := ""
 	pendingFinalReusable := false
 	// Ordinary turns use max_iterations as a consecutive no-progress lease and
@@ -400,13 +400,14 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	// unbounded write churn or repeated identical inspection.
 	for iteration := 1; ; iteration++ {
 		if !a.graphEnabled() {
+			noProgressLimit, maxTurnIterations := a.ExecutionLimits()
 			if iteration > maxTurnIterations {
-				budgetErr := reportError(send, fmt.Errorf("%w after the hard limit of %d provider iterations; the turn was still making progress or had not stopped", ErrIterationBudgetExceeded, maxTurnIterations))
+				budgetErr := reportError(send, fmt.Errorf("%w after the hard limit of %d provider iterations; work is saved. Raise /limits (or --max-turns) and continue to give this task more time", ErrIterationBudgetExceeded, maxTurnIterations))
 				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
 				return "", budgetErr
 			}
-			if iteration > 1 && iteration-1-standardLastProgressIteration >= a.maxIterations {
-				budgetErr := reportError(send, fmt.Errorf("%w: no novel progress for %d consecutive provider iterations; work remains", ErrIterationBudgetExceeded, a.maxIterations))
+			if iteration > 1 && iteration-1-standardLastProgressIteration >= noProgressLimit {
+				budgetErr := reportError(send, fmt.Errorf("%w: no novel progress for %d consecutive provider iterations; work remains", ErrIterationBudgetExceeded, noProgressLimit))
 				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
 				return "", budgetErr
 			}
@@ -519,7 +520,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		// whether a cached prefix survived is when the request arrives, not
 		// how long the model then took to answer it.
 		a.cacheGapStatsOrInit().observeRequest()
-		var streamedUsage atomic.Bool
+		var streamedUsage, streamedToolCall atomic.Bool
 		// Standard final prose is a candidate until completion accepts it.
 		// Reasoning and tool progress still stream; graph rendering is unchanged.
 		holdText := completion.enabled && !a.graphEnabled()
@@ -543,6 +544,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				send(e)
 			}
 			if delta.ToolCall != nil {
+				streamedToolCall.Store(true)
 				e := event.New(event.KindToolCallDelta)
 				e.ToolCall = &event.ToolCallDelta{Index: delta.ToolCall.Index, ID: delta.ToolCall.ID, Name: delta.ToolCall.Name, ArgumentsDelta: delta.ToolCall.Arguments, Done: delta.ToolCall.Done}
 				send(e)
@@ -660,6 +662,18 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				a.exhaustGoalGraph(err.Error(), send)
 				return response.Content, reportError(send, err)
 			}
+		}
+		if !a.graphEnabled() && response.EmptyCompleted() && !streamedToolCall.Load() {
+			if emptyResponseRetries < 2 {
+				emptyResponseRetries++
+				warning := event.New(event.KindWarning)
+				warning.Text = fmt.Sprintf("Provider returned an empty completed response (stop=%q, input=%d, output=%d). Retrying response %d of 2; completed tools will not be replayed.", response.Stop, response.Usage.InputTokens, response.Usage.OutputTokens, emptyResponseRetries)
+				send(warning)
+				continue
+			}
+			terminationErr = fmt.Errorf("provider response unavailable after 3 empty responses; work and recovery state are retained. Check the provider/proxy or switch provider before continuing: %w", terminationErr)
+		} else {
+			emptyResponseRetries = 0
 		}
 		if terminationErr != nil {
 			a.appendMessage(provider.Message{Role: "user", Content: "[Runtime response status] " + terminationErr.Error()})
@@ -980,6 +994,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	observation := toolObservation{CallID: call.ID, Name: call.Name, RetryKey: toolRetryKey(call), ExecutionPrevented: true}
 	if call.Name == "run_command" {
 		observation.LegacyRetryKey = canonicalRetryKey(call, false)
+		observation.PriorScopedRetryKey = priorScopedRetryKey(call)
 	}
 	if call.Name == "validate_artifact" {
 		if validator, ok := item.(interface {
@@ -1023,6 +1038,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
 		observation.FailureDetail = err.Error()
+		observation.ArgumentRejected = true
 		observation.Retryable = true
 		return tools.Result{Content: "Tool error: " + err.Error()}, observation, nil
 	}
@@ -1091,10 +1107,33 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	}
 	var scoped *scopedVerification
 	if _, native := item.(*tools.RunCommandTool); native && !a.graphEnabled() {
+		scopeReadDenied := false
 		var scopeErr error
-		scoped, scopeErr = prepareScopedVerification(ctx, args, action, a.workspace)
+		scoped, scopeErr = prepareScopedVerification(ctx, args, action, a.workspace, func(paths []string) error {
+			if len(paths) == 0 {
+				return nil
+			}
+			scopedAction := action
+			scopedAction.Paths = paths
+			scopedGrant, err := a.permissions.Authorize(ctx, "run_command", scopedAction)
+			decision := event.New(event.KindPermissionDecision)
+			decision.Permission = &event.Permission{Tool: "run_command", Summary: "read project verification inputs", Risk: string(scopedAction.Risk), Source: scopedGrant.Source, Rule: scopedGrant.Rule, Allowed: err == nil}
+			send(decision)
+			if err != nil {
+				scopeReadDenied = true
+				return err
+			}
+			if err := a.checkPersistence(); err != nil {
+				return err
+			}
+			err = a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: "read project verification inputs", Args: args, Paths: paths})
+			scopeReadDenied = err != nil
+			return err
+		})
 		if scopeErr != nil {
-			observation.RejectedVerification, _ = tools.ParseCommandVerification(args)
+			if !scopeReadDenied {
+				observation.RejectedVerification, _ = tools.ParseCommandVerification(args)
+			}
 			observation.Failed = true
 			observation.FailureKind = goalgraph.FailureTool
 			observation.FailureDetail = scopeErr.Error()
@@ -2408,15 +2447,16 @@ func (a *Agent) SetUsage(usage provider.Usage) {
 // ProfileSettings is the effective runtime surface of a named primary
 // profile. Runtime owns restoration of the ordinary defaults.
 type ProfileSettings struct {
-	Name          string
-	Instructions  string
-	Catalog       skills.Catalog
-	Tools         []string
-	DisabledTools []string
-	Skills        []string
-	MaxIterations int
-	TokenBudget   int
-	CostBudgetUSD float64
+	Name              string
+	Instructions      string
+	Catalog           skills.Catalog
+	Tools             []string
+	DisabledTools     []string
+	Skills            []string
+	MaxIterations     int
+	MaxTurnIterations int
+	TokenBudget       int
+	CostBudgetUSD     float64
 }
 
 // ApplyProfile changes only local agent behavior; the Runtime separately
@@ -2448,7 +2488,10 @@ func (a *Agent) ApplyProfile(settings ProfileSettings) {
 	a.profileInstructions = settings.Instructions
 	a.catalog = settings.Catalog
 	a.maxIterations = settings.MaxIterations
-	a.maxTurnIterations = standardHardIterationLimit(settings.MaxIterations)
+	a.maxTurnIterations = settings.MaxTurnIterations
+	if a.maxTurnIterations <= 0 {
+		a.maxTurnIterations = standardHardIterationLimit(settings.MaxIterations)
+	}
 	a.tokenBudget = settings.TokenBudget
 	a.costBudgetUSD = settings.CostBudgetUSD
 	a.disabled = disabled

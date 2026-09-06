@@ -31,7 +31,7 @@ func ParseCommandVerification(raw json.RawMessage) (*CommandVerification, error)
 		return nil, err
 	}
 	if len(v.Paths) == 0 || len(v.Paths) > 16 || strings.TrimSpace(v.Purpose) == "" || len(v.Purpose) > 512 {
-		return nil, errors.New("verification requires 1–16 file paths and a purpose of 1–512 bytes")
+		return nil, errors.New("verification requires 1–16 file or project-directory paths and a purpose of 1–512 bytes")
 	}
 	for _, p := range v.Paths {
 		if strings.TrimSpace(p) == "" || len(p) > 4096 {

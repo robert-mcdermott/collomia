@@ -44,7 +44,8 @@ needed to fit the existing completion-state limit; obligations are retained.
 Failures may also carry optional bounded `repair_paths` and `repair_ready`
 (native file-replacement observations, never a validation receipt). Older
 records without repair identities keep explicit recovery. Legacy exact command
-retry hashes remain accepted; new command identities ignore timeout-only changes.
+retry hashes remain accepted; new command identities ignore timeout and verification metadata. Existing
+full-argument and timeout-normalized hashes remain accepted for exact retries.
 Completion state carries task profile, dirty/unknown flags, bounded paths and
 artifact roles, unresolved operation identities, pending effect metadata, and
 an optional user acknowledgement. No validation receipts or grants are restored.
@@ -799,3 +800,29 @@ The `needs_verification` outcome is unchanged; the TUI now labels it
 events may now precede final `text.delta` events because final prose is released
 only after completion acceptance; consumers must use event kinds rather than
 assuming text precedes usage.
+
+## Standard larger-project recovery follow-up (September 6)
+
+Configuration adds `options.max_turn_iterations` (default 256); the embedded
+configuration schema is generated from this field. Older binaries reject an
+unknown configuration key, so remove it before downgrading. The no-progress
+setting keeps its meaning. No graph budget is migrated or extended.
+
+Completion state schema 1 adds optional `successes` (at most 64 bounded
+historical operation facts), monotonic `sequence` ordering, and failure
+`argument_rejected`. Neither carries
+a permission grant, passing current-file receipt, or process-local identity.
+Older readers ignore these fields and can require explicit recovery again.
+Records without the fields remain valid; old transcript text is not imported
+as a passing receipt. This is additive; no user session is rewritten on upgrade.
+
+The existing `scoped_verification` evidence kind can contain a directory
+snapshot digest in its `files` map. Directory entries represent included
+project inputs, not generic artifact-file hashes; see
+[scope and exclusions](COMPLETION.md). New/retargeted input paths require a
+new permission-checked run. A directory declaration retained by an older
+version can be fulfilled by a fresh project check after upgrade.
+
+Empty-response recovery adds no event kind or public outcome: bounded retries
+emit warnings and usage; exhaustion remains a structured provider protocol
+failure with a clearer TUI label. Refusal and truncation handling is unchanged.

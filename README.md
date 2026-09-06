@@ -186,8 +186,10 @@ See [Work mode](docs/WORK_MODE.md) for capabilities and evidence requirements.
 
 **Standard execution** is the default: describe the task and Collomia works through
 its ordinary governed tool loop. `max_iterations` is a consecutive no-progress
-lease, so productive work can continue beyond it; a hard envelope at twice the
-configured value still bounds a turn.
+lease (24 cycles by default). The independent `max_turn_iterations` bounds each
+user turn at 256 provider responses by default. Use `--max-turns 500` for a longer
+task or `/limits 500` in the TUI, including while it runs. See
+[completion and recovery](docs/COMPLETION.md).
 
 **Orchestrated Goal** is an explicit per-session option for work where a durable,
 inspectable graph and runtime-owned completion gates justify the additional

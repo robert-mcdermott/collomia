@@ -185,8 +185,8 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   isolation, recovery, and publication contract.
 - Standard mode's `max_iterations` is a consecutive no-progress lease rather
   than a whole-turn guillotine. Novel tool evidence renews it; equivalent
-  repeated output does not, and a hard envelope at twice the configured value
-  still stops continuous churn. After a verification gap is named, Collomia
+  repeated output does not. Independent `max_turn_iterations` (256 by default)
+  stops continuous churn; `--max-turns` and live `/limits` let users raise it. After a verification gap is named, Collomia
   explains why an ad hoc or composed passing command did not count and emits a
   receipt when a recognized check does count. If proof alone remains missing,
   the terminal outcome is `needs_verification`, not a claim that the work is
@@ -262,3 +262,8 @@ requested outputs in both task modes, accepts native artifact receipts in
 Developer mode, and reports verification-only gaps without a false “Blocked”
 label. Automated regressions cover the reported dashboard sequence; live user
 acceptance remains pending. See [the tracking plan](IMPROVEMENT_PLAN.md).
+
+The September 6 larger-project reliability follow-up adds project-directory
+checks, recovery facts across pauses, and bounded retries for empty completed
+provider responses. Scripted regressions and live acceptance are tracked
+separately in the [improvement plan](IMPROVEMENT_PLAN.md).
