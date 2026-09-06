@@ -1425,7 +1425,7 @@ func TestStandardVerificationGapHasItsOwnTerminalOutcome(t *testing.T) {
 	if !errors.Is(err, ErrGoalNeedsVerification) || GoalOutcomeFor(err) != GoalNeedsVerification || result != "done; smoke checks passed" || client.calls != 6 {
 		t.Fatalf("result=%q calls=%d outcome=%s error=%v", result, client.calls, GoalOutcomeFor(err), err)
 	}
-	if strings.Contains(err.Error(), "files changed after the last successful") || !strings.Contains(err.Error(), "no successful recognized verification") {
+	if strings.Contains(err.Error(), "files changed after the last successful") || !strings.Contains(err.Error(), "mutating tool did not report its paths") {
 		t.Fatalf("verification outcome is not truthful: %v", err)
 	}
 }
@@ -1800,7 +1800,7 @@ func TestCompletionControllerTreatsFailedWriteAsPotentialMutation(t *testing.T) 
 	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
 	controller.observe(toolObservation{Name: "edit_file", Action: tools.Action{Risk: tools.RiskWrite, Summary: "edit a file"}, Failed: true})
 	decision := controller.assess()
-	if decision.done || decision.blocked || !strings.Contains(decision.notice, "no successful recognized verification") || !strings.Contains(decision.notice, "edit_file") {
+	if decision.done || decision.blocked || !strings.Contains(decision.notice, "mutating tool did not report its paths") || !strings.Contains(decision.notice, "edit_file") {
 		t.Fatalf("decision=%+v", decision)
 	}
 }

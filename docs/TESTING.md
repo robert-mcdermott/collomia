@@ -1,11 +1,12 @@
 # Testing and evaluation
 
 Standard scoped verification regressions live in
-`internal/agent/scoped_verification_test.go`. They exercise real commands,
+`internal/agent/scoped_verification_test.go` and
+`internal/agent/task_completion_test.go`. They exercise real commands,
 current file evidence in both task profiles, nonzero status and fresh retries,
 masked exits, in-check drift, unrelated paths, symlink changes, restart, and
 verified native file repair. [Completion](COMPLETION.md) defines the contract;
-[the current manual checklist](IMPROVEMENT_PLAN.md#completion-simplification-checks)
+[the current manual checklist](IMPROVEMENT_PLAN.md#task-scoped-completion-checks)
 keeps user acceptance separate from automated evidence.
 
 Collomia's default test suite is credential-free and offline. Provider

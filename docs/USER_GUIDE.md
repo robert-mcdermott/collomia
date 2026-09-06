@@ -4364,16 +4364,19 @@ against structured state it can observe:
 - `done` steps require evidence; `blocked` and `skipped` steps require a reason
   in the same `evidence` field. Dependencies must be known and acyclic, and a
   step cannot be active or done before its dependencies are done or skipped.
-- In Developer, a successful tracked write makes earlier verification stale. A
-  subsequent direct, conventional build/lint/test command must succeed, or a
-  scoped task-specific command must cover the changed files, or the
+- In Developer, a relevant project change needs current verification. A
+  direct, conventional build/lint/test command can establish this, or a
+  scoped task-specific command or appropriate artifact check can cover the
+  changed files. For eligible work without meaningful automated checks, the
   plan must carry a specific `verification_note` explaining why no meaningful
   automated check applies. The note is model-authored disclosure, not
   machine-observed proof.
-- In Work, a final `validate_artifact` receipt or successful
+- In both modes, a final `validate_artifact` receipt or successful
   `run_command.verification` check clears the stale-write gate only
   for the exact changed artifact paths it covers. Neither method requires a
-  duplicate check through the other tool. Analysis, research, and external
+  duplicate check through the other tool. Disposable `.collomia-tmp/` helpers
+  and declared scratch files are excluded from independent completion checks.
+  Analysis, research, and external
   actions record their calculations, sources, receipts, or read-back in plan
   evidence; a fresh `validation_note` covers a genuinely subjective remainder
   without pretending to be runtime proof. If other tracked paths remain, the
@@ -6556,3 +6559,11 @@ report what was and was not assessed.
 Failed local checks with an ordinary process exit can be inspected and repaired
 without `/recovery acknowledge`. Interrupted commands and failed known external
 operations still require reconciliation; see [Standard recovery](RECOVERY.md).
+
+### Completion and temporary helpers
+
+Standard Developer and Work use the same task-scoped file evidence. The agent
+uses `.collomia-tmp/` for disposable helpers, which do not need separate
+validation. “Verification incomplete” identifies a remaining check; “Blocked”
+indicates an impediment. See [Completion](COMPLETION.md) for evidence scope,
+recovery, and the distinction between content and behavioral checks.

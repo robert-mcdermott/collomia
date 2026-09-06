@@ -21,6 +21,7 @@ type recoveryFailure struct {
 	Risk                       tools.Risk
 	Validation                 *tools.ArtifactValidationRequirement `json:"validation,omitempty"`
 	RepairPaths                []string                             `json:"repair_paths,omitempty"`
+	RejectedVerification       *tools.CommandVerification           `json:"rejected_verification,omitempty"`
 	RepairReady                bool                                 `json:"repair_ready,omitempty"`
 }
 type pendingEffect struct {
@@ -56,7 +57,7 @@ func decodeCompletion(raw json.RawMessage) (completionState, error) {
 		return state, errors.New("unsupported or oversized completion state")
 	}
 	for _, failure := range state.Failures {
-		if len(failure.RepairPaths) > 64 {
+		if len(failure.RepairPaths) > 64 || (failure.RejectedVerification != nil && (len(failure.RejectedVerification.Paths) == 0 || len(failure.RejectedVerification.Paths) > 16 || strings.TrimSpace(failure.RejectedVerification.Purpose) == "" || len(failure.RejectedVerification.Purpose) > 512)) {
 			return state, errors.New("oversized file repair identity")
 		}
 	}
@@ -95,7 +96,7 @@ func (c *completionController) restoreCompletion(store CompletionStore) error {
 		c.dirtyPaths[path] = struct{}{}
 	}
 	for _, failure := range state.Failures {
-		c.failures = append(c.failures, unresolvedToolFailure{id: failure.ID, tool: failure.Tool, risk: failure.Risk, detail: failure.Detail, retryKey: failure.RetryKey, planRevision: c.initialRevision, validationRequest: failure.Validation, repairPaths: failure.RepairPaths, repairReady: failure.RepairReady})
+		c.failures = append(c.failures, unresolvedToolFailure{id: failure.ID, tool: failure.Tool, risk: failure.Risk, detail: failure.Detail, retryKey: failure.RetryKey, planRevision: c.initialRevision, validationRequest: failure.Validation, repairPaths: failure.RepairPaths, repairReady: failure.RepairReady, rejectedVerification: failure.RejectedVerification})
 	}
 	if c.dirty || len(c.failures) > 0 || len(state.Roles) > 0 || c.pending != nil {
 		c.initialOpen = true
@@ -118,7 +119,7 @@ func (c *completionController) recoveryState() completionState {
 		state.Unknown = true
 	}
 	for _, f := range c.failures {
-		state.Failures = append(state.Failures, recoveryFailure{ID: f.id, Tool: f.tool, Detail: clipUTF8(f.detail, 512), RetryKey: f.retryKey, Risk: f.risk, Validation: f.validationRequest, RepairPaths: f.repairPaths, RepairReady: f.repairReady})
+		state.Failures = append(state.Failures, recoveryFailure{ID: f.id, Tool: f.tool, Detail: clipUTF8(f.detail, 512), RetryKey: f.retryKey, Risk: f.risk, Validation: f.validationRequest, RepairPaths: f.repairPaths, RepairReady: f.repairReady, RejectedVerification: f.rejectedVerification})
 	}
 	if len(state.Failures) > 64 {
 		state.Failures = state.Failures[:64]

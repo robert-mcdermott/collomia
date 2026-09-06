@@ -45,7 +45,9 @@ generation step followed by a check of the final files.
 
 Run the check directly. Shell forms that can hide its status, such as
 `check || true`, pipelines, or a trailing command, are refused as explicit
-verification before execution. Put complex assertions in a script. The script's
+verification before execution. Quoted multiline arguments and literal shell
+punctuation within quotes are accepted for Standard scoped checks. Put complex
+assertions in a script. The script's
 own logic still determines what a zero exit means; the harness cannot prove
 that an arbitrary test is comprehensive or even useful.
 
@@ -57,24 +59,39 @@ Include relevant inputs in the scope when their freshness matters.
 
 ## File completion without duplicate checks
 
-Work accepts either a current scoped command receipt or a current
+Standard Developer and Work accept either a current scoped command receipt or a current
 `validate_artifact` receipt for a file deliverable. Do not run both merely to
 close the same file gap. `validate_artifact` remains useful for format parsing,
 size, and required-content checks; HTML/source text checks do not execute code.
 
-Explicit scoped command receipts also work in Standard Developer sessions.
-They cover only their listed files and cannot clear unrelated dirty paths.
+Scoped command and artifact receipts cover only their listed files and cannot
+clear unrelated project changes. Disposable helpers are excluded as described below.
 Conventional unscoped Developer build/lint/test recognition retains its existing
 tracked-write semantics. An unscoped command does not satisfy Work's final-file
 gate. Scoped commands do not substitute for Orchestrated Goal's detected checks
 or combined-parent verification; its authority and acceptance rules are unchanged.
 
-Multi-step Work tasks can declare deliverables and scratch files in
+Multi-step Standard tasks in either mode can declare deliverables and scratch files in
 `update_plan.artifacts`. Simple tasks need no artificial plan solely to obtain
 file evidence: successful validation makes an unclassified file an implicit
 deliverable. A later plan cannot remove a retained deliverable to evade a gap.
 Scratch helpers do not require deliverable acceptance. Scope is model-selected
 intent and cannot prove that every requested output was identified.
+
+Use the workspace's `.collomia-tmp/` directory for disposable analysis, generation,
+and verification helpers. The agent chooses this location automatically from its
+instructions; users need not mention it in their prompts. Helpers elsewhere can
+be declared `scratch` in the plan in either mode. Requested scripts and reusable
+application code belong in their appropriate project locations and still need
+relevant verification. No automatic deletion or Git ignore change is performed.
+
+Scratch files do not independently create completion obligations. An explicit
+`deliverable` declaration overrides the scratch directory convention, and a
+retained deliverable cannot be demoted to evade verification. Canonical path
+checks prevent a symlink inside scratch from hiding a write outside it. A failing
+check, denied action, or uncertain execution remains tracked regardless of its
+file location. The harness cannot infer that every script is temporary or that
+all model-authored role declarations reflect user intent.
 
 The runtime rechecks receipt freshness at completion. Edits, deletions, path
 retargeting, and replaced parent directories require fresh evidence. Restart
@@ -91,6 +108,11 @@ The runtime automatically resolves:
 
 - Successful retries of the same tool operation. Command timeout changes alone
   do not create a different operation; command, PTY behavior, and scope still match.
+- A native scoped-check preflight rejection followed by a successful scoped
+  replacement with the same stated purpose covering all originally requested
+  paths. This only clears an attempt that never executed, not a failed assertion,
+  a permission/hook denial, or an uncertain action. The bounded identity survives
+  resume; a fresh passing receipt is still required.
 - Corrected native artifact checks on the same file that preserve or strengthen
   the original format, minimum-size, and required-text checks.
 - An executed native file-edit failure after a successful native replacement or
@@ -108,7 +130,12 @@ replaying an uncertain external action.
 Routine completion notices are collapsed as “Checking remaining work.” Expand
 with `ctrl+o`; details remain in the transcript and event log. When no failed
 calls remain, notices omit failure-resolution instructions. Real blocked
-outcomes remain visible.
+outcomes remain visible. Verification-only gaps appear as **Verification
+incomplete**, not **Blocked**, and list remaining paths rather than claiming that
+files changed after a check when they were simply outside its scope. Standard
+final-answer text is held until the controller accepts completion; reasoning and
+tool events still stream. Candidate responses remain in the durable transcript
+for diagnosis, so an older replay may show those drafts.
 
 ## What a final answer should say
 

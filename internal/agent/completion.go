@@ -83,30 +83,32 @@ func GoalOutcomeFor(err error) GoalOutcome {
 }
 
 type toolObservation struct {
-	CallID             string
-	RetryKey           string
-	LegacyRetryKey     string
-	Name               string
-	Action             tools.Action
-	Failed             bool
-	FailureKind        goalgraph.FailureKind
-	FailureDetail      string
-	ResultSummary      string
-	Retryable          bool
-	Started            time.Time
-	Finished           time.Time
-	GraphRecorded      bool
-	IgnoreGraphFailure bool
-	Verification       bool
-	ArtifactValidation bool
-	ArtifactEvidence   *tools.Evidence
-	ArtifactPath       string
-	ValidationRequest  *tools.ArtifactValidationRequirement
-	ScopedFiles        []artifactReceipt
-	Effects            toolEffects
-	ExecutionPrevented bool
-	CommandExited      bool // native runner observed an ordinary nonzero exit
-	VerificationCheck  verificationAssessment
+	CallID               string
+	RetryKey             string
+	LegacyRetryKey       string
+	RejectedVerification *tools.CommandVerification
+	VerificationPurpose  string
+	Name                 string
+	Action               tools.Action
+	Failed               bool
+	FailureKind          goalgraph.FailureKind
+	FailureDetail        string
+	ResultSummary        string
+	Retryable            bool
+	Started              time.Time
+	Finished             time.Time
+	GraphRecorded        bool
+	IgnoreGraphFailure   bool
+	Verification         bool
+	ArtifactValidation   bool
+	ArtifactEvidence     *tools.Evidence
+	ArtifactPath         string
+	ValidationRequest    *tools.ArtifactValidationRequirement
+	ScopedFiles          []artifactReceipt
+	Effects              toolEffects
+	ExecutionPrevented   bool
+	CommandExited        bool // native runner observed an ordinary nonzero exit
+	VerificationCheck    verificationAssessment
 }
 
 type completionController struct {
@@ -141,15 +143,16 @@ type completionController struct {
 }
 
 type unresolvedToolFailure struct {
-	id                string
-	tool              string
-	risk              tools.Risk
-	detail            string
-	planRevision      uint64
-	retryKey          string
-	validationRequest *tools.ArtifactValidationRequirement
-	repairPaths       []string
-	repairReady       bool
+	id                   string
+	tool                 string
+	risk                 tools.Risk
+	detail               string
+	planRevision         uint64
+	retryKey             string
+	validationRequest    *tools.ArtifactValidationRequirement
+	repairPaths          []string
+	repairReady          bool
+	rejectedVerification *tools.CommandVerification
 }
 
 type completionDecision struct {
@@ -221,7 +224,7 @@ func (c *completionController) observe(observation toolObservation) {
 		c.clearDirty()
 		c.recognizedEver = true
 	}
-	if c.taskMode == taskmode.Work && observation.ArtifactValidation {
+	if observation.ArtifactValidation {
 		c.recordArtifactReceipt(observation)
 	}
 	if len(observation.ScopedFiles) > 0 {
@@ -291,7 +294,7 @@ func (c *completionController) recordFailure(observation toolObservation) {
 	if c.board != nil {
 		_, revision = c.board.Snapshot()
 	}
-	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey, validationRequest: observation.ValidationRequest}
+	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey, validationRequest: observation.ValidationRequest, rejectedVerification: observation.RejectedVerification}
 	if observation.FailureKind == goalgraph.FailureTool && !observation.ExecutionPrevented && !observation.Effects.Unknown && len(observation.Effects.Paths) <= 64 {
 		switch observation.Name {
 		case "write_file", "edit_file", "apply_patch", "format_file":
@@ -319,7 +322,7 @@ func (c *completionController) recordFailure(observation toolObservation) {
 func (c *completionController) recoverFailures(observation toolObservation) {
 	remaining := c.failures[:0]
 	for _, failure := range c.failures {
-		if !matchesRetry(failure, observation) {
+		if !matchesRetry(failure, observation) && !c.recoversRejectedVerification(failure, observation) {
 			remaining = append(remaining, failure)
 		}
 	}
@@ -550,7 +553,7 @@ func (c *completionController) outstandingWorkValidationIssue() string {
 
 	var issue string
 	if len(paths) > 0 {
-		issue = "changed artifacts still needing current task-appropriate validation: " + strings.Join(paths, ", ")
+		issue = "changed files not covered by current verification: " + strings.Join(paths, ", ")
 		if total > len(paths) {
 			issue += fmt.Sprintf(" (and %d more)", total-len(paths))
 		}
@@ -637,13 +640,7 @@ func (c *completionController) assess() completionDecision {
 	issues = append(issues, artifactIssues...)
 	verificationGap := c.dirty && !c.waived
 	if verificationGap {
-		if c.taskMode == taskmode.Work {
-			issues = append(issues, c.outstandingWorkValidationIssue())
-		} else if c.recognizedEver {
-			issues = append(issues, "files changed after the last successful recognized verification command")
-		} else {
-			issues = append(issues, "no successful recognized verification has run since the latest tracked file change")
-		}
+		issues = append(issues, c.outstandingWorkValidationIssue())
 	}
 	for _, failure := range c.failures {
 		detail := failure.id + ": " + failure.tool
@@ -739,8 +736,8 @@ func completionNotice(issues []string, intervention int, mode taskmode.Mode, rec
 	} else {
 		b.WriteString("Finish the listed requirements and update any active plan with observed evidence. ")
 	}
-	if mode == taskmode.Work {
-		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Verify each listed file using a meaningful run_command check with verification.paths and verification.purpose, or use validate_artifact for structural/content checks. Either can satisfy current file evidence; do not run both for bookkeeping. A validation_note or unscoped command cannot waive declared deliverables or stale receipts. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
+	if mode == taskmode.Work || mode == taskmode.Developer {
+		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Verify each listed file using a meaningful run_command check with verification.paths and verification.purpose, or use validate_artifact for structural/content checks. Either can satisfy current file evidence; do not run both for bookkeeping. A validation_note or unscoped command cannot waive declared deliverables or stale receipts. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific verification_note (Developer) or validation_note (Work) describing what was checked and what remains a matter of judgment. ")
 	} else {
 		b.WriteString("If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. ")
 	}

@@ -785,3 +785,17 @@ Any change to a persisted or machine-readable structure should include:
 
 Compatibility tests are credential-free and run on macOS, Linux, and Windows.
 The release workflow repeats them against the exact tagged source.
+
+## Standard task-scoped completion follow-up (September 6)
+
+Completion state schema 1 adds optional `rejected_verification` to native
+preflight-failure identities (1–16 paths and a bounded purpose). Omission grants
+no inferred recovery; older binaries may retain a rejection until explicitly
+resolved. Upgraded sessions use the same scratch/deliverable roles in Developer
+and Work, with `.collomia-tmp/` as the default disposable-helper directory.
+Declared deliverables retain precedence. Passing receipts are never restored.
+The `needs_verification` outcome is unchanged; the TUI now labels it
+“Verification incomplete.” No new event kind or graph state is introduced. In Standard runs, usage/tool
+events may now precede final `text.delta` events because final prose is released
+only after completion acceptance; consumers must use event kinds rather than
+assuming text precedes usage.

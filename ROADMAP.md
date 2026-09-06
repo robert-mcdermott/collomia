@@ -23,8 +23,10 @@ checkpoints passed manual testing on 2026-09-05, completing full W7.
 On 2026-09-06, the user withdrew W6's bundled reporting workflow in favor of
 model-selected methods and user-installed skills. The cleanup retains general
 command recovery, image inspection, and artifact validation improvements.
-The active follow-up simplifies Standard completion with scoped task-specific
-checks and automatic verified file repair while retaining runtime-owned evidence.
+The active follow-up addresses false Standard completion blocks exposed by live
+Developer testing: task-scoped evidence in both profiles, disposable helpers,
+quoted-check parsing, preflight recovery, and truthful completion status. Runtime
+evidence and unrelated project obligations remain enforced.
 Broader Work evaluation follows its manual acceptance gate. See the [improvement plan](docs/IMPROVEMENT_PLAN.md#retained-capability-checks).
 Wave numbers identify work rather than a mandatory execution order.
 

@@ -13,6 +13,21 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-06 — Task-scoped Standard completion reliability
+
+- A live Developer dashboard run passed its scoped check but ended as
+  `needs_verification` because helper scripts remained dirty; the TUI called it
+  “Blocked.” An earlier artifact check was ignored by Developer completion and
+  quoted multiline Python was incorrectly refused by scoped-check preflight.
+- The follow-up shares artifact and scratch-role handling across profiles,
+  standardizes `.collomia-tmp/`, fixes Standard quoted-command parsing, and
+  recovers preflight-only rejections with matching scoped replacements. Real
+  failed checks, unrelated source changes, and stale deliverables remain tracked.
+- Standard final-answer text waits for completion acceptance. Verification-only
+  gaps receive a distinct UI label and accurate path-specific guidance.
+- Candidate and acceptance evidence: [improvement plan](IMPROVEMENT_PLAN.md).
+  Live acceptance is pending; graph authority is unchanged.
+
 ### 2026-09-06 — Standard task-specific completion evidence
 
 - The user requested less completion friction while retaining the evidence-gated

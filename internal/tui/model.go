@@ -291,6 +291,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch agent.GoalOutcomeFor(msg.err) {
 				case agent.GoalBudgetExhausted:
 					m.alert("Turn stopped: budget exhausted")
+				case agent.GoalNeedsVerification:
+					m.alert("Verification incomplete")
 				case agent.GoalCancelled:
 					m.alert("Turn cancelled")
 				default:
@@ -301,12 +303,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if msg.err != nil {
 				label := "Blocked"
-				if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {
+				role := "error"
+				if agent.GoalOutcomeFor(msg.err) == agent.GoalNeedsVerification {
+					label = "Verification incomplete"
+					role = "system"
+				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {
 					label = "Budget exhausted"
 				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalCancelled {
 					label = "Cancelled"
 				}
-				m.blocks = append(m.blocks, block{role: "error", content: label + ": " + failureid.Display(msg.err)})
+				m.blocks = append(m.blocks, block{role: role, content: label + ": " + failureid.Display(msg.err)})
 			} else if strings.TrimSpace(msg.final) == "" {
 				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}

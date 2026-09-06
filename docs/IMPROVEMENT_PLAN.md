@@ -10,19 +10,20 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Current work:** Standard completion simplification and documentation audit.
-- **Status:** implemented and ready for user testing. The earlier
+- **Current work:** Standard task-scoped completion reliability (Developer and Work).
+- **Status:** implemented; automated checks and the live Developer rerun passed.
+  The corresponding Work-mode rerun remains pending.
+  The September 6 live tests exposed false-blocked completion; this follow-up
+  supersedes the earlier candidate. The earlier
   selective cleanup is retained. The bundled
   workflow was not accepted. W1, W3, W4, W5, and full W7 remain accepted;
-  W2, W8, and W9 remain planned. Base commit is `304d7af`.
-- **Next action:** run [completion simplification checks](#completion-simplification-checks) and
+  W2, W8, and W9 remain planned. Base commit is `d39ee78`.
+- **Next action:** run the Work-mode [task-scoped completion check](#task-scoped-completion-checks) and
   retain [general capability regressions](#retained-capability-checks).
   Do not restart the bundled workflow or begin another feature wave by default.
-- **Test build:** `dist/collo-work-general`, version `v0.4.3-work-general.3`,
-  base commit `304d7af-work-general.3-dirty`. Earlier W6 binaries are historical
-  test builds and still contain the withdrawn workflow; use this new binary.
-  Preserve previous test outputs, user sessions, and W5's baseline. The installed
-  binary is unchanged; preserve the user's `VERSION` bump to `v0.4.3`.
+- **Test build:** `dist/collo-task-completion`, version `v0.4.3-task-completion.1`,
+  based on `d39ee78`. Prior test binaries and user sessions are preserved. The
+  installed binary and user's `VERSION` remain unchanged.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
@@ -36,7 +37,113 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   reasoning extraction, or restore thinking in reopened chat transcripts.
   Those are W2 work. A silent summary area does not prove absent computation.
 
-## Active follow-up — Standard completion simplification
+## Active follow-up — Task-scoped completion reliability
+
+Authorized September 6 after `worktest2-c7261c0ccb1c` produced and checked a
+report but exhausted completion interventions on supporting scripts. This fixes
+Standard execution only; it does not reopen graph milestones or change their
+verification authority.
+
+- [x] Honor scratch/deliverable roles in both modes and use `.collomia-tmp/`
+  as the default disposable-helper directory. Explicit deliverables take
+  precedence; aliases outside scratch and failed commands remain tracked.
+- [x] Accept native artifact checks in Developer as well as Work, alongside
+  scoped commands; preserve unrelated source obligations and final-file freshness.
+- [x] Parse quoted multiline scoped checks correctly without accepting outer
+  shell pipelines, fallback chains, redirection, or substitutions as proof.
+- [x] Recover native preflight-only rejections through fresh scoped replacements
+  with matching intent and covered paths, including after resume.
+- [x] Hold Standard final-answer text until completion accepts it; give
+  verification-only gaps a truthful UI label and name actual uncovered paths.
+- [x] Add native-tool regressions for dashboard completion in both modes,
+  existing helper classification, scratch boundaries, stale files, recovery,
+  shell quoting, and final-answer display.
+- [x] Complete broad offline checks and candidate build verification.
+- [x] **Developer live rerun accepted:** user reported success; transcript verified
+  September 6 (details below).
+- [ ] **Work live rerun accepted.** Do not begin the next
+  major wave before this gate. Scripted checks cannot establish model judgment,
+  latency, or visual quality.
+
+### Task-scoped completion checks
+
+Run the same ordinary task in fresh folders in each mode, using the candidate:
+
+```sh
+./dist/collo-task-completion --cwd /path/to/developer-test --mode developer
+./dist/collo-task-completion --cwd /path/to/work-test --mode work
+```
+
+Put a copy of the sunspot CSV in each folder first. Suggested prompt:
+
+> Analyze the sunspot CSV in this folder using its first two columns and create
+> an HTML dashboard reporting your findings. Check the result appropriately.
+
+Do not prescribe tool arguments, scratch roles, or recovery IDs in the prompt:
+the agent should handle those details. Confirm that the requested output is
+created, suitable checks pass with truthful coverage descriptions, and the turn
+finishes with one accepted final answer and no false “Blocked” status. Disposable
+helpers should be under `.collomia-tmp/` or declared scratch by the agent.
+No redundant check should be required merely to validate a checking script.
+If an actual check fails, normal diagnosis and repair are expected.
+
+Automated negative cases cover unrelated project changes, failed assertions,
+explicit deliverables inside scratch, stale bytes, and symlink escapes; users
+need not reproduce those manually. Existing sessions can retain root-level
+helpers: the agent can classify them as scratch through its plan without
+moving files, and obtain fresh evidence where restart requires it.
+
+### Live evidence — Developer, September 6
+
+- User reported “it worked that time.” Verified session
+  `worktest3-ac3792d381a1/20260906-164751-6176d3`: Developer mode, Ollama
+  `deepseek-v4-flash:0731-cloud`; the task ran from 16:48:10 to 16:49:28 UTC
+  (about 78 seconds).
+- Analysis and build helpers used `.collomia-tmp/`. A native artifact check
+  supplied the dashboard receipt without demanding independent helper checks.
+  The final file digest still matched the recorded receipt when inspected.
+- Two real tool mistakes occurred: running analysis from the wrong directory
+  and a malformed plan update. Both recovered. One completion intervention
+  requested disposition of the earlier executed analysis failure; the agent
+  supplied an alternative receipt, and completion cleared all durable obligations
+  and ended normally without a terminal error or user “continue.” This was a
+  successful recovery run, not a zero-intervention run.
+- Evidence establishes completion/recovery behavior. Checks were text/content
+  checks, not browser execution or an independent audit of analysis correctness.
+- A second session file in that directory (`20260906-164723-c3085e`) contained
+  only initialization records and no attempted user turn.
+
+### Automated evidence — task-scoped follow-up
+
+- Focused native-tool regressions passed, including full agent runs with zero
+  completion interventions in Developer and Work.
+- Race checks passed for agent, TUI, plan, prompts, and session packages:
+  `/private/tmp/collo-task-race.log`.
+- `go test ./...` passed, including the offline evaluations and graph boundary
+  regressions: `/private/tmp/collo-task-full.log`. Localhost/native sandbox
+  integration fixtures required approved execution outside the tool sandbox.
+- Final agent/TUI/prompt/plan race checks passed:
+  `/private/tmp/collo-task-final-race.log`. The final scratch-receipt refinement
+  passed the complete agent race suite again:
+  `/private/tmp/collo-task-scratch-race.log`.
+- `go vet ./...` passed: `/private/tmp/collo-task-vet.log`.
+- Native macOS candidate build and Linux/Windows amd64 cross-builds passed.
+  Cross-builds establish compilation, not native execution on those platforms.
+- Checked relative file links and fences in 26 Markdown documents; no broken
+  file targets or unclosed fences. Generated capabilities match the candidate;
+  `git diff --check` passed. TUI golden changes reflect the larger prompt's
+  context-usage percentage; the status-label behavior has a dedicated test.
+- Candidate: `v0.4.3-task-completion.1`,
+  `d39ee78-task-completion.1-dirty`, built September 6. The installed binary,
+  user configuration, session transcripts, original test projects, and `VERSION`
+  were not modified. No live model request or commit was made.
+
+## Previous follow-up — Standard completion simplification
+
+This candidate was not accepted: subsequent live tests exposed excessive
+reasoning in one run and a false Developer verification block in another.
+The task-scoped follow-up above fixes the latter; adaptive generation budgets
+and truncation recovery remain separate future work.
 
 Authorized September 6 after clarifying that evidence-based completion remains
 part of the product contract in Standard as well as Orchestrated Goal.

@@ -262,3 +262,8 @@ the private process in [SECURITY.md](SECURITY.md).
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+Standard completion uses the same file-evidence rules in Developer and Work.
+Disposable helpers belong in `.collomia-tmp/` and do not need separate acceptance;
+requested outputs and project changes still receive appropriate checks. See
+[completion behavior and scratch files](docs/COMPLETION.md).

@@ -25,7 +25,7 @@ func prepareScopedVerification(ctx context.Context, raw json.RawMessage, action 
 	if err != nil || v == nil {
 		return nil, err
 	}
-	if _, reason := safeVerificationChain(stripSafeVerificationStderrMerge(action.Command), workspace); reason != "" {
+	if _, reason := scopedVerificationChain(stripSafeVerificationStderrMerge(action.Command), workspace); reason != "" {
 		return nil, fmt.Errorf("verification was not started: %s; put the check in a script that exits nonzero on failure and run it directly", reason)
 	}
 	if len(v.Paths) != len(action.Paths) {
@@ -100,7 +100,7 @@ func (c *completionController) recordScopedVerification(files []artifactReceipt)
 		}
 		c.artifacts.receipts[file.path] = file
 		// Scope survives restart as an obligation, never as a passing receipt.
-		if c.artifacts.roles[file.path] != "scratch" {
+		if !c.scratchPath(file.target) {
 			if _, exists := c.artifacts.roles[file.path]; !exists && len(c.artifacts.roles) >= 64 {
 				c.artifacts.overflow = true
 			} else {
@@ -176,4 +176,30 @@ func (c *completionController) ctxOrBackground() context.Context {
 		return c.ctx
 	}
 	return context.Background()
+}
+
+// Only a native scoped-check preflight rejection is eligible. No command ran,
+// so there is no failed assertion or uncertain effect to erase. The replacement
+// must explicitly name the same purpose and cover every originally requested file.
+func (c *completionController) recoversRejectedVerification(f unresolvedToolFailure, o toolObservation) bool {
+	v := f.rejectedVerification
+	if v == nil || o.Failed || o.Name != "run_command" || len(o.ScopedFiles) == 0 || o.VerificationPurpose == "" {
+		return false
+	}
+	if o.VerificationPurpose != v.Purpose {
+		return false
+	}
+	for _, path := range v.Paths {
+		found := false
+		for _, file := range o.ScopedFiles {
+			if completionPath(c.artifactPath(path)) == file.target {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }

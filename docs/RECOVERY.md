@@ -266,3 +266,9 @@ These checks passed the user gate on 2026-09-05 and remain a regression guide.
 Report the provider/model and failing step if any check fails. W7b/full W7 is
 accepted. The bundled W6 workflow was subsequently withdrawn; current follow-up
 work and its separate acceptance gate are in [the improvement plan](IMPROVEMENT_PLAN.md).
+
+Native scoped-check preflight rejections can also recover automatically when a
+fresh successful scoped replacement has the same purpose and covers the original
+paths. This applies only before execution and never clears a failed assertion,
+permission/hook denial, or uncertain effect. Scratch-directory placement does
+not waive failed commands. See [Completion](COMPLETION.md).

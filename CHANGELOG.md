@@ -7,6 +7,20 @@ an accurate one; their history is in the Git log and in
 
 ## Unreleased
 
+### Fixed
+
+- Standard Developer and Work completion now accept appropriate artifact or
+  scoped-command evidence consistently. Disposable `.collomia-tmp/` helpers and
+  declared scratch files do not independently require validation; retained
+  deliverables, unrelated project changes, failed checks, and stale receipts
+  remain tracked.
+- Quoted multiline scoped checks no longer fail shell-composition preflight.
+  Successful scoped replacements recover preflight-only rejections with the
+  same purpose and covered paths, including after resume.
+- Completion diagnostics name uncovered paths accurately. Verification-only
+  outcomes display “Verification incomplete,” and Standard final-answer text is
+  held until accepted instead of showing premature success followed by failure.
+
 ### Added
 
 - Standard task-specific file verification through `run_command.verification`: a

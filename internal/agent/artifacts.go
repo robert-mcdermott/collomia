@@ -9,7 +9,6 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/plan"
 	"github.com/robert-mcdermott/collomia/internal/safefile"
-	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
@@ -65,7 +64,7 @@ func (c *completionController) artifactPath(path string) string {
 }
 
 func (c *completionController) syncArtifactBrief(current *plan.Plan) {
-	if c.taskMode != taskmode.Work || current == nil {
+	if current == nil {
 		return
 	}
 	if c.artifacts.roles == nil {
@@ -112,7 +111,7 @@ func (c *completionController) recordArtifactReceipt(observation toolObservation
 	}
 	// Validating an otherwise unclassified artifact makes it an implicit
 	// deliverable. Only a previously declared scratch role opts out.
-	scratch := false
+	scratch := c.scratchPath(target)
 	for declared, role := range c.artifacts.roles {
 		if completionPath(declared) == target && role == "scratch" {
 			scratch = true
@@ -126,12 +125,9 @@ func (c *completionController) recordArtifactReceipt(observation toolObservation
 }
 
 // checkArtifacts hashes only files for which an authorized validation returned
-// a typed receipt. Declarations alone grant no reads. Rechecks apply to Work
-// files and explicitly scoped Standard Developer checks, never graph gates.
+// a typed receipt. Declarations alone grant no reads. Rechecks apply to
+// Standard Developer and Work file checks, never graph gates.
 func (c *completionController) checkArtifacts(current *plan.Plan, active bool) []string {
-	if c.taskMode != taskmode.Work && len(c.artifacts.receipts) == 0 && len(c.artifacts.roles) == 0 {
-		return nil
-	}
 	if active {
 		c.syncArtifactBrief(current)
 	}
@@ -142,17 +138,14 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 	var issues []string
 	valid := map[string]bool{}
 	deliverables := map[string]bool{}
-	scratch := map[string]bool{}
 	for path, role := range c.artifacts.roles {
 		target := completionPath(path)
 		if role == "deliverable" {
 			deliverables[target] = true
-		} else if role == "scratch" {
-			scratch[target] = true
 		}
 	}
 	for _, receipt := range c.artifacts.receipts {
-		if scratch[receipt.target] && !deliverables[receipt.target] {
+		if c.scratchPath(receipt.path) && !deliverables[receipt.target] {
 			continue
 		}
 		digest, err := tools.RecheckArtifactDigest(ctx, receipt.path, receipt.target, receipt.root)
@@ -185,6 +178,11 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 			delete(c.dirtyPaths, target)
 		}
 	}
+	for path := range c.dirtyPaths {
+		if c.scratchPath(path) {
+			delete(c.dirtyPaths, path)
+		}
+	}
 	c.dirty = c.dirtyUnknown || len(c.dirtyPaths) > 0
 	if c.artifacts.overflow {
 		issues = append(issues, "artifact tracking exceeded 64 declarations or validation paths in this turn; split the work into smaller tasks")
@@ -198,4 +196,30 @@ func (c *completionController) displayArtifact(path string) string {
 		path = filepath.ToSlash(relative)
 	}
 	return fmt.Sprintf("%q", clipUTF8(path, 240))
+}
+
+// scratchPath classifies temporary implementation aids, never a retained
+// deliverable. Canonical containment prevents a scratch symlink from hiding
+// a write to project source outside the scratch directory.
+func (c *completionController) scratchPath(path string) bool {
+	target := completionPath(path)
+	scratch := false
+	for declared, role := range c.artifacts.roles {
+		if completionPath(declared) == target {
+			if role == "deliverable" {
+				return false
+			}
+			scratch = scratch || role == "scratch"
+		}
+	}
+	if scratch {
+		return true
+	}
+	workspace := completionPath(c.workspace)
+	root := filepath.Join(workspace, ".collomia-tmp")
+	if completionPath(root) != root {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

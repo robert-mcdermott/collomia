@@ -256,3 +256,9 @@ The default bundle excludes configuration values, prompts, source files,
 session transcripts, audit content, and logs. Review any bundle before sharing
 it. Use the repository's [security policy](../SECURITY.md) for vulnerabilities;
 use an ordinary issue for non-sensitive defects and usability feedback.
+
+Standard completion's September 6 follow-up separates disposable helpers from
+requested outputs in both task modes, accepts native artifact receipts in
+Developer mode, and reports verification-only gaps without a false “Blocked”
+label. Automated regressions cover the reported dashboard sequence; live user
+acceptance remains pending. See [the tracking plan](IMPROVEMENT_PLAN.md).

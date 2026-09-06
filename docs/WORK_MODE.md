@@ -231,3 +231,11 @@ covering:
 - stale/path-specific artifact evidence and macOS path-alias normalization;
 - Markdown, JSON, CSV, DOCX, PPTX, PDF, binary bounds, and malformed artifacts;
 - additive event/schema fields and durable file-change manifests.
+
+## Temporary working files
+
+The agent uses `.collomia-tmp/` for disposable scripts and intermediate files.
+They do not need separate completion checks. Requested outputs still need
+appropriate evidence, and failed commands remain visible. The same convention
+works in Developer mode; helper files elsewhere can be explicitly declared
+`scratch` through the plan. See [completion rules](COMPLETION.md).

@@ -15,4 +15,4 @@ I will check the inputs, reconcile the totals, and inspect the report.
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │❯ Ask Collomia to build, debug, explain…  (/ for commands)                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ✿   ollama/qwen3-coder   ASK ⛨  ctx ▎░░░░░░░░░ 3%               ∙∙∙ esc cancel
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▍░░░░░░░░░ 4%               ∙∙∙ esc cancel

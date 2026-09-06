@@ -520,9 +520,19 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		// how long the model then took to answer it.
 		a.cacheGapStatsOrInit().observeRequest()
 		var streamedUsage atomic.Bool
+		// Standard final prose is a candidate until completion accepts it.
+		// Reasoning and tool progress still stream; graph rendering is unchanged.
+		holdText := completion.enabled && !a.graphEnabled()
+		publishText := func(content string) {
+			if content != "" {
+				e := event.New(event.KindTextDelta)
+				e.Text = content
+				send(e)
+			}
+		}
 		a.beginProviderIteration()
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
-			if delta.Text != "" {
+			if delta.Text != "" && !holdText {
 				e := event.New(event.KindTextDelta)
 				e.Text = delta.Text
 				send(e)
@@ -611,6 +621,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		a.mu.Unlock()
 		if onUsage != nil {
 			onUsage(usage)
+		}
+		if holdText && len(response.ToolCalls) > 0 {
+			publishText(response.Content)
 		}
 		terminationErr := response.CompletionError(a.providerName)
 		assistant := provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls}
@@ -737,6 +750,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				if err := completion.saveRecovery(true); err != nil {
 					return "", reportError(send, err)
 				}
+				if holdText {
+					publishText(response.Content)
+				}
 				a.endTurn(ctx, send, iteration, GoalDone)
 				return response.Content, nil
 			case decision.blocked:
@@ -804,6 +820,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			case decision.done:
 				if err := completion.saveRecovery(true); err != nil {
 					return "", reportError(send, err)
+				}
+				if holdText {
+					publishText(pendingFinal)
 				}
 				a.endTurn(ctx, send, iteration, GoalDone)
 				return pendingFinal, nil
@@ -1075,11 +1094,15 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		var scopeErr error
 		scoped, scopeErr = prepareScopedVerification(ctx, args, action, a.workspace)
 		if scopeErr != nil {
+			observation.RejectedVerification, _ = tools.ParseCommandVerification(args)
 			observation.Failed = true
 			observation.FailureKind = goalgraph.FailureTool
 			observation.FailureDetail = scopeErr.Error()
 			return tools.Result{Content: "Tool error: " + scopeErr.Error()}, observation, nil
 		}
+	}
+	if scoped != nil {
+		observation.VerificationPurpose = scoped.purpose
 	}
 	graphStarted, graphErr := a.beginGoalTool(ctx, call.Name, action, send)
 	if graphErr != nil {
