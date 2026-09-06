@@ -55,6 +55,11 @@ Standard execution do not require Git.
 - Failed tool calls named by the completion controller carry stable
   current-turn IDs. A successful retry with the same tool and complete arguments
   clears that operation automatically, without a recovery-only plan update.
+  Native artifact validation also recognizes a corrected check of the same
+  file when it preserves all required text, does not lower the minimum size,
+  and preserves or strengthens the format checks. Unsupported format spellings
+  retain the native extension-inferred checks; JSON/Office parsing cannot be
+  replaced by a text-only check. Other tools retain exact-operation matching.
   A different file, command, or argument does not clear it just because the tool
   name matches. `update_plan.resolved_failures` binds each remaining relevant ID to
   a terminal step and, for a retry or alternative, the exact successful tool
@@ -80,7 +85,7 @@ software test framework:
 
 | Outcome | Preferred evidence |
 | --- | --- |
-| Text, Markdown, JSON, CSV/TSV, DOCX, PPTX, PDF, or other file | `validate_artifact` after the final write, bound to the exact path and SHA-256 digest. |
+| Text, Markdown, JSON, CSV/TSV, XLSX, DOCX, PPTX, PDF, or other file | A task-specific `run_command.verification` check, or `validate_artifact` for structural/content checks, after the final write. Either binds evidence to current file bytes. |
 | Analysis or data work | Identified inputs plus reproducible calculations, reconciliations, invariants, and data-quality caveats. |
 | Research or retrieval | Sources actually consulted, citations where available, explicit separation of sourced fact from inference, and material uncertainty. |
 | External action | Returned receipt/identifier and a safe read-back or typed postcondition when the service provides one. |
@@ -91,10 +96,13 @@ that a regular non-empty file exists at a particular digest and performs the
 following format checks:
 
 - valid UTF-8 and basic structure for text and Markdown;
+- HTML and common source/configuration extensions are inferred as UTF-8 text;
+  explicit `format: "html"` is a text-check alias, not HTML parsing or execution;
 - a single parseable JSON value;
 - parseable CSV or TSV records;
-- required Open XML package parts and parseable XML for DOCX and PPTX, with
+- required Open XML package parts and parseable XML for XLSX, DOCX and PPTX, with
   inspectable text extraction;
+- XLSX worksheet relationship targets (without formula recalculation);
 - PDF header and end marker presence;
 - size and digest only for an unknown binary format.
 
@@ -109,11 +117,12 @@ the receipt. If a completion attempt still has dirty tracked
 artifacts, the controller lists only those remaining paths relative to the
 workspace and omits paths with accepted current receipts, so remediation does
 not repeat validation of an already-cleared deliverable. Mutations whose tools
-did not report paths remain an explicit unknown-path gap. Conventional
-build/lint/test commands remain evidence when Work produces code, but do not
-replace a file deliverable's artifact receipt.
+did not report paths remain an explicit unknown-path gap. A successful task-specific command with `verification.paths` and a purpose can
+satisfy the same file obligation without another artifact-tool call. Unscoped
+commands do not close the Work file gate. See [Completion](COMPLETION.md) for
+the interface, limits, and the distinction between a passing check and coverage.
 
-For file-producing tasks, the optional `artifacts` field in `update_plan`
+For multi-step file-producing tasks, the optional `artifacts` field in `update_plan`
 serves as a small task brief:
 
 ```json
@@ -125,10 +134,11 @@ serves as a small task brief:
 
 Declare requested outputs, including files created by shell commands, and keep
 the declarations in subsequent complete plan updates. Declared deliverables
-require current successful `validate_artifact` receipts even if no file-write
+require current scoped-command or artifact-validation receipts even if no file-write
 tool observed their creation. Scratch files do not need deliverable acceptance.
 Without a declaration, tracked writes retain the previous validation behavior;
-validating an unclassified file makes it an implicit deliverable for this turn.
+validating an unclassified file through either supported evidence path makes it
+an implicit deliverable for this turn. Simple tasks need no plan just to check a file.
 A declared deliverable cannot be silently removed or demoted during the turn.
 Roles express model-authored intent, grant no permissions, and do not prove that
 every user-requested output was identified. Direct Q&A needs no task brief.
@@ -171,6 +181,26 @@ unrelated tool activity neither clears a failure nor purchases more retries.
 - Tracked file tools and `/undo` emit `file.change` path-manifest events. These
   are observations for audit/recovery consumers; replay never performs them.
 - Schema-v1 consumers must continue tolerating these additive fields.
+
+## General tools and user-installed skills
+
+Start Work mode in the folder relevant to your task and describe the outcome.
+The model chooses an approach using available tools and user-installed skills;
+no task-specific runtime, sample project, or built-in reporting procedure is
+required. System maintenance, analysis, research, Q&A, and automation use the
+same governed tool loop. Specialized dependencies and procedures can come from
+skills you install or tools the agent selects for the task.
+
+`view_image` supplies bounded local PNG/JPEG/GIF pixels for screenshots, diagrams,
+charts, photographs, or rendered pages. It requires an image-capable model;
+when pixels cannot be delivered, the model receives an explicit limitation.
+Loading an image does not establish visual quality.
+
+Native artifact receipts include optional `checks` fields distinguishing
+structure and required-text checks from unassessed calculations, sources, and
+visual quality. These tools provide evidence without prescribing how an
+analysis or document must be produced. Collo does not bundle Office-generation
+libraries or require LibreOffice; an installed skill may have its own dependencies.
 
 ## Initial boundaries and future work
 

@@ -1,5 +1,11 @@
 # Collomia project review — September 4, 2026
 
+**Historical assessment, not current usage guidance.** The tracked follow-up
+is [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md). Several findings below have been
+fixed, and the proposed bundled Work toolkit was withdrawn on September 6.
+Current capabilities and verification behavior are documented in
+[CAPABILITIES.md](CAPABILITIES.md) and [COMPLETION.md](COMPLETION.md).
+
 Reviewed development tree at commit `f523696`. This is an assessment and proposed backlog, not an implementation or an orchestration graduation decision. No application code or existing tests were changed.
 
 **My assessment:** Collomia has a substantial foundation for a capable agent: one governed tool path, explicit trust, durable sessions, recoverable publication, provider adapters, skills, MCP, and bounded execution. Work is a sensible separate task profile. The next investment should concentrate on getting the full benefit of models, completing real user tasks with fewer interventions, and producing useful artifacts. More orchestration machinery is a lower priority until those improvements are measured.

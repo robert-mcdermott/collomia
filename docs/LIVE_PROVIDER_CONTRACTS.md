@@ -2,7 +2,7 @@
 
 Collomia's ordinary `go test ./...` suite runs deterministic, recorded protocol
 contracts for every built-in adapter family. Those tests are safe for pull
-requests and need no network access or credentials. They cover streaming text,
+requests and need no external network access or credentials. They cover streaming text,
 reasoning, tool-call fragments and completed arguments, usage, HTTP and
 in-stream failures, retry behavior, truncated streams, and cancellation.
 

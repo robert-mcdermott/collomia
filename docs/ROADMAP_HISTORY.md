@@ -13,6 +13,114 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-06 — Standard task-specific completion evidence
+
+- The user requested less completion friction while retaining the evidence-gated
+  product contract. Standard now accepts explicitly scoped native command checks
+  as an alternative to generic artifact validation for current files. The model
+  selects scope and test purpose; the runtime observes successful execution and
+  byte/target/parent freshness. Test adequacy remains a disclosed limitation.
+- Successful native file replacement/edit plus fresh evidence can recover an
+  executed file-edit failure without exact-ID plan bookkeeping. Unrelated passes,
+  weaker failed requirements, permission/hook denials, and ambiguous effects do
+  not qualify. Command timeout-only changes preserve operation identity.
+- Added schema-v1 `scoped_verification` evidence and a bounded file digest map;
+  updated the quality receipt grader. Restart restores obligations and repair
+  facts, never passing receipts. Graph acceptance and authority remain unchanged.
+- Audited current versus historical documentation, corrected outdated feature
+  version labels, and added a documentation index and completion contract.
+- Automated qualification and user acceptance are tracked in the current
+  [improvement plan](IMPROVEMENT_PLAN.md). This entry does not assert a live-model
+  efficiency gain or acceptance before the user tests the separate build.
+
+### 2026-09-06 — general validation recovery and quieter completion checks
+
+- User testing produced a working single-file Asteroids game, but format
+  corrections left two obsolete validation failures open. The user requested
+  corrected-check recognition and less intrusive presentation.
+- HTML and common source/configuration files now infer UTF-8 text checks;
+  `html` is an explicit text alias, not HTML parsing or browser execution.
+  Native successful checks can cover earlier validation requirements for the
+  same file without a recovery-only plan update. Required text, minimum size,
+  and parser requirements cannot be weakened. Bounded hashed requirements
+  survive resume; older records retain exact-operation recovery.
+- Routine controller diagnostics collapse in live/restored TUI chat and appear
+  as informational activity. Expansion, transcript search/copy, model context,
+  and event logs retain details. Actual failures and blocks remain visible.
+  The separate test build is `v0.4.2-work-general.2`; no later wave started.
+- Full tests, affected-package race checks, vet, and Linux/Windows Go cross-builds
+  passed. Synthetic native-tool tests cover corrected-format recovery, resume,
+  and refusal to erase missing requirements. Live user acceptance is pending.
+
+### 2026-09-06 — W6 workflow withdrawn; general primitives retained
+
+- The user authorized removing the bundled reporting workflow in favor of
+  general-purpose Work mode, model-selected approaches, and user-installed skills.
+  W6 was not accepted. Earlier entries below describe superseded experiments.
+- Removed the built-in skill, Python/Office toolkit, runtime setup/diagnostics,
+  and workflow-specific prompt. Retained ordinary command-failure recovery,
+  generic image inspection with unavailable-image notices, XLSX structural
+  validation, and explicit check scopes. No generation workflow is prescribed.
+- Preserved user files, sessions, prior builds and evaluation outputs. Archived
+  withdrawn code under ignored dist storage. A separate `collo-work-general`
+  test build supersedes the W6 workflow binaries; installed Collo is unchanged.
+- Full regression tests, affected-package race checks, vet, documentation
+  checks, and Linux/Windows Go cross-builds passed after removal. No provider
+  calls were made; live general-purpose Work acceptance remains pending.
+- Broader Work evaluation is proposed before another feature wave. The
+  [retained-capability checks](IMPROVEMENT_PLAN.md#retained-capability-checks)
+  are the current manual gate. Orchestration milestones are unchanged.
+
+### 2026-09-05 — W6 command-failure recovery correction
+
+- Live sunspot testing exposed a Standard recovery guard that blocked an
+  ordinary script repair after an observed assertion failure. The native
+  command runner now distinguishes ordinary nonzero exits from interruptions.
+- Completed local failures allow inspection, repair and deliberate retries;
+  unresolved failure IDs and deliverable validation requirements remain.
+  Timeout, cancellation, signal-like exits, and failed known network/publication
+  operations retain the uncertainty guard. No automatic external replay is added.
+- Old persisted markers lack native exit classification and require one
+  inspected acknowledgement. The user's workspace and session were not edited.
+  The W6.3 test build remains subject to user acceptance; no later wave started.
+
+### 2026-09-05 — W6 existing-folder UX revision
+
+- The user successfully tried the documented initial workflow, but found the
+  exported example README and duplicate Work verb confusing for actual tasks.
+- Replaced the unreleased `work init` command with a shipped `work-artifacts`
+  skill. Work mode can load guidance and prepare optional hidden, versioned
+  helpers through `setup artifacts` in the user's existing folder. No example
+  data or root README is created. `doctor artifacts` provides read-only checks.
+- Ordinary skill overrides, profile filtering, command permissions, and sandbox
+  controls remain in effect. The skill supports task-specific scripts rather
+  than requiring the grouped-summary example.
+- Full regressions, vet, and built-in skill validation passed. An operational
+  fixture reconciled total 39 and produced valid XLSX/DOCX/PDF outputs under the
+  required command sandbox without networking; actual pages were reviewed.
+- The revised `v0.4.2-wave6.2` test build is ready for the existing-folder manual
+  gate. W6 acceptance and matched W5 quality comparison remain pending; no
+  orchestration milestones or later waves changed.
+
+### 2026-09-05 — W6 Work artifact workflow
+
+- After W7b acceptance and commit `304d7af`, the user selected W6.
+- Added an exportable locked uv toolkit for CSV/XLSX analysis, LibreOffice
+  recalculation, independent total reconciliation, cited DOCX/PDF generation,
+  actual page rendering, and simple existing-file revision. Setup and scripts
+  retain the ordinary command permission boundary.
+- Native `view_image` exposes bounded local pixels through existing typed
+  attachments; XLSX validation and explicit receipt scopes distinguish parsed
+  structure from unperformed calculations/source/visual assessments.
+- Offline Go tests, affected-package race checks, vet, and Linux/Windows Go
+  cross-builds passed. A freshly exported kit and new uv environment passed
+  real LibreOffice creation/revision/rendering checks on darwin/arm64. Example
+  memo/workbook previews were visually inspected. Separate `v0.4.2-wave6` build
+  delivered; installed binary and `VERSION` are unchanged.
+- Live acceptance and matched W5 baseline comparison remain pending in
+  improvement plan at that time; those gates were superseded by withdrawal.
+  Orchestration milestones are unchanged.
+
 ### 2026-09-05 — W7b durable Standard recovery
 
 - Following W7a acceptance and commit `0f618aa`, the user selected W7b.

@@ -122,6 +122,8 @@ type Result struct {
 }
 
 type Evidence struct {
+	Files   map[string]string // scoped verification: path -> observed SHA-256 digest
+	Checks  map[string]string // Explicit scope; never an assertion that all acceptance criteria passed.
 	Kind    string
 	Subject string
 	Digest  string

@@ -2,6 +2,7 @@ package activity
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,20 @@ func TestFromEventExcludesStreamingNoise(t *testing.T) {
 		if item, ok := FromEvent(event.New(kind)); ok {
 			t.Fatalf("%s unexpectedly projected as %+v", kind, item)
 		}
+	}
+}
+
+func TestCompletionCheckIsInformationalActivity(t *testing.T) {
+	e := event.New(event.KindWarning)
+	e.Text = "Collomia completion controller (intervention 1 of 2): this response cannot finish the turn yet.\nRecorded gaps:\n- check final file"
+	item, ok := FromEvent(e)
+	if !ok || item.Status != StatusInfo || item.Category != CategoryTurn || !strings.Contains(item.Detail, "check final file") {
+		t.Fatalf("completion check=%+v", item)
+	}
+	e.Text = "Tool access denied"
+	item, _ = FromEvent(e)
+	if item.Status != StatusWarning || item.Category != CategoryFailure {
+		t.Fatal("real warning downgraded")
 	}
 }
 

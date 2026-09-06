@@ -22,6 +22,7 @@ import (
 )
 
 type RunCommandTool struct {
+	Guard          *PathGuard // shared file-read policy for explicit verification scope
 	Workspace      string
 	DeniedPatterns []*regexp.Regexp
 	MaxOutputBytes int
@@ -57,6 +58,18 @@ type RunCommandTool struct {
 	EgressAllowlist egress.Allowlist
 	// EgressObserve receives each brokered decision for the audit ledger.
 	EgressObserve func(egress.Decision)
+}
+
+// completedCommandError records an observed nonzero process exit. It says
+// nothing about successful work, rollback, or whether repeating effects is safe.
+// Only the native runner creates this marker; tool output text is not evidence.
+type completedCommandError struct{ error }
+
+func (e *completedCommandError) Unwrap() error { return e.error }
+
+func CommandExitedNormally(err error) bool {
+	var completed *completedCommandError
+	return errors.As(err, &completed)
 }
 
 // egressPlan is the resolved decision about brokering one command: whether to
@@ -111,7 +124,7 @@ func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*Run
 }
 
 func (t RunCommandTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. The process already starts in the workspace; run verification directly without a leading cd or a trailing shell status wrapper so its result can be recognized as evidence. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. OS sandbox policy may deny outside-workspace reads or writes and command networking; required read-only dependencies belong in permissions.sandbox_readable_roots, writable external caches in sandbox_writable_roots, and outbound access is controlled by sandbox_allow_network. For uv under the sandbox, prefer a workspace-local cache prefix such as UV_CACHE_DIR=\"$PWD/.uv-cache\" uv run …. Provider and remote MCP traffic are unaffected. Set pty=true for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal"}},"required":["command"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. The process already starts in the workspace; run verification directly without a leading cd or a trailing shell status wrapper so its result can be recognized as evidence. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. OS sandbox policy may deny outside-workspace reads or writes and command networking; required read-only dependencies belong in permissions.sandbox_readable_roots, writable external caches in sandbox_writable_roots, and outbound access is controlled by sandbox_allow_network. For uv under the sandbox, prefer a workspace-local cache prefix such as UV_CACHE_DIR=\"$PWD/.uv-cache\" uv run …. Provider and remote MCP traffic are unaffected. In Standard execution, set verification with file paths and a purpose when running a task-specific check: the runtime records a passing exit against unchanged file bytes, so no extra validate_artifact call is needed. Use a direct check command or script that exits nonzero on failure. This scope does not replace Orchestrated Goal verification. Set pty=true for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"verification":{"type":"object","description":"Optional Standard-only task-specific check; file scope is intent, passing status and freshness are runtime-observed","properties":{"paths":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}},"purpose":{"type":"string","minLength":1,"maxLength":512}},"required":["paths","purpose"],"additionalProperties":false},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal"}},"required":["command"],"additionalProperties":false}`)}
 }
 func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -124,7 +137,29 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, errors.New("command must not be empty")
 	}
 	analysis := shell.AnalyzeInWorkspace(a.Command, t.Workspace)
-	return ActionFromAnalysis("run: "+a.Command, a.Command, analysis), nil
+	action := ActionFromAnalysis("run: "+a.Command, a.Command, analysis)
+	verification, err := ParseCommandVerification(raw)
+	if err != nil {
+		return action, err
+	}
+	if verification != nil {
+		guard := t.Guard
+		if guard == nil {
+			guard, err = NewPathGuard(t.Workspace, false)
+			if err != nil {
+				return action, err
+			}
+		}
+		for _, path := range verification.Paths {
+			target, outside, err := guard.ResolveRead(path)
+			if err != nil {
+				return action, err
+			}
+			action.Paths = append(action.Paths, target)
+			action.Outside = action.Outside || outside
+		}
+	}
+	return action, nil
 }
 
 // ActionFromAnalysis builds the permission-facing description of a shell
@@ -273,6 +308,12 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
 	}
 	if err != nil {
+		var exit *exec.ExitError
+		// Shells often encode a child signal as 128+signal. Keep those, direct
+		// signals, cancellation, timeouts, and launch/wait failures uncertain.
+		if runCtx.Err() == nil && errors.As(err, &exit) && exit.ExitCode() > 0 && exit.ExitCode() < 128 {
+			return out, &completedCommandError{fmt.Errorf("command failed: %w", err)}
+		}
 		return out, fmt.Errorf("command failed: %w", err)
 	}
 	if out == "" {

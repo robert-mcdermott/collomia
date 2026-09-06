@@ -1,5 +1,11 @@
 # Standard recovery and workspace checkpoints
 
+For current evidence choices and automatic correction rules, see
+[Evidence-based completion](COMPLETION.md). Native file-edit failures can recover
+after a successful native replacement/edit covers every affected path and fresh
+file verification passes. Bounded `repair_paths` and `repair_ready` record the
+observed repair across restart; they never restore passing validation.
+
 W7b makes unfinished Standard work survive later turns and application restart.
 It supports Developer and Work sessions, including ordinary non-Git folders.
 The offline checks passed, and the user accepted W7b and full W7 after successful
@@ -15,8 +21,24 @@ replace this state. A completed task clears its completion obligations, so later
 unrelated questions do not inherit them. `/new` starts a separate task/session;
 the previous session retains its unfinished work.
 
+Corrected native artifact validation can resolve an earlier failed attempt when
+the same file is checked with all original required text, at least the original
+minimum size, and equivalent or stronger format checks. Changing argument order,
+using an equivalent format, or fixing an unsupported format does not require a
+separate plan resolution when those conditions hold. Other commands and external actions still require matching operations; a
+command timeout adjustment alone is compatible with a successful retry.
+Existing final-byte checks still apply.
+New failure records retain bounded hashes of the path/text requirements and the
+format/size requirements across resume, never old validation receipts. Older
+records without these identities retain exact-retry/explicit recovery behavior.
+
+Routine completion interventions appear as “Checking remaining work” in the TUI.
+Use `ctrl+o` (or the configured output-toggle binding) to expand their diagnostics;
+transcript search/copy and event logs retain the details. Actual blocked outcomes
+and ordinary warnings remain visible.
+
 Saved state is **not a validation receipt or permission grant**. New turns require
-fresh artifact validation where deliverables remain unfinished, and successful
+fresh scoped-command or artifact validation where deliverables remain unfinished, and successful
 recovery receipts must come from the current turn. A later plan cannot silently
 drop a retained deliverable. Finish in the original task profile; switching modes
 cannot bypass unfinished obligations. Ephemeral runs retain their existing
@@ -29,12 +51,26 @@ not change runtime obligations. A recorded next action never schedules itself.
 
 Before a potentially mutating Standard tool executes, Collo persists and syncs
 an in-flight marker. A successful observed result settles it. If the process
-stops before settlement, or an opaque command/external tool fails after starting,
-the runtime keeps the outcome uncertain. It does not replay that action. Known
+stops before settlement, a command is cancelled, times out or exits with a
+signal-like status, or an external tool fails after starting, the runtime keeps
+the outcome uncertain. A failed command with a known network destination or
+publication operation also retains this guard. It does not replay that action. Known
 read-only tools can inspect the current state, while another possibly mutating
 call is refused. The final outcome remains blocked until user reconciliation.
 
-After inspecting the actual result, use:
+An ordinary nonzero local command exit (for example, a failed assertion, test,
+or compiler diagnostic) is a completed execution with unsuccessful work. Collo
+can inspect outputs, fix the problem, and deliberately retry without a recovery
+acknowledgement. The failure remains unresolved until recovered, and deliverables
+still need current validation. Process completion does not prove absence of
+partial effects or make a remote action safe to repeat; scripts can hide effects
+that command analysis cannot identify. The agent must inspect before retrying.
+
+Older builds may have saved an uncertain marker for an ordinary command failure.
+Those records do not contain the native exit classification, so they are not
+silently cleared on upgrade. Inspect the saved failure and acknowledge it once.
+
+After inspecting an uncertain action's actual result, use:
 
 ```text
 /recovery acknowledge Inspected the output; one action occurred and I am keeping it
@@ -102,18 +138,19 @@ continues to use `/restore integration` and its separate authority contract.
 
 ## Manual acceptance checks
 
-Prepared binary: `dist/collo-wave7b`, version `v0.4.2-wave7b`, based on W7a commit
-`0f618aa`. If needed, rebuild from the repository root:
+Run these regression checks with a current build in disposable fixture folders.
+The active candidate build is linked from [the improvement plan](IMPROVEMENT_PLAN.md).
+To build a separate binary from the current checkout:
 
 ```sh
-go build -o dist/collo-wave7b -ldflags '-X github.com/robert-mcdermott/collomia/internal/version.Version=v0.4.2-wave7b -X github.com/robert-mcdermott/collomia/internal/version.Commit=0f618aa-wave7b-dirty' ./cmd/collo
+go build -o dist/collo-test ./cmd/collo
 ```
 
 ### 1. Unfinished deliverable across restart
 
 ```sh
-mkdir -p dist/wave7b-obligations
-./dist/collo-wave7b --mode work --cwd dist/wave7b-obligations
+mkdir -p dist/recovery-obligations
+./dist/collo-test --mode work --cwd dist/recovery-obligations
 ```
 
 Send:
@@ -128,7 +165,7 @@ not an accepted done. `/recovery` should retain the deliverable and any dirty pa
 Quit, then resume:
 
 ```sh
-./dist/collo-wave7b --cwd dist/wave7b-obligations --continue
+./dist/collo-test --cwd dist/recovery-obligations --continue
 ```
 
 Inspect `/recovery` again. Send:
@@ -146,9 +183,9 @@ verification if you regularly use that profile.
 Start a fresh fixture/session so the two prompts below are turns 1 and 2:
 
 ```sh
-mkdir -p dist/wave7b-checkpoints
-printf 'ORIGINAL\n' > dist/wave7b-checkpoints/checkpoint.txt
-./dist/collo-wave7b --mode work --cwd dist/wave7b-checkpoints
+mkdir -p dist/recovery-checkpoints
+printf 'ORIGINAL\n' > dist/recovery-checkpoints/checkpoint.txt
+./dist/collo-test --mode work --cwd dist/recovery-checkpoints
 ```
 
 First prompt:
@@ -166,8 +203,8 @@ Second prompt:
 Quit. Introduce a deliberate outside edit and resume:
 
 ```sh
-printf 'MANUAL\n' > dist/wave7b-checkpoints/checkpoint.txt
-./dist/collo-wave7b --cwd dist/wave7b-checkpoints --continue
+printf 'MANUAL\n' > dist/recovery-checkpoints/checkpoint.txt
+./dist/collo-test --cwd dist/recovery-checkpoints --continue
 ```
 
 Run `/restore 1`. Expect refusal naming checkpoint.txt; MANUAL and the current
@@ -175,8 +212,8 @@ session must remain unchanged. Quit and put back the exact bytes the second
 write_file wrote (normally SECOND with no newline; match its actual output):
 
 ```sh
-printf 'SECOND' > dist/wave7b-checkpoints/checkpoint.txt
-./dist/collo-wave7b --cwd dist/wave7b-checkpoints --continue
+printf 'SECOND' > dist/recovery-checkpoints/checkpoint.txt
+./dist/collo-test --cwd dist/recovery-checkpoints --continue
 ```
 
 Run `/restore 1` again. Expect a new conversation branch and file contents FIRST.
@@ -189,16 +226,16 @@ completion obligations must be absent.
 Use another fresh Work session under a fixture directory:
 
 ```sh
-mkdir -p dist/wave7b-uncertain
-./dist/collo-wave7b --mode work --cwd dist/wave7b-uncertain
+mkdir -p dist/recovery-uncertain
+./dist/collo-test --mode work --cwd dist/recovery-uncertain
 ```
 
 Send (approve this harmless fixture command if asked):
 
-> Call run_command exactly once with: printf 'ONCE\n' >> uncertain.txt; false
-> The nonzero exit is intentional. Do not retry it or append again.
+> Call run_command exactly once with command: printf 'ONCE\n' >> uncertain.txt; sleep 30
+> Set timeout_seconds to 1. The timeout is intentional. Do not retry or append again.
 
-Expect a tool failure and `/recovery` showing an uncertain run_command. Quit and
+Expect a timeout and `/recovery` showing an uncertain run_command. Quit and
 resume with the same cwd and `--continue`. Send:
 
 > Use read_file to inspect uncertain.txt and explain the retained uncertainty.
@@ -227,4 +264,5 @@ inspection flow above.
 
 These checks passed the user gate on 2026-09-05 and remain a regression guide.
 Report the provider/model and failing step if any check fails. W7b/full W7 is
-accepted; W6 remains a later, separately authorized wave.
+accepted. The bundled W6 workflow was subsequently withdrawn; current follow-up
+work and its separate acceptance gate are in [the improvement plan](IMPROVEMENT_PLAN.md).

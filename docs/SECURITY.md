@@ -1,5 +1,11 @@
 # Collomia security model
 
+Standard [scoped command verification](COMPLETION.md) uses the ordinary command
+permission/sandbox path and the file-read guard for each declared scope path.
+The runtime observes exit status and unchanged bytes/targets/parents; it does
+not certify the adequacy of a model-selected script. This evidence path does
+not replace graph verification, approve publication, or settle unknown effects.
+
 This document states what each control actually guarantees, what it does
 not, and where the boundaries are. It is the "documentation truth pass"
 required before advertising any unattended use.
@@ -32,7 +38,7 @@ server, relax project trust, change the sandbox, inherit more environment, or
 permit publication. Both profiles pass actions through the same permission,
 hook, redaction, audit, and containment layers described here.
 
-Work makes Git optional, not safety optional. Its artifact receipts establish
+Work makes Git optional, not safety optional. Its structural artifact receipts establish
 only bounded structure/content at one path and SHA-256 digest; they do not prove
 facts, source quality, accessibility, visual polish, or the success of an
 external side effect. Ambiguous external mutations must be read back or handed

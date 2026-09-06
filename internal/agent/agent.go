@@ -959,6 +959,16 @@ func reportError(send Emit, err error) error {
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, completion *completionController, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
 	observation := toolObservation{CallID: call.ID, Name: call.Name, RetryKey: toolRetryKey(call), ExecutionPrevented: true}
+	if call.Name == "run_command" {
+		observation.LegacyRetryKey = canonicalRetryKey(call, false)
+	}
+	if call.Name == "validate_artifact" {
+		if validator, ok := item.(interface {
+			ValidationRequirement(json.RawMessage) *tools.ArtifactValidationRequirement
+		}); ok {
+			observation.ValidationRequest = validator.ValidationRequirement(call.Arguments)
+		}
+	}
 	if hasItem && !a.toolAvailable(item, plan) {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -1060,6 +1070,17 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			return tools.Result{Content: "Tool error: " + overridden.Error()}, observation, nil
 		}
 	}
+	var scoped *scopedVerification
+	if _, native := item.(*tools.RunCommandTool); native && !a.graphEnabled() {
+		var scopeErr error
+		scoped, scopeErr = prepareScopedVerification(ctx, args, action, a.workspace)
+		if scopeErr != nil {
+			observation.Failed = true
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = scopeErr.Error()
+			return tools.Result{Content: "Tool error: " + scopeErr.Error()}, observation, nil
+		}
+	}
 	graphStarted, graphErr := a.beginGoalTool(ctx, call.Name, action, send)
 	if graphErr != nil {
 		observation.Failed = true
@@ -1091,6 +1112,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 	observation.ExecutionPrevented = false
 	observation.Effects = executionEffects(call.Name, action)
 	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
+	observation.CommandExited = call.Name == "run_command" && tools.CommandExitedNormally(err)
 	observation.Finished = time.Now().UTC()
 	a.permissions.RecordOutcome(permissionTool, action, err)
 	if len(result.Content) > a.maxToolOutput {
@@ -1114,7 +1136,11 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += "\n… tool output truncated …"
 		}
 	}
+	returnedParts := len(result.Parts)
 	result.Parts = a.retainToolParts(call.Name, result.Parts, send)
+	if returnedParts > 0 && len(result.Parts) == 0 {
+		result.Content += "\nNo image pixels were delivered to the model (provider support or attachment retention was unavailable). Do not claim visual inspection; preserve the image for human review."
+	}
 	if err != nil {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -1128,7 +1154,7 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += "\nEffect status: this executed tool may have changed local or external state before failing. Inspect outputs or use a safe read-back before another write; do not blindly replay an external action with an uncertain outcome."
 		}
 	}
-	if call.Name == "run_command" {
+	if call.Name == "run_command" && scoped == nil {
 		assessment := assessVerificationCommand(action.Command, a.workspace)
 		observation.Verification = assessment.Recognized
 		observation.VerificationCheck = assessment
@@ -1175,6 +1201,22 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 				result.Content += "\n\n"
 			}
 			result.Content += notice
+		}
+	}
+	if scoped != nil && err == nil {
+		if scopeErr := scoped.finish(ctx); scopeErr != nil {
+			observation.Failed = true
+			observation.CommandExited = true // command completed; its evidence was rejected
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = scopeErr.Error()
+			observation.Verification = false
+			result.Evidence = nil
+			err = scopeErr
+			result.Content += "\nTool error: " + scopeErr.Error()
+		} else {
+			observation.ScopedFiles = scoped.files
+			result.Evidence = &tools.Evidence{Kind: "scoped_verification", Subject: action.Command, Detail: scoped.purpose, Files: scoped.digests(a.workspace), Checks: map[string]string{"execution": "passed", "file_freshness": "passed", "coverage": "not_assessed"}}
+			result.Content += scoped.summary()
 		}
 	}
 	if err == nil && call.Name == "validate_artifact" && result.Evidence != nil && result.Evidence.Kind == "artifact_validated" {
@@ -1243,7 +1285,7 @@ func eventEvidence(value *tools.Evidence) *event.Evidence {
 	if value == nil {
 		return nil
 	}
-	return &event.Evidence{Kind: value.Kind, Subject: value.Subject, Digest: value.Digest, Detail: value.Detail}
+	return &event.Evidence{Kind: value.Kind, Subject: value.Subject, Digest: value.Digest, Detail: value.Detail, Checks: value.Checks, Files: value.Files}
 }
 
 func trackedFileMutationTool(name string) bool {
@@ -1361,7 +1403,7 @@ func graphOwnedTool(name string) bool {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "read_task_context", "update_task_context", "read_session", "search_session", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
+	case "read_file", "view_image", "list_files", "search_files", "search_symbols", "read_tool_result", "read_task_context", "update_task_context", "read_session", "search_session", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
 		"find_definition", "find_references",
 		// Research is most of what planning is. The web tools change nothing
 		// on the machine, and a plan written without checking a library's

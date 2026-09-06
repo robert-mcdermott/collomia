@@ -389,6 +389,11 @@ func (t *traceLog) event(e event.Event) {
 	if e.Kind == event.KindToolResult && e.Tool != nil && !e.Tool.IsError && e.Tool.Evidence != nil && e.Tool.Evidence.Kind == "artifact_validated" {
 		t.receipts[e.Tool.Evidence.Subject] = e.Tool.Evidence.Digest
 	}
+	if e.Kind == event.KindToolResult && e.Tool != nil && !e.Tool.IsError && e.Tool.Evidence != nil && e.Tool.Evidence.Kind == "scoped_verification" {
+		for path, digest := range e.Tool.Evidence.Files {
+			t.receipts[path] = digest
+		}
+	}
 }
 func (t *traceLog) message(message provider.Message) {
 	t.mu.Lock()

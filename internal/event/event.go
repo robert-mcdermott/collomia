@@ -121,10 +121,12 @@ type Tool struct {
 // result. Kind describes the narrow claim the runtime can support; Detail must
 // not expand that claim into subjective quality or factual correctness.
 type Evidence struct {
-	Kind    string `json:"kind"`
-	Subject string `json:"subject"`
-	Digest  string `json:"digest,omitempty"`
-	Detail  string `json:"detail,omitempty"`
+	Files   map[string]string `json:"files,omitempty"`
+	Checks  map[string]string `json:"checks,omitempty"`
+	Kind    string            `json:"kind"`
+	Subject string            `json:"subject"`
+	Digest  string            `json:"digest,omitempty"`
+	Detail  string            `json:"detail,omitempty"`
 }
 
 // Permission describes a requested privileged action and its decision.

@@ -85,6 +85,7 @@ func GoalOutcomeFor(err error) GoalOutcome {
 type toolObservation struct {
 	CallID             string
 	RetryKey           string
+	LegacyRetryKey     string
 	Name               string
 	Action             tools.Action
 	Failed             bool
@@ -100,8 +101,11 @@ type toolObservation struct {
 	ArtifactValidation bool
 	ArtifactEvidence   *tools.Evidence
 	ArtifactPath       string
+	ValidationRequest  *tools.ArtifactValidationRequirement
+	ScopedFiles        []artifactReceipt
 	Effects            toolEffects
 	ExecutionPrevented bool
+	CommandExited      bool // native runner observed an ordinary nonzero exit
 	VerificationCheck  verificationAssessment
 }
 
@@ -137,12 +141,15 @@ type completionController struct {
 }
 
 type unresolvedToolFailure struct {
-	id           string
-	tool         string
-	risk         tools.Risk
-	detail       string
-	planRevision uint64
-	retryKey     string
+	id                string
+	tool              string
+	risk              tools.Risk
+	detail            string
+	planRevision      uint64
+	retryKey          string
+	validationRequest *tools.ArtifactValidationRequirement
+	repairPaths       []string
+	repairReady       bool
 }
 
 type completionDecision struct {
@@ -205,17 +212,24 @@ func (c *completionController) observe(observation toolObservation) {
 		}
 		c.successes[observation.CallID] = observation
 	}
-	// An exact operation retry recovers automatically. Other recovery is never
-	// guessed from tool names or permission-risk labels; update_plan binds it
-	// to the exact failed and successful call IDs.
+	// Exact operations and native artifact checks covering the original
+	// requirements recover automatically. Other recovery is never guessed from
+	// tool names or permission-risk labels; update_plan binds its receipt IDs.
 	c.recoverFailures(observation)
 	c.resolveFailuresFromPlan()
-	if observation.Name == "run_command" && observation.Verification && c.taskMode != taskmode.Work {
+	if observation.Name == "run_command" && observation.Verification && c.taskMode != taskmode.Work && len(observation.ScopedFiles) == 0 {
 		c.clearDirty()
 		c.recognizedEver = true
 	}
 	if c.taskMode == taskmode.Work && observation.ArtifactValidation {
 		c.recordArtifactReceipt(observation)
+	}
+	if len(observation.ScopedFiles) > 0 {
+		c.recordScopedVerification(observation.ScopedFiles)
+	}
+	c.markFileRepairs(observation)
+	if len(observation.ScopedFiles) > 0 || observation.ArtifactValidation {
+		c.recoverVerifiedFileFailures()
 	}
 	if observation.Name == "update_plan" && c.dirty && c.board != nil {
 		if current := c.board.Current(); current != nil && completionDisclosure(current, c.taskMode) != "" && completionDisclosure(current, c.taskMode) != c.noteAtMutation {
@@ -277,7 +291,15 @@ func (c *completionController) recordFailure(observation toolObservation) {
 	if c.board != nil {
 		_, revision = c.board.Snapshot()
 	}
-	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey}
+	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey, validationRequest: observation.ValidationRequest}
+	if observation.FailureKind == goalgraph.FailureTool && !observation.ExecutionPrevented && !observation.Effects.Unknown && len(observation.Effects.Paths) <= 64 {
+		switch observation.Name {
+		case "write_file", "edit_file", "apply_patch", "format_file":
+			for _, path := range observation.Effects.Paths {
+				failure.repairPaths = append(failure.repairPaths, completionPath(path))
+			}
+		}
+	}
 	for suffix := 2; ; suffix++ {
 		collision := false
 		for _, existing := range c.failures {
@@ -668,7 +690,7 @@ func (c *completionController) assess() completionDecision {
 		c.bestInterventionGaps = gapCount
 	}
 	return completionDecision{
-		notice:         completionNotice(issues, c.interventions, c.taskMode, c.recoveryReceipts()),
+		notice:         completionNotice(issues, c.interventions, c.taskMode, c.recoveryReceipts(), len(c.failures) > 0),
 		reuseCandidate: planIssueCount == 0 && !verificationGap && len(artifactIssues) == 0 && len(c.failures) > 0 && len(c.resolutionIssues) == 0,
 	}
 }
@@ -686,34 +708,39 @@ func blockedPlanReason(current *plan.Plan) string {
 	return "the active plan is blocked — " + strings.Join(reasons, "; ")
 }
 
-func completionNotice(issues []string, intervention int, mode taskmode.Mode, receipts []recoveryReceipt) string {
+func completionNotice(issues []string, intervention int, mode taskmode.Mode, receipts []recoveryReceipt, failed ...bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Collomia completion controller (intervention %d of %d): this response cannot finish the turn yet.\nRecorded gaps:\n", intervention, maxCompletionInterventions)
 	for _, issue := range issues {
 		b.WriteString("- " + issue + "\n")
 	}
-	b.WriteString("A successful retry of the same tool with the same arguments clears its failure automatically; no plan update is needed solely to record that retry. A different path, command, or other argument is a different operation even when the tool name is unchanged. ")
-	if len(receipts) > 0 {
-		b.WriteString("Successful current-turn tool receipts available for an explicit recovery:\n")
-		for _, receipt := range receipts {
-			fmt.Fprintf(&b, "- `%s`: %s", receipt.callID, receipt.tool)
-			if receipt.summary != "" {
-				b.WriteString(" (" + receipt.summary + ")")
+	if len(failed) == 0 || failed[0] {
+		b.WriteString("A successful retry of the same tool with the same arguments clears its failure automatically; no plan update is needed solely to record that retry. A different path, command, or other argument is a different operation even when the tool name is unchanged. ")
+		b.WriteString("Native artifact validation also recovers a corrected check of the same file when every required text, minimum-size, and format check is preserved or strengthened. Dropping a requirement does not recover its failure. A successful native file edit/replacement followed by current verification of all affected paths also recovers an earlier executed file-edit failure automatically. ")
+		if len(receipts) > 0 {
+			b.WriteString("Successful current-turn tool receipts available for an explicit recovery:\n")
+			for _, receipt := range receipts {
+				fmt.Fprintf(&b, "- `%s`: %s", receipt.callID, receipt.tool)
+				if receipt.summary != "" {
+					b.WriteString(" (" + receipt.summary + ")")
+				}
+				b.WriteByte('\n')
 			}
-			b.WriteByte('\n')
+			b.WriteString("Use the exact tool-call ID shown above only when that call truly recovered the named failure. An ID printed inside tool output (for example, a COLLOMIA_EXTERNAL_WEB_DATA marker) is content provenance, not a recovery_tool_call_id. If no listed receipt is a real recovery, run one necessary retry or alternative and use that successful call's provider-envelope ID. ")
 		}
-		b.WriteString("Use the exact tool-call ID shown above only when that call truly recovered the named failure. An ID printed inside tool output (for example, a COLLOMIA_EXTERNAL_WEB_DATA marker) is content provenance, not a recovery_tool_call_id. If no listed receipt is a real recovery, run one necessary retry or alternative and use that successful call's provider-envelope ID. ")
+		// The status this asks for decides how the whole turn is reported, so it
+		// has to name both. A step marked blocked makes the run end blocked, which
+		// is right for work that cannot be done and wrong for an action that
+		// turned out to be unnecessary or was achieved another way — and telling
+		// the model only about `blocked` produced exactly that: finished
+		// deliverables reported as failures because an abandoned side attempt was
+		// recorded with the only word on offer.
+		b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence. For each named failure ID, add an update_plan.resolved_failures entry tied to a terminal step: use `recovered_by_retry` or `recovered_by_alternative` with the successful `recovery_tool_call_id`; use `skipped_unnecessary` only when the action was not needed and its step is `skipped`; use `blocked` only when the work genuinely cannot be completed and its step is `blocked`, since a blocked step ends this turn as blocked. Include the exact failure_id, step_id, and evidence; prose alone does not resolve a failed call. ")
+	} else {
+		b.WriteString("Finish the listed requirements and update any active plan with observed evidence. ")
 	}
-	// The status this asks for decides how the whole turn is reported, so it
-	// has to name both. A step marked blocked makes the run end blocked, which
-	// is right for work that cannot be done and wrong for an action that
-	// turned out to be unnecessary or was achieved another way — and telling
-	// the model only about `blocked` produced exactly that: finished
-	// deliverables reported as failures because an abandoned side attempt was
-	// recorded with the only word on offer.
-	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence. For each named failure ID, add an update_plan.resolved_failures entry tied to a terminal step: use `recovered_by_retry` or `recovered_by_alternative` with the successful `recovery_tool_call_id`; use `skipped_unnecessary` only when the action was not needed and its step is `skipped`; use `blocked` only when the work genuinely cannot be completed and its step is `blocked`, since a blocked step ends this turn as blocked. Include the exact failure_id, step_id, and evidence; prose alone does not resolve a failed call. ")
 	if mode == taskmode.Work {
-		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Validate each listed file deliverable with validate_artifact after its final write. Declared deliverables and stale digest receipts require fresh validate_artifact evidence; a validation_note or general test command cannot waive them. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
+		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Verify each listed file using a meaningful run_command check with verification.paths and verification.purpose, or use validate_artifact for structural/content checks. Either can satisfy current file evidence; do not run both for bookkeeping. A validation_note or unscoped command cannot waive declared deliverables or stale receipts. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
 	} else {
 		b.WriteString("If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. ")
 	}
@@ -1094,7 +1121,7 @@ func refusedVerificationNotice(command, reason, workspace string) string {
 }
 
 func workValidationNotice(command, reason string) string {
-	return fmt.Sprintf("Collomia task-appropriate validation was not recorded for %s: %s. For a file deliverable, run validate_artifact on the final artifact. For analysis, research, retrieval, or an external action with no meaningful machine validator, update the completed plan step with the observed calculation, source, receipt, or read-back and add a fresh specific validation_note describing what was checked and what remains a matter of judgment.", boundedVerificationCommand(command), reason)
+	return fmt.Sprintf("Collomia task-appropriate validation was not recorded for %s: %s. For a file deliverable, use run_command.verification with its paths and purpose for a task-specific check, or validate_artifact for structural/content checks. For analysis, research, retrieval, or an external action with no meaningful machine validator, update the completed plan step with the observed calculation, source, receipt, or read-back and add a fresh specific validation_note describing what was checked and what remains a matter of judgment.", boundedVerificationCommand(command), reason)
 }
 
 func boundedVerificationCommand(command string) string {

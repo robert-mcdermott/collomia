@@ -20,7 +20,12 @@ W1, W3, W4, and W5 are user-accepted. W5's balanced 12-task baseline passed
 separately. W7a retained task context and retrievable session evidence passed
 manual testing and is accepted. W7b's durable obligations and workspace
 checkpoints passed manual testing on 2026-09-05, completing full W7.
-W6's complete Work artifact workflow remains the proposed next wave, not started.
+On 2026-09-06, the user withdrew W6's bundled reporting workflow in favor of
+model-selected methods and user-installed skills. The cleanup retains general
+command recovery, image inspection, and artifact validation improvements.
+The active follow-up simplifies Standard completion with scoped task-specific
+checks and automatic verified file repair while retaining runtime-owned evidence.
+Broader Work evaluation follows its manual acceptance gate. See the [improvement plan](docs/IMPROVEMENT_PLAN.md#retained-capability-checks).
 Wave numbers identify work rather than a mandatory execution order.
 
 Collomia is a cross-platform, provider-neutral local terminal agent for
@@ -65,7 +70,8 @@ also shipped:
 - persisted Developer and Work task profiles: Developer retains the
   repository/build-test default, while Work supports non-Git folders, direct
   Q&A, research, analysis, external actions, and document/artifact outcomes
-  with task-appropriate evidence and path-bound validation receipts;
+  with task-appropriate evidence and current file receipts from scoped command
+  checks or native artifact validation;
 - normalized provider capabilities, streaming, retries, health, contracts,
   Azure Entra refresh, Bedrock SigV4/bearer authentication, optional macOS/
   Windows keychain credential storage, opt-in provider-safe reasoning controls,

@@ -1,6 +1,6 @@
 # Agent improvement plan
 
-Updated: 2026-09-05. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
+Updated: 2026-09-06. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
 
 This is the durable implementation and user-testing plan for the September
 review. It supplements the [roadmap](../ROADMAP.md). The existing
@@ -10,15 +10,19 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Completed slice:** W7b — durable Standard obligations and workspace checkpoints.
-- **Status:** accepted. W1, W3, W4, W5, and full W7 (W7a and W7b) are accepted.
-  W7a was committed as `0f618aa`; W7b passed user manual testing on 2026-09-05.
-  W2, W6, W8, and W9 remain planned.
-- **Next action:** commit W7b. W6's complete Work artifact workflow is the
-  proposed next wave; wait for the user's direction before starting it.
-- **Test build:** `dist/collo-wave7b`, version `v0.4.2-wave7b`, base commit
-  `0f618aa-wave7b-dirty`. Preserve W5's baseline/build and W7a's test binary.
-  The installed binary and `VERSION` are unchanged.
+- **Current work:** Standard completion simplification and documentation audit.
+- **Status:** implemented and ready for user testing. The earlier
+  selective cleanup is retained. The bundled
+  workflow was not accepted. W1, W3, W4, W5, and full W7 remain accepted;
+  W2, W8, and W9 remain planned. Base commit is `304d7af`.
+- **Next action:** run [completion simplification checks](#completion-simplification-checks) and
+  retain [general capability regressions](#retained-capability-checks).
+  Do not restart the bundled workflow or begin another feature wave by default.
+- **Test build:** `dist/collo-work-general`, version `v0.4.3-work-general.3`,
+  base commit `304d7af-work-general.3-dirty`. Earlier W6 binaries are historical
+  test builds and still contain the withdrawn workflow; use this new binary.
+  Preserve previous test outputs, user sessions, and W5's baseline. The installed
+  binary is unchanged; preserve the user's `VERSION` bump to `v0.4.3`.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
@@ -31,6 +35,92 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   emitted by an adapter. It does not enable thinking at the API, add synchronous
   reasoning extraction, or restore thinking in reopened chat transcripts.
   Those are W2 work. A silent summary area does not prove absent computation.
+
+## Active follow-up — Standard completion simplification
+
+Authorized September 6 after clarifying that evidence-based completion remains
+part of the product contract in Standard as well as Orchestrated Goal.
+This supersedes the earlier proposal to replace completion gates with prompt
+instructions alone. It does not remove runtime-owned evidence or open a new
+orchestration milestone.
+
+- [x] Add explicit `run_command.verification` scope for task-specific checks in
+  Standard Developer and Work. Require observed success and unchanged authorized
+  file bytes/target/parent before recording evidence.
+- [x] Accept scoped command evidence in place of a duplicate Work artifact check.
+  Keep declared outputs, stale bytes, failed checks, and unrelated paths guarded.
+- [x] Recognize native file repairs only after a successful replacement/edit and
+  current verification; retain explicit recovery for semantic alternatives.
+- [x] Preserve command retry identity across timeout changes, including compatibility
+  with older retained exact hashes. Preserve interruption and external-action guards.
+- [x] Update event evidence and the quality grader for scoped file receipts.
+- [x] Audit the `/docs` inventory; add [a documentation guide](README.md) and
+  [the completion contract](COMPLETION.md). Mark the original review as historical.
+- [x] Finish full offline tests, race checks, vet, cross-builds, and generated docs.
+- [x] Deliver `dist/collo-work-general` as `v0.4.3-work-general.3`.
+- [ ] **User accepts this follow-up.** Live comparison remains pending; do not
+  claim less model latency or a quality improvement from scripted fixtures alone.
+
+### Automated evidence — September 6 completion follow-up
+
+- `go test ./...`: passed, including the offline evaluation suite.
+  Log: `/private/tmp/collomia-adaptive-full.log`.
+- `go test -race ./internal/agent ./internal/tools ./internal/event ./internal/quality ./internal/plan ./internal/prompts ./internal/app ./internal/session ./cmd/collo`:
+  passed. Log: `/private/tmp/collomia-adaptive-race.log`. Final scoped-check
+  parsing/guidance refinements passed targeted tools/agent race regressions again
+  (`/private/tmp/collomia-adaptive-final-scope.log`).
+- `go vet ./...`: passed (`/private/tmp/collomia-adaptive-vet.log`).
+- Final CLI/documentation, plan, prompt, event-schema and quality suites passed
+  (`/private/tmp/collomia-adaptive-final-docs.log`). The native quality fixture
+  accepts scoped receipts with zero controller interventions; a graph regression
+  rejects the same custom scope as graph verification.
+- Linux amd64 and Windows amd64 cross-builds passed. This is compilation evidence,
+  not native platform execution. Tests ran on macOS arm64; suites needing loopback
+  or native sandbox fixtures used approved execution after restricted attempts
+  encountered environment denials.
+- Relative links and anchors checked across 26 Markdown documents: no unresolved
+  targets or unclosed fenced blocks. Generated capabilities match the candidate.
+- Candidate: `dist/collo-work-general`, `v0.4.3-work-general.3`,
+  `304d7af-work-general.3-dirty`. Previous candidate retained as
+  `dist/collo-work-general.2`. The user's `VERSION` bump is preserved. No installed
+  binary update, commit, live-provider request, or user session/game edit occurred.
+- This establishes runtime behavior under controlled fixtures. Browser gameplay,
+  real analysis quality, provider performance, and live efficiency gains remain
+  the user's manual/matched-evaluation gate.
+
+### Completion simplification checks
+
+Use the separate test binary in a fresh, disposable folder. No example project
+or Work setup command is needed. The installed binary stays unchanged; preserve the user's `VERSION` bump.
+
+```sh
+/path/to/collomia/dist/collo-work-general --cwd /path/to/test-folder --mode work
+```
+
+1. **Game:** ask for a self-contained HTML game and proportionate verification.
+   If browser tooling is available, Collo should exercise the game; otherwise it
+   must say what it checked and that gameplay was not tested. A successful scoped
+   check should not be followed by `validate_artifact` solely to satisfy completion.
+   Open the game yourself. Repeat with `--mode developer` in a separate folder.
+2. **Analysis:** supply a small CSV and ask for totals and a brief report. Collo
+   should choose tools/skills, verify calculations, and finish with current file
+   evidence. No prescribed reporting toolkit or template should appear.
+3. **Recoverable check:** ask Collo to create `result.txt` containing `BEFORE` and
+   a check script that requires `AFTER`; run it once to observe failure, then fix
+   the output and rerun the same check with `verification.paths: ["result.txt"]`.
+   The nonzero local exit should permit repair, and the successful retry should
+   recover automatically. No `/recovery acknowledge` or failure-ID plan entry
+   should be needed for that settled exact-operation retry.
+4. **Freshness:** ask it to verify a file, rewrite it through a shell command,
+   and finish. It must obtain new evidence on the final bytes. An unchanged
+   receipt or a prose claim must not satisfy the old check after the rewrite.
+5. **Direct answer:** ask a simple explanatory question. No synthetic file,
+   artifact plan, or verification command should be created.
+
+Automatic tests additionally cover failed-edit/replacement recovery, missing
+proof after restart, masked exits, changed paths and parent identity, narrower
+checks, permissions, and unchanged graph gates. Retain actual outputs and the
+session path if live behavior differs; provider/model should accompany feedback.
 
 ## How to use this plan across sessions
 
@@ -57,7 +147,7 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 Wave numbers are stable identifiers, not mandatory execution order. On
 2026-09-04 the user chose W3 ahead of W2. W1, W3, and W4 are accepted;
-W5 and full W7 are accepted. W2, W6, W8, and W9 remain planned.
+W5 and full W7 are accepted. W6 was withdrawn/re-scoped; W2, W8, and W9 remain planned.
 Revisit the next priority at each gate.
 After accepting W3, the user explicitly selected W4 on 2026-09-04.
 After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
@@ -69,7 +159,7 @@ After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 | W3 | Correct completion outcomes, exact failure recovery, large-file pagination | Accepted | User confirmed pagination and the follow-up manual tests passed |
 | W4 | Final deliverable identity and observed-effect checks | Accepted | User confirmed all manual tests passed and explicitly marked the wave done |
 | W5 | Real-model evaluation baseline | Accepted | Representative tasks and quality/cost metrics reflect the user's work |
-| W6 | One complete Work workflow: data → workbook → cited memo | Planned | Fresh setup can create, inspect, revise, and deliver useful artifacts |
+| W6 | Bundled artifact workflow withdrawn; general primitives retained | Cleanup / retained-capability testing | Broad Work behavior without a prescribed workflow |
 | W7 | Durable task context, retrievable evidence, and restart checkpoints | Accepted (W7a and W7b) | User confirmed successful manual testing of both slices |
 | W8 | Lazy tool discovery and measured independent-read concurrency | Planned | Connected tools are discoverable and parallel reads improve latency |
 | W9 | Scoped autonomy mandates and durable delayed continuation | Planned; design gate required | Authorized work resumes predictably with clear wait/cancel controls |
@@ -475,18 +565,112 @@ Individual `eval review` decisions remain pending unless entered by the user.
   established baseline. The subsequent user instruction to proceed accepted
   the wave; it did not assign individual artifact review decisions.
 
-### W6 — a useful Work vertical slice
+### W6 — withdrawn workflow; retained general improvements
 
-- [ ] Ship a maintained dependency/setup path and input extraction for one
-  concrete workflow using CSV/XLSX inputs and a DOCX/PDF memo deliverable.
-- [ ] Add workbook/formula/reconciliation checks, document generation,
-  rendering, and model-accessible image inspection using tested libraries.
-- [ ] Retain cited source records and make validation receipts distinguish
-  structure, calculations, content/source checks, and visual inspection.
-- [ ] Run fresh-setup and edit-existing-artifact tasks through creation,
-  inspection, revision, and handoff; compare against W5 baseline.
-- [ ] **User accepts W6** before expanding to presentations, additional formats,
-  optional browser support, or alternative search backends.
+**Decision — 2026-09-06:** the user wants Work mode to handle system maintenance,
+data analysis, research, Q&A, automation, and other non-development tasks through
+a capable model, general tools, and user-installed skills. The bundled reporting
+workflow was too prescriptive. Initial example testing passed, but W6 was never
+accepted; the user authorized selective removal after reviewing the tradeoffs.
+
+- [x] Remove the embedded reporting skill, dedicated Python/Office toolkit,
+  hidden runtime preparation/diagnostics commands, and workflow-specific prompt.
+- [x] Restore ordinary user/project skill discovery and the general Work profile.
+- [x] Retain ordinary command-failure repair, including the native distinction
+  between observed nonzero exits and interrupted/known-external failures.
+- [x] Retain generic `view_image` and explicit notices when images cannot reach
+  the model; remove document-specific directions from the tool description.
+- [x] Retain XLSX structure/relationship validation, bounded Open XML package
+  checks, and explicit evidence scopes without a generation workflow.
+- [x] Preserve user sessions, existing workspaces, baseline results and test
+  outputs. Archive withdrawn sources and the pre-cleanup diff in ignored
+  `dist/_withdrawn-w6-20260906-37310-4lqxh4`; this is historical local material,
+  not shipped code or an installed skill. Earlier W6 binaries remain historical.
+- [x] Validate the reduced implementation and prepare the separate test build.
+- [ ] User confirms retained primitives and representative general Work behavior.
+
+The first sample-kit and subsequent built-in-skill experiments, their offline
+qualification, and the command-failure correction remain recorded in
+[roadmap history](ROADMAP_HISTORY.md). Their live Office acceptance and matched
+W5 comparison were never completed. They are superseded, not implied passes.
+
+**Cleanup evidence — 2026-09-06:** full `go test ./...` and `go vet ./...`
+passed. Agent/tools/app/skills/TUI/CLI/event race checks passed, as did Linux
+amd64 and Windows amd64 Go cross-builds. Documentation links, generated
+capabilities, and whitespace checks passed. The native test binary reports
+`v0.4.2-work-general.1`; help and capabilities expose the retained general tools
+without the removed workflow setup. Existing offline Work, skill-discovery,
+resume, and recovery fixtures ran against the reduced code. No provider calls
+were made; this does not establish live-model task quality or user acceptance.
+
+#### Retained-capability checks
+
+Use a fresh session to avoid instructions from the withdrawn skill in old
+conversation history. No initialization or preinstalled reporting skill is needed:
+
+```sh
+./dist/collo-work-general --cwd /path/to/your-folder --mode work
+```
+
+1. **General Work:** ask a direct question, request a read-only system inventory,
+   analyze an existing data file, or request source-backed research. Collo should
+   select an appropriate approach and avoid inventing a report or artifact for
+   tasks that do not need one. Existing permission/network controls still apply.
+2. **Skills:** use a skill you installed through the existing skill mechanism.
+   It should be discoverable/loadable as before; there is no shipped reporting
+   skill or automatic artifact-runtime preparation.
+3. **Local failure repair:** ask Collo to fix and rerun a failing local script
+   or test. An observed ordinary nonzero exit should permit repair without
+   `/recovery acknowledge`; unrelated successful work must not erase the failure.
+4. **Images:** ask Collo to inspect a local screenshot, diagram, or chart using
+   `view_image`. A capable model should receive the pixels; unsupported models
+   should receive an explicit limitation rather than claim visual inspection.
+5. **Validation:** ask for `validate_artifact` on an existing XLSX file. It should
+   check structure and worksheet relationships while leaving calculation and
+   visual quality unassessed. No Python or LibreOffice setup is required by the
+   native tool. Generated deliverables still need fresh validation after edits.
+6. **HTML and corrected checks:** request a self-contained HTML file or validate
+   an existing one. `auto` should infer text; `html` is an explicit text alias.
+   Corrected validations that preserve required text, minimum size, and format
+   checks should recover without an administrative plan update. A check that
+   drops a missing required string must not clear the failure.
+7. **Quiet completion status:** if a genuine completion gap remains, the TUI
+   should show “Checking remaining work.” Expand with `ctrl+o` to see diagnostics;
+   transcript search/copy and logs retain them. Actual blocks remain visible.
+
+**Validation follow-up — 2026-09-06:** the user reported a working Asteroids
+game but excessive validation bookkeeping, using DeepSeek V4 Flash through
+Ollama. The recorded attempts used unsupported `html`, then `auto` (previously
+binary), then a successful `text` check with all six strings preserved. Exact
+argument matching kept the first two failures open. The user authorized fixing
+format inference, native validation recovery, and notice presentation.
+The revised implementation retains bounded hashed validation requirements across
+resume, prevents lowered text/size/parser requirements from auto-recovering a
+failure, and leaves command/external retry identity unchanged. Full diagnostics
+still reach the model and event log; this is not a hidden relaxation of gates.
+This earlier build was `v0.4.2-work-general.2`; the active candidate and combined
+manual gate are in the current handoff above.
+
+Automated evidence: full `go test ./...`, affected tools/agent/TUI/activity/event/
+app/session race checks, and vet passed. Native Linux/Windows Go cross-builds
+passed. Regressions cover the format-correction sequence with zero interventions,
+resume without restored receipts, text/size/parser downgrade rejection, bounded
+requirement retention, and collapsed/live/restored diagnostic presentation.
+The full event text and model guidance remain available; evaluation intervention
+counting is unchanged. No live provider calls or edits to the user's game/session
+were made. The previous general test binary is preserved as
+`dist/collo-work-general.1`; installed Collo and `VERSION` remain unchanged.
+
+Older sessions can still resume, but their history may contain loaded skill
+instructions or old helper paths. Existing uncertain markers require inspection
+and one acknowledgement as described in [recovery](RECOVERY.md); cleanup does not
+rewrite logs or silently clear obligations. User-created files remain available.
+
+**Next direction:** evaluate a broader mix of Work tasks before choosing another
+feature wave. Keep specialized procedures in optional user-installed skills.
+The preserved W5 suite can measure general regressions, but it does not cover
+all system maintenance, research, or automation behavior. Do not expand the suite
+or make live provider calls as part of this cleanup without a separate request.
 
 ### W7 — durable context and recovery
 
@@ -639,6 +823,8 @@ the four context tools. No background continuation or workspace restore changes.
 | 2026-09-04 | W7a acceptance | User reported “manual testing passes” after receiving the W7a test build and manual guide. Provider/model was not specified. | W7a accepted; W7b unblocked but not started. Full W7 remains incomplete. |
 | 2026-09-05 | W7b implementation | User explicitly selected W7b after W7a commit `0f618aa`. Durable Standard obligations and bounded checkpoint recovery passed offline tests, affected-package race checks, vet, and cross-build checks. Separate `v0.4.2-wave7b` binary and manual guide prepared. | W7b ready for user testing; full W7 acceptance and later waves remain pending. |
 | 2026-09-05 | W7b / full W7 acceptance | User confirmed manual testing was complete and successful and requested that W7b be marked complete. Provider/model was not specified. | W7b and full W7 accepted; ready to commit. W6 remains proposed, not started. |
+| 2026-09-05 | W6 implementation | User selected the Work artifact workflow after W7b commit `304d7af`. Exported locked toolkit, native image/XLSX evidence support, real creation/revision/rendering checks, and separate test build delivered. Offline, race, vet, cross-build, and fresh virtual-environment gates passed. | W6 ready for user testing; live workflow acceptance and matched W5 comparison pending. Later waves remain planned. |
+| 2026-09-05 | W6 UX revision | User reported the initial workflow worked but requested ordinary Work-mode tasks without a pre-populated example project. Added a built-in skill, hidden runtime preparation through setup, and read-only diagnostics; removed the unreleased work-init command. Full offline, race, vet, cross-build, and required-sandbox operational checks passed. | Revised build ready for natural-request testing in an existing folder; W6 acceptance and matched W5 comparison pending. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.

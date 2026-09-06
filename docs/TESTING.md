@@ -1,5 +1,13 @@
 # Testing and evaluation
 
+Standard scoped verification regressions live in
+`internal/agent/scoped_verification_test.go`. They exercise real commands,
+current file evidence in both task profiles, nonzero status and fresh retries,
+masked exits, in-check drift, unrelated paths, symlink changes, restart, and
+verified native file repair. [Completion](COMPLETION.md) defines the contract;
+[the current manual checklist](IMPROVEMENT_PLAN.md#completion-simplification-checks)
+keeps user acceptance separate from automated evidence.
+
 Collomia's default test suite is credential-free and offline. Provider
 protocol tests use in-process HTTP fixtures, MCP tests use the official SDK's
 in-memory transports, and agent evaluations use a scripted provider while
@@ -21,6 +29,21 @@ UTF-8 truncation, custom bindings, narrow screens, and live/finished golden
 screens. They do not establish live provider enablement or state continuity.
 
 ## Standard local checks
+
+Artifact tests cover native XLSX relationships and check scopes, bounded image
+reads and model delivery, explicit unavailable-image notices, and event
+round-trip. Recovery tests cover ordinary command-failure repair after resume
+while retaining failed-operation and validation obligations, plus interruption
+and known-external-action guards. Run the standard Go checks below; no bundled
+Python or Office runtime is required. Manual checks for the retained capabilities
+are recorded in the [improvement plan](IMPROVEMENT_PLAN.md#retained-capability-checks).
+
+Validation-recovery fixtures cover source-file text inference, explicit HTML
+text-only scope, same-file format correction without controller intervention,
+required-text/size/parser downgrade rejection, persisted hashed requirements,
+and bounded fallback to exact-operation recovery. TUI/activity fixtures cover
+collapsed live/restored notices, expanded/searchable diagnostics, and visible
+ordinary warnings and terminal errors.
 
 W7b adds `recovery_test.go` in agent/app/session and `checkpoint_test.go` in
 diffmodel. Production-app fixtures cover non-Git Work restart, cancellation

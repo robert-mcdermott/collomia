@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/robert-mcdermott/collomia/internal/activity"
+	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
@@ -50,6 +51,10 @@ func restoredBlocks(messages []provider.Message) []block {
 	for _, message := range messages {
 		switch message.Role {
 		case "user":
+			if summary := event.CompletionNoticeSummary(message.Content); summary != "" {
+				blocks = append(blocks, block{role: "status-detail", summary: summary, content: message.Content})
+				continue
+			}
 			if strings.HasPrefix(message.Content, "[Context summary") {
 				blocks = append(blocks, block{role: "system", content: "· older model context was compacted; complete conversation restored below ·"})
 				continue

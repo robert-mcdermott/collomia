@@ -88,19 +88,19 @@ checkpoint controls, see [Standard recovery](RECOVERY.md).
 
 Use a separate fixture directory and test binary, preserving the W5 baseline:
 
-The prepared binary is `dist/collo-wave7`, version `v0.4.2-wave7a`. If `dist`
-has been removed, rebuild from this revision at the repository root:
+Use a current build; historical W7a build metadata is retained in
+[the improvement plan](IMPROVEMENT_PLAN.md). From the repository root:
 
 ```sh
-go build -o dist/collo-wave7 -ldflags '-X github.com/robert-mcdermott/collomia/internal/version.Version=v0.4.2-wave7a -X github.com/robert-mcdermott/collomia/internal/version.Commit=0c72f04-wave7a-dirty' ./cmd/collo
+go build -o dist/collo-test ./cmd/collo
 ```
 
 Then prepare the fixture and launch:
 
 ```sh
-mkdir -p dist/wave7-fixtures
-printf 'W7_ORIGINAL: 30 successes out of 40 requests\n' > dist/wave7-fixtures/source.txt
-./dist/collo-wave7 --mode work --cwd dist/wave7-fixtures
+mkdir -p dist/context-fixtures
+printf 'W7_ORIGINAL: 30 successes out of 40 requests\n' > dist/context-fixtures/source.txt
+./dist/collo-test --mode work --cwd dist/context-fixtures
 ```
 
 1. Send:
@@ -132,8 +132,8 @@ printf 'W7_ORIGINAL: 30 successes out of 40 requests\n' > dist/wave7-fixtures/so
 4. Quit Collo. From your shell, replace the fixture and resume:
 
    ```sh
-   printf 'W7_CURRENT: 20 successes out of 40 requests\n' > dist/wave7-fixtures/source.txt
-   ./dist/collo-wave7 --cwd dist/wave7-fixtures --continue
+   printf 'W7_CURRENT: 20 successes out of 40 requests\n' > dist/context-fixtures/source.txt
+   ./dist/collo-test --cwd dist/context-fixtures --continue
    ```
 
    Send:

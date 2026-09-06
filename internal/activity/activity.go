@@ -200,6 +200,9 @@ func FromEvent(e event.Event) (Item, bool) {
 	case event.KindWarning:
 		item.Category, item.Status, item.Title = CategoryFailure, StatusWarning, "Warning"
 		item.Detail = e.Text
+		if summary := event.CompletionNoticeSummary(e.Text); summary != "" {
+			item.Category, item.Status, item.Title = CategoryTurn, StatusInfo, summary
+		}
 	case event.KindError:
 		item.Category, item.Status, item.Title = CategoryFailure, StatusError, "Run failed"
 		item.Detail = e.Error

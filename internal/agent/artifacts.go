@@ -30,7 +30,7 @@ func executionEffects(name string, action tools.Action) toolEffects {
 		// Command Paths include inputs and working directories, not a reliable
 		// write set. Never interpret them as final deliverables.
 		return toolEffects{Unknown: true}
-	case "read_file", "list_files", "search_files", "validate_artifact", "update_plan", "detect_verification", "read_tool_result",
+	case "read_file", "list_files", "search_files", "validate_artifact", "view_image", "update_plan", "detect_verification", "read_tool_result",
 		"read_task_context", "update_task_context", "read_session", "search_session", "git_status", "git_diff", "git_log", "git_blame", "load_skill", "ask_user", "inspect_delegate_changes", "compare_delegate_changes", "web_fetch", "web_search", "search_symbols", "find_definition", "find_references", "diagnostics", "list_processes", "process_output":
 		return toolEffects{}
 	default:
@@ -126,10 +126,10 @@ func (c *completionController) recordArtifactReceipt(observation toolObservation
 }
 
 // checkArtifacts hashes only files for which an authorized validation returned
-// a typed receipt. Declarations alone grant no reads. Rechecks apply to Work's
-// Standard completion controller; Developer and graph authority are unchanged.
+// a typed receipt. Declarations alone grant no reads. Rechecks apply to Work
+// files and explicitly scoped Standard Developer checks, never graph gates.
 func (c *completionController) checkArtifacts(current *plan.Plan, active bool) []string {
-	if c.taskMode != taskmode.Work {
+	if c.taskMode != taskmode.Work && len(c.artifacts.receipts) == 0 && len(c.artifacts.roles) == 0 {
 		return nil
 	}
 	if active {
@@ -161,7 +161,7 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 			if err != nil {
 				reason = err.Error()
 			}
-			issues = append(issues, fmt.Sprintf("artifact %s has no current receipt: %s; run validate_artifact after its final write", c.displayArtifact(receipt.path), reason))
+			issues = append(issues, fmt.Sprintf("artifact %s has no current receipt: %s; rerun its task-specific check with run_command.verification or validate_artifact after its final write", c.displayArtifact(receipt.path), reason))
 			continue
 		}
 		valid[receipt.target] = true
@@ -176,7 +176,7 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 		if !valid[target] {
 			// Do not read a newly declared path just to explain why its receipt
 			// is missing. validate_artifact uses the ordinary permission path.
-			issues = append(issues, fmt.Sprintf("declared deliverable %s needs a successful current validate_artifact receipt (it may be missing or changed)", c.displayArtifact(path)))
+			issues = append(issues, fmt.Sprintf("declared deliverable %s needs current evidence from run_command.verification or validate_artifact (it may be missing or changed)", c.displayArtifact(path)))
 		}
 	}
 	for path, role := range c.artifacts.roles {

@@ -9,6 +9,20 @@ an accurate one; their history is in the Git log and in
 
 ### Added
 
+- Standard task-specific file verification through `run_command.verification`: a
+  passing command with unchanged scoped files can satisfy Work file completion
+  without a redundant generic artifact check. Available in both task profiles;
+  graph verification is unchanged. Receipts expose their scope and cannot certify
+  test coverage. Verified native file repairs recover failed edits automatically;
+  command timeout-only adjustments preserve retry identity. See
+  [Completion](docs/COMPLETION.md).
+
+- General-purpose `view_image` for bounded local PNG/JPEG/GIF inspection, with
+  explicit model-context notices when image pixels cannot be delivered.
+- XLSX structural validation, worksheet relationship checks, bounded Open XML
+  package checks, and explicit evidence scopes in `validate_artifact`.
+  Calculation, source quality, and visual acceptance remain separate.
+
 - W7b Standard recovery: persisted unfinished completion obligations, synced
   in-flight markers, fresh validation after restart, bounded workspace
   checkpoint deltas, durable undo/restore interruption handling, and user-only
@@ -32,6 +46,16 @@ an accurate one; their history is in the Git log and in
 
 ### Fixed
 
+- Artifact validation recognizes HTML and common source files as UTF-8 text,
+  with `html` as an explicit text-check alias and no claim of parsing or execution.
+  Corrected checks of the same file automatically recover prior validation
+  failures when text, size, and format requirements are preserved. Routine
+  completion checks are collapsed in the TUI; details remain expandable and
+  logged, and actual blockers stay visible.
+- Ordinary nonzero local command exits no longer require manual recovery
+  acknowledgement before the agent can repair a failed script or test.
+  Failure and validation obligations remain; interrupted commands and failures
+  involving known network/publication operations retain the uncertainty guard.
 - Evaluation error traces now include failure classification and correlation
   metadata required by offline replay, including budget exhaustion and
   cancellation. Scorecard tables label overall task passes separately from

@@ -448,7 +448,7 @@ var isolatedWriterPlanSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "goal": {"type": "string", "minLength": 1},
-    "artifacts": {"type":"array","maxItems":64,"description":"Optional Work task brief: declare final deliverables and scratch/helper files before writing, including shell-created outputs. Retain declarations in complete plan updates. Roles grant no permissions; deliverables require current validate_artifact receipts and cannot be silently demoted during a turn.","items":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":1024},"role":{"type":"string","enum":["deliverable","scratch"]}},"required":["path","role"],"additionalProperties":false}},
+    "artifacts": {"type":"array","maxItems":64,"description":"Optional Work task brief: declare final deliverables and scratch/helper files before writing, including shell-created outputs. Retain declarations in complete plan updates. Roles grant no permissions; deliverables require current scoped run_command.verification or validate_artifact receipts and cannot be silently demoted during a turn.","items":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":1024},"role":{"type":"string","enum":["deliverable","scratch"]}},"required":["path","role"],"additionalProperties":false}},
     "steps": {
       "type": "array",
       "minItems": 1,

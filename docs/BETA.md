@@ -1,5 +1,11 @@
 # Collomia beta status and known limitations
 
+The current development checkout adds [scoped task-specific completion
+checks](COMPLETION.md). Automated results and the pending user acceptance gate
+are tracked in [the improvement plan](IMPROVEMENT_PLAN.md). Existing accepted
+W7 behavior remains distinct from this new slice; no live-model improvement
+is claimed from scripted tests alone.
+
 Collomia is suitable for a public **technical beta** aimed at developers and
 technical users who want an interactive, inspectable local terminal agent.
 Beta means the core permission, session, provider, editing, Work, MCP, and
@@ -13,6 +19,17 @@ guaranteed. W7b adds durable Standard obligations and bounded workspace
 checkpoints; it passed its offline and user manual-testing gates. Interrupted actions require
 inspection, retained history has explicit limits, and external effects cannot
 be restored. See [Task context](TASK_CONTEXT.md) and [Standard recovery](RECOVERY.md).
+
+Work mode remains general-purpose and uses available tools and user-installed
+skills. The proposed bundled reporting workflow was withdrawn before acceptance.
+Retained image inspection and XLSX structural checks are general tools; they do
+not prescribe an analysis or document-generation method. Images require model
+support, and structural validation does not prove calculations or appearance.
+
+Ordinary nonzero local command exits permit inspection and repair without a
+manual recovery acknowledgement. Failed checks still require resolution;
+interruptions and failed known external operations retain the recovery guard.
+Command analysis cannot identify every effect hidden inside scripts.
 
 ## Appropriate beta use
 
@@ -173,8 +190,10 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   explains why an ad hoc or composed passing command did not count and emits a
   receipt when a recognized check does count. If proof alone remains missing,
   the terminal outcome is `needs_verification`, not a claim that the work is
-  blocked. The recognizer remains deliberately conservative: arbitrary
-  always-passing shell commands do not become proof.
+  blocked. Unscoped recognition remains conservative. Explicit scoped checks can use
+  custom scripts; their exit status and file freshness are observed, but test
+  adequacy is not certified. A trivial always-passing check is insufficient
+  evidence of functionality even when its process receipt is valid.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache

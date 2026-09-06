@@ -2884,7 +2884,7 @@ are tracked in Wave 2 of the [improvement plan](IMPROVEMENT_PLAN.md).
 | `ctrl+t` | Cycle Chat, Session, and Help. |
 | `alt+s` | Open the saved-session picker without replacing the current draft. |
 | `alt+a` | Inspect an active delegated agent, prepare steering guidance, or explicitly stop it without stopping siblings or the parent. |
-| `ctrl+o` | Expand or collapse tool output and thinking summaries. |
+| `ctrl+o` | Expand or collapse tool output, thinking summaries, and completion-check details. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
 | `alt+r` | Show or hide the context rail. It appears on its own at 146 columns and is unavailable below 116. |
@@ -3001,14 +3001,17 @@ versions load as Developer. `/mode developer` changes only the task profile—
 conversation, usage, provider, model, plan state, autonomy, permissions,
 sandboxing, hooks, audit, and trust remain intact.
 
-Work matches evidence to the outcome. `validate_artifact` checks a completed
-file after its final write and emits a path- and SHA-256-bound typed receipt.
+Work matches evidence to the outcome. A task-specific `run_command` check with
+`verification.paths` and a purpose, or `validate_artifact` for structural/content
+checks, supplies path- and SHA-256-bound evidence after the final write.
+Use either method; no duplicate generic check is required. See
+[Evidence-based completion](COMPLETION.md) for examples and exact limits.
 Work completion rechecks those final bytes and path identity, including shell
 and external edits. For file-producing tasks, `update_plan.artifacts` may list
 `{"path":"report.md","role":"deliverable"}` and
 `{"path":"helper.sh","role":"scratch"}`. Declared deliverables need current
 receipts; scratch files are excluded from deliverable acceptance. Keep the
-declarations in subsequent complete plan updates. A validation note or general
+declarations in subsequent complete plan updates. A validation note or unscoped
 test command cannot waive a missing declared output or a stale receipt.
 Analysis should retain identified inputs and reproducible calculations;
 research should identify consulted sources and separate fact from inference;
@@ -4300,7 +4303,7 @@ question broker can make the model-visible subset smaller.
 | `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
 | `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |
 | `apply_patch` | Validate related create/update/delete operations before applying them through rooted atomic replacement and safe deletion, with rollback on a later publish failure. |
-| `validate_artifact` | Validate a non-empty completed file after its final write, record its SHA-256 digest, and parse bounded text/Markdown/JSON/CSV/DOCX/PPTX/PDF structure. Exact required text is supported where content is inspectable. The receipt does not prove factual or visual quality. |
+| `validate_artifact` | Validate a non-empty completed file after its final write, record its SHA-256 digest, and parse bounded text/Markdown/JSON/CSV/XLSX/DOCX/PPTX/PDF structure. HTML and common source extensions use UTF-8 text checks, not parsing or execution. Exact required text is supported where content is inspectable. The receipt does not prove factual or visual quality. |
 | `run_command` | Shell command in workspace; default timeout 120 seconds, maximum 1,800; bounded/live output; optional PTY on Unix or pseudoconsole on Windows 10 1809 and later. |
 | `git_status` | Read-only branch/ahead/behind/change status. |
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
@@ -4362,24 +4365,31 @@ against structured state it can observe:
   in the same `evidence` field. Dependencies must be known and acyclic, and a
   step cannot be active or done before its dependencies are done or skipped.
 - In Developer, a successful tracked write makes earlier verification stale. A
-  subsequent direct, conventional build/lint/test command must succeed, or the
+  subsequent direct, conventional build/lint/test command must succeed, or a
+  scoped task-specific command must cover the changed files, or the
   plan must carry a specific `verification_note` explaining why no meaningful
   automated check applies. The note is model-authored disclosure, not
   machine-observed proof.
-- In Work, a final `validate_artifact` receipt clears the stale-write gate only
-  for the exact changed artifact paths it covers. Conventional test evidence is
-  still accepted when Work produces code. Analysis, research, and external
+- In Work, a final `validate_artifact` receipt or successful
+  `run_command.verification` check clears the stale-write gate only
+  for the exact changed artifact paths it covers. Neither method requires a
+  duplicate check through the other tool. Analysis, research, and external
   actions record their calculations, sources, receipts, or read-back in plan
   evidence; a fresh `validation_note` covers a genuinely subjective remainder
   without pretending to be runtime proof. If other tracked paths remain, the
   completion notice names a bounded, sorted, workspace-relative list of those
   paths and omits artifacts whose current receipts were accepted. A mutation
   that did not report paths remains a separate explicit unknown-path gap.
-- A successful retry of the same tool with the same complete arguments clears
+- A successful retry of the same tool operation clears
   its failed operation automatically, without a plan update solely for recovery.
   JSON object key order and spacing do not matter; different paths, commands,
   or other arguments are different operations. Default/explicit arguments and
-  alternative path spellings are conservatively distinct. A valid corrected
+  alternative path spellings are conservatively distinct, except equivalent
+  native artifact checks. Command timeout changes alone do not change retry
+  identity. An executed native file-edit failure also recovers after a successful
+  native edit/replacement covers all its paths and fresh verification passes.
+  Unrelated successes, permission denials, and opaque external effects do not
+  qualify. See [automatic recovery](COMPLETION.md#recovery-without-unnecessary-bookkeeping). A valid corrected
   `update_plan` repairs its own task-local board update.
 - After an unresolved tool failure, the completion notice names the failed tool-call ID.
   The agent records an exact `resolved_failures` entry in `update_plan`:
@@ -6520,3 +6530,29 @@ Deleting those locations is irreversible and removes provider definitions,
 skills, instructions, sessions, audit history, trust decisions, MCP pins, and
 logs. Project-owned `.collomia.json`, `.collomia.example.jsonc`, instruction
 files, and project skills remain in each repository until removed there.
+
+## General-purpose Work tasks
+
+Start `collo --mode work` in an existing folder and describe your request.
+Work mode supports system maintenance, analysis, research, Q&A, automation,
+and file creation through available tools and user-installed skills. The model
+chooses the method; there is no bundled reporting workflow to initialize.
+Skills can supply specialized methods, templates, and dependency instructions.
+See [Work mode](WORK_MODE.md) for the task and evidence contract.
+
+`view_image` supplies local PNG/JPEG/GIF pixels for screenshots, diagrams, charts,
+and other images to an image-capable model. Images are limited to 5 MiB and
+16 million pixels. When no pixels reach the model, it receives an explicit
+limitation. Image loading alone does not establish visual quality.
+Corrected native validation of the same file can recover earlier failed attempts
+when required text, minimum size, and format checks are preserved. Routine
+completion notices collapse to “Checking remaining work”; use `ctrl+o` to inspect
+the full diagnostic, or search/copy it in the transcript. Actual blocks stay visible.
+
+`validate_artifact` supports XLSX structure and worksheet relationships alongside
+other supported formats; it does not calculate formulas. Typed check scopes
+report what was and was not assessed.
+
+Failed local checks with an ordinary process exit can be inspected and repaired
+without `/recovery acknowledge`. Interrupted commands and failed known external
+operations still require reconciliation; see [Standard recovery](RECOVERY.md).

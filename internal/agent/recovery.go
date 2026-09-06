@@ -19,6 +19,9 @@ type CompletionStore interface {
 type recoveryFailure struct {
 	ID, Tool, Detail, RetryKey string
 	Risk                       tools.Risk
+	Validation                 *tools.ArtifactValidationRequirement `json:"validation,omitempty"`
+	RepairPaths                []string                             `json:"repair_paths,omitempty"`
+	RepairReady                bool                                 `json:"repair_ready,omitempty"`
 }
 type pendingEffect struct {
 	Tool, Summary, RetryKey string
@@ -51,6 +54,11 @@ func decodeCompletion(raw json.RawMessage) (completionState, error) {
 	}
 	if state.Schema != 1 || len(state.Paths) > 128 || len(state.Roles) > 64 || len(state.Failures) > 64 {
 		return state, errors.New("unsupported or oversized completion state")
+	}
+	for _, failure := range state.Failures {
+		if len(failure.RepairPaths) > 64 {
+			return state, errors.New("oversized file repair identity")
+		}
 	}
 	return state, nil
 }
@@ -87,7 +95,7 @@ func (c *completionController) restoreCompletion(store CompletionStore) error {
 		c.dirtyPaths[path] = struct{}{}
 	}
 	for _, failure := range state.Failures {
-		c.failures = append(c.failures, unresolvedToolFailure{id: failure.ID, tool: failure.Tool, risk: failure.Risk, detail: failure.Detail, retryKey: failure.RetryKey, planRevision: c.initialRevision})
+		c.failures = append(c.failures, unresolvedToolFailure{id: failure.ID, tool: failure.Tool, risk: failure.Risk, detail: failure.Detail, retryKey: failure.RetryKey, planRevision: c.initialRevision, validationRequest: failure.Validation, repairPaths: failure.RepairPaths, repairReady: failure.RepairReady})
 	}
 	if c.dirty || len(c.failures) > 0 || len(state.Roles) > 0 || c.pending != nil {
 		c.initialOpen = true
@@ -110,7 +118,7 @@ func (c *completionController) recoveryState() completionState {
 		state.Unknown = true
 	}
 	for _, f := range c.failures {
-		state.Failures = append(state.Failures, recoveryFailure{ID: f.id, Tool: f.tool, Detail: clipUTF8(f.detail, 512), RetryKey: f.retryKey, Risk: f.risk})
+		state.Failures = append(state.Failures, recoveryFailure{ID: f.id, Tool: f.tool, Detail: clipUTF8(f.detail, 512), RetryKey: f.retryKey, Risk: f.risk, Validation: f.validationRequest, RepairPaths: f.repairPaths, RepairReady: f.repairReady})
 	}
 	if len(state.Failures) > 64 {
 		state.Failures = state.Failures[:64]
@@ -129,6 +137,20 @@ func (c *completionController) saveRecovery(done bool) error {
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
+	}
+	// Optional recovery identities must not crowd out durable obligations.
+	// Drop the optimization if necessary; exact retries and explicit recovery
+	// remain available, and older records without identities work the same way.
+	if len(data) > 128<<10 {
+		for i := range state.Failures {
+			state.Failures[i].Validation = nil
+			state.Failures[i].RepairPaths = nil
+			state.Failures[i].RepairReady = false
+		}
+		data, err = json.Marshal(state)
+		if err != nil {
+			return err
+		}
 	}
 	return c.store.SaveCompletion(data)
 }
@@ -153,7 +175,13 @@ func (c *completionController) finishEffect(o toolObservation) error {
 		return nil
 	}
 	if c.effectStarted {
-		if !o.Failed || !o.Effects.Unknown {
+		// An observed ordinary local exit settles execution even when the work
+		// failed. Keep dirty paths and failure obligations, allowing inspection,
+		// repair and a deliberate retry. Known network/publication operations
+		// still need reconciliation because a failed client can mask a remote
+		// commit. Arbitrary script effects remain opaque, never replay-safe.
+		localExit := o.CommandExited && !o.Action.Network && len(o.Action.Hosts) == 0 && len(o.Action.PublicationTargets) == 0
+		if !o.Failed || !o.Effects.Unknown || localExit {
 			c.pending = nil
 		}
 		c.effectStarted = false

@@ -836,7 +836,11 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 			m.streaming = false
 		}
 	case runtimeevent.KindWarning:
-		m.blocks = append(m.blocks, block{role: "system", content: e.Text})
+		if summary := runtimeevent.CompletionNoticeSummary(e.Text); summary != "" {
+			m.blocks = append(m.blocks, block{role: "status-detail", summary: summary, content: e.Text})
+		} else {
+			m.blocks = append(m.blocks, block{role: "system", content: e.Text})
+		}
 	}
 	if m.transcript != nil {
 		atBottom := m.transcript.viewport.AtBottom()
@@ -1017,6 +1021,12 @@ func (m *Model) chatContent() string {
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
 		case "reasoning":
 			b.WriteString(m.renderReasoning(i) + "\n\n")
+		case "status-detail":
+			b.WriteString(m.styles.system.Render(m.wrapProse("· "+block.summary+" ("+m.binding("toggle_tool_output")+" for details)", 0)) + "\n")
+			if m.expandTools {
+				b.WriteString(m.styles.system.Render(m.wrapProse(block.content, 0)) + "\n")
+			}
+			b.WriteString("\n")
 		case "tool":
 			b.WriteString(m.renderToolHeader(block) + "\n")
 		case "tool-result":
@@ -1472,7 +1482,7 @@ func (m *Model) helpContent() string {
 		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
 		{m.binding("session_picker"), "open saved sessions without replacing the draft"},
 		{m.binding("agent_control"), "inspect active agents; use /agents to steer, verify, compare, stop, or apply"},
-		{m.binding("toggle_tool_output"), "expand / collapse tool output and thinking summaries"},
+		{m.binding("toggle_tool_output"), "expand / collapse tool output, thinking summaries, and completion details"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
 		{m.binding("context_rail"), "show / hide the context rail (automatic above " + fmt.Sprintf("%d", railAutoWidth) + " columns)"},

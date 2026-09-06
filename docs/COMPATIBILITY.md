@@ -1,5 +1,12 @@
 # Compatibility and migration policy
 
+Current Standard completion adds optional `run_command.verification` input and
+a schema-v1 evidence kind, `scoped_verification`, with an optional bounded
+`files` digest map. Consumers validating evidence kinds must refresh
+`collo schema events`; the event schema version and `run.result` outcomes are
+unchanged. Older binaries do not implement this scoped completion contract.
+See [Completion](COMPLETION.md) for exact scope and freshness guarantees.
+
 Collomia stores configuration, sessions, automation events, attachments, and
 support metadata on the user's machine. This document defines which formats
 are stable, how version changes are handled, and what to do before upgrading
@@ -21,8 +28,23 @@ without rewriting it.
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
 
+Optional `tool.evidence.checks` in schema-1 events reports narrow `passed` or
+`not_assessed` scopes. Absence in old records makes no new claim. Native
+`view_image` reuses existing typed attachment records; no session format change
+is required. XLSX structural validation extends the existing artifact tool
+without requiring an external runtime. See [Work mode](WORK_MODE.md) for limits.
+
 W7b adds runtime-owned `completion_state` and `workspace_checkpoint_delta`
 records under session record schema 1. Both payloads use `schema_version: 1`.
+Completion failures may now include an optional `validation` requirement identity
+(path/text SHA-256 hashes, effective format, minimum size). These are bounded
+requirements, not receipts. Older records remain valid and use exact-operation
+recovery when the identity is absent. The optional identities are omitted if
+needed to fit the existing completion-state limit; obligations are retained.
+Failures may also carry optional bounded `repair_paths` and `repair_ready`
+(native file-replacement observations, never a validation receipt). Older
+records without repair identities keep explicit recovery. Legacy exact command
+retry hashes remain accepted; new command identities ignore timeout-only changes.
 Completion state carries task profile, dirty/unknown flags, bounded paths and
 artifact roles, unresolved operation identities, pending effect metadata, and
 an optional user acknowledgement. No validation receipts or grants are restored.

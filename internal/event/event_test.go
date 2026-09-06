@@ -58,7 +58,7 @@ func TestSchemaV1TypedConsumerToleratesAdditiveFields(t *testing.T) {
 
 func TestToolEvidenceRoundTrips(t *testing.T) {
 	e := New(KindToolResult)
-	e.Tool = &Tool{Name: "validate_artifact", Output: "passed", Evidence: &Evidence{Kind: "artifact_validated", Subject: "report.md", Digest: "sha256:abc", Detail: "markdown parsed"}}
+	e.Tool = &Tool{Name: "validate_artifact", Output: "passed", Evidence: &Evidence{Kind: "artifact_validated", Subject: "report.md", Digest: "sha256:abc", Detail: "markdown parsed", Checks: map[string]string{"structure": "passed", "visual": "not_assessed"}}}
 	data, err := json.Marshal(e)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +69,9 @@ func TestToolEvidenceRoundTrips(t *testing.T) {
 	}
 	if decoded.Tool == nil || decoded.Tool.Evidence == nil || decoded.Tool.Evidence.Kind != "artifact_validated" || decoded.Tool.Evidence.Subject != "report.md" || decoded.Tool.Evidence.Digest != "sha256:abc" {
 		t.Fatalf("tool evidence round trip=%+v", decoded.Tool)
+	}
+	if decoded.Tool.Evidence.Checks["visual"] != "not_assessed" || decoded.Tool.Evidence.Checks["structure"] != "passed" {
+		t.Fatalf("scope lost: %+v", decoded.Tool.Evidence)
 	}
 }
 

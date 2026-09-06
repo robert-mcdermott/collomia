@@ -8,12 +8,17 @@ import (
 	"io"
 
 	"github.com/robert-mcdermott/collomia/internal/provider"
+	"github.com/robert-mcdermott/collomia/internal/tools"
 )
 
 // Hash the complete operation arguments, not the human-facing summary. JSON
 // key order/spacing is immaterial, but large numeric IDs must retain precision.
 // Only the digest is kept in observations; payloads may contain private data.
 func toolRetryKey(call provider.ToolCall) string {
+	return canonicalRetryKey(call, true)
+}
+
+func canonicalRetryKey(call provider.ToolCall, normalizeTimeout bool) string {
 	decoder := json.NewDecoder(bytes.NewReader(call.Arguments))
 	decoder.UseNumber()
 	var args any
@@ -23,6 +28,13 @@ func toolRetryKey(call provider.ToolCall) string {
 	var trailing any
 	if decoder.Decode(&trailing) != io.EOF {
 		return ""
+	}
+	// The timeout is an execution allowance, not a different operation. A
+	// successful retry still needs identical command, PTY and check scope.
+	if normalizeTimeout && call.Name == "run_command" {
+		if object, ok := args.(map[string]any); ok {
+			delete(object, "timeout_seconds")
+		}
 	}
 	canonical, err := json.Marshal(args)
 	if err != nil {
@@ -41,5 +53,8 @@ func matchesRetry(failure unresolvedToolFailure, success toolObservation) bool {
 	if success.Name == "update_plan" {
 		return true
 	}
-	return failure.retryKey != "" && failure.retryKey == success.RetryKey
+	if success.Name == "validate_artifact" && !success.Failed && success.ArtifactValidation && success.ArtifactEvidence != nil && tools.ValidArtifactDigest(success.ArtifactEvidence.Digest) && success.ArtifactEvidence.ArtifactRoot.Valid() && success.ValidationRequest.Covers(failure.validationRequest) {
+		return true
+	}
+	return failure.retryKey != "" && (failure.retryKey == success.RetryKey || failure.retryKey == success.LegacyRetryKey)
 }

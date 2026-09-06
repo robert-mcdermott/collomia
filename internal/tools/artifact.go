@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,8 +36,8 @@ type validateArtifactArgs struct {
 func (t ValidateArtifactTool) Definition() provider.ToolDefinition {
 	return provider.ToolDefinition{
 		Name:        "validate_artifact",
-		Description: "Validate a completed file deliverable after its final write. Confirms a bounded regular file exists, records its SHA-256 digest, parses supported text/Markdown/JSON/CSV/DOCX/PPTX/PDF structure, and can require exact text for formats whose text is inspectable. This is structural/content evidence only: it does not prove factual correctness, source quality, or visual polish.",
-		InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or permitted absolute artifact path"},"format":{"type":"string","enum":["auto","text","markdown","json","csv","docx","pptx","pdf","binary"],"description":"auto (default) infers from the extension"},"min_bytes":{"type":"integer","minimum":1,"maximum":67108864,"description":"Optional minimum file size"},"required_text":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512},"description":"Exact text each of which must occur in inspectable artifact content"}},"required":["path"],"additionalProperties":false}`),
+		Description: "Validate a completed file deliverable after its final write. Confirms a bounded regular file exists, records its SHA-256 digest, parses supported text/Markdown/JSON/CSV/XLSX/DOCX/PPTX/PDF structure, and can require exact text. HTML, CSS, JavaScript and other known source files are checked as UTF-8 text, not parsed or executed; use an appropriate parser or browser to test functionality. This evidence does not prove factual correctness, source quality, or visual polish.",
+		InputSchema: schema(`{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or permitted absolute artifact path"},"format":{"type":"string","enum":["auto","text","html","markdown","json","csv","xlsx","docx","pptx","pdf","binary"],"description":"auto infers from the extension; html is an alias for UTF-8 text checks, not HTML parsing or browser testing"},"min_bytes":{"type":"integer","minimum":1,"maximum":67108864,"description":"Optional minimum file size"},"required_text":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512},"description":"Exact text each of which must occur in inspectable artifact content"}},"required":["path"],"additionalProperties":false}`),
 	}
 }
 
@@ -137,7 +138,17 @@ func (t ValidateArtifactTool) ExecuteResultStream(ctx context.Context, raw json.
 		content += fmt.Sprintf("\nrequired text: %d/%d present", len(args.RequiredText), len(args.RequiredText))
 	}
 	content += "\nscope: structural and requested-text validation only; factual correctness, source quality, and visual polish were not established"
-	return Result{Content: content, Evidence: &Evidence{Kind: "artifact_validated", Subject: display, Digest: "sha256:" + digest, Detail: detail, ArtifactRoot: rootID}}, nil
+	if format == "text" {
+		content += "\nText checks do not parse or execute source code, HTML, or scripts; syntax and functionality were not tested."
+	}
+	checks := map[string]string{"structure": "passed", "calculations": "not_assessed", "content": "not_assessed", "sources": "not_assessed", "visual": "not_assessed"}
+	if format == "binary" {
+		checks["structure"] = "not_assessed"
+	}
+	if len(args.RequiredText) > 0 {
+		checks["content"] = "passed"
+	}
+	return Result{Content: content, Evidence: &Evidence{Kind: "artifact_validated", Subject: display, Digest: "sha256:" + digest, Detail: detail, Checks: checks, ArtifactRoot: rootID}}, nil
 }
 
 func parseValidateArtifactArgs(raw json.RawMessage) (validateArtifactArgs, error) {
@@ -163,7 +174,7 @@ func parseValidateArtifactArgs(raw json.RawMessage) (validateArtifactArgs, error
 		}
 	}
 	switch format := strings.ToLower(strings.TrimSpace(args.Format)); format {
-	case "", "auto", "text", "markdown", "json", "csv", "docx", "pptx", "pdf", "binary":
+	case "", "auto", "text", "html", "markdown", "json", "csv", "xlsx", "docx", "pptx", "pdf", "binary":
 	default:
 		return args, fmt.Errorf("unsupported format %q", args.Format)
 	}
@@ -172,11 +183,14 @@ func parseValidateArtifactArgs(raw json.RawMessage) (validateArtifactArgs, error
 
 func artifactFormat(requested, path string) string {
 	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "html" {
+		return "text"
+	}
 	if requested != "" && requested != "auto" {
 		return requested
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".txt", ".log", ".rst":
+	case ".txt", ".log", ".rst", ".html", ".htm", ".css", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".py", ".go", ".rs", ".sh", ".bash", ".zsh", ".sql", ".yaml", ".yml", ".toml", ".xml", ".svg":
 		return "text"
 	case ".md", ".markdown":
 		return "markdown"
@@ -184,6 +198,8 @@ func artifactFormat(requested, path string) string {
 		return "json"
 	case ".csv", ".tsv":
 		return "csv"
+	case ".xlsx":
+		return "xlsx"
 	case ".docx":
 		return "docx"
 	case ".pptx":
@@ -246,8 +262,8 @@ func inspectArtifact(format string, data []byte) (inspection, searchable string,
 			return "", "", errors.New("no CSV records")
 		}
 		return fmt.Sprintf("valid delimited data; %d row(s), %d column(s)", len(records), len(records[0])), string(data), nil
-	case "docx":
-		return inspectOpenXML(data, "docx")
+	case "xlsx", "docx":
+		return inspectOpenXML(data, format)
 	case "pptx":
 		return inspectOpenXML(data, "pptx")
 	case "pdf":
@@ -274,13 +290,21 @@ func inspectOpenXML(data []byte, format string) (inspection, searchable string, 
 	if err != nil {
 		return "", "", err
 	}
+	if len(archive.File) > 4096 {
+		return "", "", errors.New("package exceeds 4096 parts")
+	}
 	files := make(map[string]*zip.File, len(archive.File))
 	for _, file := range archive.File {
+		if files[file.Name] != nil {
+			return "", "", errors.New("duplicate package part")
+		}
 		files[file.Name] = file
 	}
 	required := []string{"[Content_Types].xml"}
 	if format == "docx" {
 		required = append(required, "word/document.xml")
+	} else if format == "xlsx" {
+		required = append(required, "xl/workbook.xml", "xl/_rels/workbook.xml.rels")
 	} else {
 		required = append(required, "ppt/presentation.xml")
 	}
@@ -289,9 +313,30 @@ func inspectOpenXML(data []byte, format string) (inspection, searchable string, 
 			return "", "", fmt.Errorf("missing required package part %s", name)
 		}
 	}
+	if format == "xlsx" {
+		if err := checkWorkbookRelationships(files); err != nil {
+			return "", "", err
+		}
+	}
 	var targets []string
 	if format == "docx" {
 		targets = []string{"[Content_Types].xml", "word/document.xml"}
+	} else if format == "xlsx" {
+		targets = []string{"[Content_Types].xml", "xl/workbook.xml", "xl/_rels/workbook.xml.rels"}
+		sheets := 0
+		for name := range files {
+			if strings.HasPrefix(name, "xl/worksheets/") && strings.HasSuffix(name, ".xml") && !strings.Contains(strings.TrimPrefix(name, "xl/worksheets/"), "/") {
+				targets = append(targets, name)
+				sheets++
+			}
+		}
+		if sheets == 0 {
+			return "", "", errors.New("workbook contains no worksheet XML parts")
+		}
+		if files["xl/sharedStrings.xml"] != nil {
+			targets = append(targets, "xl/sharedStrings.xml")
+		}
+		sort.Strings(targets[3:])
 	} else {
 		targets = []string{"[Content_Types].xml", "ppt/presentation.xml"}
 		for name := range files {
@@ -346,7 +391,72 @@ func inspectOpenXML(data []byte, format string) (inspection, searchable string, 
 	if format == "docx" {
 		return fmt.Sprintf("valid DOCX package; document XML parsed, %d paragraph element(s)", paragraphs), text.String(), nil
 	}
+	if format == "xlsx" {
+		return "XLSX package parts and worksheet XML parsed; formulas and cached values are not recalculated or reconciled", text.String(), nil
+	}
 	return fmt.Sprintf("valid PPTX package; %d slide(s), %d paragraph element(s)", len(targets)-2, paragraphs), text.String(), nil
+}
+
+// Check that the declared sheets actually exist; an unrelated worksheet XML
+// file must not make a workbook with dangling sheet references validate.
+func checkWorkbookRelationships(files map[string]*zip.File) error {
+	workbook, err := readZipPart(files["xl/workbook.xml"])
+	if err != nil {
+		return err
+	}
+	var book struct {
+		XMLName xml.Name `xml:"workbook"`
+		Sheets  []struct {
+			ID string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
+		} `xml:"sheets>sheet"`
+	}
+	if err := xml.Unmarshal(workbook, &book); err != nil {
+		return fmt.Errorf("parse workbook: %w", err)
+	}
+	if len(book.Sheets) == 0 {
+		return errors.New("workbook declares no sheets")
+	}
+	data, err := readZipPart(files["xl/_rels/workbook.xml.rels"])
+	if err != nil {
+		return err
+	}
+	var relationships struct {
+		XMLName xml.Name `xml:"Relationships"`
+		Items   []struct {
+			ID     string `xml:"Id,attr"`
+			Target string `xml:"Target,attr"`
+			Type   string `xml:"Type,attr"`
+			Mode   string `xml:"TargetMode,attr"`
+		} `xml:"Relationship"`
+	}
+	if err := xml.Unmarshal(data, &relationships); err != nil {
+		return err
+	}
+	targets := map[string]string{}
+	seen := map[string]bool{}
+	for _, rel := range relationships.Items {
+		if rel.ID == "" || seen[rel.ID] {
+			return errors.New("missing or duplicate workbook relationship ID")
+		}
+		seen[rel.ID] = true
+		if rel.Mode == "External" || !strings.HasSuffix(rel.Type, "/worksheet") {
+			continue
+		}
+		target := path.Clean(path.Join("xl", rel.Target))
+		if strings.HasPrefix(rel.Target, "/") {
+			target = strings.TrimPrefix(path.Clean(rel.Target), "/")
+		}
+		if !strings.HasPrefix(target, "xl/worksheets/") || files[target] == nil {
+			return errors.New("worksheet relationship target missing or unsupported")
+		}
+		targets[rel.ID] = target
+	}
+	for _, sheet := range book.Sheets {
+		if targets[sheet.ID] == "" {
+			return errors.New("declared sheet has no local worksheet relationship")
+		}
+	}
+	return nil
 }
 
 func readZipPart(file *zip.File) ([]byte, error) {

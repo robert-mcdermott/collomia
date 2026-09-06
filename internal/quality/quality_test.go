@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -352,6 +353,33 @@ func TestWorkDeliverableReceiptsReachGrader(t *testing.T) {
 	}
 	if !result.Trials[0].MachinePass {
 		t.Fatalf("valid deliverable failed: %+v", result.Trials[0])
+	}
+}
+
+func TestScopedWorkReceiptsReachGraderWithoutInterventions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX assertion fixture")
+	}
+	opts := fixtureOptions(t)
+	opts.Tasks, _ = Select("work_totals")
+	opts.Factory = func() (provider.Client, error) {
+		return &fixtureClient{usage: true, response: func(call int) provider.Response {
+			switch call {
+			case 1:
+				return provider.Response{ToolCalls: []provider.ToolCall{{ID: "write", Name: "write_file", Arguments: json.RawMessage(`{"path":"totals.json","content":"{\"net_revenue\":39,\"rows\":3}"}`)}}}
+			case 2:
+				return provider.Response{ToolCalls: []provider.ToolCall{{ID: "check", Name: "run_command", Arguments: json.RawMessage(`{"command":"grep -q 39 totals.json","verification":{"paths":["totals.json"],"purpose":"Check fixture total text"}}`)}}}
+			default:
+				return provider.Response{Content: "Created totals.json; checked total text. Independent grading checks the numbers."}
+			}
+		}}, nil
+	}
+	result, err := Run(t.Context(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Trials[0].MachinePass || result.Trials[0].ControllerInterventions != 0 {
+		t.Fatalf("scoped receipt rejected: %+v", result.Trials[0])
 	}
 }
 

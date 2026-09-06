@@ -2556,6 +2556,14 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
+- Standard maintenance (2026-09-06): the authorized completion simplification
+  accepts explicitly scoped command evidence for current files and automatically
+  recovers demonstrably repaired native file failures. This is a Standard-only
+  acceptance path; graph command recognition, readiness, freshness, recovery,
+  integration, budgets, terminal authority, and graduation status are unchanged.
+  See [COMPLETION.md](COMPLETION.md) and the active
+  [improvement plan](IMPROVEMENT_PLAN.md) for the implementation/manual gate.
+
 - Runtime maintenance (2026-09-04): W4 adds Standard Work final-artifact
   rechecks and optional plan `artifacts` intent metadata. Developer and
   Orchestrated Goal acceptance still use their existing contracts; artifact

@@ -19,6 +19,12 @@ Orchestrated Goal adds optional evidence-gated durable execution in which the
 runtime—not model prose—owns readiness, evidence freshness, recovery, budgets,
 and the terminal outcome.
 
+In Standard execution, the agent can select task-specific checks and the
+runtime records their outcomes against current files. It does not require a
+second generic file check when suitable scoped evidence already exists. See
+[evidence-based completion](docs/COMPLETION.md) and the
+[documentation guide](docs/README.md).
+
 ## Why Collomia stands out
 
 - **Native containment on every major desktop OS.** Commands can run under
@@ -173,6 +179,10 @@ analysis, sourced research, external-action receipts/read-back, or a direct
 answer. Select it at startup with `collo --mode work`, in a session with
 `/mode work`, and in headless use with `collo run --mode work ...`. The choice
 is persisted per session. See the [Work mode contract](docs/WORK_MODE.md).
+
+Work mode uses the available tools and user-installed skills to choose an approach
+for your request. It does not require a starter project or bundled workflow.
+See [Work mode](docs/WORK_MODE.md) for capabilities and evidence requirements.
 
 **Standard execution** is the default: describe the task and Collomia works through
 its ordinary governed tool loop. `max_iterations` is a consecutive no-progress

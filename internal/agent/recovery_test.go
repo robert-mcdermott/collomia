@@ -5,13 +5,104 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/permission"
 	"github.com/robert-mcdermott/collomia/internal/plan"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/taskmode"
 	"github.com/robert-mcdermott/collomia/internal/tools"
 )
+
+func TestCompletedCommandFailureAllowsRepairAfterResume(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command fixture")
+	}
+	dir := t.TempDir()
+	command, err := tools.NewRunCommandTool(dir, nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := tools.NewPathGuard(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := New(Options{Workspace: dir, Registry: tools.NewRegistry(command, tools.WriteFileTool{Guard: guard}), Permissions: permission.New(appconfig.Permissions{Mode: "autopilot"}, nil), TaskMode: taskmode.Work})
+	store := &memoryCompletionStore{}
+	c := newCompletionController(plan.NewBoard(), dir, false, taskmode.Work)
+	if err := c.restoreCompletion(store); err != nil {
+		t.Fatal(err)
+	}
+	c.artifacts.roles[filepath.Join(dir, "repaired.txt")] = "deliverable"
+	execute := func(id, name, args string) toolObservation {
+		t.Helper()
+		_, observation, err := a.executeTool(t.Context(), provider.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)}, false, c, func(event.Event) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.observe(observation)
+		if err := c.finishEffect(observation); err != nil {
+			t.Fatal(err)
+		}
+		return observation
+	}
+	check := `{"command":"test -f repaired.txt"}`
+	o := execute("failed-check", "run_command", check)
+	if !o.Failed || !o.CommandExited || c.pending != nil || len(c.failures) != 1 || len(c.artifacts.roles) != 1 {
+		t.Fatalf("ordinary failure lost obligations or blocked repair: %+v %+v", o, c.recoveryState())
+	}
+	c = newCompletionController(plan.NewBoard(), dir, false, taskmode.Work)
+	if err := c.restoreCompletion(store); err != nil {
+		t.Fatal(err)
+	}
+	if o := execute("repair", "write_file", `{"path":"repaired.txt","content":"fixed"}`); o.Failed {
+		t.Fatalf("repair blocked: %+v", o)
+	}
+	if len(c.failures) != 1 {
+		t.Fatal("unrelated edit erased failed check")
+	}
+	if o := execute("retry", "run_command", check); o.Failed {
+		t.Fatalf("retry failed: %+v", o)
+	}
+	if len(c.failures) != 0 || c.pending != nil || !c.dirty {
+		t.Fatal("retry failed to resolve failure or erased validation requirements")
+	}
+}
+
+func TestRecoveryKeepsUnknownAndExternalFailuresBlocked(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		exited bool
+		action tools.Action
+	}{
+		{"interrupted", false, tools.Action{Risk: tools.RiskExecute}},
+		{"network", true, tools.Action{Risk: tools.RiskExecute, Network: true}},
+		{"host", true, tools.Action{Risk: tools.RiskExecute, Hosts: []string{"example.com"}}},
+		{"publication", true, tools.Action{Risk: tools.RiskExecute, PublicationTargets: []string{"publish"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCompletionController(plan.NewBoard(), t.TempDir(), false, taskmode.Work)
+			c.store = &memoryCompletionStore{}
+			if err := c.beginEffect("run_command", tc.action, "key"); err != nil {
+				t.Fatal(err)
+			}
+			o := toolObservation{Name: "run_command", Failed: true, CommandExited: tc.exited, Action: tc.action, Effects: executionEffects("run_command", tc.action)}
+			if err := c.finishEffect(o); err != nil {
+				t.Fatal(err)
+			}
+			if c.pending == nil {
+				t.Fatal("uncertain or external outcome was cleared")
+			}
+			if err := c.beginEffect("write_file", tools.Action{Risk: tools.RiskWrite, Paths: []string{"file"}}, "write"); err == nil {
+				t.Fatal("mutation allowed before reconciliation")
+			}
+		})
+	}
+}
 
 type memoryCompletionStore struct {
 	raw  json.RawMessage

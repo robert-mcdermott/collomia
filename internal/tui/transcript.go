@@ -89,6 +89,8 @@ func transcriptBlockTitle(entry block) string {
 		return "COLLOMIA"
 	case "reasoning":
 		return "THINKING SUMMARY"
+	case "status-detail":
+		return "COMPLETION CHECK"
 	case "tool":
 		name, _, _ := strings.Cut(entry.content, "\x00")
 		return "TOOL · " + name

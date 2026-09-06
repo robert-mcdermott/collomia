@@ -1,5 +1,12 @@
 # Real-model quality evaluations
 
+The receipt grader accepts both native artifact validation and Standard
+`scoped_verification.files` evidence and compares the recorded digest with final
+bytes. This does not grade browser behavior or calculation methodology by itself;
+the independent task checks and human rubric still apply. Existing saved
+baselines remain historical; a matched live rerun is needed to measure this
+completion change's effect on quality, interventions, latency, and cost.
+
 W5 adds an opt-in scorecard for the production Standard agent loop. The initial
 `standard-balanced-v1` suite has six Developer and six Work tasks. Its prompts,
 synthetic inputs, and independent checks are versioned in
