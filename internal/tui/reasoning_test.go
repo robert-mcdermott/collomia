@@ -160,7 +160,7 @@ func TestReasoningGoldenScreens(t *testing.T) {
 			}
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 			m = updated.(Model)
-			assertGoldenScreen(t, name, m.View())
+			assertGoldenScreen(t, name, m)
 		})
 	}
 }

@@ -440,7 +440,11 @@ produced binary on all three operating systems. Only then can it attest the
 artifacts and create a draft release.
 
 Golden terminal fixtures normalize line endings and padding so the same
-semantic screen is stable across operating systems. Use semantic assertions
+semantic screen is stable across operating systems. Their context input is
+fixed at 2,048 estimated tokens in a 32,768-token window: real prompt lengths
+include host and temporary-path details and must not determine screen snapshots.
+The fixture still uses the real estimator and gauge and fails explicitly if
+the base prompt outgrows its input budget. Use semantic assertions
 instead of a golden when color, terminal width, clock time, or platform text
 is not the behavior under test.
 
