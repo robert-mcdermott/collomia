@@ -48,8 +48,9 @@ second generic file check when suitable scoped evidence already exists. See
   and broad tool grants cannot silently cover.
 - **Evidence-gated Standard mode.** A final-sounding response does not complete
   an active goal while plan work is open, verification is stale after a write,
-  or a tool failure remains unresolved. A verification command Collomia cannot
-  accept is explained in its tool result, accepted proof receives an explicit
+  or an actual task failure remains unresolved. Housekeeping mistakes and native
+  input rejected before execution are correction feedback. A verification command
+  Collomia cannot accept is explained in its tool result, accepted proof receives an explicit
   receipt, and work that is complete but still unverified is reported as
   `needs_verification` rather than falsely `blocked`. Standard mode stays fast
   and model-directed while the runtime checks the evidence it can actually

@@ -20,8 +20,16 @@ an output-limit continuation and corrected verification input/scope issues.
 One completion intervention was resolved autonomously; there were no terminal
 error events and the final recovery state was empty. Its frontend build used
 explicit project scope, so automatic inference is covered by offline tests only.
-Work-mode live acceptance remains pending in [the improvement plan](IMPROVEMENT_PLAN.md).
-This single observed success is not a measured cross-model success rate.
+Work-mode live acceptance was reported by the user on 2026-09-07; no transcript
+or provider/model was supplied for that check. See [the improvement plan](IMPROVEMENT_PLAN.md).
+These accepted runs are not a measured cross-model success rate. Exact-tag
+release qualification remains separate from candidate checks.
+
+## Historical candidate evidence
+
+The following records preserve qualification at the time of each candidate.
+Older candidates were not all separately accepted; their pending live gates are
+superseded by the integrated acceptance above.
 
 Kanban28's `internal/agent/command_recovery_test.go` runs actual loopback HTTP
 and native shell tools through `Agent.Run`: a failing HTTP health check,
@@ -73,7 +81,7 @@ Standard execution, graph-controller execution and Standard restart; it does
 not make Work/Orchestrated Goal a supported public combination. File argument
 and shell classification tests include intentional empty replacements, atomic
 batch rejection and retained interruption guards. The original dependency
-allowlist and network-command exclusions are superseded by Kanban28 below. These tests prove the correction path, not a measured
+allowlist and network-command exclusions are superseded by Kanban28 above. These tests prove the correction path, not a measured
 live-model success rate. Acceptance is tracked in the improvement plan.
 
 Kanban23 has offline reproductions for a real PTY whose reader stops consuming

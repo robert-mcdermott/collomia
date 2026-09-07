@@ -1,5 +1,15 @@
 # Collomia Roadmap History
 
+### 2026-09-07 — v0.5.0 preparation and Work acceptance
+
+The user committed the v0.5.0 version bump (`fe0164d`) and reported successful
+Work-mode testing. No transcript or provider/model was provided for this check;
+it is user acceptance, not independently inspected trace evidence. Together
+with Kanban30 Developer acceptance this closes the integrated Standard manual
+gate. Release notes and current documentation now distinguish this status from
+historical candidates. Exact-tag release CI remains required after the PR merge;
+no release publication or new orchestration milestone is claimed.
+
 ### 2026-09-06 — Kanban30 Standard Developer acceptance
 
 The user reported successful testing of recovery-reliability candidate `.5`.

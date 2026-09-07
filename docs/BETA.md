@@ -1,66 +1,15 @@
 # Collomia beta status and known limitations
 
-Kanban29's remaining warning was a directory/scope mismatch after passing API
-checks and frontend builds. Standard now captures project scope for supported
-plain builds before execution, preserves valid receipts across unrelated docs
-changes, explains narrower-scope gaps and treats native verification-input
-rejections as correction feedback. Explicit scopes, real check failures,
-permissions and evidence freshness remain enforced. Candidate `.5` passed user
-acceptance in Standard Developer via Kanban30 on 2026-09-06: real failures were
-repaired, current checks passed and completion cleared all recovery obligations.
-The separate Work-mode live check remains pending. See
-[completion behavior](COMPLETION.md) and [candidate acceptance](IMPROVEMENT_PLAN.md).
-
-Kanban28 replaces command-specific recovery exceptions with a process-lifecycle
-rule: every observed ordinary native shell exit permits diagnosis and repair.
-A failed local HTTP smoke test no longer locks out the command needed to expose
-its startup error. Completion still requires recovery of real failures and
-current evidence; remote mutations are never automatically replayed and retain
-normal permissions. Interruptions and opaque external-tool failures stay guarded.
-Candidate verification and live acceptance are tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
-
-Kanban27 maintenance separates housekeeping from task completion: malformed or
-stale working-note updates no longer block a verified task or require receipt
-hunting. Real failures, file evidence and uncertain effects remain enforced.
-Standard legacy note failures are filtered on resume without acknowledgement.
-A valid explicit recovery receipt is not rejected solely for a retry/alternative
-label mismatch. Acceptance is tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
-
-Kanban26 maintenance fixes false uncertainty after npm exit 254 and verification
-advice that dropped the frontend directory. Direct retry suggestions preserve
-execution context; checks in literal workspace subdirectories can qualify.
-Interrupted commands and actual failed checks retain their safeguards. Candidate
-verification and live acceptance are tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
-
-Kanban25 maintenance rejects malformed native file replacements before mutation
-and lets ordinary dependency-installation failures be inspected and repaired
-without treating network access as remote publication. Typed file-input errors
-are corrective feedback rather than permanent failure obligations. The automated
-correction/restart tests pass; live acceptance and the one-time reconciliation
-for legacy Kanban25 state are tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
-
-The current development checkout adds [scoped task-specific completion
-checks](COMPLETION.md), inherited-PATH command execution, safe executable
-discovery, and Orchestrated Goal scheduling/budget-continuation repairs. The
-Kanban21 follow-up passed user manual testing on 2026-09-06. Automated results
-and separate outstanding Standard/Work acceptance checks are tracked in
-[the improvement plan](IMPROVEMENT_PLAN.md). Existing accepted
-W7 behavior remains distinct from this new slice; no live-model improvement
-is claimed from scripted tests alone.
-
-The Kanban22 follow-up adds bounded automatic continuation after a model reaches
-its response limit, retaining earlier work and discarding incomplete tool calls.
-Persistent limits appear as a model-response-limit pause. Its automated and live
-acceptance gates are tracked separately in the improvement plan.
-
-Kanban23 maintenance bounds terminal display stalls, cancels blocked UI event
-delivery, preserves omitted plan steps during progress updates and clarifies
-context/compaction reporting. The output timeout does not repair a broken
-terminal bridge; it preserves a resumable session instead of hanging forever.
-The prior user process remains untouched and live acceptance is still pending.
-The first terminal-output candidate's “Starting Collomia…” regression is fixed
-in `v0.4.4-terminal-reliability.2`, with real PTY startup/resize coverage and
-Developer/Work CLI smoke checks. See the improvement plan for the current build.
+The v0.5.0 release candidate combines task-scoped completion checks, durable
+recovery, bounded response-limit continuation, inherited-PATH execution and
+terminal reliability improvements. Standard Developer passed user acceptance
+through Kanban30 on September 6; Work mode passed user-reported testing on
+September 7. No transcript or model was supplied for the Work check. The
+Orchestrated Goal continuation follow-up passed manual testing through Kanban21.
+See [the improvement plan](IMPROVEMENT_PLAN.md#current-handoff--read-this-first)
+for evidence and [completion behavior](COMPLETION.md) for the supported contract.
+These checks do not establish a cross-model success rate or replace exact-tag
+cross-platform release CI.
 
 Collomia is suitable for a public **technical beta** aimed at developers and
 technical users who want an interactive, inspectable local terminal agent.
@@ -82,10 +31,11 @@ Retained image inspection and XLSX structural checks are general tools; they do
 not prescribe an analysis or document-generation method. Images require model
 support, and structural validation does not prove calculations or appearance.
 
-Ordinary nonzero local command exits permit inspection and repair without a
+Observed ordinary native shell exits permit inspection and repair without a
 manual recovery acknowledgement. Failed checks still require resolution;
-interruptions and failed known external operations retain the recovery guard.
-Command analysis cannot identify every effect hidden inside scripts.
+interruptions and failed opaque external tools retain the recovery guard. Each
+action retains its permissions, and remote mutations are not automatically
+replayed. Command analysis cannot identify every effect hidden inside scripts.
 
 ## Appropriate beta use
 
@@ -312,14 +262,3 @@ The default bundle excludes configuration values, prompts, source files,
 session transcripts, audit content, and logs. Review any bundle before sharing
 it. Use the repository's [security policy](../SECURITY.md) for vulnerabilities;
 use an ordinary issue for non-sensitive defects and usability feedback.
-
-Standard completion's September 6 follow-up separates disposable helpers from
-requested outputs in both task modes, accepts native artifact receipts in
-Developer mode, and reports verification-only gaps without a false “Blocked”
-label. Automated regressions cover the reported dashboard sequence; live user
-acceptance remains pending. See [the tracking plan](IMPROVEMENT_PLAN.md).
-
-The September 6 larger-project reliability follow-up adds project-directory
-checks, recovery facts across pauses, and bounded retries for empty completed
-provider responses. Scripted regressions and live acceptance are tracked
-separately in the [improvement plan](IMPROVEMENT_PLAN.md).

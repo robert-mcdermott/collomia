@@ -1,6 +1,6 @@
 # Agent improvement plan
 
-Updated: 2026-09-06. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
+Updated: 2026-09-07. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
 
 This is the durable implementation and user-testing plan for the September
 review. It supplements the [roadmap](../ROADMAP.md). The existing
@@ -10,20 +10,25 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Current work:** Kanban29 project-scope verification mismatch after passing
-  checks; capture project inputs before builds and simplify input correction.
-- **Status:** implementation, automated verification and builds pass. The user
-  accepted candidate `.5` in Standard Developer through Kanban30 on 2026-09-06;
-  transcript review confirms clean completion. Kanban21 remains user-accepted.
-  The separate Work-mode live acceptance check remains pending.
-- **Next action:** review/commit the completed reliability changes when requested;
-  use the separate Work check for additional live acceptance.
-  Do not begin another feature wave by default.
-- **Test build:** `dist/collo-recovery-reliability`, candidate version
-  `v0.4.4-recovery-reliability.5`, based on `c037a7c` plus these changes.
-  Includes the uncommitted Kanban22 and Kanban23 fixes.
-  Platform binaries in `dist/` are also rebuilt with this candidate version.
-  The installed binary, user sessions, and `VERSION` are preserved.
+- **Current work:** prepare the `wave39` PR and v0.5.0 release documentation.
+- **Status:** reliability implementation committed in `c90beea`; `VERSION` bumped
+  to `v0.5.0` in `fe0164d`. Candidate automated gates passed. Standard Developer
+  acceptance passed through Kanban30 on September 6. The user reported successful
+  Work-mode testing on September 7; no transcript or provider/model was supplied
+  for that check. Kanban21 remains user-accepted.
+- **Local PR qualification (2026-09-07):** uncached `go test -count=1 ./...`,
+  full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
+  final CLI/documentation tests and `git diff --check` passed. No runtime code
+  changed in this documentation pass; tagged release artifacts were not rebuilt.
+- **Next action:** review and merge the release PR, then run the release process
+  against merged `main`. Exact-tag CI and release artifact qualification remain
+  required; candidate checks do not substitute for them. Do not start another
+  feature wave by default.
+- **Historical evidence:** candidate versions, commands, and unchecked manual
+  gates below record the state at that time. Older candidates were not all
+  separately accepted; the current integrated Developer/Work acceptance above
+  supersedes those pending release gates. They are not installation instructions
+  or claims of universal provider/platform coverage.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
@@ -78,8 +83,9 @@ behavior, not clean completion acceptance.
   confirms no terminal error or `needs_verification`, all six plan steps done,
   and final completion state reset to `{"schema_version":1}` with no retained
   failures, dirty paths, roles or uncertain action.
-- [ ] Separate Work-mode live acceptance. One successful Developer run does not
-  establish a cross-model success rate or test all supported paths.
+- [x] Separate Work-mode live acceptance reported by the user on 2026-09-07.
+  No transcript or provider/model was supplied for this check. These accepted
+  runs do not establish a cross-model success rate or test all supported paths.
 
 Kanban30 live evidence: backend tests ended at **9 passed**, frontend tsc/Vite
 build passed, **10/10** HTTP smoke checks passed, and the launcher, README and

@@ -5,7 +5,7 @@ End-to-end graphs with governed read fan-out are supported as an optional
 mode. Isolated-writer candidate waves remain experimental after the documented
 audit pass. Standard mode remains the permanent default.
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
-**Last updated:** 2026-08-25
+**Last updated:** 2026-09-07
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
 
 This document is the durable implementation charter and decision record for
@@ -2557,6 +2557,14 @@ Every agent or contributor continuing this program must:
    commands and evaluations that proved its exit gate.
 
 ### Current handoff
+
+Release preparation (2026-09-07): v0.5.0 retains the milestone status and authority
+boundaries above. Kanban21 continuation maintenance is user-accepted; integrated
+Standard Developer and Work acceptance is recorded in the
+[improvement plan](IMPROVEMENT_PLAN.md#current-handoff--read-this-first).
+Exact-tag release qualification remains required. Dated maintenance entries
+below describe their original candidate state, including gates not separately
+accepted at the time; they do not reopen completed orchestration milestones.
 
 - Active maintenance (2026-09-06): Kanban29 repairs Standard project-scope
   accounting after a passing build. Automatic scope is limited to native

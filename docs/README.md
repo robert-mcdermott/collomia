@@ -38,7 +38,7 @@ acceptance; historical test builds are not installation instructions.
 
 | Document | Status and purpose |
 | --- | --- |
-| [Improvement plan](IMPROVEMENT_PLAN.md) | Current September work, pending manual gate, and later priorities; completed sections retain dated evidence. |
+| [Improvement plan](IMPROVEMENT_PLAN.md) | Current release handoff, accepted manual checks, and later priorities; completed sections retain dated evidence. |
 | [Orchestration strategy](ORCHESTRATION_STRATEGY.md) | Authoritative current graph contract and milestone status, followed by dated implementation decisions. |
 | [Roadmap history](ROADMAP_HISTORY.md) | Historical decisions and validation at the time they shipped; later entries may supersede earlier behavior. |
 | [September 4 review](PROJECT_REVIEW_2026-09-04.md) | Historical assessment of `f523696`; findings and proposals are not current capability claims. |
@@ -49,17 +49,18 @@ only where they explain a dated decision or test. Current use follows the guides
 above. `collo-screenshot.png` remains the illustrative TUI image used by the root
 README; it is not a specification of current keyboard bindings or capabilities.
 
-## September 6 documentation audit
+## September 7 v0.5.0 documentation audit
 
 Reviewed the documentation inventory for completion contracts, retired Work
 workflow instructions, old version labels, cross-links, and current versus
-historical status. Updated the affected guides, generated capabilities, event
-contract, beta limits, and roadmap handoffs together. Installation, release,
+historical status. Consolidated release notes, beta status, feature version,
+and roadmap handoffs; recorded Work-mode acceptance and separated historical
+candidate gates from current release requirements. Installation, release,
 Linux, provider, and MCP guides retain their distinct operational purpose;
 their platform/live qualification instructions remain necessary and are not
 claims that those external checks ran during this change.
 
 The automated documentation checks cover links, documented commands/tools,
 configuration fields, event kinds, and generated capability drift. The current
-[manual acceptance checklist](IMPROVEMENT_PLAN.md#completion-simplification-checks)
+[release handoff](IMPROVEMENT_PLAN.md#current-handoff--read-this-first)
 is separate from those automated checks.

@@ -5,104 +5,79 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-## Unreleased
-
-### Fixed
-
-- Standard Developer and Work completion now accept appropriate artifact or
-  scoped-command evidence consistently. Disposable `.collomia-tmp/` helpers and
-  declared scratch files do not independently require validation; retained
-  deliverables, unrelated project changes, failed checks, and stale receipts
-  remain tracked.
-- Quoted multiline scoped checks no longer fail shell-composition preflight.
-  Successful scoped replacements recover preflight-only rejections with the
-  same purpose and covered paths, including after resume.
-- Completion diagnostics name uncovered paths accurately. Verification-only
-  outcomes display “Verification incomplete,” and Standard final-answer text is
-  held until accepted instead of showing premature success followed by failure.
+## v0.5.0
 
 ### Added
 
-- Standard task-specific file verification through `run_command.verification`: a
-  passing command with unchanged scoped files can satisfy Work file completion
-  without a redundant generic artifact check. Available in both task profiles;
-  graph verification is unchanged. Receipts expose their scope and cannot certify
-  test coverage. Verified native file repairs recover failed edits automatically;
-  command timeout-only adjustments preserve retry identity. See
-  [Completion](docs/COMPLETION.md).
-
-- General-purpose `view_image` for bounded local PNG/JPEG/GIF inspection, with
-  explicit model-context notices when image pixels cannot be delivered.
-- XLSX structural validation, worksheet relationship checks, bounded Open XML
-  package checks, and explicit evidence scopes in `validate_artifact`.
-  Calculation, source quality, and visual acceptance remain separate.
-
-- W7b Standard recovery: persisted unfinished completion obligations, synced
-  in-flight markers, fresh validation after restart, bounded workspace
-  checkpoint deltas, durable undo/restore interruption handling, and user-only
-  `/recovery` inspection/reconciliation. External effects are never replayed
-  or rolled back. Passed offline and user manual-testing gates, completing W7.
-  See [Standard recovery](docs/RECOVERY.md).
-
-- W7a session task context: bounded, revisioned working notes retained across
-  compaction/resume; separate original user-request previews; session-local
-  history search/read; `/context task` and `/context clear`. Model notes do not
-  grant permission or validate artifacts. W7b recovery is described above. W7a passed offline and user manual-testing gates. See
-  [Task context](docs/TASK_CONTEXT.md) for usage and testing.
-
-- Opt-in `collo eval` quality evaluations: 12 balanced coding/Work tasks,
-  independent checks, fresh workspaces, required command containment, bounded
-  live runs, replayable local traces, manual acceptance reviews, and matched
-  before/after comparisons. `collo schema eval` publishes result schema v1.
-  Offline tests cover the runner; an initial 24-trial live baseline is recorded
-  with separate prose-quality findings. W5 was accepted by explicit continuation.
+- Live, collapsible thinking summaries for reasoning events emitted by provider
+  adapters. Provider-side enablement and reasoning display in reopened sessions
+  remain separate follow-up work.
+- Retained task notes, original-request previews and session evidence retrieval
+  across compaction/resume. See [Task context](docs/TASK_CONTEXT.md).
+- Durable Standard completion obligations, bounded workspace checkpoints and
+  `/recovery` inspection/reconciliation. Interrupted actions require inspection;
+  external effects cannot be rolled back or automatically replayed. See
+  [Recovery](docs/RECOVERY.md).
+- Opt-in `collo eval` with 12 balanced coding/Work tasks, contained workspaces,
+  budgets, traces, independent checks, human review and matched comparisons.
+  An initial 24-trial baseline is recorded separately from prose-quality review.
   See [Quality evaluations](docs/QUALITY_EVALUATIONS.md).
+- Task-specific `run_command.verification` in Standard Developer and Work.
+  Supported plain project builds automatically capture input scope when explicit
+  verification metadata is absent. Explicit scopes remain authoritative, and
+  passing checks certify only their recorded scope. See [Completion](docs/COMPLETION.md).
+- General-purpose local PNG/JPEG/GIF inspection with `view_image`, and bounded
+  XLSX/Open XML structural validation. Pixel delivery depends on model support;
+  structural checks do not prove calculation or visual correctness.
+- Separate total-turn and no-progress limits, `--max-turns`, `--max-no-progress`
+  and live `/limits` controls. Standard execution defaults to 256 total turns.
 
 ### Fixed
 
-- Artifact validation recognizes HTML and common source files as UTF-8 text,
-  with `html` as an explicit text-check alias and no claim of parsing or execution.
-  Corrected checks of the same file automatically recover prior validation
-  failures when text, size, and format requirements are preserved. Routine
-  completion checks are collapsed in the TUI; details remain expandable and
-  logged, and actual blockers stay visible.
-- Ordinary nonzero local command exits no longer require manual recovery
-  acknowledgement before the agent can repair a failed script or test.
-  Failure and validation obligations remain; interrupted commands and failures
-  involving known network/publication operations retain the uncertainty guard.
-- Evaluation error traces now include failure classification and correlation
-  metadata required by offline replay, including budget exhaustion and
-  cancellation. Scorecard tables label overall task passes separately from
-  per-artifact checks.
-- Work completion rechecks the final bytes and target identity of validated
-  artifacts, catching script mutations, deletion, and external edits. Stale or
-  missing declared-deliverable receipts cannot be waived by a validation note
-  or a general test command. Optional `update_plan.artifacts` declarations
-  distinguish deliverables from scratch files; failed opaque executions report
-  uncertain effects without changing permissions or replaying actions.
-- Truncated, refused, failed, and incomplete provider responses cannot finish
-  a task successfully or execute their proposed tools. Partial text and usage
-  remain available; incomplete compaction cannot replace conversation context.
-  These responses stop explicitly without automatic continuation.
-- Standard failure recovery now matches a tool's complete operation arguments.
-  An unrelated successful command or file read cannot erase an earlier failure.
-  Exact retries require no recovery-only plan update; explicit alternatives and
-  unnecessary exploratory attempts retain their existing structured resolution.
-- `read_file` can paginate beyond the first MiB, with a separate per-page output
-  bound, EOF/next-offset metadata, cancellable skipping, and oversized-line
-  guidance that still permits access to later lines.
+- Standard completion distinguishes requested deliverables from disposable
+  helpers, accepts scoped project evidence, and preserves receipts across
+  unrelated edits. Final bytes, target identity and input freshness remain
+  checked. HTML/source validation checks text rather than claiming execution.
+- Verification-only gaps report “Verification incomplete”; final success text
+  is held until accepted. Diagnostics identify uncovered paths and narrower
+  receipts, and routine verification details are collapsed in the TUI.
+- Observed ordinary native shell exits allow diagnosis and repair without manual
+  recovery acknowledgement. Actual failed work still needs resolution;
+  interruptions and opaque external-tool failures retain uncertainty guards.
+- Housekeeping errors and native input rejected before execution no longer
+  create task-failure obligations. Malformed file replacements are rejected
+  before mutation, including patch-batch preflight.
+- Recovery uses exact operation arguments or supported alternative evidence.
+  Verification guidance preserves working directories and environment context;
+  non-signal exit statuses such as npm's 254 are classified correctly.
+- Output/context limits allow up to two bounded continuations per turn; incomplete
+  tool calls are discarded without execution. Persistent limits pause resumably.
+  Empty completed responses receive bounded retries. Refused or failed responses
+  cannot become successful completion, and incomplete compaction cannot replace
+  conversation context.
+- Native command execution inherits the caller's PATH through a non-login shell;
+  executable discovery and Orchestrated Goal scheduling, wall accounting and
+  explicit budget continuation are repaired.
+- Partial plan updates preserve omitted steps. Terminal output stalls and UI
+  teardown are bounded; real-PTY startup and resize regressions are covered.
+  Context reporting distinguishes current input occupancy from cumulative usage.
+- `read_file` pagination reaches beyond the first MiB with bounded pages,
+  EOF/continuation metadata and guidance for oversized lines.
+- Evaluation failure traces include classification/correlation metadata, and
+  scorecards distinguish task passes from individual artifact checks.
 
-- Provider-emitted reasoning now appears in a separate live thinking-summary
-  block in the TUI. The preview is bounded, finished summaries collapse, and
-  the existing tool-output key (default `ctrl+o`) reveals retained text.
-  Current-transcript search/copy includes summaries, with explicit UTF-8-safe
-  truncation at 64 KiB per summary. Provider enablement, reasoning-state
-  continuation, and restored-session display remain separate follow-up work.
+### Documentation and acceptance
 
-### Documentation
-
-- Added a durable [improvement plan](docs/IMPROVEMENT_PLAN.md) with small
-  implementation waves, regression evidence, and user acceptance gates.
+- Work remains general-purpose: no bundled reporting workflow or example-project
+  initializer is required. Tools and user-installed skills support model-selected
+  methods. The proposed prescriptive workflow was withdrawn.
+- Updated usage, completion, recovery and evaluation guides, and consolidated
+  current release status separately from historical candidate records.
+- Standard Developer acceptance was verified through Kanban30 on September 6;
+  Work acceptance was reported by the user on September 7. Orchestrated Goal's
+  continuation follow-up passed manual testing through Kanban21. These results
+  do not establish universal model/platform reliability; exact-tag release CI
+  remains required. See the [improvement plan](docs/IMPROVEMENT_PLAN.md).
 
 ## v0.4.1
 
