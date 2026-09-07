@@ -1968,11 +1968,9 @@ func TestVerificationRecognitionAcceptsPreparationBeforeTheVerifier(t *testing.T
 	if elsewhere.Recognized || !strings.Contains(elsewhere.Reason, "changes directory") {
 		t.Fatalf("relocated verification assessment=%+v", elsewhere)
 	}
-	// A refused command names the direct form wherever the verifier sits,
-	// because the session that failed was never told which part was the
-	// problem.
+	// Do not extract a later verifier while silently discarding its environment.
 	trailing := assessVerificationCommand("export FOO=bar; uv run pytest -q", workspace)
-	if trailing.Recognized || !trailing.VerificationLike || trailing.Suggestion != "uv run pytest -q" {
+	if trailing.Recognized || trailing.Suggestion != "" {
 		t.Fatalf("trailing verifier assessment=%+v", trailing)
 	}
 	// A final command assembled by substitution cannot be classified at all,

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -67,6 +69,9 @@ const (
 var tabNames = [tabCount]string{"Chat", "Session", "Help"}
 
 type Model struct {
+	runContext       context.Context
+	terminalOutput   io.Writer
+	runLifetime      *sync.WaitGroup
 	runtime          *app.Runtime
 	broker           *ApprovalBroker
 	viewport         viewport.Model
@@ -134,11 +139,18 @@ type Model struct {
 }
 
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
+	return NewWithOutput(context.Background(), runtime, broker, initial, os.Stdout)
+}
+
+// NewWithOutput binds agent cancellation and theme writes to the same guarded
+// interactive lifetime as the renderer.
+func NewWithOutput(ctx context.Context, runtime *app.Runtime, broker *ApprovalBroker, initial string, output io.Writer) Model {
 	theme := resolveTheme(runtime.Config.Options.Theme)
 	in := newComposer()
 	spin := spinner.New()
 	spin.Spinner = spinner.Points
 	m := Model{
+		runContext: ctx, terminalOutput: output, runLifetime: &sync.WaitGroup{},
 		runtime: runtime, broker: broker, input: in, spinner: spin,
 		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{}, sessionAttachments: map[string][]pendingAttachment{},
 		workspaceLoading: true, workspaceGeneration: 1,
@@ -155,6 +167,19 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	return m
 }
 
+// WaitForRuns lets command teardown wait for cancellation to reach the agent
+// and its durable transcript before closing the session. Call after Run exits.
+func (m Model) WaitForRuns(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() { m.runLifetime.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // applyTheme installs a theme and restyles every themed component.
 func (m *Model) applyTheme(t Theme) {
 	m.theme = t
@@ -163,9 +188,9 @@ func (m *Model) applyTheme(t Theme) {
 	m.restyleComposer()
 	m.renderer = nil // force glamour rebuild with the new style
 	if t.Background == "" {
-		ResetTerminalBackground()
+		ResetTerminalBackground(m.terminalOutput)
 	} else {
-		setTerminalBackground(t.Background)
+		setTerminalBackground(t.Background, m.terminalOutput)
 	}
 }
 
@@ -290,6 +315,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.err != nil {
 				if errors.Is(msg.err, provider.ErrResponseEmpty) {
 					m.alert("Provider response unavailable; work retained")
+				} else if errors.Is(msg.err, provider.ErrResponseTruncated) {
+					m.alert("Paused at model response limit; work retained")
 				} else {
 					switch agent.GoalOutcomeFor(msg.err) {
 					case agent.GoalBudgetExhausted:
@@ -310,6 +337,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role := "error"
 				if errors.Is(msg.err, provider.ErrResponseEmpty) {
 					label, role = "Provider response unavailable", "system"
+				} else if errors.Is(msg.err, provider.ErrResponseTruncated) {
+					label, role = "Paused at model response limit", "system"
 				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalNeedsVerification {
 					label = "Verification incomplete"
 					role = "system"
@@ -751,15 +780,20 @@ func (m *Model) startTurn(value string) tea.Cmd {
 	m.busy = true
 	m.turnStarted = time.Now()
 	m.input.Focus()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.runContext)
 	m.cancel = cancel
 	m.runEvents = make(chan runMsg, 64)
 	events := m.runEvents
 	runtime := m.runtime
+	m.runLifetime.Add(1)
 	go func() {
+		defer m.runLifetime.Done()
 		final, err := runtime.Agent.RunWithParts(ctx, value, parts, func(e runtimeevent.Event) {
 			runtime.LogEvent(e)
-			events <- runMsg{event: &e}
+			select {
+			case events <- runMsg{event: &e}:
+			case <-ctx.Done():
+			}
 		})
 		if persistenceErr := runtime.PersistenceError(); persistenceErr != nil {
 			persistenceErr = fmt.Errorf("session persistence failed: %w", persistenceErr)
@@ -778,7 +812,10 @@ func (m *Model) startTurn(value string) tea.Cmd {
 		} else {
 			err = failureid.Ensure(err)
 		}
-		events <- runMsg{done: true, final: final, err: err}
+		select {
+		case events <- runMsg{done: true, final: final, err: err}:
+		case <-ctx.Done():
+		}
 		close(events)
 	}()
 	return tea.Batch(waitRun(events), m.progressTick())
@@ -1956,4 +1993,8 @@ func indent(value, prefix string) string {
 // ring sounds the terminal bell so an unattended approval, question, or
 // finished long turn gets the user's attention. Terminals map this to their
 // configured notification (sound, badge, or nothing) — never intrusive.
-func ring() { _, _ = os.Stderr.WriteString("\a") }
+func (m Model) ring() {
+	if m.terminalOutput != nil {
+		_, _ = io.WriteString(m.terminalOutput, "\a")
+	}
+}

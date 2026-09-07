@@ -44,7 +44,26 @@ exit. Only matching bytes, path targets, and parent identities yield a scoped
 receipt. Checks that modify their own scoped outputs must be separated into a
 generation step followed by a check of the final files.
 
-For an application, scope source trees instead of enumerating every file:
+Standard Developer and Work now capture project-input evidence automatically
+for plain `npm run build`, `pnpm build`/`pnpm run build`, `yarn build`/`yarn run
+build`, `bun run build`, `go build ./...`, and `cargo build` when `verification`
+is omitted and the matching manifest exists in the command's directory. Literal
+workspace-contained `cd ... &&` prefixes are supported. Flags, selectors,
+wrappers, environment prefixes, pipelines and other preparation require explicit
+scope. Explicit verification fields are honored unchanged.
+
+Scope is established before execution and passes the same file guard, command
+permissions, child-read permissions and hooks as a supplied scope. Source,
+configuration, manifests and lockfiles participate in freshness; common generated
+and dependency directories do not. No prior command is retroactively converted
+into evidence. A directory declaration with only narrower receipts now names the
+current scopes and requests the whole directory; it does not guess at unread
+files or claim a build failed. Malformed verification metadata and native shell
+syntax rejected before execution are correction feedback, not failed task actions.
+Actual command failures, filesystem errors, permissions and changed inputs remain
+enforced. Orchestrated Goal's verification authority is unchanged.
+
+For other application checks, scope source trees instead of enumerating every file:
 
 ```json
 {
@@ -66,7 +85,7 @@ Each tree is bounded to 10,000 entries and 256 MiB total (64 MiB per file).
 Directory checks exclude these **directories by name**:
 `.git`, `.hg`, `.svn`, `.collomia`, `.collomia-tmp`, `node_modules`,
 `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`,
-`.ruff_cache`, `.uv-cache`, `.npm`, `.cache`, `dist`, `build`,
+`.ruff_cache`, `.uv-cache`, `.npm-cache`, `.npm`, `.cache`, `dist`, `build`,
 `target`, `coverage`, `.next`, and `.nuxt`.
 Scope an excluded output explicitly when it is a requested deliverable.
 A source check can generate a bundle in `dist` without making its own source
@@ -77,6 +96,15 @@ Passing tree checks cover retained directory declarations and their included
 descendants, including obligations saved by older Collo versions. Fresh project
 checks supersede older receipts for covered inputs. Excluded outputs and unrelated
 paths retain their own obligations.
+
+For a nested project, use `cd frontend && npm run build`; literal directory
+changes that remain inside the workspace are accepted. Scope paths are still
+relative to the workspace (for example `frontend/src`, not `src`). Outside,
+dynamic and unresolved directory targets cannot establish workspace evidence.
+When suggesting a direct retry of a piped check, Collo preserves directory and
+environment setup and quoted arguments. It does not extract a later command
+across a semicolon or prescribe replaying effectful preparation. Complex setup
+can be put in a check script with the correct exit behavior.
 
 Run the check directly. Shell forms that can hide its status, such as
 `check || true`, pipelines, or a trailing command, are refused as explicit
@@ -142,6 +170,30 @@ end as `needs_verification`, not successful verification.
 
 ## Recovery without unnecessary bookkeeping
 
+Native file-tool argument errors are returned for correction before execution.
+Missing `content`/`new_text`, contradictory patch fields and rejected patch
+preconditions do not become failed-action obligations in Standard or Orchestrated
+Goal execution. They cannot change files, grant permission, mark a plan complete
+or substitute for required verification. Deliberate empty strings are accepted.
+
+Every observed ordinary nonzero native `run_command` exit allows diagnosis,
+repair and a deliberate retry, including commands containing HTTP calls or
+publication operations. Execution has finished; its failure and possibly partial
+local/remote effects still need assessment. No automatic replay occurs and each
+next action retains normal permission checks. The failed operation remains
+unresolved until recovered. Interruptions, timeouts, signal outcomes and failed
+external/MCP tools with unknown effects retain uncertainty protection.
+See [Standard recovery](RECOVERY.md).
+
+Planning, working-note and session-history tools are **housekeeping**, not task
+outcomes: `update_plan`, `detect_verification`, `update_task_context`,
+`read_task_context`, `read_session`, and `search_session`. Their tool errors
+remain feedback but never become task-failure obligations. A malformed note or
+stale note revision cannot invalidate a finished application. Successful notes
+likewise cannot prove a task passed. Repeated notes/searches do not renew the
+progress allowance. Actual unfinished plan steps, stale file receipts, failed
+task operations, uncertain effects and persistence failures remain enforced.
+
 The runtime automatically resolves:
 
 - Successful retries of the same executed operation. Command timeout and
@@ -151,7 +203,8 @@ The runtime automatically resolves:
 - A successful corrected call of the same tool after native argument/preflight
   assessment rejected an earlier call before execution. Permission and hook
   denials are separate and do not qualify.
-- A native scoped-check preflight rejection followed by a successful scoped
+- A retained native scoped-check preflight failure (including legacy sessions)
+  followed by a successful scoped
   replacement with the same stated purpose covering all originally requested
   paths. This only clears an attempt that never executed, not a failed assertion,
   a permission/hook denial, or an uncertain action. The bounded identity survives
@@ -161,6 +214,12 @@ The runtime automatically resolves:
 - An executed native file-edit failure after a successful native replacement or
   edit covers **every affected path**, followed by current file verification.
   Validation alone cannot erase a failed edit to unchanged old contents.
+
+For an explicit recovery, both `recovered_by_retry` and
+`recovered_by_alternative` require a later successful non-metadata receipt,
+a terminal step and stated recovery intent. A changed command is an alternative
+regardless of the supplied label; that label mismatch alone does not block
+completion. This does not make an unrelated success automatic recovery.
 
 Up to 64 successful tool-call facts survive a budget pause, provider interruption,
 or restart. These retain bounded IDs, operation hashes, tool names, risk, and
@@ -217,6 +276,17 @@ responses appear as **Provider response unavailable**, with work retained and
 a suggestion to check the provider/proxy or switch providers before continuing.
 The machine-readable result remains a provider failure; an unusable response
 is never reported as task success.
+
+Output/context-limit responses have a separate bounded continuation path across
+Developer, Work, planning and graph execution. At most two additional requests
+per turn ask for a smaller next step; successful responses do not refill this
+allowance. Usage and iterations count normally. The runtime discards rejected
+tool calls instead of executing or persisting them as pending work. Persistent
+limits display **Paused at model response limit** and return `budget_exhausted`,
+retaining work for a normal Standard continuation or `/orchestrate extend` in a
+graph. Graph workers propagate the same resource-stop status. No model setting
+is widened, no rejected response completes a task, and no incomplete compaction
+summary replaces the original context.
 
 ## What a final answer should say
 

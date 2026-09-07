@@ -251,7 +251,7 @@ func (t WriteFileTool) Definition() provider.ToolDefinition {
 }
 func (t WriteFileTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct{ Path, Content string }
-	if err := json.Unmarshal(raw, &a); err != nil {
+	if err := decodeFileInput(raw, &a, "path", "content"); err != nil {
 		return Action{}, err
 	}
 	p, o, e := t.Guard.Resolve(a.Path)
@@ -267,7 +267,7 @@ func (t WriteFileTool) Assess(raw json.RawMessage) (Action, error) {
 }
 func (t WriteFileTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
 	var a struct{ Path, Content string }
-	if err := json.Unmarshal(raw, &a); err != nil {
+	if err := decodeFileInput(raw, &a, "path", "content"); err != nil {
 		return "", err
 	}
 	target, _, err := t.Guard.MutationTarget(a.Path)
@@ -322,7 +322,7 @@ func (t EditFileTool) Assess(raw json.RawMessage) (Action, error) {
 		Old  string `json:"old_text"`
 		New  string `json:"new_text"`
 	}
-	if err := json.Unmarshal(raw, &a); err != nil {
+	if err := decodeFileInput(raw, &a, "path", "old_text", "new_text"); err != nil {
 		return Action{}, err
 	}
 	p, o, e := t.Guard.Resolve(a.Path)
@@ -341,7 +341,7 @@ func (t EditFileTool) Execute(_ context.Context, raw json.RawMessage) (string, e
 		Old  string `json:"old_text"`
 		New  string `json:"new_text"`
 	}
-	if err := json.Unmarshal(raw, &a); err != nil {
+	if err := decodeFileInput(raw, &a, "path", "old_text", "new_text"); err != nil {
 		return "", err
 	}
 	if a.Old == "" {

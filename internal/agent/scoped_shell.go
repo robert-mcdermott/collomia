@@ -53,6 +53,7 @@ func scopedVerificationChain(command, workspace string) (string, string) {
 		return "", invalid
 	}
 	segments = append(segments, strings.TrimSpace(command[start:]))
+	cwd := workspace
 	for i, segment := range segments {
 		if segment == "" {
 			return "", invalid
@@ -68,8 +69,12 @@ func scopedVerificationChain(command, workspace string) (string, string) {
 		case "!", "if", "then", "else", "elif", "fi", "while", "until", "for", "do", "done", "case", "esac", "function":
 			return "", invalid
 		}
-		if i < len(segments)-1 && relocatesVerification(segment, workspace) {
-			return "", "the command changes directory before verifying, so its result would not describe the workspace the evidence is bound to"
+		if i < len(segments)-1 {
+			next, ok := verificationDirectory(segment, cwd, workspace)
+			if !ok {
+				return "", "the command changes directory before verifying, so its result would not describe the workspace the evidence is bound to"
+			}
+			cwd = next
 		}
 	}
 	return segments[len(segments)-1], ""

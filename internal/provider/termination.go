@@ -54,9 +54,10 @@ func (r Response) Termination() Termination {
 	return TerminationFailed
 }
 
-// CompletionError never requests an automatic retry: a partial response may
-// follow real tool effects. The caller retains accounting and partial text,
-// but must neither execute this response's calls nor accept it as a final answer.
+// CompletionError never requests a transport retry. The agent may make a
+// bounded continuation after a response limit, retaining earlier tool effects
+// and accounting, but must neither execute this response's calls nor accept it
+// as a final answer.
 func (r Response) CompletionError(name string) error {
 	var cause error
 	var message string

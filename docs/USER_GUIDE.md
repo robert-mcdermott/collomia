@@ -3184,11 +3184,12 @@ Run verification as the direct command whose exit status should become proof.
 Leading environment assignments, virtual-environment executable paths, and
 direct Python module invocation are recognized, so commands such as
 `UV_CACHE_DIR=.uv-cache uv run pytest -v`, `.venv/bin/pytest -v`, and
-`.venv/bin/python -m pytest -v` can qualify. Collomia also safely removes an
-exact redundant `cd` to the current workspace (or `.`) followed by `&&`, and a
-final literal `2>&1`; these wrappers preserve the verifier's exit status.
-Other directories, pipes, semicolons, `||`, and shell composition remain
-ineligible because a later operation can hide that status.
+`.venv/bin/python -m pytest -v` can qualify. Literal `cd` into an existing workspace subdirectory followed by `&&` and a
+final literal `2>&1` preserve the verifier's exit status and can qualify.
+Outside or unresolved directory targets cannot establish workspace evidence.
+Pipes, semicolons, `||`, and other status-masking composition remain ineligible.
+Suggested direct retries retain directory/environment setup and quoted
+arguments; Collo omits a suggestion when it cannot preserve that context safely.
 If a successful command looks like verification but is ineligible, its tool
 result says why and shows the direct form to run; for example,
 `pytest -v 2>&1; echo "$?"` is rejected and suggests `pytest -v`.
@@ -4356,16 +4357,29 @@ that an unseen operation succeeded—narrow the request or inspect the reference
 
 ### Evidence-gated completion
 
+`update_plan` progress updates merge by step ID. Omitted steps, acceptance
+criteria and other fields remain in the plan; existing steps may supply just
+their ID and changed fields. New steps still require a title and status. To
+start a new task or intentionally restructure/remove steps, the agent sends
+`replace: true` with a complete plan. Invalid updates leave the prior plan intact.
+This does not change runtime-owned Orchestrated Goal revisions or readiness.
+
 Before accepting an answer or executing its proposed tool calls, Collomia checks
-the provider's machine-reported terminal state. Output/context-limit truncation,
-refusal/filtering, incomplete/failed responses, and explicit unrecognized stop
-states stop the turn with an error. Partial text and reported usage are retained;
-the rejected response's tools are not executed or saved as pending calls. Prior
-tool effects remain in the workspace. There is no automatic continuation for
-these cases: inspect the partial work before requesting continuation, a shorter
-answer, or an appropriate token-limit adjustment. A refused response also sets
-`run.result.refused`; these responses do not produce a successful `done` result.
-Token/cost budget exhaustion retains its own outcome when the budget is exceeded.
+the provider's machine-reported terminal state. Output/context-limit truncation
+receives at most two automatic continuation requests per turn, asking for a
+smaller next step. Each request consumes ordinary iteration/token/cost budgets;
+the allowance does not reset after usable responses. Partial text and reported
+usage are retained; rejected tool calls are neither executed nor saved as pending
+calls. Prior tool effects remain in the workspace. No model setting is raised.
+Persistent truncation displays **Paused at model response limit**, with a
+`budget_exhausted` result. Continue with a normal prompt in Standard execution,
+or `/orchestrate extend` for an approved graph. If it persists, change the model
+or response settings; increasing context alone does not fix an output limit.
+
+Refusal/filtering, incomplete/failed responses, and explicit unrecognized stop
+states do not receive this continuation. A refused response also sets
+`run.result.refused`; rejected responses never produce successful `done` results.
+Token/cost budget exhaustion retains precedence when its budget is exceeded.
 
 An incomplete compaction summary cannot replace the original context. Known
 stream endings are checked by adapters; compatible endpoints that omit a stop
@@ -4413,9 +4427,10 @@ against structured state it can observe:
   `update_plan` repairs its own task-local board update.
 - After an unresolved tool failure, the completion notice names the failed tool-call ID.
   The agent records an exact `resolved_failures` entry in `update_plan`:
-  `recovered_by_retry` (matching operation) or `recovered_by_alternative` (an
-  explicitly justified changed operation) names the successful
-  `recovery_tool_call_id`; `skipped_unnecessary` points to a skipped step; and
+  `recovered_by_retry` or `recovered_by_alternative` names the successful
+  `recovery_tool_call_id`. A changed operation is treated as an alternative
+  even if the model selected the retry label; a label mismatch does not force
+  another turn. `skipped_unnecessary` points to a skipped step; and
   `blocked` points to a blocked step. The runtime validates those retained
   references (up to 64 successful facts survive a pause or restart; fresh file checks remain required), so prose and a merely similar permission-risk label cannot
   silently clear a failure. When successful recovery candidates exist, the
@@ -4429,6 +4444,13 @@ reported. Any `blocked` step makes the turn end blocked; a `skipped` step with
 a reason does not. An abandoned side attempt — a reference that turned out not
 to be needed, a tool call replaced by a better one — belongs in `skipped`, so a
 finished deliverable is not reported as a failed run.
+
+Planning, working-note and session-history errors remain visible feedback but do
+not create task-failure obligations. Correct notes when useful; no recovery
+receipt or repeated verification is needed solely for housekeeping. Notes also
+cannot prove task completion or renew progress. Older persisted metadata failures
+are filtered on resume without acknowledgement; real failures and current-file
+checks remain enforced.
 
 When a gap remains, Collomia adds a deterministic controller notice and gives
 the agent another iteration. It permits at most two final attempts until the
@@ -6082,6 +6104,25 @@ is retained in the session JSONL file. Compaction itself consumes a provider
 request and tokens; graph-triggered compaction is included in durable graph
 accounting.
 
+The TUI `ctx` percentage estimates the current input prompt against the configured
+context window, using the last reported input plus subsequent message estimates.
+It is not cumulative token spending and does not count streamed reasoning that
+is not resent as input. In Standard execution, automatic compaction normally
+starts above 80% when enough history can be reclaimed. Graph boundary and
+aggregate-budget compactions can happen earlier. `/context` reports summary
+blocks; a model saying "resuming after compaction" is not runtime evidence that
+compaction occurred. Pinned task state is refreshed on every request.
+
+### Unresponsive terminal output
+
+If the terminal or an intervening PTY bridge stops accepting output, interactive
+display writes time out after 30 seconds. Collo records a session warning,
+cancels the active turn and exits with failure status instead of hanging
+indefinitely. It avoids writing an error back into that same blocked terminal.
+Resume the saved session in a working terminal; check terminal integrations or
+bridges if the problem recurs. This does not silently finish the task or replay
+an interrupted action. Headless JSONL and durable session writes are unchanged.
+
 ### Session image storage
 
 Submitted image bytes are stored as owner-only raw blobs beside the session,
@@ -6576,11 +6617,29 @@ the full diagnostic, or search/copy it in the transcript. Actual blocks stay vis
 other supported formats; it does not calculate formulas. Typed check scopes
 report what was and was not assessed.
 
-Failed local checks with an ordinary process exit can be inspected and repaired
-without `/recovery acknowledge`. Interrupted commands and failed known external
-operations still require reconciliation; see [Standard recovery](RECOVERY.md).
+All native shell commands with an observed ordinary exit can be inspected and
+repaired without `/recovery acknowledge`, including failed HTTP smoke tests,
+remote clients and npm ENOENT exit 254. A high numeric exit code alone does not
+indicate a signal. This settles execution, not success or partial effects:
+inspect before deliberately retrying an external mutation. No automatic retry
+occurs and normal permissions still govern every next action. Interrupted
+commands and failed external/MCP tools with unknown effects still require
+reconciliation. Prefer `start_process` and `process_output` for development
+servers so startup errors remain available. Native file tools reject missing or
+misplaced replacement text before writing and return those input errors for
+correction without a persistent failure obligation. See [Standard recovery](RECOVERY.md).
 
 ### Completion and temporary helpers
+
+Standard captures project-input evidence for supported plain builds when no
+explicit verification scope is given. For example, `cd frontend && npm run build`
+with a local `package.json` captures the frontend source/configuration/manifest/
+lockfile state before and after the build, excluding dependencies and generated
+outputs. Explicit scopes remain unchanged; `frontend/src` alone is not a receipt
+for a declared `frontend` directory. Gaps now explain that distinction. Other
+check forms use explicit `run_command.verification`; see
+[the supported automatic command forms](COMPLETION.md). Check syntax rejected
+before execution is correction feedback and does not need a recovery receipt.
 
 Standard Developer and Work use the same task-scoped file evidence. The agent
 uses `.collomia-tmp/` for disposable helpers, which do not need separate

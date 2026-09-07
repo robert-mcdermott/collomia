@@ -57,22 +57,50 @@ Before a potentially mutating Standard tool executes, Collo persists and syncs
 an in-flight marker. A successful observed result settles it. If the process
 stops before settlement, a command is cancelled, times out or exits with a
 signal-like status, or an external tool fails after starting, the runtime keeps
-the outcome uncertain. A failed command with a known network destination or
-publication operation also retains this guard. It does not replay that action. Known
+the outcome uncertain. Failed external/MCP tools with unknown effects also
+retain this guard. Collo does not replay an uncertain action. Known
 read-only tools can inspect the current state, while another possibly mutating
 call is refused. The final outcome remains blocked until user reconciliation.
 
-An ordinary nonzero local command exit (for example, a failed assertion, test,
-or compiler diagnostic) is a completed execution with unsuccessful work. Collo
+An ordinary nonzero native `run_command` exit is a completed execution with
+unsuccessful work. This rule applies to every command, including HTTP smoke
+tests, dependency installs and remote clients; network or publication labels
+are not evidence that execution was interrupted. Each subsequent action still
+passes its normal permission and publication checks. No command is automatically
+retried. This includes npm ENOENT
+status 254 and other ordinary high exit codes such as 200 and 255; a high
+number alone is not evidence of interruption. POSIX 128+valid-signal statuses
+remain conservative, and native Windows exception/control statuses remain
+uncertain. Collo
 can inspect outputs, fix the problem, and deliberately retry without a recovery
 acknowledgement. The failure remains unresolved until recovered, and deliverables
 still need current validation. Process completion does not prove absence of
 partial effects or make a remote action safe to repeat; scripts can hide effects
 that command analysis cannot identify. The agent must inspect before retrying.
 
+Old **housekeeping failures** (planning, notes and session-history tools) are
+filtered when recovery state is read, including status and resume. They require
+no `/recovery acknowledge` or successful task receipt. Original transcript events
+remain intact. Real task failures, pending effects and final-file checks remain.
+A correct explicit recovery receipt is accepted even if a changed operation is
+labeled `recovered_by_retry`; the runtime checks the successful receipt, its
+ordering and the semantic recovery link instead of requiring label repair.
+
 Older builds may have saved an uncertain marker for an ordinary command failure.
 Those records do not contain the native exit classification, so they are not
 silently cleared on upgrade. Inspect the saved failure and acknowledge it once.
+
+New malformed `run_command.verification` inputs and native verification shell
+syntax rejected before execution are correction feedback; no failed command ran
+and no recovery receipt is needed solely to repair that input. Actual failed
+checks, permission denials, filesystem errors and stale evidence retain their
+requirements. Existing saved preflight failures keep their older recovery rules.
+
+Native `write_file`, `edit_file`, and `apply_patch` reject missing or misplaced
+replacement fields before changing files. These typed input errors are corrective
+feedback, not a persisted failed-action obligation. Explicit empty replacement
+strings remain valid. Permission denials, execution failures, required checks and
+existing unfinished work are still tracked.
 
 After inspecting an uncertain action's actual result, use:
 
@@ -271,7 +299,8 @@ Report the provider/model and failing step if any check fails. W7b/full W7 is
 accepted. The bundled W6 workflow was subsequently withdrawn; current follow-up
 work and its separate acceptance gate are in [the improvement plan](IMPROVEMENT_PLAN.md).
 
-Native scoped-check preflight rejections can also recover automatically when a
+Retained native scoped-check preflight failures (including legacy sessions)
+can also recover automatically when a
 fresh successful scoped replacement has the same purpose and covers the original
 paths. This applies only before execution and never clears a failed assertion,
 permission/hook denial, or uncertain effect. Scratch-directory placement does

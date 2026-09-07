@@ -14,7 +14,12 @@ type CommandVerification struct {
 	Purpose string   `json:"purpose"`
 }
 
-func ParseCommandVerification(raw json.RawMessage) (*CommandVerification, error) {
+func ParseCommandVerification(raw json.RawMessage) (result *CommandVerification, err error) {
+	defer func() {
+		if err != nil {
+			err = &inputError{err}
+		}
+	}()
 	var args struct {
 		Verification json.RawMessage `json:"verification"`
 	}

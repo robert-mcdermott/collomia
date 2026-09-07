@@ -390,6 +390,9 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	// and release it as soon as the controller is satisfied instead of asking the
 	// provider to generate the same answer again.
 	emptyResponseRetries := 0
+	// Per-turn, not consecutive: intermittent successes must not make a model
+	// that repeatedly hits its output limit consume unbounded continuations.
+	responseLimitContinuations := 0
 	pendingFinal := ""
 	pendingFinalReusable := false
 	// Ordinary turns use max_iterations as a consecutive no-progress lease and
@@ -685,17 +688,42 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			emptyResponseRetries = 0
 		}
 		if terminationErr != nil {
+			if errors.Is(terminationErr, provider.ErrResponseTruncated) {
+				if responseLimitContinuations < 2 {
+					responseLimitContinuations++
+					notice := fmt.Sprintf("[Runtime response continuation %d of 2] The provider reached a response limit (stop=%q, input=%d, output=%d). This response's tool calls were discarded and none were executed. Prior completed tools and their results remain valid. Continue from the recorded state with one small next step: keep reasoning brief, issue a small complete tool call when needed, and split large file writes into smaller edits. Do not restart the task, repeat completed actions, or treat partial prose as evidence of completed work. If only an answer remains, give a concise complete answer.", responseLimitContinuations, response.Stop, response.Usage.InputTokens, response.Usage.OutputTokens)
+					a.appendMessage(provider.Message{Role: "user", Content: notice})
+					if err := a.checkPersistence(); err != nil {
+						return response.Content, reportError(send, err)
+					}
+					warning := event.New(event.KindWarning)
+					warning.Text = fmt.Sprintf("Model reached its response limit; continuing with a smaller next step (%d of 2). Prior work retained; incomplete tool calls discarded.", responseLimitContinuations)
+					send(warning)
+					continue
+				}
+				advice := "Continue to try another bounded turn, or switch model/adjust its response settings if this persists"
+				if a.graphEnabled() || a.graphWorker {
+					advice = "Use /orchestrate extend to resume with another allowance; switch model/adjust its response settings if this persists"
+				}
+				terminationErr = &provider.Error{Provider: a.providerName, Operation: "completion", Kind: provider.ErrorProtocol, Message: fmt.Sprintf("model response limit persisted after 2 automatic continuations (stop=%q, input=%d, output=%d); work is retained and incomplete tool calls were discarded. %s", response.Stop, response.Usage.InputTokens, response.Usage.OutputTokens, advice), Err: provider.ErrResponseTruncated}
+				if a.graphEnabled() {
+					if err := a.goalGraph.ExhaustBudget(context.WithoutCancel(ctx), terminationErr.Error()); err != nil {
+						return response.Content, reportError(send, err)
+					}
+					a.emitGoalUpdates(send)
+				}
+			}
 			a.appendMessage(provider.Message{Role: "user", Content: "[Runtime response status] " + terminationErr.Error()})
 			if err := a.checkPersistence(); err != nil {
 				return response.Content, reportError(send, err)
 			}
-			if a.graphEnabled() {
+			if a.graphEnabled() && !errors.Is(terminationErr, provider.ErrResponseTruncated) {
 				if _, graphErr := a.recordProviderFailure(context.WithoutCancel(ctx), terminationErr, send); graphErr != nil {
 					terminationErr = errors.Join(terminationErr, graphErr)
 				}
 			}
 			terminationErr = reportError(send, terminationErr)
-			a.endTurn(ctx, send, iteration, GoalBlocked)
+			a.endTurn(ctx, send, iteration, GoalOutcomeFor(terminationErr))
 			return response.Content, terminationErr
 		}
 		if len(response.ToolCalls) == 0 {
@@ -1042,12 +1070,17 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, observation, nil
 		}
 	}
+	if _, native := item.(*tools.RunCommandTool); native && !a.graphEnabled() && !a.graphWorker && !plan {
+		call.Arguments = automaticProjectVerification(call.Arguments, a.workspace)
+	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
 		observation.FailureDetail = err.Error()
 		observation.ArgumentRejected = true
+		observation.InputCorrection = tools.IsInputError(err)
+		observation.IgnoreGraphFailure = observation.InputCorrection
 		observation.Retryable = true
 		return tools.Result{Content: "Tool error: " + err.Error()}, observation, nil
 	}
@@ -1142,6 +1175,9 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		if scopeErr != nil {
 			if !scopeReadDenied {
 				observation.RejectedVerification, _ = tools.ParseCommandVerification(args)
+				var input *verificationInputError
+				observation.InputCorrection = errors.As(scopeErr, &input)
+				observation.IgnoreGraphFailure = observation.InputCorrection
 			}
 			observation.Failed = true
 			observation.FailureKind = goalgraph.FailureTool
@@ -1221,7 +1257,11 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += "\n"
 		}
 		result.Content += "Tool error: " + err.Error()
-		if observation.Effects.Unknown {
+		if completionMetaTool(call.Name) {
+			result.Content += "\nThis housekeeping error does not invalidate task work or require a recovery receipt. Correct it only if needed for the task; finish when the requested work and checks are complete."
+		} else if commandFailureAllowsRepair(observation) {
+			result.Content += "\nThe command finished unsuccessfully; diagnosis and repair may continue without recovery acknowledgement. No automatic retry was performed. Local or remote effects may have partially completed: inspect the result before deliberately retrying, especially an external mutation. A normal exit does not prove the work succeeded."
+		} else if observation.Effects.Unknown {
 			result.Content += "\nEffect status: this executed tool may have changed local or external state before failing. Inspect outputs or use a safe read-back before another write; do not blindly replay an external action with an uncertain outcome."
 		}
 	}
@@ -2403,6 +2443,8 @@ func delegateTerminalStatus(err error) string {
 	case errors.Is(err, ErrTokenBudgetExceeded):
 		return DelegateBudgetExhausted
 	case errors.Is(err, ErrCostBudgetExceeded):
+		return DelegateBudgetExhausted
+	case errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, provider.ErrResponseTruncated):
 		return DelegateBudgetExhausted
 	case errors.Is(err, context.Canceled):
 		return DelegateCancelled

@@ -73,7 +73,7 @@ func GoalOutcomeFor(err error) GoalOutcome {
 		return GoalDone
 	case errors.Is(err, ErrGoalNeedsVerification):
 		return GoalNeedsVerification
-	case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded), errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, ErrAggregateBudgetExceeded):
+	case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded), errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, ErrAggregateBudgetExceeded), errors.Is(err, provider.ErrResponseTruncated):
 		return GoalBudgetExhausted
 	case errors.Is(err, context.Canceled):
 		return GoalCancelled
@@ -109,6 +109,7 @@ type toolObservation struct {
 	ScopedFiles          []artifactReceipt
 	Effects              toolEffects
 	ArgumentRejected     bool // native assessment rejected before permission/execution
+	InputCorrection      bool // typed native input error: no attempted operation to reconcile
 	ExecutionPrevented   bool
 	CommandExited        bool // native runner observed an ordinary nonzero exit
 	VerificationCheck    verificationAssessment
@@ -257,6 +258,11 @@ func (c *completionController) observe(observation toolObservation) {
 // a successful write always does because its content is intentionally absent
 // from toolObservation. The separate hard turn envelope still bounds churn.
 func (c *completionController) observeProgress(observation toolObservation) {
+	if completionMetaTool(observation.Name) && observation.Name != "update_plan" {
+		// Saving notes or searching history is not new task progress, even when
+		// each save increments a revision or returns a different excerpt.
+		return
+	}
 	if !observation.ExecutionPrevented && (observation.Action.Risk == tools.RiskWrite || len(observation.Effects.Paths) > 0) {
 		c.progressVersion++
 		return
@@ -268,6 +274,9 @@ func (c *completionController) observeProgress(observation toolObservation) {
 			c.progressVersion++
 			return
 		}
+	}
+	if completionMetaTool(observation.Name) {
+		return // only an actual plan revision above counts as planning progress
 	}
 	fingerprint := sha256.Sum256([]byte(strings.Join([]string{
 		observation.Name,
@@ -291,6 +300,17 @@ func (c *completionController) awaitingVerificationGuidance() bool {
 }
 
 func (c *completionController) recordFailure(observation toolObservation) {
+	if completionMetaTool(observation.Name) {
+		// Metadata is neither proof of task success nor a failed task action.
+		// Requiring a task receipt for it creates an impossible recovery gate:
+		// these tools are deliberately excluded from recovery evidence below.
+		return
+	}
+	if observation.InputCorrection && observation.ExecutionPrevented {
+		// Correctable tool syntax/preconditions are feedback, not evidence that
+		// work executed and failed. Keep plans, dirty files and prior failures.
+		return
+	}
 	id := strings.TrimSpace(observation.CallID)
 	if id == "" {
 		c.nextFailureID++
@@ -405,11 +425,11 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 		if completionMetaTool(recovery.Name) {
 			return prefix + " cannot use completion metadata tool " + recovery.Name + " as recovery evidence"
 		}
-		if resolution.Disposition == "recovered_by_retry" && !matchesRetry(failure, recovery) {
-			return prefix + " says recovered_by_retry but the successful receipt is not the same operation and arguments; use recovered_by_alternative with evidence if the changed operation replaced it"
-		}
-		if resolution.Disposition == "recovered_by_alternative" && recoveryID == failure.id {
-			return prefix + " says recovered_by_alternative but references the failed call itself"
+		// The explicit link provides semantic recovery intent in both cases.
+		// Changed arguments make this an alternative, regardless of the model's
+		// label. Rejecting only the label adds no evidence or safety guarantee.
+		if recoveryID == failure.id {
+			return prefix + " references the failed call itself"
 		}
 		if step.Status != "done" && step.Status != "skipped" {
 			return prefix + fmt.Sprintf(" recovery step %d is %s rather than done or skipped", step.ID, step.Status)
@@ -428,6 +448,8 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 	return ""
 }
 
+// Completion metadata can describe work but cannot prove or invalidate it.
+// Keep this boundary identical for Standard, graph execution and restoration.
 func completionMetaTool(name string) bool {
 	return name == "update_plan" || name == "detect_verification" || name == "update_task_context" || name == "read_task_context" || name == "read_session" || name == "search_session"
 }
@@ -798,12 +820,8 @@ func assessVerificationCommand(command, workspace string) verificationAssessment
 		}
 		return verificationAssessment{Unrecognized: true}
 	}
-	// The composition is ineligible. Naming the direct form is the difference
-	// between a model that corrects itself on the next call and one that
-	// repeats an equivalent command until its progress lease runs out, so the
-	// whole command is searched rather than only its leading segment: the
-	// verifier can be first (`pytest || true`) or last (`export CACHE=... &&
-	// pytest`).
+	// Offer an intact direct prefix when possible. Extracting a later verifier
+	// can silently lose directory/environment setup and manufacture a failure.
 	if suggestion := verificationChainSuggestion(candidate, workspace); suggestion != "" {
 		return verificationAssessment{VerificationLike: true, Reason: refusal, Suggestion: suggestion}
 	}
@@ -840,10 +858,13 @@ func safeVerificationChain(command, workspace string) (string, string) {
 	if strings.Contains(final, "$(") {
 		return "", "the verification command is assembled by command substitution, so the runtime cannot tell which check would run"
 	}
+	cwd := workspace
 	for _, segment := range segments[:len(segments)-1] {
-		if relocatesVerification(strings.TrimSpace(segment), workspace) {
+		next, ok := verificationDirectory(strings.TrimSpace(segment), cwd, workspace)
+		if !ok {
 			return "", "the command changes directory before verifying, so its result would not describe the workspace the evidence is bound to"
 		}
+		cwd = next
 	}
 	return final, ""
 }
@@ -865,66 +886,6 @@ func unsafeVerificationOperator(command string) bool {
 		}
 	}
 	return false
-}
-
-// relocatesVerification reports whether a leading segment would run the final
-// command somewhere other than the workspace. The redundant workspace `cd` that
-// run_command already supplies is the one relocation that changes nothing.
-func relocatesVerification(segment, workspace string) bool {
-	fields := strings.Fields(segment)
-	for len(fields) > 0 && shellEnvironmentAssignment(fields[0]) {
-		fields = fields[1:]
-	}
-	if len(fields) == 0 {
-		return false
-	}
-	switch fields[0] {
-	case "pushd", "popd", "chdir":
-		return true
-	case "cd":
-		if len(fields) != 2 {
-			return true
-		}
-		cleanWorkspace := filepath.Clean(strings.TrimSpace(workspace))
-		allowed := []string{".", "'.'", `"."`}
-		if cleanWorkspace != "." && cleanWorkspace != "" {
-			allowed = append(allowed, cleanWorkspace, "'"+cleanWorkspace+"'", `"`+cleanWorkspace+`"`)
-		}
-		return !slices.Contains(allowed, fields[1])
-	}
-	return false
-}
-
-// verificationChainSuggestion finds the recognized check inside a command the
-// gate refused, so the correction can name the exact direct form to run.
-func verificationChainSuggestion(command, workspace string) string {
-	for _, segment := range splitVerificationSegments(command) {
-		if directVerificationCommand(segment, workspace) {
-			return strings.Join(strings.Fields(segment), " ")
-		}
-	}
-	return ""
-}
-
-func splitVerificationSegments(command string) []string {
-	var segments []string
-	for _, field := range strings.FieldsFunc(command, func(r rune) bool {
-		return r == '\n' || r == ';' || r == '&' || r == '|'
-	}) {
-		// A redirection ends the command it belongs to. Drop it along with any
-		// attached file-descriptor digits (`2>&1`) rather than leaving them as
-		// spurious verification arguments.
-		if cut := strings.IndexAny(field, "<>"); cut >= 0 {
-			for cut > 0 && field[cut-1] >= '0' && field[cut-1] <= '9' {
-				cut--
-			}
-			field = field[:cut]
-		}
-		if trimmed := strings.TrimSpace(field); trimmed != "" {
-			segments = append(segments, trimmed)
-		}
-	}
-	return segments
 }
 
 // A final stderr-to-stdout merge changes presentation, not the command's exit

@@ -81,6 +81,12 @@ func decodeCompletion(raw json.RawMessage) (completionState, error) {
 			return state, errors.New("unsupported recovery sequence")
 		}
 	}
+	// Upgrade obsolete bookkeeping obligations centrally so the TUI recovery
+	// view, profile switching and the next run agree. Keep the original events,
+	// real task failures, pending effects and fresh-validation obligations.
+	state.Failures = slices.DeleteFunc(state.Failures, func(f recoveryFailure) bool {
+		return completionMetaTool(f.Tool)
+	})
 	return state, nil
 }
 func (a *Agent) SetCompletionStore(store CompletionStore) {
@@ -218,18 +224,21 @@ func (c *completionController) finishEffect(o toolObservation) error {
 		return nil
 	}
 	if c.effectStarted {
-		// An observed ordinary local exit settles execution even when the work
-		// failed. Keep dirty paths and failure obligations, allowing inspection,
-		// repair and a deliberate retry. Known network/publication operations
-		// still need reconciliation because a failed client can mask a remote
-		// commit. Arbitrary script effects remain opaque, never replay-safe.
-		localExit := o.CommandExited && !o.Action.Network && len(o.Action.Hosts) == 0 && len(o.Action.PublicationTargets) == 0
-		if !o.Failed || !o.Effects.Unknown || localExit {
+		// A native ordinary exit settles command execution, not task success or
+		// rollback. Networking/publication labels describe possible effects;
+		// they must not turn a finished process into a global recovery lock.
+		// Keep failures and file obligations. Every next action is authorized
+		// normally, and remote effects must be inspected before deliberate retry.
+		if !o.Failed || !o.Effects.Unknown || commandFailureAllowsRepair(o) {
 			c.pending = nil
 		}
 		c.effectStarted = false
 	}
 	return c.saveRecovery(false)
+}
+
+func commandFailureAllowsRepair(o toolObservation) bool {
+	return o.Name == "run_command" && o.CommandExited
 }
 func (c *completionController) recoveryNotice() string {
 	state := c.recoveryState()

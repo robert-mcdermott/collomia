@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -23,11 +25,11 @@ type ApplyPatchTool struct {
 }
 
 type patchOperation struct {
-	Op      string `json:"op"` // update, create, delete
-	Path    string `json:"path"`
-	OldText string `json:"old_text,omitempty"`
-	NewText string `json:"new_text,omitempty"`
-	Content string `json:"content,omitempty"`
+	Op      string  `json:"op"` // update, create, delete
+	Path    string  `json:"path"`
+	OldText *string `json:"old_text,omitempty"`
+	NewText *string `json:"new_text,omitempty"`
+	Content *string `json:"content,omitempty"`
 }
 
 type patchInput struct {
@@ -35,7 +37,7 @@ type patchInput struct {
 }
 
 func (t ApplyPatchTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "apply_patch", Description: "Apply a multi-file change set atomically. Each operation is one of: update (replace one exact, unique old_text with new_text in an existing file), create (new file with content), delete (remove a file). All operations are validated against current file contents before any is applied; on failure nothing changes. Use this for related edits that must land together.", InputSchema: schema(`{"type":"object","properties":{"operations":{"type":"array","minItems":1,"items":{"type":"object","properties":{"op":{"type":"string","enum":["update","create","delete"]},"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"content":{"type":"string"}},"required":["op","path"],"additionalProperties":false}}},"required":["operations"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "apply_patch", Description: "Apply a multi-file change set atomically. Each operation is one of: update (replace one exact, unique old_text with new_text in an existing file), create (new file with content), delete (remove a file). All operations are validated against current file contents before any is applied; on failure nothing changes. Use this for related edits that must land together.", InputSchema: schema(`{"type":"object","properties":{"operations":{"type":"array","minItems":1,"items":{"type":"object","properties":{"op":{"type":"string","enum":["update","create","delete"]},"path":{"type":"string"},"old_text":{"type":"string","description":"Required nonempty exact match for update only"},"new_text":{"type":"string","description":"Required replacement for update only; explicit empty string deletes the matched text"},"content":{"type":"string","description":"Required file contents for create only; forbidden for update and delete"}},"required":["op","path"],"additionalProperties":false}}},"required":["operations"],"additionalProperties":false}`)}
 }
 
 // resolved is a fully validated operation ready to apply.
@@ -50,11 +52,43 @@ type resolvedOperation struct {
 
 func (t ApplyPatchTool) resolve(raw json.RawMessage, secure bool) ([]resolvedOperation, bool, error) {
 	var input patchInput
-	if err := json.Unmarshal(raw, &input); err != nil {
-		return nil, false, err
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return nil, false, &inputError{err}
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, false, &inputError{errors.New("apply_patch requires exactly one JSON object")}
 	}
 	if len(input.Operations) == 0 {
-		return nil, false, errors.New("operations must not be empty")
+		return nil, false, &inputError{errors.New("operations must not be empty")}
+	}
+	// Validate the entire argument set before resolving any file. A misplaced
+	// content field must never turn an intended replacement into a deletion.
+	for i, op := range input.Operations {
+		var problem string
+		switch op.Op {
+		case "update":
+			if op.Content != nil || op.OldText == nil || *op.OldText == "" || op.NewText == nil {
+				problem = "update requires nonempty old_text and explicit new_text (empty is allowed for intentional deletion); content is only for create"
+			}
+		case "create":
+			if op.Content == nil || op.OldText != nil || op.NewText != nil {
+				problem = "create requires content (empty is allowed); old_text and new_text are only for update"
+			}
+		case "delete":
+			if op.Content != nil || op.OldText != nil || op.NewText != nil {
+				problem = "delete accepts only op and path"
+			}
+		default:
+			problem = "op must be update, create, or delete"
+		}
+		if strings.TrimSpace(op.Path) == "" {
+			problem = "path must not be empty"
+		}
+		if problem != "" {
+			return nil, false, &inputError{fmt.Errorf("operations[%d]: %s; no files changed", i, problem)}
+		}
 	}
 	outside := false
 	var ops []resolvedOperation
@@ -126,26 +160,23 @@ func (t ApplyPatchTool) resolve(raw json.RawMessage, secure bool) ([]resolvedOpe
 		switch op.Op {
 		case "create":
 			if current != nil {
-				return fail(fmt.Errorf("operations[%d]: %s already exists; use update", i, op.Path))
+				return fail(&inputError{fmt.Errorf("operations[%d]: %s already exists; use update", i, op.Path)})
 			}
-			content := op.Content
+			content := *op.Content
 			resolved.after = &content
 		case "update":
 			if current == nil {
-				return fail(fmt.Errorf("operations[%d]: %s does not exist; use create", i, op.Path))
+				return fail(&inputError{fmt.Errorf("operations[%d]: %s does not exist; use create", i, op.Path)})
 			}
-			if op.OldText == "" {
-				return fail(fmt.Errorf("operations[%d]: update requires old_text", i))
-			}
-			count := strings.Count(*current, op.OldText)
+			count := strings.Count(*current, *op.OldText)
 			if count != 1 {
-				return fail(fmt.Errorf("operations[%d]: old_text must match %s exactly once (found %d); the file may differ from what you expect — re-read it", i, op.Path, count))
+				return fail(&inputError{fmt.Errorf("operations[%d]: old_text must match %s exactly once (found %d); the file may differ from what you expect — re-read it", i, op.Path, count)})
 			}
-			updated := strings.Replace(*current, op.OldText, op.NewText, 1)
+			updated := strings.Replace(*current, *op.OldText, *op.NewText, 1)
 			resolved.after = &updated
 		case "delete":
 			if current == nil {
-				return fail(fmt.Errorf("operations[%d]: %s does not exist", i, op.Path))
+				return fail(&inputError{fmt.Errorf("operations[%d]: %s does not exist", i, op.Path)})
 			}
 			resolved.after = nil
 		default:

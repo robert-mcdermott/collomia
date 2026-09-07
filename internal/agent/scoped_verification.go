@@ -21,13 +21,17 @@ type scopedVerification struct {
 	files   []artifactReceipt
 }
 
+// Native syntax rejection before execution is corrective feedback, not a
+// failed check. Filesystem, permission and post-execution errors are distinct.
+type verificationInputError struct{ error }
+
 func prepareScopedVerification(ctx context.Context, raw json.RawMessage, action tools.Action, workspace string, authorize func([]string) error) (*scopedVerification, error) {
 	v, err := tools.ParseCommandVerification(raw)
 	if err != nil || v == nil {
 		return nil, err
 	}
 	if _, reason := scopedVerificationChain(stripSafeVerificationStderrMerge(action.Command), workspace); reason != "" {
-		return nil, fmt.Errorf("verification was not started: %s; put the check in a script that exits nonzero on failure and run it directly", reason)
+		return nil, &verificationInputError{fmt.Errorf("verification was not started: %s; put the check in a script that exits nonzero on failure and run it directly. No command ran; correct the input without a recovery receipt", reason)}
 	}
 	if len(v.Paths) != len(action.Paths) {
 		return nil, fmt.Errorf("verification scope does not match authorized paths")

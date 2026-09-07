@@ -35,6 +35,16 @@ func TestExecutionLimitIsReportedAsAPause(t *testing.T) {
 	}
 }
 
+func TestResponseLimitIsReportedAsAPause(t *testing.T) {
+	m := newTestModel(t)
+	updated, _ := m.Update(runMsg{done: true, err: provider.ErrResponseTruncated})
+	m = updated.(Model)
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != "system" || !strings.Contains(last.content, "Paused at model response limit") || strings.Contains(last.content, "Blocked") {
+		t.Fatalf("response limit presented as failed work: %+v", last)
+	}
+}
+
 func TestEmptyProviderDoesNotLabelWorkBlocked(t *testing.T) {
 	m := newTestModel(t)
 	err := (provider.Response{Stop: "stop"}).CompletionError("fixture")

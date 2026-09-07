@@ -18,4 +18,4 @@ The totals agree with the inputs.
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │❯ Ask Collomia to build, debug, explain…  (/ for commands)                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ✿   ollama/qwen3-coder   ASK ⛨  ctx ▍░░░░░░░░░ 4%     / commands · ctrl+c quit
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▌░░░░░░░░░ 6%     / commands · ctrl+c quit

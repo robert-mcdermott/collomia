@@ -19,7 +19,7 @@ import (
 // Explicitly scope an excluded output separately when it is a deliverable.
 func projectExcluded(name string) bool {
 	switch name {
-	case ".git", ".hg", ".svn", ".collomia", ".collomia-tmp", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".uv-cache", ".npm", ".cache", "dist", "build", "target", "coverage", ".next", ".nuxt":
+	case ".git", ".hg", ".svn", ".collomia", ".collomia-tmp", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".uv-cache", ".npm-cache", ".npm", ".cache", "dist", "build", "target", "coverage", ".next", ".nuxt":
 		return true
 	}
 	return false

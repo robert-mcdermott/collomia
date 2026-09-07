@@ -175,7 +175,7 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 		if !valid[target] {
 			// Do not read a newly declared path just to explain why its receipt
 			// is missing. validate_artifact uses the ordinary permission path.
-			issues = append(issues, fmt.Sprintf("declared deliverable %s needs current evidence from run_command.verification or validate_artifact (it may be missing or changed)", c.displayArtifact(path)))
+			issues = append(issues, c.missingArtifactScope(path, valid))
 		}
 	}
 	for path, role := range c.artifacts.roles {
@@ -195,6 +195,28 @@ func (c *completionController) checkArtifacts(current *plan.Plan, active bool) [
 	}
 	slices.Sort(issues)
 	return issues
+}
+
+func (c *completionController) missingArtifactScope(path string, valid map[string]bool) string {
+	target := completionPath(path)
+	var children []string
+	for _, receipt := range c.artifacts.receipts {
+		if !valid[receipt.target] || receipt.target == target {
+			continue
+		}
+		rel, err := filepath.Rel(target, receipt.target)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			children = append(children, c.displayArtifact(receipt.path))
+		}
+	}
+	slices.Sort(children)
+	if len(children) > 8 {
+		children = append(children[:8], "…")
+	}
+	if len(children) > 0 {
+		return fmt.Sprintf("declared deliverable %s lacks a receipt covering the whole directory; current narrower scopes: %s. Run its project check with verification.paths containing %s; dependency/cache/build directories are excluded automatically. Narrower scopes do not establish coverage of other project inputs", c.displayArtifact(path), strings.Join(children, ", "), c.displayArtifact(path))
+	}
+	return fmt.Sprintf("declared deliverable %s has no current covering receipt; run its task-specific check with verification.paths containing this exact path, or validate_artifact for a file. A declaration alone does not establish existence or verification", c.displayArtifact(path))
 }
 
 func (c *completionController) displayArtifact(path string) string {

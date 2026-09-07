@@ -1,5 +1,86 @@
 # Collomia Roadmap History
 
+### 2026-09-06 — Kanban30 Standard Developer acceptance
+
+The user reported successful testing of recovery-reliability candidate `.5`.
+Transcript `20260907-053039-c1665a` confirms clean Standard Developer completion
+with Ollama `deepseek-v4-flash:0731-cloud`: 9 API tests, a passing frontend build,
+10/10 HTTP smoke checks, launcher verification and completed docs/ignore checks.
+A real cascade-delete bug and a mutable-data verification scope were repaired.
+One completion intervention was resolved without user input; no terminal error
+was emitted and the final completion state held no obligations. The frontend
+used explicit scope; automatic inference remains offline-tested. Work-mode live
+acceptance is still pending. This closes the Developer acceptance gate, not an
+orchestration milestone or a cross-model quality measurement.
+
+### 2026-09-06 — Kanban29 project verification scope
+
+The Kanban29 run passed 11 API tests and the TypeScript/Vite build but ended
+`needs_verification` because it declared `frontend/` and provided narrower
+receipts. Standard now captures project inputs before supported plain builds,
+including manifest/lockfile freshness, through normal permissions. Explicit
+scopes are preserved. Missing covering receipts explain narrower scopes instead
+of suggesting that the app may be missing or changed. Malformed check metadata
+and native shell syntax rejected before execution return correction feedback;
+actual failed checks and permission/filesystem errors remain obligations.
+
+Native agent-loop regression tests exercise the full finish sequence and
+counterexamples for failure, drift, scope and permissions. No schema changes,
+new graph authority or live-model quality claim. Candidate gates are recorded
+in the [improvement plan](IMPROVEMENT_PLAN.md).
+
+### 2026-09-06 — Kanban28 ordinary command failures must allow diagnosis
+
+- A local HTTP smoke test exited 1 after its server failed to start. The next
+  diagnostic command was refused by Standard's uncertain-action fence because
+  the failed command contained `curl`. Reproduction isolated SQLite's missing
+  database parent directory; the app was still under development.
+- Replace the local/dependency-fetch exception list with native execution state:
+  every ordinary observed shell exit settles execution. Keep real failure and
+  evidence obligations, per-action permissions, and uncertain interruption or
+  external/MCP-tool outcomes. Never automatically replay a failed command;
+  assess partial local/remote effects before a deliberate retry.
+- Remove the dependency-fetch allowlist. Add native loopback HTTP agent tests
+  covering failure, shell diagnosis, repair, deliberate retry, fresh verification
+  and completion without extra controller rounds across Standard and graph
+  fixtures. Add recovery/restart counterexamples for interrupted and opaque
+  external failures. Earlier history describing network/publication shell
+  failures as necessarily uncertain is superseded by this policy.
+- No schema changes or edits to user sessions, workspaces, configuration or
+  installed binary. Full candidate verification and user acceptance are tracked
+  in the [improvement plan](IMPROVEMENT_PLAN.md).
+
+### 2026-09-06 — Kanban27 task completion versus internal housekeeping
+
+- The app's API, frontend and serving checks passed. The final blocked state
+  contained only two malformed note updates, corrected earlier in the session.
+  Exact retry identity could not match the corrected notes, while recovery
+  explicitly prohibited note saves as proof: an impossible completion condition.
+- Planning/note/history errors are now feedback without task-failure obligations
+  in Standard and graph execution. They cannot establish evidence or renew
+  task progress. Standard restoration filters obsolete metadata failures without
+  rewriting history or clearing real failures, pending effects or file checks.
+- Explicit successful recovery references no longer fail only because a changed
+  operation was labeled retry rather than alternative. Later successful
+  non-metadata receipts and semantic intent remain required.
+- Native agent termination and counterexample tests pass, along with the full
+  offline suite, agent/tools/session/goalgraph/TUI/CLI race checks, vet, six
+  platform builds/checksums and native real-PTY startup checks. User acceptance
+  remains tracked separately in the improvement plan.
+
+### 2026-09-06 — Kanban26 verification retry context and npm exit 254
+
+- A passing Vite build piped through `tail` led to runtime advice that removed
+  `cd frontend`. npm then failed with ENOENT/254; the all-high-codes-are-signals
+  heuristic fenced the model's correctly targeted retry.
+- Native status classification now distinguishes valid shell signal statuses
+  from ordinary high exits. Suggestions preserve directory, environment and
+  quoted arguments; unsafe extraction/replay is omitted. Literal workspace
+  subdirectory checks qualify while outside/dynamic targets remain refused.
+- Native frontend, high-exit, PTY and restart/alternative recovery regressions
+  cover the observed failure. Live acceptance remains tracked separately in
+  [the improvement plan](IMPROVEMENT_PLAN.md).
+
 This archive preserves the detailed assessment, dated implementation log, and
 historical phase annotations that previously lived in `ROADMAP.md`. It is a
 record of what changed and why, not the current task queue.
@@ -12,6 +93,72 @@ For current priorities, remaining deliverables, and sequencing, see
 **Scope:** Current repository compared with the original product requirements,
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
+
+### 2026-09-06 — Kanban25 dependency recovery and native file arguments
+
+- An update patch supplied `content` instead of `new_text`, emptying the project
+  manifest and ignore file. `uv add` then returned status 2; a broad network
+  classification fenced the agent's subsequent repair after read-back.
+- File tools now reject missing/misplaced replacement text before mutation.
+  Typed native input/precondition errors are feedback rather than permanent
+  failure obligations; deliberate empty replacements remain valid. Required
+  verification, denied actions and executed failures keep their existing rules.
+- Recognized dependency/repository fetches settle ordinary observed exits while
+  retaining failed-operation and validation obligations. Publishing, opaque
+  remote clients and interrupted outcomes remain guarded. Routine command errors
+  no longer carry generic sandbox settings advice without an access diagnostic.
+- Native-tool scripted correction/completion and restart regressions pass,
+  alongside the full offline suite, focused race checks and real-PTY CLI smoke
+  checks. Live acceptance and legacy-session reconciliation are tracked in the
+  [improvement plan](IMPROVEMENT_PLAN.md).
+
+### 2026-09-06 — Terminal-reliability candidate startup repair
+
+- The first output wrapper preserved only `Fd`, but Bubble Tea detects a
+  terminal using the complete `term.File` interface. Initial window sizing
+  silently stopped and the actual TUI remained on “Starting Collomia…”.
+  This regression was introduced by the wrapper, independently of the earlier
+  output stall or the configured model/provider.
+- The wrapper now retains the full interface while borrowing the terminal;
+  closing the adapter does not close shared stdout. A compile-time contract
+  prevents accidentally dropping the required methods again.
+- A real PTY regression failed before the fix and passes after it, covering
+  initial sizing and resizing without manually supplying `WindowSizeMsg`.
+  The rebuilt CLI also passed Developer and Work startup, resize, local-command
+  interaction and clean exit checks. Candidate `.2` replaces `.1`; broader
+  live-model acceptance remains tracked separately in the improvement plan.
+
+### 2026-09-06 — Kanban23 terminal stalls and partial plan updates
+
+- Live sampling and debugger inspection found Collo blocked writing fd 1 to
+  a PTY controlled by `kiro-cli-term` inside cmux. The terminal bridge was not
+  draining output; the renderer lock and full UI queue then stalled the agent.
+  This establishes an output stall, not the cause of the bridge's failure or
+  every previously reported lockup. The inspected process was left running.
+- Interactive output now times out after 30 seconds, records a warning,
+  cancels the run and avoids blocked teardown/error writes. Agent event delivery
+  respects cancellation when the UI queue is full. A real stopped-reader PTY,
+  renderer teardown and queue cancellation have race-tested reproductions.
+- Plan updates now merge fields and step IDs; explicit `replace: true` selects
+  full replacement. This prevents the observed 7 → 2 → 4 accidental loss of
+  future work. Stored plan format and runtime graph replacement are unchanged.
+- There were no recorded compactions despite model claims. `/context` and the
+  pinned-state prompt distinguish current input from cumulative spending and
+  actual runtime summaries. Acceptance is tracked in the improvement plan.
+
+### 2026-09-06 — Kanban22 model response-limit recovery
+
+- Executable discovery succeeded. Standard Developer execution then stopped
+  when Ollama reported `length` at exactly 32,000 output tokens, after 9,107
+  input tokens and seven successful read-only tool calls. No app writes had run.
+- The shared agent now makes at most two accounted continuation requests with
+  smaller-step guidance. Rejected calls never execute or become pending history;
+  previous effects remain. Repeated limits pause rather than report blocked work.
+- Graph and worker resource stops remain extendable; team and returned worker
+  statuses use the same classification. Refusals, unknown terminal states and
+  incomplete summaries remain unaccepted. No model configuration is widened.
+- Automated verification and live acceptance are recorded in
+  [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md#kanban22-response-limit-continuation--september-6).
 
 ### 2026-09-06 — Kanban21 execution and graph continuation maintenance
 

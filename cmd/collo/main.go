@@ -35,6 +35,11 @@ func main() {
 		if errors.As(err, &exitErr) && exitErr.Code > 0 {
 			os.Exit(exitErr.Code)
 		}
+		// stderr can share the same stopped PTY as stdout. The diagnostic is
+		// already durable; writing it here would hang again after clean teardown.
+		if errors.Is(err, tui.ErrTerminalOutputStalled) {
+			os.Exit(exitFailure)
+		}
 		fmt.Fprintln(os.Stderr, "collo:", failureid.Display(err))
 		os.Exit(exitCode(err))
 	}
@@ -309,6 +314,14 @@ func run(args []string) error {
 		return err
 	}
 	defer runtime.Close()
+	ctx, cancelUI := context.WithCancel(ctx)
+	defer cancelUI()
+	output := tui.NewGuardedOutput(os.Stdout, 30*time.Second, func(err error) {
+		notice := event.New(event.KindWarning)
+		notice.Text = "Terminal output unavailable; cancelling the active turn and retaining the session for resume in a working terminal: " + err.Error()
+		runtime.LogEvent(notice)
+		cancelUI()
+	})
 	initial := strings.Join(opts.args, " ")
 	altScreen := runtime.Config.Options.AlternateScreen
 	if opts.altScreen != nil {
@@ -335,11 +348,18 @@ func run(args []string) error {
 	// terminal that no longer exists. WithContext is what turns a cancelled
 	// shutdown context into a returned Run, and a returned Run is what reaches
 	// the deferred Close above.
-	programOptions = append(programOptions, tea.WithContext(ctx))
-	program := tea.NewProgram(tui.New(runtime, broker, initial), programOptions...)
+	programOptions = append(programOptions, tea.WithContext(ctx), tea.WithOutput(output))
+	model := tui.NewWithOutput(ctx, runtime, broker, initial, output)
+	program := tea.NewProgram(model, programOptions...)
 	_, err = program.Run()
-	tui.ResetTerminalBackground()
-	if shutdownRequested(err, ctx) {
+	wasShutdown := shutdownRequested(err, ctx)
+	cancelUI()
+	model.WaitForRuns(5 * time.Second)
+	tui.ResetTerminalBackground(output)
+	if outputErr := output.Err(); outputErr != nil {
+		return fmt.Errorf("%w: %v", tui.ErrTerminalOutputStalled, outputErr)
+	}
+	if wasShutdown {
 		return nil
 	}
 	return err

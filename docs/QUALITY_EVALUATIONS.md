@@ -1,5 +1,103 @@
 # Real-model quality evaluations
 
+Kanban29 regressions in `internal/agent/automatic_verification_test.go` run native
+shell checks through the agent loop in Standard Developer and Work. A plain
+project build, later documentation writes, malformed verification metadata,
+rejected piped check, valid docs check, narrower build scope and late directory
+declaration finish without interventions or terminal errors. Counterexamples
+retain incomplete outcomes for failed builds, source/lockfile drift, changes
+during a build, new inputs, denied reads, masked statuses and explicitly narrow
+coverage. They test harness behavior, not full application correctness or a
+live-provider success rate. Candidate `v0.4.4-recovery-reliability.5` passes the
+full offline suite, agent/tools/session/goalgraph/TUI/CLI race checks, vet,
+six-platform builds/checksums and Developer/Work native PTY startup, resize,
+status and quit checks. Legacy preflight-failure recovery remains covered
+separately. Standard Developer user acceptance passed on 2026-09-06 through
+Kanban30 (`20260907-053039-c1665a`, Ollama `deepseek-v4-flash:0731-cloud`):
+9 backend tests, passing frontend build, 10/10 HTTP smoke checks and launcher/docs/
+ignore-rule checks. The run repaired a real cascade-delete bug, recovered from
+an output-limit continuation and corrected verification input/scope issues.
+One completion intervention was resolved autonomously; there were no terminal
+error events and the final recovery state was empty. Its frontend build used
+explicit project scope, so automatic inference is covered by offline tests only.
+Work-mode live acceptance remains pending in [the improvement plan](IMPROVEMENT_PLAN.md).
+This single observed success is not a measured cross-model success rate.
+
+Kanban28's `internal/agent/command_recovery_test.go` runs actual loopback HTTP
+and native shell tools through `Agent.Run`: a failing HTTP health check,
+shell diagnosis, directory repair, one deliberate retry, a file write, fresh
+verification and final answer. Developer/Work Standard and primary graph
+fixtures assert zero terminal errors, zero completion interventions and exactly
+two HTTP requests (no hidden automatic retry). Recovery/restart tests distinguish
+normal shell exits, including network/publication labels, from interrupted
+commands and failed opaque external tools. These are scripted harness tests,
+not a measured live-model success rate. The internal Work/graph fixture does
+not enable that public combination. Candidate `v0.4.4-recovery-reliability.4`
+passes the full offline suite, agent/tools/session/goalgraph/TUI/CLI race checks,
+vet, six-platform builds/checksums and native Developer/Work real-PTY startup,
+resize, status and quit checks. Only expected context-bar snapshot changes
+needed updating. Live acceptance is pending in
+[the improvement plan](IMPROVEMENT_PLAN.md).
+
+Kanban27's offline regressions in `internal/agent/bookkeeping_completion_test.go`
+exercise native note tools, writes, a failed check, repair, fresh verification,
+and a final stale-note conflict through `Agent.Run`. They assert termination
+with zero completion interventions, zero terminal errors and no extra model
+requests in Developer/Work Standard and graph-controller fixtures. Legacy-state
+migration, metadata progress churn, unfinished plans, stale evidence, invalid
+recovery proofs and persistence failures have counterexamples. This tests the
+completion contract, not a live-model success rate. The internal Work/graph
+fixture does not enable that public combination. Candidate
+`v0.4.4-recovery-reliability.3` passes the full offline suite, agent/tools/session/
+goalgraph/TUI/CLI race checks, vet, six-platform builds/checksums and native
+Developer/Work real-PTY startup, resize, status and quit smoke checks. Live
+acceptance is pending.
+
+Kanban26 has native regressions in `internal/agent/verification_command_test.go`
+and `internal/tools/command_test.go`: a successful piped frontend build is
+converted into a direct check preserving cwd, `$PWD`, exports and quoted spaces;
+its scoped receipt completes Standard Developer/Work work. High non-signal exits
+(including npm's 254) allow repair across restart and a recorded successful
+alternative can complete. Pipes and PTYs preserve native exit classification;
+interruption counterexamples remain uncertain. These are offline harness tests,
+not live-provider quality measurements. Candidate
+`v0.4.4-recovery-reliability.2` passes the full offline suite, agent/tools/shell/
+TUI/CLI race checks, vet, six-platform builds/checksums and native real-PTY
+startup/resize/status/quit checks. User acceptance remains pending.
+
+Kanban25 has an offline native-tool regression in
+`internal/agent/dependency_recovery_test.go`: malformed patch rejection, ordinary
+dependency-command failure, read-back, repair, retry and verification complete
+without terminal errors or completion interventions. It covers Developer/Work
+Standard execution, graph-controller execution and Standard restart; it does
+not make Work/Orchestrated Goal a supported public combination. File argument
+and shell classification tests include intentional empty replacements, atomic
+batch rejection and retained interruption guards. The original dependency
+allowlist and network-command exclusions are superseded by Kanban28 below. These tests prove the correction path, not a measured
+live-model success rate. Acceptance is tracked in the improvement plan.
+
+Kanban23 has offline reproductions for a real PTY whose reader stops consuming
+output, bounded renderer teardown, cancellation with a full UI queue, and partial
+plan updates retaining seven steps. See `internal/tui/output*_test.go`,
+`cmd/collo/shutdown_test.go` and `internal/plan/update_test.go`. These establish
+the harness behavior under those failures, not a fix to a third-party terminal
+bridge or a live-model quality improvement.
+
+The first terminal-output candidate exposed a startup regression that the
+stopped-reader test did not cover. `TestGuardedTerminalDeliversStartupAndResize`
+now runs the actual TUI on a sized PTY and relies on Bubble Tea's terminal
+detection for both initial and changed dimensions. It failed on the incomplete
+output wrapper and passes with the complete `term.File` contract. Developer and
+Work smoke checks of candidate `.2` also passed startup, resize, `/status` and
+`/quit` using temporary configuration/workspaces and no live model calls.
+
+Kanban22 response-limit recovery is covered offline by
+`internal/agent/response_limit_test.go` and the updated termination/graph tests.
+They check bounded continuation across modes, no execution of rejected tool
+calls, charged usage, cancellation and extendable resource stops. This is
+regression evidence, not a live-model quality score; acceptance remains tracked
+in the improvement plan.
+
 The September 6 orchestration reliability maintenance has separate offline
 regressions in `internal/goalgraph/continuation_test.go`,
 `internal/agent/worker_budget_test.go`, and

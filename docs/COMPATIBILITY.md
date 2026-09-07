@@ -1,5 +1,48 @@
 # Compatibility and migration policy
 
+Kanban29 changes no schema or saved-state version. Standard native commands may
+receive runtime-generated verification metadata before authorization when no
+explicit verification field was supplied and a supported project build is
+recognized. The original transcript tool call remains as requested; the native
+result reports the automatically captured scope. Explicit scope is unchanged.
+No historical success becomes a current receipt, and older directory obligations
+still require fresh evidence after resume. Invalid verification arguments and
+shell syntax rejected before execution no longer add failed-task obligations;
+older saved failures retain their existing recovery behavior. See
+[completion](COMPLETION.md) for supported command shapes and limits.
+
+Kanban28 changes no schema version. Native shell commands that finish with an
+ordinary nonzero exit now settle execution regardless of network/publication
+classification. Failure/evidence obligations and per-action permissions remain.
+Legacy pending markers lack native exit classification and require one-time
+inspection/reconciliation; transcript text is not trusted exit metadata. Failed
+external/MCP tools with unknown effects and genuinely interrupted commands keep
+their guards. See [recovery](RECOVERY.md) and the [handoff](IMPROVEMENT_PLAN.md).
+
+Kanban27 changes no schema version. Existing Standard recovery records are read
+with obsolete planning/note/history failures filtered; their original transcript
+events remain intact. Real failures, pending effects and fresh-file requirements
+are retained. Existing `recovered_by_retry`/`recovered_by_alternative` fields are
+still accepted; either label can link an explicitly justified changed operation
+to a successful later non-metadata receipt. Metadata tools are neither task
+failure obligations nor completion evidence in Standard and graph execution.
+
+Kanban26 maintenance changes no public schema or persisted state version.
+Native ordinary exit 254 no longer creates an uncertain-action marker. Literal
+workspace subdirectory verification chains are accepted, and direct-command
+suggestions retain their execution context. Legacy pending markers still need
+one-time reconciliation because they lack native completion classification.
+
+Native file tools now enforce the replacement fields already described by their
+contracts: `write_file.content`, `edit_file.new_text`, and patch update
+`old_text`/`new_text` must be explicit strings. Patch `content` is create-only;
+unknown or contradictory fields are rejected before mutation. Explicit empty
+strings remain valid. These typed input errors return corrective feedback rather
+than a durable executed-failure obligation. No session/event schema version changes.
+Older persisted uncertain-command markers are retained on upgrade because they
+lack the native exit classification needed for automatic settlement; see
+[Standard recovery](RECOVERY.md) for one-time reconciliation.
+
 Current Standard completion adds optional `run_command.verification` input and
 a schema-v1 evidence kind, `scoped_verification`, with an optional bounded
 `files` digest map. Consumers validating evidence kinds must refresh
@@ -825,7 +868,36 @@ version can be fulfilled by a fresh project check after upgrade.
 
 Empty-response recovery adds no event kind or public outcome: bounded retries
 emit warnings and usage; exhaustion remains a structured provider protocol
-failure with a clearer TUI label. Refusal and truncation handling is unchanged.
+failure with a clearer TUI label. Refusal handling is unchanged; response-limit
+continuation is described below.
+
+## September 6 terminal and plan-update maintenance
+
+Interactive rendering, theme, bell and clipboard output share a bounded writer.
+A terminal that stops accepting bytes for 30 seconds causes a durable warning
+and run cancellation; later display writes fail immediately and process error
+reporting avoids the blocked terminal. Session and headless output are not routed
+through this display guard. One blocked native write can remain until exit.
+
+The `update_plan` tool accepts optional `replace` (default false). Supplied fields
+and steps merge by ID; omitted fields and steps remain. Existing step updates
+require only `id`, while new steps still validate title/status and new plans still
+validate their goal. `replace: true` uses complete-plan replacement. Stored plan
+schema, `Board.Set` and runtime-owned graph revision semantics are unchanged.
+Older binaries still interpret tool calls as full replacement; regenerate tool
+catalogs from the running version. Failed updates remain atomic.
+
+## September 6 model response-limit continuation
+
+An explicit output/context-limit stop can now trigger at most two additional
+requests per turn. Existing warning, usage and message records carry the
+continuation; no new schema fields or event kinds are introduced. Unaccepted
+tool calls remain absent from pending history, and previous effects remain.
+If the response limit persists, the public outcome is now `budget_exhausted`
+instead of `blocked`, with the existing structured provider protocol metadata
+and a model-response-limit TUI label. Approved graphs retain an extendable budget
+outcome; worker and team statuses agree. Refusals, unknown terminal states and
+incomplete compaction summaries remain unaccepted.
 
 ## September 6 execution allowance and environment maintenance
 

@@ -203,6 +203,8 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		inspector += fmt.Sprintf("\n  conversation       %d user / %d assistant messages", breakdown.MessagesByRole["user"], breakdown.MessagesByRole["assistant"])
 		if breakdown.Summaries > 0 {
 			inspector += fmt.Sprintf("\n  compaction         %d summary block(s) replacing older history", breakdown.Summaries)
+		} else {
+			inspector += "\n  compaction         no summary blocks in the current conversation"
 		}
 		if breakdown.ArtifactCount > 0 {
 			inspector += fmt.Sprintf("\n  retained results   %d artifact(s), %s on disk and outside the prompt", breakdown.ArtifactCount, formatByteCount(breakdown.ArtifactBytes))
@@ -210,7 +212,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if breakdown.ImageCount > 0 {
 			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
 		}
-		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
+		inspector += "\n\nctx estimates the current input prompt, not cumulative token spending or live reasoning output. Standard automatic compaction normally starts above 80% of the configured context window when enough history can be reclaimed. Orchestrated Goal can also compact at a node boundary or under aggregate token-budget pressure. Model prose claiming compaction is not a runtime event. /compact requests summarization; the full transcript survives in the session log."
 		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input / %d output%s tokens%s%s%s\nEstimated current prompt for one request: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, usage.OutputTokens, reasoning, cacheLine, cost, graphBudget, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()

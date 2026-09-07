@@ -307,16 +307,7 @@ func (t *Team) FinishDetailed(id, summary string, evidence, changed []string, wo
 		err = failureid.Ensure(err)
 		s.Error = err.Error()
 		s.FailureID = failureid.ID(err)
-		switch {
-		case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded):
-			s.Status = DelegateBudgetExhausted
-		case errors.Is(err, context.Canceled):
-			s.Status = DelegateCancelled
-		case errors.Is(err, context.DeadlineExceeded):
-			s.Status = DelegateTimedOut
-		default:
-			s.Status = DelegateError
-		}
+		s.Status = delegateTerminalStatus(err)
 	})
 }
 

@@ -139,6 +139,7 @@ func TestScopedVerificationRejectsMaskedStatusAndDrift(t *testing.T) {
 			putScopedFile(t, dir, "game.html", "ASTEROIDS")
 			putScopedFile(t, dir, "check.sh", "exit 1\n")
 			putScopedFile(t, dir, "mutate.sh", "printf CHANGED > game.html\n")
+			c.syncArtifactBrief(&plan.Plan{Artifacts: []plan.Artifact{{Path: "game.html", Role: "deliverable"}}})
 			raw, _ := json.Marshal(map[string]any{"command": command, "verification": map[string]any{"paths": []string{"game.html"}, "purpose": "Check"}})
 			r, o := runScopedTool(t, a, c, "check", "run_command", string(raw))
 			if !o.Failed || len(o.ScopedFiles) != 0 || r.Evidence != nil {

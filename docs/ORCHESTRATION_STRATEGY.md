@@ -1014,11 +1014,13 @@ OG-3A.4 completion-gap and executable-topology correction:
   workspace `cd`, an environment assignment, and `2>&1`. The controller then
   accepted that node but immediately blocked the next isolated writer because
   primary scaffolding had necessarily left the parent workspace dirty.
-- Safe verification canonicalization now removes only an exact redundant
+- At this milestone, safe verification canonicalization removed only an exact redundant
   `cd` to the current workspace (or `.`) followed by `&&`, plus a final literal
   `2>&1`. Those wrappers preserve the verifier's exit status. Other
   directories, pipes, semicolons, `||`, and status-masking composition remain
-  ineligible and receive direct-command guidance.
+  ineligible and received direct-command guidance. The Kanban26 maintenance
+  below extends this to literal workspace subdirectories and corrects advice
+  that discarded execution context.
 - A durable completion-gap fingerprint and provider-iteration watermark now
   bound remediation. Once the runtime records an unmet gate, only evidence
   capable of changing that gate renews its four-cycle lease: recognized
@@ -2555,6 +2557,87 @@ Every agent or contributor continuing this program must:
    commands and evaluations that proved its exit gate.
 
 ### Current handoff
+
+- Active maintenance (2026-09-06): Kanban29 repairs Standard project-scope
+  accounting after a passing build. Automatic scope is limited to native
+  Standard builds and is established before authorization/execution; graph and
+  graph-worker verification rules are unchanged. Typed malformed verification
+  metadata is corrective input feedback, never graph task evidence. No milestone
+  reopening, schema change or authority expansion. Full finishing regressions,
+  retained failure/freshness/permission gates and acceptance are tracked in the
+  improvement plan.
+
+- Active maintenance (2026-09-06): Kanban28's ordinary failed HTTP smoke test
+  locked out its diagnostic command because networking was mistaken for an
+  uncertain execution outcome. All observed ordinary native shell exits now
+  permit diagnosis and repair; no command is automatically replayed. Required
+  graph evidence, readiness, failure receipts, per-action permissions and
+  integration checkpoints remain runtime-owned. The native HTTP failure →
+  diagnosis → repair → deliberate retry → verification → completion regression
+  covers Standard and the primary graph controller. No schema change, public
+  mode expansion or milestone reopening. The earlier dependency allowlist is
+  removed. Candidate verification and acceptance are tracked in the improvement
+  plan; interruptions and failed external tools with unknown effects stay guarded.
+
+- Active maintenance (2026-09-06): Kanban27 exposed a Standard completion
+  requirement that could not be satisfied: task-note errors were tracked as
+  failures while note saves were forbidden as recovery evidence. Housekeeping
+  is now outside both task-failure and task-evidence accounting in Standard and
+  graph execution; working-note/history tools remain available to workers.
+  They cannot renew progress or substitute for state-bound checks. Readiness,
+  required evidence, permissions and durable graph outcomes remain runtime-owned.
+  Native note-error → failed check → repair → passed check → note conflict →
+  final-answer tests cover the primary graph controller as well as Standard.
+  No schema change, public mode expansion or milestone reopening. Standard
+  legacy note-failure migration and acceptance are in the improvement plan.
+
+- Active maintenance (2026-09-06): Kanban26's correction advice discarded the
+  frontend directory, then npm exit 254 was mistaken for a signal. Native exit
+  classification now distinguishes valid signal statuses from ordinary high
+  codes. Suggestions preserve execution context; literal workspace subdirectory
+  `cd ... &&` checks can qualify in the graph recognizer. Outside or unresolved
+  targets remain refused. Runtime readiness, freshness, failure receipts and
+  permission authority remain unchanged. No schema or milestone changes.
+  Acceptance is tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
+
+- Active maintenance (2026-09-06): Kanban25 exposed malformed native file
+  replacement arguments and a Standard recovery fence after an ordinary failed
+  dependency install. Native file-input/precondition errors now return corrective
+  feedback before execution without a graph failure obligation. Required graph
+  verification, permissions, write-ahead execution tracking and actual failed
+  tool receipts retain their existing authority. Native-tool correction tests
+  complete through the graph controller; Standard restart recovery is tested
+  separately. This does not enable public Work/graph execution or reopen a
+  milestone. Live acceptance is tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
+
+- Active maintenance (2026-09-06): Kanban23's live stack identifies blocked
+  terminal stdout behind the Kiro/cmux PTY chain. Bound interactive output waits
+  and cancel the agent when the display fails; do not change graph permission,
+  readiness, freshness or recovery authority. Ordinary `update_plan` patches
+  preserve omitted step IDs/fields; explicit replacement remains available,
+  while runtime board `Set` and graph revisions keep complete replacement
+  semantics. Context documentation distinguishes ordinary 80% pressure from
+  explicit graph boundaries/budget pressure and unsupported model prose.
+  Focused PTY, cancellation and plan-update reproductions passed with race
+  detection. Full verification and live acceptance are tracked in the
+  [Kanban23 checklist](IMPROVEMENT_PLAN.md#kanban23-terminal-and-plan-reliability--september-6).
+
+- Active maintenance (2026-09-06): Kanban22 exposed immediate task failure on
+  a model's output limit in Standard Developer execution. Add at most two
+  accounted continuation requests per turn across profiles and graph workers;
+  discard rejected tool calls and request a smaller next step. Exhaustion must
+  preserve work as a resource pause, including an extendable graph outcome,
+  rather than insert a permanent provider-failure blocker. Refusals, unknown
+  terminal states, interrupted requests and incomplete compaction summaries
+  remain unaccepted. No model setting or permission is widened automatically.
+  Implementation passed the full offline suite, targeted race checks, vet,
+  documentation checks and native/Linux/Windows builds. Tests cover successful
+  continuation across profiles, graph primary/worker execution, immutable prior
+  effects, discarded calls, monotonic retry limits, cancellation, accounting and
+  restored graph extension/completion. A local Ollama-compatible HTTP stream
+  regression also passed with the observed reasoning-only stop and token counts.
+  Live acceptance remains pending in the
+  [Kanban22 checklist](IMPROVEMENT_PLAN.md#kanban22-response-limit-continuation--september-6).
 
 - Accepted maintenance (2026-09-06): Kanban21 exposed a command-dependent probe
   assigned to a worker without command access, eager research invalidated by

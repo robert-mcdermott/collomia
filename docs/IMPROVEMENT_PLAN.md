@@ -10,15 +10,20 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Current work:** Kanban21 Orchestrated Goal continuation and shared runtime discovery.
-- **Status:** complete and user-accepted on 2026-09-06. The user reported
-  successful manual testing: "manually tested it and it works." The separate
-  larger-project Standard and Work acceptance checks below remain pending.
-- **Next action:** commit the accepted maintenance changes.
+- **Current work:** Kanban29 project-scope verification mismatch after passing
+  checks; capture project inputs before builds and simplify input correction.
+- **Status:** implementation, automated verification and builds pass. The user
+  accepted candidate `.5` in Standard Developer through Kanban30 on 2026-09-06;
+  transcript review confirms clean completion. Kanban21 remains user-accepted.
+  The separate Work-mode live acceptance check remains pending.
+- **Next action:** review/commit the completed reliability changes when requested;
+  use the separate Work check for additional live acceptance.
   Do not begin another feature wave by default.
-- **Test build:** `dist/collo-orchestration-reliability`, candidate version
-  `v0.4.3-orchestration-reliability.1`, based on `9172f57` plus these changes.
-  Prior binaries, installed binary, user sessions, and `VERSION` are preserved.
+- **Test build:** `dist/collo-recovery-reliability`, candidate version
+  `v0.4.4-recovery-reliability.5`, based on `c037a7c` plus these changes.
+  Includes the uncommitted Kanban22 and Kanban23 fixes.
+  Platform binaries in `dist/` are also rebuilt with this candidate version.
+  The installed binary, user sessions, and `VERSION` are preserved.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
@@ -31,6 +36,411 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   emitted by an adapter. It does not enable thinking at the API, add synchronous
   reasoning extraction, or restore thinking in reopened chat transcripts.
   Those are W2 work. A silent summary area does not prove absent computation.
+
+## Kanban29 project verification must finish cleanly — September 6
+
+Session `20260907-042642-94c5af` passed 11 API tests, the TypeScript/Vite build,
+and API/SPA smoke checks. The user confirmed no block in the fresh run, but it
+ended `needs_verification`: the plan declared `frontend/`, while final scoped
+build evidence named only `frontend/src` and three config files. An earlier
+unscoped passing build did not establish durable file receipts. Two intervention
+rounds were spent aligning evidence, including manually reconciling a check
+refused before execution. This is partial live acceptance of `.4`'s recovery
+behavior, not clean completion acceptance.
+
+- [x] Capture project inputs before supported plain native builds when verification
+  is omitted. Honor explicit scopes unchanged. Supported forms and conservative
+  exclusions are documented in [completion](COMPLETION.md).
+- [x] Bind source, config, manifest and lockfile bytes through existing guards,
+  child-read permissions and hooks. No retrospective receipts. Exclude the
+  workspace `.npm-cache` directory alongside other existing generated inputs.
+- [x] Explain missing covering receipts and list narrower current scopes without
+  reading undeclared/unapproved files to construct the diagnostic.
+- [x] Malformed verification metadata and native check shell syntax rejected
+  before execution are correction feedback. Real failures, missing paths,
+  permissions, drift and runtime graph evidence remain enforced.
+- [x] Native Developer/Work agent-loop regression: plain build → later docs →
+  rejected check syntax → docs check → narrower build → directory declaration →
+  final answer, with zero interventions, no terminal errors and no receipt hunt.
+  Negative cases cover failed builds, source/lockfile changes, changes during
+  checking, added inputs, read denial, masked statuses and narrow explicit scope.
+- [x] Full offline suite (`go test ./...`) and vet pass. Race checks pass for
+  agent, tools, session, goalgraph, TUI and CLI. All six Darwin/Linux/Windows
+  amd64/arm64 builds and checksums pass. Native `.5` passes Developer alternate-
+  screen and Work inline PTY startup, resize, `/status` and `/quit` with isolated
+  configuration and no model calls. Generated docs and `git diff --check` pass.
+  Prompt guidance raises some context-gauge snapshots from 5% to 6%; no layout
+  behavior changed. Legacy preflight recovery is tested separately from new
+  syntax correction, which no longer persists a failure.
+- [x] Standard Developer user acceptance of candidate `.5` on 2026-09-06 via
+  Kanban30, session `20260907-053039-c1665a`, Ollama
+  `deepseek-v4-flash:0731-cloud`. The user reported success; transcript review
+  confirms no terminal error or `needs_verification`, all six plan steps done,
+  and final completion state reset to `{"schema_version":1}` with no retained
+  failures, dirty paths, roles or uncertain action.
+- [ ] Separate Work-mode live acceptance. One successful Developer run does not
+  establish a cross-model success rate or test all supported paths.
+
+Kanban30 live evidence: backend tests ended at **9 passed**, frontend tsc/Vite
+build passed, **10/10** HTTP smoke checks passed, and the launcher, README and
+ignore rules received current checks. The agent repaired a genuine board-delete
+HTTP 500, added a cascade regression test, and corrected a smoke scope that
+included mutable SQLite data. It recovered from an output-limit continuation
+and housekeeping input errors. One completion intervention named the missing
+README/ignore-rule checks; these were completed without user assistance. A
+rejected inline verification loop was replaced with a script and created no
+recovery-receipt obligation. The frontend build used explicit `frontend` scope;
+automatic scope inference remains established by the offline regression, not
+claimed as exercised by this live run.
+
+After installation, either run a fresh application task normally or resume:
+
+```sh
+collo --cwd /Users/rmcdermo/mycode/kanban29 --resume 20260907-042642-94c5af
+```
+
+Ask Collo to finish the remaining verification using the frontend project build
+and summarize the result. No `/recovery acknowledge` is needed: Kanban29 has no
+uncertain action. Resume still needs fresh evidence for retained deliverables;
+old passing receipts are not restored or manufactured. No user workspace,
+transcript, configuration or installed binary is changed by this maintenance.
+
+## Kanban28 command failure must permit diagnosis — September 6
+
+Session `20260907-035857-7daaba` used Standard Developer with Ollama
+`deepseek-v4-flash:0731-cloud`. At 04:05:41 UTC the backend smoke command exited
+1 after its server terminated before the HTTP calls. At 04:05:46 the model
+tried to expose the startup error, but the harness blocked that diagnostic
+command as an uncertain action (`err-0f93c3c85890cbb6`). The failed command's
+`curl` calls triggered the old network exclusion. Reproduction of startup with
+a missing database parent produces `OperationalError: unable to open database
+file`. This was an ordinary repairable development error, not a finished app.
+Earlier fixes special-cased local work and dependency fetching instead of
+correctly distinguishing unsuccessful execution from interrupted execution.
+
+- [x] Every observed ordinary native `run_command` exit settles execution,
+  regardless of network, host or publication classification. Remove the
+  dependency-fetch allowlist; diagnosis and repair require no acknowledgement.
+- [x] Preserve failed-operation and current-evidence requirements. Do not
+  automatically retry a command or bypass any next action's permissions.
+  Feedback requires assessment of partial local/remote effects before retrying.
+  Interrupted, timed-out and signal-style commands, failed external/MCP tools
+  with unknown effects, and persistence errors keep their protections.
+- [x] Prompt guidance favors managed development servers with retained startup
+  logs and creates temporary parent directories before using files within them.
+- [x] Native loopback HTTP agent regression covers failure, shell diagnosis,
+  directory repair, deliberate retry, fresh verification and completion with
+  zero extra completion rounds in Standard Developer/Work and primary graph
+  fixtures. Assert exactly two HTTP calls, not an automatic replay. Recovery
+  tests cover restart, remote/publication-labelled normal exits and genuinely
+  uncertain command/external-tool counterexamples. Internal Work/graph tests
+  do not enable that unsupported public combination.
+- [x] Full offline suite (`go test ./...`) and `go vet ./...` pass. Race checks
+  pass for agent, tools, session, goalgraph, TUI and CLI. All six Darwin/Linux/
+  Windows amd64/arm64 binaries build and their checksums verify. Native `.4`
+  passes Developer alternate-screen and Work inline real-PTY startup, resize,
+  `/status` and `/quit` checks using isolated config and no model calls.
+  Generated documentation checks and `git diff --check` pass. Reviewed snapshot
+  updates reflect only the slightly increased context-bar fill from prompt
+  guidance; the displayed percentage remains 5% compared with candidate `.3`.
+- [ ] User acceptance of candidate `.4`; scripted regressions establish the
+  runtime contract, not a live-model success rate or absence of every blocker.
+
+Install the candidate and test a fresh task normally. To resume this old session:
+
+```sh
+collo --cwd /Users/rmcdermo/mycode/kanban28 --resume 20260907-035857-7daaba
+```
+
+The old persisted pending marker lacks trusted native exit classification.
+After reviewing the failed local smoke test, reconcile it once:
+
+```text
+/recovery acknowledge Reviewed the failed local smoke test; diagnose startup and create its missing database directory before retrying
+```
+
+Acknowledgement keeps the current workspace and releases its recovery checkpoint;
+it does not verify the application. Ask Collo to diagnose startup, complete the
+remaining task and run the appropriate checks. Original transcript events are
+preserved. No user workspace, config, transcript or installed binary was modified.
+
+## Kanban27 housekeeping must not prevent completion — September 6
+
+Session `20260907-032327-dc3ddb` used Standard Developer with Ollama
+`deepseek-v4-flash:0731-cloud`. The API smoke test, repaired frontend build and
+SPA-serving check passed. The first final answer was at 03:31:44 UTC. The
+controller correctly requested some missing final-file coverage, but also
+retained two malformed `update_task_context` calls as task failures. Those
+notes were corrected; nevertheless exact retry matching could not recover
+changed arguments, and metadata saves were forbidden as recovery evidence.
+By the final block at 03:35:43, all remaining failures were those two note
+updates. This was an impossible housekeeping requirement, not a failed app.
+A correct successful uv recovery receipt also caused extra work because the
+model labeled a changed-command recovery as a retry rather than an alternative.
+
+- [x] One completion boundary excludes planning, working-note and session-history
+  tools from task-failure obligations in Standard and graph execution. Their
+  errors remain visible tool feedback. Neither successful nor failed notes
+  establish verification, erase real failures or alter permission decisions.
+- [x] Housekeeping saves/searches cannot renew task progress through changing
+  revisions or excerpts. Actual plan revisions retain their planning behavior.
+- [x] Explicit recovery uses a real successful receipt after the failure and
+  the model's stated recovery intent. Both recovery labels accept a changed
+  command; choosing the wrong label no longer forces another model turn.
+  Automatic recovery still requires matching operation identity; unrelated
+  successes do not automatically clear failures. Metadata, older successes,
+  failed calls and missing receipts cannot prove recovery.
+- [x] Standard recovery decoding filters obsolete metadata-only failures for
+  status, mode checks and resumed execution. No transcript rewrite or manual
+  acknowledgement is required. Real failures, pending effects, file obligations
+  and fresh-validation requirements survive.
+- [x] Native scripted agent runs cover note errors before and after work, an
+  actual failed check, repair, passing check and final note revision conflict.
+  Developer/Work and graph-controller fixtures finish with zero interventions,
+  zero terminal errors and exactly one final-answer request. The internal
+  Work/graph fixture does not enable that unsupported public combination.
+  Counterexamples protect unfinished plans, stale evidence and persistence errors.
+- [x] Full offline suite (`go test ./...`) and vet pass. Race checks pass for
+  agent, tools, session, goalgraph, TUI and CLI. All six Darwin/Linux/Windows
+  amd64/arm64 builds and checksums pass. Native `.3` passes Developer alternate-
+  screen and Work inline PTY startup, resize, `/status` and `/quit` checks.
+  Documentation generation checks and `git diff --check` also pass.
+- [ ] User acceptance of candidate `.3`. Scripted tests establish the controller
+  contract, not a live-model success rate or absence of every possible blocker.
+
+After installing the candidate, resume the existing work normally:
+
+```sh
+collo --cwd /Users/rmcdermo/mycode/kanban27 --resume 20260907-032327-dc3ddb
+```
+
+Ask for a concise final summary. The old note failures no longer require repair.
+A resumed run still needs current evidence for retained deliverables; earlier
+receipts are not silently promoted to fresh verification. No user workspace,
+configuration, transcript or installed binary was modified by this maintenance.
+
+## Kanban26 verification context and high exit statuses — September 6
+
+Session `20260907-023754-a4db94` used Standard Developer with Ollama
+`deepseek-v4-flash:0731-cloud`. Backend smoke tests passed 24 checks and the
+frontend Vite build succeeded. The build piped output to `tail`, so its status
+could not count as verification. The runtime's suggested direct command removed
+`cd frontend`, causing npm ENOENT at the workspace root (exit **254**). The model
+corrected the command using `--prefix frontend`, but the runner classified every
+exit >=128 as a possible signal and fenced that repair. Bounded output-limit
+continuation had worked earlier; this final stop was not a token/context limit.
+
+- [x] Native process classification distinguishes ordinary high exit codes
+  (including 200, 254 and 255) from valid POSIX signal statuses, direct signals,
+  cancellation, timeouts and Windows exception/control statuses. Failed work
+  remains tracked; ordinary execution completion permits inspection and repair.
+- [x] Verification suggestions preserve the complete safe command prefix,
+  including directory, exports, `$PWD` and quoted whitespace. No later command
+  is extracted across a semicolon or replayed after effectful preparation.
+- [x] Literal directory changes within the workspace can precede a check in
+  Standard and the graph recognizer. Outside, dynamic, missing and escaping
+  symlink targets remain ineligible. Check scopes still use workspace paths.
+- [x] Native regressions execute the suggested frontend check, verify its
+  receipt and completion, exercise high exits through pipes and PTYs, and
+  verify Standard repair, restart and successful alternative reconciliation.
+- [x] `go test ./...` and `go vet ./...` pass. Race checks pass for
+  `internal/agent`, `internal/tools`, `internal/shell`, `internal/tui` and
+  `cmd/collo`. All six Darwin/Linux/Windows amd64/arm64 binaries build and their
+  checksums verify. The native `.2` binary passes Developer alternate-screen
+  and Work inline real-PTY startup, resize, `/status` and `/quit` checks without
+  model calls. Reviewed TUI golden changes only update estimated context 4% → 5%
+  after the tool-description guidance changed.
+- [ ] Live user acceptance of this candidate; offline tests are not a measured
+  live-model success rate.
+
+Install the rebuilt native binary and start a fresh task normally. To resume
+this historical session instead:
+
+```sh
+collo --cwd /Users/rmcdermo/mycode/kanban26 --resume 20260907-023754-a4db94
+```
+
+Its old persisted pending marker has no native exit classification, so review
+and reconcile it once:
+
+```text
+/recovery acknowledge Reviewed npm ENOENT exit 254 from the wrong directory; rerun the frontend check in frontend and continue
+```
+
+Then ask Collo to finish the remaining plan, rerun the frontend verification
+with its correct working directory, and reconcile the failed call using the
+successful retry receipt. This acknowledgement does not validate the project;
+it retains unfinished obligations and discards checkpoint history as described
+in [Recovery](RECOVERY.md). This maintenance does not modify the user's project,
+transcript, configuration or installed binary.
+
+## Kanban25 dependency failure and file-input repair — September 6
+
+Session `20260907-020414-234249` used Standard Developer mode with Ollama
+`deepseek-v4-flash:0731-cloud`. `apply_patch` received intended replacements in
+`content` while `new_text` was empty. The old implementation ignored `content`
+for updates and emptied both `pyproject.toml` and `.gitignore`. `uv add` then
+exited normally with status 2 because the project table was absent. The agent
+read the empty manifest and proposed a repair, but Standard recovery treated
+the command's network classification as an uncertain remote mutation and refused
+the write. This was not a token limit, missing executable or terminal stall.
+
+- [x] Native file tools require explicit replacement text and reject unknown or
+  contradictory fields. Patch batches validate before mutation; explicit empty
+  replacements and empty file creation remain supported.
+- [x] Typed native file-input errors remain tool feedback without becoming
+  durable failed-operation obligations. Permissions, actual execution failures,
+  plan readiness and evidence requirements remain enforced in both execution paths.
+- [x] Ordinary observed exits from recognized dependency installation/download
+  and Git fetching allow inspection, repair and deliberate retries. Failed
+  operations and dirty files remain tracked. The original publication/remote
+  command exclusions here are superseded by Kanban28's general execution-state
+  policy. Timeout, cancellation and interrupted actions retain their guard.
+- [x] Ordinary command failures no longer receive generic sandbox opt-out
+  guidance unless their output reports an access problem.
+- [x] Native-tool scripted runs reproduce rejection → install failure → read →
+  repair → retry → verification → completion without terminal errors or completion
+  interventions. Developer and Work Standard runs and graph-controller runs pass;
+  the internal Work/graph fixture does not enable that unsupported public combination.
+  Standard restart tests retain the failed install while allowing repair.
+- [x] Full offline suite and vet pass. Race checks pass for agent, tools, shell,
+  TUI and CLI. The new binary passes Developer/Work real-PTY startup, resize,
+  `/status` and `/quit` smoke checks without live model calls.
+- [ ] User acceptance of the Kanban25 repairs. Automated fixtures do not establish
+  a live-model success rate or claim that all causes of blocking are eliminated.
+
+For a fresh manual check, ask Collo to build the application as usual; if an
+installation fails normally, it should inspect and repair without `/recovery`.
+Malformed file arguments should leave all files intact and permit correction.
+
+The existing Kanban25 session retains the old uncertain marker, which lacks a
+persisted native exit classification. It is deliberately not silently rewritten.
+To continue it after installing the candidate:
+
+```sh
+collo --cwd /Users/rmcdermo/mycode/kanban25 --resume 20260907-020414-234249
+```
+
+After reviewing the recorded failure, reconcile the old marker once:
+
+```text
+/recovery acknowledge Reviewed the failed uv add and empty project files; repair the manifest before retrying
+```
+
+Then ask Collo to repair **both** `pyproject.toml` and `.gitignore` from the
+intended content in the transcript, retry dependency installation and continue.
+Acknowledgement retains current files and unfinished obligations, and discards
+checkpoint history as documented in [Recovery](RECOVERY.md); it is not proof of
+successful installation. No user workspace/session/configuration was modified
+by this maintenance work.
+
+## Kanban23 terminal and plan reliability — September 6
+
+The live process (PID 21781) was sampled and briefly debugger-attached, then
+detached without changing its memory or terminating it. Its blocked write was
+to fd 1, the `/dev/ttys009` terminal. The controlling chain was Collo → zsh →
+`kiro-cli-term` → cmux. The terminal bridge was not draining that PTY. No model
+socket or active tool process remained at inspection. Both terminals had XON/XOFF
+disabled. The Kiro bridge also logged repeated connection refusals, but this
+does not establish why its forwarding stalled or diagnose earlier incidents.
+Blocked renderer output holds the renderer lock and fills Collo's 64-event UI
+queue, eventually trapping the provider callback as well.
+
+Session `20260907-004257-82900e` contained zero compaction records/events. The
+model's repeated compaction claims were unsupported. Last reported input was
+50,680 tokens, about 19.3% of the configured 262,000-token window. Reasoning
+output and cumulative session usage are not the current input prompt.
+The actual plans were 7 → 2 → 4 steps: the model sent partial updates to a tool
+that replaced the whole plan, dropping future work and some criteria.
+
+- [x] Interactive display writes have a 30-second timeout. Failure is recorded
+  in the session, cancels the run, and makes teardown writes fail immediately.
+  CLI error reporting does not write into the same stopped terminal again.
+  One underlying kernel write can remain blocked until process exit; no retry
+  threads or queued display buffers accumulate after failure.
+- [x] Agent events and final delivery respect cancellation even with a full UI
+  queue. Teardown waits briefly for the run before closing the session.
+- [x] `update_plan` merges supplied fields and steps by ID. Omitted steps,
+  criteria and notes survive. `replace: true` deliberately replaces the plan;
+  validation remains atomic. Runtime-owned graph replacement is unchanged.
+- [x] Pinned state no longer suggests a compaction occurred. `/context` explains
+  input occupancy versus cumulative spending and the separate graph triggers.
+- [x] Race-tested reproductions cover a real PTY whose reader stops, renderer
+  teardown, event-queue cancellation, and 7 → partial-2 → partial-4 plan updates.
+- [x] Correct the first candidate's startup regression: Bubble Tea requires
+  `term.File` (`Read`, `Write`, `Close`, `Fd`) to detect output dimensions.
+  The incomplete wrapper suppressed `WindowSizeMsg`, leaving the model on
+  “Starting Collomia…”. A compile-time interface check and real PTY startup/
+  resize regression now cover this path without injecting window-size events.
+  The test reproduced the failure before the fix. The rebuilt CLI also passed
+  Developer/alternate-screen and Work/scrollback startup, SIGWINCH resize,
+  `/status` interaction and clean `/quit` smoke checks in isolated workspaces.
+- [x] Full offline suite, vet, documentation checks and native/Linux/Windows
+  candidate builds passed. Focused race checks also passed after routing theme,
+  clipboard and notification writes through the same guarded output.
+  After the startup repair, `go test ./...`, `go vet ./...` and
+  `go test -race ./internal/tui ./cmd/collo` passed. All six platform artifacts
+  were rebuilt as candidate `.2` and their published checksums verified.
+- [ ] Live acceptance of Kanban23 changes. No existing user process was killed.
+  Startup repair specifically is user-accepted: “now that's working again.”
+  This does not mark plan-update or output-stall live checks accepted.
+
+Manual testing: use candidate `.2` or newer. After closing any old Collo instance
+on this workspace, resume with:
+
+```sh
+./dist/collo-terminal-reliability --cwd /Users/rmcdermo/mycode/kanban23 --resume 20260907-004257-82900e
+```
+
+Ask Collo to restore the original seven-step plan from the session transcript
+and continue. The candidate prevents future accidental omissions; it does not
+rewrite the already-truncated saved plan. Check that status-only updates retain
+future work. `/context` should show no summary blocks unless actual compaction
+has occurred. The timeout prevents an indefinite Collo hang; it does not repair
+a broken upstream terminal bridge. Do not run two agents on this workspace at
+once. The existing Kanban22 and broader Standard/Work live gates remain separate.
+
+## Kanban22 response-limit continuation — September 6
+
+Session `20260907-001543-462f49` used Standard Developer mode with Ollama
+`deepseek-v4-flash:0731-cloud`. Executable discovery found Node/npm correctly.
+Seven read-only tools completed across two responses. The third response used
+9,107 input tokens and exactly 32,000 output tokens, emitted reasoning without
+a usable answer/tool call, and ended with `length` after about 167 seconds.
+No application files were written. This was a per-response output limit, not
+the graph budget problem or evidence of a full context window.
+
+- [x] At most two additional response requests per turn, with smaller-step
+  guidance and ordinary iteration/token/cost limits. Usable responses do not
+  reset this allowance. Model configuration is unchanged.
+- [x] Rejected calls remain unexecuted and absent from pending history. Earlier
+  tool effects and usage remain. Refusals, unknown statuses and interrupted
+  requests receive no new retry permission; partial compaction is unaccepted.
+- [x] Persistent truncation is a model-response-limit pause, not a task blocker.
+  Graph primary and worker stops remain extendable without provider-failure
+  ledger entries that would poison a later successful attempt.
+- [x] Focused tests cover Developer, Work, planning, graph primary/worker,
+  accounting, discarded tool JSON, cancellation, budgets and graph recovery.
+- [x] Full offline suite, targeted race checks, vet and documentation checks
+  passed. Native candidate and Linux/Windows cross-builds passed. A local HTTP
+  fixture through the actual Ollama-compatible streaming adapter reproduces the
+  reasoning-only response at 9,107 input / 32,000 output tokens, then verifies
+  successful continuation with unchanged `max_tokens` and complete accounting.
+- [ ] User acceptance of the Kanban22 follow-up.
+
+Manual check with the candidate:
+
+```sh
+./dist/collo-response-limit --cwd /Users/rmcdermo/mycode/kanban22 --resume 20260907-001543-462f49
+```
+
+Send `Continue building the Kanban application; take small implementation steps.`
+If another response reaches its limit, expect a continuation notice and a new
+request. A persistent limit pauses after two automatic continuations; it does
+not report success or execute incomplete calls. Ordinary completion checks still
+apply. This session is Standard, so continuation is a normal prompt; an approved
+graph stopped for this reason uses `/orchestrate extend`. No installed binary,
+user configuration, session or project is modified by preparing the candidate.
 
 ## Kanban21 reliability candidate — September 6
 

@@ -32,8 +32,38 @@ retries. The Kanban21 follow-up repairs shared runtime discovery/PATH,
 read scheduling, worker wall accounting and explicit graph budget extensions.
 The user confirmed successful manual testing of the Kanban21 follow-up on
 2026-09-06; separate Standard/Work live checks remain tracked in the improvement
-plan. Runtime
+plan. Kanban22 adds bounded continuation for model response limits across modes,
+with rejected calls discarded and persistent limits reported as resource pauses.
+Its live acceptance remains pending. Kanban23 follow-up adds bounded terminal
+output/cancellation, plan updates that preserve omitted steps, and clearer
+context/compaction reporting; its live gate is tracked separately. Runtime
 evidence and unrelated project obligations remain enforced.
+Kanban25 adds native file-argument rejection before mutation and recovery from
+ordinary dependency-fetch failures without a false uncertain-action fence.
+Its automated correction/restart gates pass; user acceptance remains pending.
+Kanban26 corrects high-exit-status classification and preserves working-directory
+and environment context in suggested verification retries. Literal workspace
+subdirectory checks qualify without weakening fresh evidence or graph readiness.
+Its acceptance gate is tracked separately in the improvement plan.
+Kanban27 separates internal housekeeping errors from task completion across
+Standard and graph execution, removes recovery-label-only rejections, and
+filters obsolete Standard note failures on resume. Native termination tests
+cover corrected/uncorrected notes around actual failed and passing checks.
+Live acceptance remains tracked separately.
+Kanban28 replaces local/dependency command exceptions with observed native
+execution state: any ordinary shell exit permits diagnosis and repair, including
+failed HTTP smoke tests. Failure/evidence obligations and per-action permissions
+remain; no automatic remote replay occurs. Interrupted execution and failed
+opaque external tools keep their guards. The native HTTP regression covers the
+complete repair-to-completion path; candidate acceptance is tracked separately.
+Kanban29 follows up on a remaining `needs_verification` scope mismatch after
+passing builds: Standard captures project inputs before supported plain builds,
+keeps explicit scopes, reports narrower-scope gaps and treats rejected check
+syntax as corrective feedback. Freshness and permission gates remain enforced;
+candidate verification and user acceptance are tracked in the improvement plan.
+Kanban30 passed Standard Developer user acceptance on 2026-09-06 with repaired
+application failures, passing checks and cleared completion state. The Work-mode
+live gate remains pending; automatic build-scope inference is offline-tested.
 Broader Work evaluation follows its manual acceptance gate. See the [improvement plan](docs/IMPROVEMENT_PLAN.md#retained-capability-checks).
 Wave numbers identify work rather than a mandatory execution order.
 
@@ -2429,8 +2459,10 @@ status.
 ## Recommended next sequence
 
 The Kanban21 runtime-discovery and graph-continuation maintenance passed manual
-testing and was accepted on 2026-09-06. Commit this completed slice before
-selecting further work from [`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md).
+testing, was accepted on 2026-09-06, and is committed as `c037a7c`. The active
+maintenance slice includes Kanban22 response-limit continuation and Kanban23
+terminal/plan reliability; finish verification and their live acceptance in
+[`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) before selecting more work.
 The prior Standard larger-project and Work acceptance gates remain open.
 Wave numbers do not impose a strict execution order.
 

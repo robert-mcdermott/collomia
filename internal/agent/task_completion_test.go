@@ -125,11 +125,21 @@ func TestTaskCompletionScratchDoesNotHideSourceOrFailures(t *testing.T) {
 	}
 }
 
-func TestTaskCompletionRejectedCheckRecoveryAfterResume(t *testing.T) {
+func TestTaskCompletionLegacyRejectedCheckRecoveryAfterResume(t *testing.T) {
 	a, c, dir := scopedFixture(t, taskmode.Developer)
 	putScopedFile(t, dir, "game.html", "ASTEROIDS")
 	putScopedFile(t, dir, "check.sh", "grep -q ASTEROIDS game.html\n")
-	runScopedTool(t, a, c, "rejected", "run_command", `{"command":"sh check.sh || true","verification":{"paths":["game.html"],"purpose":"Check required game content"}}`)
+	_, rejected := runScopedTool(t, a, c, "rejected", "run_command", `{"command":"sh check.sh || true","verification":{"paths":["game.html"],"purpose":"Check required game content"}}`)
+	if !rejected.InputCorrection || len(c.failures) != 0 {
+		t.Fatal("new input rejection became a failed task action")
+	}
+	// Older sessions stored this native preflight observation as a failure.
+	// Keep testing their recovery contract separately from new input feedback.
+	rejected.InputCorrection = false
+	c.recordFailure(rejected)
+	if err := c.saveRecovery(false); err != nil {
+		t.Fatal(err)
+	}
 	restored := newCompletionController(plan.NewBoard(), dir, false, taskmode.Developer)
 	if err := restored.restoreCompletion(c.store); err != nil {
 		t.Fatal(err)

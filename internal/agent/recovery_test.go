@@ -73,32 +73,39 @@ func TestCompletedCommandFailureAllowsRepairAfterResume(t *testing.T) {
 	}
 }
 
-func TestRecoveryKeepsUnknownAndExternalFailuresBlocked(t *testing.T) {
+func TestRecoveryDistinguishesCommandExitFromUncertainExecution(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		exited bool
-		action tools.Action
+		name, tool      string
+		exited, pending bool
+		action          tools.Action
 	}{
-		{"interrupted", false, tools.Action{Risk: tools.RiskExecute}},
-		{"network", true, tools.Action{Risk: tools.RiskExecute, Network: true}},
-		{"host", true, tools.Action{Risk: tools.RiskExecute, Hosts: []string{"example.com"}}},
-		{"publication", true, tools.Action{Risk: tools.RiskExecute, PublicationTargets: []string{"publish"}}},
+		{"interrupted", "run_command", false, true, tools.Action{Risk: tools.RiskExecute}},
+		{"network", "run_command", true, false, tools.Action{Risk: tools.RiskExecute, Network: true}},
+		{"host", "run_command", true, false, tools.Action{Risk: tools.RiskExecute, Hosts: []string{"example.com"}}},
+		{"publication", "run_command", true, false, tools.Action{Risk: tools.RiskExecute, PublicationTargets: []string{"publish"}}},
+		{"remote-tool", "mcp_external", false, true, tools.Action{Risk: tools.RiskExternal}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newCompletionController(plan.NewBoard(), t.TempDir(), false, taskmode.Work)
 			c.store = &memoryCompletionStore{}
-			if err := c.beginEffect("run_command", tc.action, "key"); err != nil {
+			if err := c.beginEffect(tc.tool, tc.action, "key"); err != nil {
 				t.Fatal(err)
 			}
-			o := toolObservation{Name: "run_command", Failed: true, CommandExited: tc.exited, Action: tc.action, Effects: executionEffects("run_command", tc.action)}
+			o := toolObservation{Name: tc.tool, CallID: "failed", Failed: true, CommandExited: tc.exited, Action: tc.action, Effects: executionEffects(tc.tool, tc.action)}
+			c.observe(o)
 			if err := c.finishEffect(o); err != nil {
 				t.Fatal(err)
 			}
-			if c.pending == nil {
-				t.Fatal("uncertain or external outcome was cleared")
+			if (c.pending != nil) != tc.pending || len(c.failures) != 1 {
+				t.Fatalf("wrong settlement or failure lost: %+v", c.recoveryState())
 			}
-			if err := c.beginEffect("write_file", tools.Action{Risk: tools.RiskWrite, Paths: []string{"file"}}, "write"); err == nil {
-				t.Fatal("mutation allowed before reconciliation")
+			next := newCompletionController(plan.NewBoard(), c.workspace, false, taskmode.Work)
+			if err := next.restoreCompletion(c.store); err != nil {
+				t.Fatal(err)
+			}
+			err := next.beginEffect("write_file", tools.Action{Risk: tools.RiskWrite, Paths: []string{"file"}}, "write")
+			if (err != nil) != tc.pending {
+				t.Fatalf("repair after resume: %v", err)
 			}
 		})
 	}

@@ -223,7 +223,7 @@ func (m Model) handleActivityKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if item.FailureID != "" {
 			value, label = item.FailureID, "failure ID copied"
 		}
-		state.notice = clipboardNotice(copyTerminalText(value), label)
+		state.notice = clipboardNotice(copyTerminalText(value, m.terminalOutput), label)
 		return m, nil
 	default:
 		switch {

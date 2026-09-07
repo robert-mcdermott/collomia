@@ -37,10 +37,14 @@ func TestRejectedProviderResponseNeverFinishesOrExecutesTools(t *testing.T) {
 					a := New(Options{Client: client, ProviderName: "fixture", Model: "model", Workspace: t.TempDir(), Registry: registry, Permissions: permission.New(appconfig.Permissions{Mode: "ask"}, nil), TaskMode: mode, CompletionPlan: plan.NewBoard(), MaxIterations: 4})
 					var events []event.Event
 					answer, err := a.Run(t.Context(), "inspect", func(e event.Event) { events = append(events, e) })
-					if err == nil || GoalOutcomeFor(err) != GoalBlocked || answer != "Partial answer" || executed || client.calls != 1 {
+					wantCalls, wantOutcome := 1, GoalBlocked
+					if stop == "length" || stop == "max_tokens" {
+						wantCalls, wantOutcome = 3, GoalBudgetExhausted
+					}
+					if err == nil || GoalOutcomeFor(err) != wantOutcome || answer != "Partial answer" || executed || client.calls != wantCalls {
 						t.Fatalf("answer=%q err=%v executed=%v calls=%d", answer, err, executed, client.calls)
 					}
-					if a.Usage().InputTokens != 20 || a.Usage().OutputTokens != 10 {
+					if a.Usage().InputTokens != 20*wantCalls || a.Usage().OutputTokens != 10*wantCalls {
 						t.Fatalf("usage lost: %+v", a.Usage())
 					}
 					for _, m := range a.messages {
@@ -69,7 +73,7 @@ func TestTruncationWithoutCompletionControllerAndBudgetAccounting(t *testing.T) 
 		t.Fatalf("without controller: %v", err)
 	}
 	a.tokenBudget = 10000
-	if _, err := a.Run(t.Context(), "continue", nil); !errors.Is(err, ErrTokenBudgetExceeded) || client.calls != 1 {
+	if _, err := a.Run(t.Context(), "continue", nil); !errors.Is(err, ErrTokenBudgetExceeded) || client.calls != 3 {
 		t.Fatalf("budget reset or extra request: err=%v calls=%d", err, client.calls)
 	}
 }
@@ -126,8 +130,35 @@ func TestGoalGraphRejectsTruncatedCompletion(t *testing.T) {
 	if _, err := a.Run(t.Context(), "inspect", nil); !errors.Is(err, provider.ErrResponseTruncated) {
 		t.Fatalf("err=%v", err)
 	}
-	if outcome, _ := graph.Outcome(); outcome != goalgraph.OutcomeBlocked || client.calls != 1 {
+	if outcome, _ := graph.Outcome(); outcome != goalgraph.OutcomeBudgetExhausted || client.calls != 3 {
 		t.Fatalf("outcome=%s calls=%d", outcome, client.calls)
+	}
+	// Reopening and explicitly extending must not inherit a permanent provider
+	// failure that makes the next usable response block again.
+	restored, err := goalgraph.Restore(graph.Snapshot(), goalgraph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.ExtendBudget(t.Context(), "continue after model limit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Activate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	a.goalGraph = restored
+	a.registry.Add(tools.Function{Def: provider.ToolDefinition{Name: "inspect"}, Action: tools.Action{Risk: tools.RiskRead}, Run: func(context.Context, json.RawMessage) (string, error) { return "observed", nil }})
+	a.permissions = permission.New(appconfig.Permissions{Mode: "autopilot"}, nil)
+	a.client = &fakeClient{chat: func(call int, _ provider.Request) (provider.Response, error) {
+		if call == 1 {
+			return provider.Response{ToolCalls: []provider.ToolCall{{ID: "fresh", Name: "inspect", Arguments: json.RawMessage(`{}`)}}}, nil
+		}
+		return provider.Response{Content: "Inspection complete."}, nil
+	}}
+	if _, err := a.Run(t.Context(), "Continue", nil); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, _ := restored.Outcome(); outcome != goalgraph.OutcomeDone {
+		t.Fatal(outcome)
 	}
 }
 
@@ -212,8 +243,11 @@ func TestDifferentSameToolReceiptNeedsExplicitAlternative(t *testing.T) {
 	c.observe(toolObservation{CallID: "alternate", Name: "read_file", RetryKey: "alternate-input"})
 	p := &plan.Plan{Goal: "inspect input", Steps: []plan.Step{{ID: 1, Title: "inspect input", Status: "done", Evidence: "an alternative input supplies the needed facts"}}}
 	r := plan.FailureResolution{FailureID: "failed", Disposition: "recovered_by_retry", StepID: 1, RecoveryToolCallID: "alternate", Evidence: "alternative input"}
-	if issue := c.validateFailureResolution(p, c.failures[0], r); !strings.Contains(issue, "not the same operation") {
-		t.Fatalf("an unrelated same-tool receipt masqueraded as a retry: %q", issue)
+	if len(c.failures) != 1 {
+		t.Fatal("an unrelated success automatically cleared a failure")
+	}
+	if issue := c.validateFailureResolution(p, c.failures[0], r); issue != "" {
+		t.Fatalf("explicit recovery with a real receipt rejected for its label: %q", issue)
 	}
 	r.Disposition = "recovered_by_alternative"
 	if issue := c.validateFailureResolution(p, c.failures[0], r); issue != "" {

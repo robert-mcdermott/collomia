@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robert-mcdermott/collomia/internal/tui"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -17,6 +19,29 @@ type idleModel struct{}
 func (idleModel) Init() tea.Cmd                         { return nil }
 func (m idleModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
 func (idleModel) View() string                          { return "" }
+
+type blockedDisplay struct{ release chan struct{} }
+
+func (w blockedDisplay) Write(p []byte) (int, error) { <-w.release; return len(p), nil }
+
+func TestTerminalOutputStallCancelsProgramAndTeardown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	writer := blockedDisplay{release: make(chan struct{})}
+	defer close(writer.release)
+	output := tui.NewGuardedOutput(writer, 30*time.Millisecond, func(error) { cancel() })
+	program := tea.NewProgram(idleModel{}, tea.WithContext(ctx), tea.WithInput(bytes.NewReader(nil)), tea.WithOutput(output))
+	done := make(chan error, 1)
+	go func() { _, err := program.Run(); done <- err }()
+	select {
+	case <-done:
+		if !errors.Is(output.Err(), tui.ErrTerminalOutputStalled) {
+			t.Fatal(output.Err())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("output failure prevented renderer teardown")
+	}
+}
 
 // A dependency contract, pinned because the shutdown path now rests on it.
 //
