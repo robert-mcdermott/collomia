@@ -308,7 +308,10 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
 	}
 	if err != nil {
-		var exit *exec.ExitError
+		var exit interface {
+			error
+			ExitCode() int
+		}
 		// Shells often encode a child signal as 128+signal. Keep those, direct
 		// signals, cancellation, timeouts, and launch/wait failures uncertain.
 		if runCtx.Err() == nil && errors.As(err, &exit) && ordinaryCommandExit(exit.ExitCode()) {

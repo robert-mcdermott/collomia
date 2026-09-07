@@ -110,7 +110,15 @@ func TestUndoRestoresOriginalModeWithAtomicReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	tracker := NewTracker(dir)
-	tracker.RecordWithMode(path, "edit", &before, &after, 0o700, 0o755)
+	observed, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMode := os.FileMode(0o700)
+	if runtime.GOOS == "windows" {
+		beforeMode = observed.Mode().Perm()
+	}
+	tracker.RecordWithMode(path, "edit", &before, &after, beforeMode, observed.Mode().Perm())
 	if _, err := tracker.Undo(); err != nil {
 		t.Fatal(err)
 	}

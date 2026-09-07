@@ -296,7 +296,13 @@ func (t WriteFileTool) Execute(_ context.Context, raw json.RawMessage) (string, 
 	}
 	if t.Tracker != nil {
 		after := a.Content
-		t.Tracker.RecordWithMode(p, "write", before, &after, beforeMode, mode)
+		// Record the mode the filesystem actually retained (Windows does not
+		// preserve Unix permission bits), not merely the requested mode.
+		info, statErr := target.Stat()
+		if statErr != nil {
+			return "", fmt.Errorf("inspect completed write for checkpoint: %w", statErr)
+		}
+		t.Tracker.RecordWithMode(p, "write", before, &after, beforeMode, info.Mode().Perm())
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p), nil
 }

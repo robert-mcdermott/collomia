@@ -37,7 +37,7 @@ func verificationDirectory(segment, cwd, workspace string) (string, bool) {
 		} else if strings.ContainsAny(arg, " \t") {
 			return cwd, false
 		}
-		if arg == "" || strings.HasPrefix(arg, "-") || strings.ContainsAny(arg, "'\"$`*?[]~") || (filepath.Separator != '\\' && strings.Contains(arg, `\`)) || (filepath.Separator == '\\' && strings.ContainsAny(arg, "%!^")) {
+		if arg == "" || strings.HasPrefix(arg, "-") || strings.ContainsAny(arg, "'\"$`*?[]") || (filepath.Separator != '\\' && strings.ContainsAny(arg, `\~`)) || (filepath.Separator == '\\' && strings.ContainsAny(arg, "%!^")) {
 			return cwd, false
 		}
 		if !filepath.IsAbs(arg) {

@@ -67,6 +67,10 @@ func TestRecoveryCheckpointRestoresAcrossRestartAndRejectsDrift(t *testing.T) {
 	if err := os.WriteFile(path, []byte("ORIGINAL"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	originalInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r, err := New(t.Context(), Options{Autonomy: "autopilot", Workspace: workspace, TaskMode: "work"})
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +113,7 @@ func TestRecoveryCheckpointRestoresAcrossRestartAndRejectsDrift(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	info, _ := os.Stat(path)
-	if string(data) != "FIRST" || info.Mode().Perm() != 0600 {
+	if string(data) != "FIRST" || info.Mode().Perm() != originalInfo.Mode().Perm() {
 		t.Fatal("restore lost bytes or mode")
 	}
 	branch := resumed.Session.Meta.ID

@@ -27,7 +27,11 @@ func TestCheckpointBoundsBinaryAndRootIdentity(t *testing.T) {
 	if err := os.WriteFile(path, []byte(after), 0600); err != nil {
 		t.Fatal(err)
 	}
-	tracker.RecordWithMode(path, "write", &before, &after, 0600, 0600)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.RecordWithMode(path, "write", &before, &after, info.Mode().Perm(), info.Mode().Perm())
 	resumed := NewTracker(root)
 	if err := resumed.BindCheckpoint(saved, 0, save); err != nil {
 		t.Fatal(err)

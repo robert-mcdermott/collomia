@@ -127,3 +127,21 @@ func TestKanban26HighExitAllowsCorrectedCommandAndResume(t *testing.T) {
 		}
 	}
 }
+
+func TestVerificationDirectoryWindowsShortName(t *testing.T) {
+	if filepath.Separator != '\\' {
+		t.Skip("Windows short-path semantics")
+	}
+	root := filepath.Join(t.TempDir(), "RUNNER~1")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if !isVerificationCommand(fmt.Sprintf(`cd "%s" && go test ./...`, root), root) {
+		t.Fatal("literal Windows short-name path rejected")
+	}
+	for _, arg := range []string{`%TEMP%`, `!DIR!`, `..`} {
+		if _, ok := verificationDirectory(`cd "`+arg+`"`, root, root); ok {
+			t.Fatalf("dynamic or outside directory accepted: %q", arg)
+		}
+	}
+}

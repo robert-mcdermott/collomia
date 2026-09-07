@@ -27,7 +27,10 @@ func TestCommandExitClassification(t *testing.T) {
 		}
 		for _, code := range []int{1, 2, 126, 127, 128, 200, 254, 255} {
 			_, err := tool.Execute(t.Context(), json.RawMessage(fmt.Sprintf(`{"command":"exit %d","pty":%t}`, code, pty)))
-			var exit *exec.ExitError
+			var exit interface {
+				error
+				ExitCode() int
+			}
 			if !CommandExitedNormally(err) || !errors.As(err, &exit) || exit.ExitCode() != code {
 				t.Fatalf("pty=%v code=%d: lost observed exit or underlying error: %v", pty, code, err)
 			}

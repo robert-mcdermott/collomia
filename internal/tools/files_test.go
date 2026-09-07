@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/robert-mcdermott/collomia/internal/diffmodel"
 )
 
 func TestFileDiscoverySkipsGeneratedAndDependencyTrees(t *testing.T) {
@@ -46,5 +48,24 @@ func TestFileDiscoverySkipsGeneratedAndDependencyTrees(t *testing.T) {
 	}
 	if strings.TrimSpace(matches) != "source.go:1:package source // NEEDLE" {
 		t.Fatalf("generated trees leaked into search results:\n%s", matches)
+	}
+}
+
+func TestNewFileCheckpointUsesObservedMode(t *testing.T) {
+	root := t.TempDir()
+	guard, err := NewPathGuard(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := diffmodel.NewTracker(root)
+	tool := WriteFileTool{Guard: guard, Tracker: tracker}
+	if _, err := tool.Execute(t.Context(), json.RawMessage(`{"path":"new.txt","content":"created"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tracker.Undo(); err != nil {
+		t.Fatalf("undo of native creation rejected observed mode: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("created file not removed: %v", err)
 	}
 }
