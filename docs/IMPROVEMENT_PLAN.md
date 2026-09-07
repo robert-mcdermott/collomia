@@ -10,6 +10,23 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
+- **Ubuntu CI follow-up (2026-09-07):** main run `34168303221` at
+  `6a79dca` (VERSION v0.5.1, including the Windows ACL and shared-workflow fixes)
+  failed the Ubuntu race run in `TestRunCommandPTY`: successful command exit
+  returned no output. The Unix runner closed the terminal master after
+  `cmd.Wait` but before the output goroutine finished, discarding unread bytes.
+  The fix drains before close, enables runtime polling on the PTY descriptor,
+  and bounds post-exit drain to five seconds with cancellation support.
+  Linux regressions cover a paused reader across child exit and cancellation
+  while a descendant holds the terminal open. Darwin can drop unread terminal
+  data on hangup, so the forced-pause fixture is Linux-specific; existing
+  cross-platform terminal and timeout tests remain in place.
+  Twenty native macOS race-detector repetitions of the PTY/timeout tests passed.
+  The complete native tools package passed under the race detector, and native
+  tools vet passed.
+  Linux amd64 tools tests compile and Linux-targeted vet passed; native Ubuntu
+  regression execution remains required. The same CI run's quality and macOS
+  jobs passed; Windows was still running at the last check.
 - **Release follow-up (2026-09-07):** final PR CI `34162136407` and
   post-merge CI `34163671111` passed. Release run `34166528857` on the same
   merged source (`a43ff41`, tag `v0.5.0`) failed only Windows
@@ -50,8 +67,8 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** commit/review the follow-up, pass native Windows and full
-  PR/main CI, and prepare a new VERSION/tag (recommended v0.5.1) from reviewed
+- **Next action:** commit/review the PTY follow-up, pass native Ubuntu/Windows
+  and full PR/main CI, and qualify VERSION v0.5.1 from reviewed
   main. Use a signed tag for a GitHub-verifiable tag signature, then verify the
   generated artifact attestations before publishing the draft. No version,
   tag, remote branch, or release was changed in this follow-up. Do not start

@@ -4,6 +4,8 @@ package tools
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // ptySupported reports whether this platform can run commands under a
@@ -45,15 +48,62 @@ func runUnderPTY(ctx context.Context, argv []string, dir string, env []string, b
 	if err != nil {
 		return err
 	}
-	copied := make(chan struct{})
+	// PTY masters need nonblocking mode for Go's poller to enforce read
+	// deadlines and interrupt a read on Close (creack/pty's documented contract).
+	// Re-wrap a duplicate after setting O_NONBLOCK: on macOS pty.Open uses
+	// os.NewFile on a blocking descriptor, so setting the flag alone does not
+	// register that existing os.File with the runtime poller.
+	fd, pollErr := unix.FcntlInt(master.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if pollErr == nil {
+		pollErr = syscall.SetNonblock(fd, true)
+		if pollErr != nil {
+			_ = syscall.Close(fd)
+		}
+	}
+	_ = master.Close()
+	if pollErr != nil {
+		_ = cmd.Cancel()
+		_ = cmd.Wait()
+		return fmt.Errorf("configure PTY output polling: %w", pollErr)
+	}
+	master = os.NewFile(uintptr(fd), "pty-output")
+	defer master.Close()
+	copied := make(chan error, 1)
 	go func() {
-		defer close(copied)
 		// Reading from the master returns EIO once the child exits; that
 		// is the normal end-of-stream signal for a pty, not a failure.
-		_, _ = io.Copy(buffer, master)
+		_, copyErr := io.Copy(buffer, master)
+		copied <- copyErr
 	}()
 	err = cmd.Wait()
-	_ = master.Close()
-	<-copied
+	// Process exit does not mean the reader has collected the trailing bytes.
+	// Drain to EOF/EIO before closing the master. Bound the drain because a
+	// descendant can retain the slave after the command's direct child exits;
+	// exec.Cmd.WaitDelay does not cover this separately managed reader.
+	if deadlineErr := master.SetReadDeadline(time.Now().Add(cmd.WaitDelay)); deadlineErr != nil {
+		_ = cmd.Cancel()
+		_ = master.Close()
+		<-copied
+		return fmt.Errorf("set PTY output drain deadline: %w", deadlineErr)
+	}
+	var copyErr error
+	select {
+	case copyErr = <-copied:
+		if errors.Is(copyErr, os.ErrDeadlineExceeded) {
+			_ = cmd.Cancel()
+			copyErr = exec.ErrWaitDelay
+		}
+	case <-ctx.Done():
+		_ = cmd.Cancel()
+		_ = master.Close()
+		<-copied
+		return ctx.Err()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if copyErr != nil && !errors.Is(copyErr, syscall.EIO) {
+		return fmt.Errorf("drain PTY output: %w", copyErr)
+	}
 	return err
 }

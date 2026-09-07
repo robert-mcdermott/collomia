@@ -4538,6 +4538,11 @@ the command without terminal semantics. A command is quoted identically with
 and without `pty: true`, because the pseudoconsole path resolves and escapes
 its arguments exactly the way the ordinary path does.
 
+Unix PTY commands drain pending output before releasing the terminal. If a
+descendant keeps it open after the main command exits, the drain is limited
+to five seconds and remains cancellable; an expired drain reports incomplete
+output instead of silently treating the captured prefix as the full result.
+
 Cancellation reaches the whole process tree either way, but by different
 means. On Unix the child leads its own process group and the group is signalled.
 On Windows the child is created suspended and joined to a job object before it
