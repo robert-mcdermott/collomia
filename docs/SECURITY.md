@@ -1387,13 +1387,19 @@ applies it when the sandbox is off.
 The allowlist is exactly `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
 `TMPDIR`, `TEMP`, `TMP`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `COLUMNS`,
 `LINES`, `SYSTEMROOT`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `LOCALAPPDATA`,
-and `GOCACHE`, each passed only when it is set in the parent environment. No
+`GOCACHE`, and `GOROOT`, each passed only when it is set in the parent environment. No
 other variable reaches an agent command, so shell-resident credentials such
 as `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_*`, and provider API keys are not
 exposed to commands. There is no per-variable passthrough; a command that
 needs one value should set it inline in the command string. See the user
 guide's [command environment](USER_GUIDE.md) section for what this breaks and
 how to work around it.
+
+On Windows, AppContainer resolves executable paths, explicit readable roots,
+PATH entries, and an explicit GOROOT through opened handles before launch.
+This keeps junction aliases consistent with the granted SDK location without
+adding readable roots or changing their access rights. Passing GOROOT does not
+authorize an otherwise inaccessible SDK.
 
 ### Durable conversation and retained tool output
 

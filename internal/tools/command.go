@@ -485,7 +485,7 @@ func plural(n int, singular, many string) string {
 // minimalEnv keeps only the variables a build needs, so credentials in the
 // parent environment never reach agent commands.
 func minimalEnv() []string {
-	keep := []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "COLUMNS", "LINES", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "GOCACHE"}
+	keep := []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "COLUMNS", "LINES", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "GOCACHE", "GOROOT"}
 	var env []string
 	for _, key := range keep {
 		if value, ok := os.LookupEnv(key); ok {

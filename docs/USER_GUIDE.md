@@ -2553,7 +2553,7 @@ through, and only when they are set in the parent environment:
 | Terminal | `TERM` `COLUMNS` `LINES` |
 | Locale | `LANG` `LC_ALL` `LC_CTYPE` |
 | Windows essentials | `SYSTEMROOT` `COMSPEC` `PATHEXT` `USERPROFILE` `LOCALAPPDATA` |
-| Build cache | `GOCACHE` |
+| Go SDK and build cache | `GOROOT` `GOCACHE` |
 
 Everything else is dropped, which is the point: `GITHUB_TOKEN`, `NPM_TOKEN`,
 `AWS_*`, `ANTHROPIC_API_KEY`, and any other credential in your shell never
@@ -2564,7 +2564,7 @@ What predictably stops working: proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`,
 configuration (`AWS_PROFILE`, `AWS_REGION`,
 `GOOGLE_APPLICATION_CREDENTIALS`), toolchain overrides (`GOPATH`, `GOPROXY`,
 `CARGO_HOME`, `JAVA_HOME`, `NODE_OPTIONS`), and anything injected by direnv,
-asdf, or nvm shims. Note that `GOCACHE` is kept while `GOPATH` and `GOPROXY`
+asdf, or nvm shims. Note that `GOROOT` and `GOCACHE` are kept while `GOPATH` and `GOPROXY`
 are not — a deliberate narrow carve-out for Go builds, not general toolchain
 support.
 

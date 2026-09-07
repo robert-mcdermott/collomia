@@ -550,3 +550,16 @@ func TestRunCommandPTYTimeoutKillsGroup(t *testing.T) {
 		t.Fatalf("timeout took too long: %s", elapsed)
 	}
 }
+
+func TestMinimalEnvKeepsExplicitGoSDK(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "go-sdk")
+	t.Setenv("GOROOT", root)
+	t.Setenv("COLLO_SECRET_TOKEN", "not-in-child")
+	env := minimalEnv()
+	if !containsEnv(env, "GOROOT", root) {
+		t.Fatal("explicit Go SDK omitted from minimal environment")
+	}
+	if containsEnv(env, "COLLO_SECRET_TOKEN", "not-in-child") {
+		t.Fatal("minimal environment leaked credential")
+	}
+}

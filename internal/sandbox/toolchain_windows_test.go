@@ -18,7 +18,7 @@ import (
 // widening the policy or substituting an unsandboxed verification command.
 func TestAppContainerGoSDKDiscovery(t *testing.T) {
 	sdk := runtime.GOROOT()
-	resolved, err := filepath.EvalSymlinks(sdk)
+	resolved, err := finalAppContainerPath(sdk)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,15 +10,16 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **PR CI follow-up (2026-09-07):** run `34158179404` passes Ubuntu and
-  quality checks, including the deterministic golden fixtures. Windows exposes
-  short-path verification rejection, Unix-mode fixture assumptions, untyped
-  ConPTY exits and sandboxed Go lookup failures. Local fixes address the first
-  three and record observed modes for native file creation. A Windows-only
-  AppContainer SDK-discovery regression compares direct resolved-SDK execution
-  with shell PATH lookup to diagnose the remaining Go failure. No sandbox grant
-  is broadened. Native Windows acceptance and the Go failure remain unresolved;
-  macOS was cancelled by Windows failure. CI now retains all platform results.
+- **PR CI follow-up (2026-09-07):** run `34159552184` passes Ubuntu,
+  macOS, quality and the earlier Windows short-path/checkpoint/ConPTY fixes.
+  Remaining Windows failures share sandboxed Go discovery. The native diagnostic
+  shows `EvalSymlinks` retaining the SDK alias, absolute Go launch failing SDK
+  discovery, and shell PATH lookup failing. The follow-up uses Windows final
+  handle paths for executable lookup, explicit readable roots and PATH/GOROOT;
+  minimal commands also retain an explicitly configured GOROOT. No sandbox grant
+  is broadened. A real-junction regression covers resolution and environment
+  restoration; native SDK discovery and Go preflight remain mandatory CI gates.
+  The revised fix still requires Windows CI acceptance before merge.
 
 - **Current work:** prepare the `wave39` PR and v0.5.0 release documentation.
 - **Status:** reliability implementation committed in `c90beea`; `VERSION` bumped
@@ -30,7 +31,8 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** review and merge the release PR, then run the release process
+- **Next action:** pass the Windows CI gate, review and merge the release PR,
+  then run the release process
   against merged `main`. Exact-tag CI and release artifact qualification remain
   required; candidate checks do not substitute for them. Do not start another
   feature wave by default.

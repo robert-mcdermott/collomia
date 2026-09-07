@@ -205,7 +205,7 @@ func TestWindowsAppContainerConfinesWrites(t *testing.T) {
 
 func windowsAppContainerTestEnv(t *testing.T) []string {
 	t.Helper()
-	keys := []string{"PATH", "TEMP", "TMP", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA"}
+	keys := []string{"PATH", "TEMP", "TMP", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "GOROOT"}
 	required := map[string]bool{"USERPROFILE": true, "LOCALAPPDATA": true}
 	env := make([]string, 0, len(keys))
 	for _, key := range keys {
