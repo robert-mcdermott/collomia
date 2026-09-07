@@ -29,14 +29,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Build
-        run: go build ./...
-      - name: Unit, integration, and evaluation tests
-        run: go test -count=1 ./...
-      - name: Race detector
-        run: go test -race -count=1 ./...
-      - name: Static analysis
-        run: go vet ./...
+      - name: Qualify tagged source
+        uses: ./.github/actions/qualify
       - name: Filesystem exhaustion campaign
         # macOS only: hdiutil builds and mounts a small filesystem without
         # privileges, so the durable writers meet a genuinely full disk rather
@@ -46,13 +40,6 @@ jobs:
         env:
           COLLO_DISK_EXHAUSTION_TESTS: '1'
         run: go test -count=1 ./internal/reliability
-      - name: Test shell installer
-        if: runner.os != 'Windows'
-        run: scripts/test-install.sh
-      - name: Test PowerShell installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/test-install.ps1
 
   quality:
     name: Security and deterministic quality gates
@@ -71,7 +58,7 @@ jobs:
       - name: Scan reachable Go dependencies
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Deterministic offline agent evaluations
-        run: go test -count=1 ./internal/eval
+        run: go test -count=1 -timeout=20m ./internal/eval
       - name: Interruption and cancellation stress
         # Raised from 5 to 20. These are the tests whose failures are races,
         # and a race that reproduces one run in ten passes a five-run gate
@@ -92,13 +79,13 @@ jobs:
           -benchtime=1x -benchmem
           ./internal/app ./internal/activity ./internal/index ./internal/session ./internal/tui
       - name: Replay parser fuzz smoke test
-        run: go test ./internal/replay -run '^$' -fuzz '^FuzzRead$' -fuzztime 3s
+        run: go test ./internal/replay -run '^$' -fuzz '^FuzzRead$' -fuzztime=10000x
       - name: Configuration validation fuzz smoke test
-        run: go test ./internal/config -run '^$' -fuzz '^FuzzConfigValidation$' -fuzztime 3s
+        run: go test ./internal/config -run '^$' -fuzz '^FuzzConfigValidation$' -fuzztime=10000x
       - name: Shell analysis fuzz smoke test
-        run: go test ./internal/shell -run '^$' -fuzz '^FuzzAnalyze$' -fuzztime 3s
+        run: go test ./internal/shell -run '^$' -fuzz '^FuzzAnalyze$' -fuzztime=10000x
       - name: Diff parser fuzz smoke test
-        run: go test ./internal/diffmodel -run '^$' -fuzz '^FuzzDiffAndHunkParsing$' -fuzztime 3s
+        run: go test ./internal/diffmodel -run '^$' -fuzz '^FuzzDiffAndHunkParsing$' -fuzztime=10000x
 
   build-release:
     name: Build release assets

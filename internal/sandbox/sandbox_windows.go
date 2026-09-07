@@ -306,6 +306,11 @@ func ensureAppContainerProfile(name string) (*windows.SID, error) {
 // The ACE names a workspace-specific AppContainer SID, not a user or broad
 // group, and therefore grants no additional access to ordinary processes.
 func grantAppContainerAccess(path string, sid *windows.SID, permissions windows.ACCESS_MASK) error {
+	unlock, err := lockAppContainerACL()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	info, err := os.Stat(path)
 	if err != nil {
 		return err

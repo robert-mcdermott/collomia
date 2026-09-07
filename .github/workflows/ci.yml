@@ -21,31 +21,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Build
-        run: go build ./...
-      # The evaluation package drives complete runtimes against real Git
-      # worktrees and the real Go toolchain, so it is the slowest package here
-      # by a wide margin. Its cost is addressed where it comes from — one shared
-      # build cache rather than a cold one per evaluation — and these limits are
-      # insurance rather than a budget the suite is expected to use. They sit
-      # well above the observed cost so a genuine hang is still caught quickly.
-      - name: Cross-platform unit, integration, and evaluation tests
-        run: go test -count=1 -timeout=20m ./...
-      - name: Race detector
-        if: runner.os != 'Windows'
-        run: go test -race -count=1 -timeout=30m ./...
-      - name: Race detector
-        if: runner.os == 'Windows'
-        run: go test -race -p=1 -count=1 -timeout=30m ./...
-      - name: Static analysis
-        run: go vet ./...
-      - name: Test shell installer
-        if: runner.os != 'Windows'
-        run: scripts/test-install.sh
-      - name: Test PowerShell installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/test-install.ps1
+      - name: Qualify source
+        uses: ./.github/actions/qualify
 
   release-builds:
     needs: [test, quality]

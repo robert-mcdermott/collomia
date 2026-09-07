@@ -646,6 +646,11 @@ troubleshooting.
 - Windows stores a small per-workspace AppContainer profile and an inheritable
   ACE naming that container SID on granted roots. The ACE gives no access to
   ordinary users or unrelated AppContainers and is reused on later commands.
+  Permission updates use a per-user named Windows mutex across processes and
+  sessions: concurrent sandbox shims must not overwrite each other's grants
+  on shared SDK or temp directories. Only the ACL read/merge/write is serialized;
+  commands still run concurrently. A 30-second lock wait fails closed, and an
+  interrupted lock owner is recovered by re-reading the current permissions.
 
 Microsoft's [AppContainer launch documentation](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)
 describes the inbox profile, SID/DACL, capability, low-integrity, and process

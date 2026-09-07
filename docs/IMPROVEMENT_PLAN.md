@@ -10,24 +10,37 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **PR CI follow-up (2026-09-07):** run `34160727968` passes macOS and
-  Ubuntu. Windows now passes agent/tool checks, the full agent evaluations,
-  quality preflight and sandboxed shell Go lookup. Its two remaining failures
-  are diagnostic fixtures: junction creation used the wrong cmd.exe quoting,
-  and direct trimmed-SDK execution omitted an explicit GOROOT. The test fixes
-  preserve the unmodified shell-PATH check and all sandbox grants. Native Windows
-  acceptance of these fixture corrections remains required.
-- **Quality follow-up:** the separate Ubuntu quality job failed
-  `TestOrchestratedGoalFailedWriterLeavesParentUntouchedEvaluation`: the expected
-  successful sibling was blocked. The same suite passed in the Ubuntu test job.
-  Thirty isolated local repetitions and three complete local evaluation-suite
-  repetitions passed. The assertion now includes graph and per-node reasons so
-  recurrence identifies the underlying failure. Windows amd64/arm64 test builds,
-  Windows-targeted vet and documentation checks pass. This intermittent quality
-  failure is not claimed fixed or waived; the next quality CI result remains
-  required qualification evidence.
-
-- **Current work:** prepare the `wave39` PR and v0.5.0 release documentation.
+- **Release follow-up (2026-09-07):** final PR CI `34162136407` and
+  post-merge CI `34163671111` passed. Release run `34166528857` on the same
+  merged source (`a43ff41`, tag `v0.5.0`) failed only Windows
+  `TestPlatformGoPreflight`: sandboxed cmd.exe reported Go unavailable. Linux,
+  macOS (including disk exhaustion), and release quality passed. Asset builds,
+  attestations, and draft creation were skipped; no v0.5.0 release exists.
+- **Fix under qualification:** AppContainer ACL read/merge/write operations
+  were unsynchronized across re-exec processes. Concurrent grants to shared
+  SDK/temp roots can overwrite another workspace's permissions. A per-user
+  cross-process Windows mutex now protects these updates, including inherited
+  parent/child permissions; execution remains concurrent. This is a concrete
+  race found in code and a plausible explanation for the intermittent missing
+  Go failure, not proof of the failed runner's exact permission state.
+  A Windows regression starts eight separate grant processes and checks both
+  exclusion and preservation of every SID on a shared directory tree.
+- **Workflow consistency:** PR/main and release now use the same composite
+  qualification action. Release picks up CI's explicit test timeouts, serialized
+  Windows race-test packages, and fixed-count fuzz smoke settings. Stronger
+  release-only campaigns and artifact verification remain required.
+- **Local validation:** macOS sandbox, quality (including platform Go preflight),
+  and CLI/documentation tests passed. Windows amd64/arm64 sandbox and quality
+  tests compile, and Windows-targeted sandbox vet passed on both architectures.
+  Workflow lint (`actionlint` v1.7.12), composite-action YAML/shell checks and
+  `git diff --check` passed. These cross-builds do not execute Windows tests. Native Windows regression
+  and full CI/release acceptance remain pending.
+- **Earlier quality intermittent:** the writer-sibling evaluation failure from
+  `34160727968` did not recur in final PR, main, or release quality. Its diagnostic
+  assertion remains; the original intermittent cause is still not established.
+- **Current work:** qualify the release follow-up, then prepare a fresh patch
+  release. The existing v0.5.0 tag is unsigned; its merge commit is verified.
+  The tag was pushed successfully and must not be moved to include these fixes.
 - **Status:** reliability implementation committed in `c90beea`; `VERSION` bumped
   to `v0.5.0` in `fe0164d`. Candidate automated gates passed. Standard Developer
   acceptance passed through Kanban30 on September 6. The user reported successful
@@ -37,11 +50,12 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** pass the Windows CI gate, review and merge the release PR,
-  then run the release process
-  against merged `main`. Exact-tag CI and release artifact qualification remain
-  required; candidate checks do not substitute for them. Do not start another
-  feature wave by default.
+- **Next action:** commit/review the follow-up, pass native Windows and full
+  PR/main CI, and prepare a new VERSION/tag (recommended v0.5.1) from reviewed
+  main. Use a signed tag for a GitHub-verifiable tag signature, then verify the
+  generated artifact attestations before publishing the draft. No version,
+  tag, remote branch, or release was changed in this follow-up. Do not start
+  another feature wave by default.
 - **Historical evidence:** candidate versions, commands, and unchecked manual
   gates below record the state at that time. Older candidates were not all
   separately accepted; the current integrated Developer/Work acceptance above

@@ -49,6 +49,13 @@ platform-signed.
    checking its embedded version and full commit identity.
 7. Creates provenance/SBOM attestations and a **draft** GitHub Release.
 
+PR/main CI and release qualification both call
+`.github/actions/qualify/action.yml` for build, uncached tests, race detection,
+vet, and installers. This keeps Windows race-test package concurrency and test
+timeouts consistent. Release quality retains additional disk-exhaustion,
+durability, and interruption-stress coverage. Passing PR/main CI is necessary
+but does not replace exact-tag qualification or artifact smoke tests.
+
 A tag containing a prerelease suffix, such as `vX.Y.Z-beta.1`, produces a draft
 marked as a prerelease. GitHub's `/releases/latest/download` URL continues to
 refer to the latest stable, non-prerelease release. Beta users must pin the beta
@@ -118,9 +125,26 @@ Read the version directly from the reviewed file:
 
 ```sh
 version="$(tr -d '[:space:]' < VERSION)"
-git tag -s "$version" -m "Collomia $version" # use -a if tag signing is unavailable
+git tag -s "$version" -m "Collomia $version"
+git tag -v "$version"
 git push origin "$version"
 ```
+
+Configure a signing key and register it with your GitHub account before this
+step if you want the tag's **Verified** badge. Signing an annotated tag with
+`-s` is different from creating an unsigned annotated tag with `-a`.
+GitHub must be able to verify the signature; a green Actions run does not sign
+an unsigned tag. See GitHub's [tag signing instructions](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-tags).
+
+There are three independent checks:
+
+- **Commit/tag signature:** identifies the source signer. A verified merge
+  commit does not give an unsigned tag its own verified signature.
+- **Artifact attestations:** bind downloaded bytes to this repository's build
+  workflow and source commit, verified with `gh attestation verify` below.
+- **CI status:** records which qualification jobs passed. It is neither of the
+  signatures above. The release command's `--verify-tag` only checks that the
+  remote tag exists; it does not sign or verify a cryptographic tag signature.
 
 Do not move or recreate a tag after it has been pushed. Watch the Release
 workflow. If qualification succeeds, open the generated draft and review:
@@ -165,6 +189,14 @@ publication. Record the missing provenance in the release notes.
 
 ## Failed and withdrawn releases
 
+- Start with `gh run view RUN_ID --log-failed` to distinguish test failures
+  from build, attestation, or publication failures. A successful tag push can
+  trigger a workflow that later fails before any release draft exists.
+- For a transient runner failure, rerun the original workflow on the same
+  immutable tag. A rerun uses the original tagged source and workflow: fixes
+  merged into `main` afterward are not picked up. If source or workflow changes
+  are required, merge them, pass CI, update `VERSION` for a new patch or
+  prerelease, and create a fresh signed tag from that reviewed commit.
 - Before publication, leave a failed release as a draft while investigating or
   delete only the draft. Never reuse its pushed version tag for different bits.
 - After publication, prefer a new patch or prerelease version containing the
