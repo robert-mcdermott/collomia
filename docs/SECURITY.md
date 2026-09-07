@@ -1,5 +1,11 @@
 # Collomia security model
 
+Standard [scoped command verification](COMPLETION.md) uses the ordinary command
+permission/sandbox path and the file-read guard for each declared scope path.
+The runtime observes exit status and unchanged bytes/targets/parents; it does
+not certify the adequacy of a model-selected script. This evidence path does
+not replace graph verification, approve publication, or settle unknown effects.
+
 This document states what each control actually guarantees, what it does
 not, and where the boundaries are. It is the "documentation truth pass"
 required before advertising any unattended use.
@@ -32,7 +38,7 @@ server, relax project trust, change the sandbox, inherit more environment, or
 permit publication. Both profiles pass actions through the same permission,
 hook, redaction, audit, and containment layers described here.
 
-Work makes Git optional, not safety optional. Its artifact receipts establish
+Work makes Git optional, not safety optional. Its structural artifact receipts establish
 only bounded structure/content at one path and SHA-256 digest; they do not prove
 facts, source quality, accessibility, visual polish, or the success of an
 external side effect. Ambiguous external mutations must be read back or handed
@@ -852,8 +858,10 @@ bound separately to its machine-observed Git workspace token. An unchanged
 token preserves earlier verification; a changed or unavailable token requires
 fresh proof. This distinction grants no new network, process, or write access.
 
-Standard mode uses the same no-progress meaning and a hard provider-turn
-envelope at twice `max_iterations`. The hard envelope is not renewed by writes,
+Standard mode uses the same no-progress meaning and an independent
+`max_turn_iterations` provider-turn ceiling (256 by default). User-only CLI
+and `/limits` controls can adjust Standard limits without changing permissions
+or Orchestrated Goal budgets. The hard envelope is not renewed by writes,
 and token/cost budgets continue to take precedence when configured. A command
 the verifier cannot safely classify stays ordinary tool output: Collomia now
 explains the refusal after a named verification gap, but never promotes an ad
@@ -1379,13 +1387,19 @@ applies it when the sandbox is off.
 The allowlist is exactly `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
 `TMPDIR`, `TEMP`, `TMP`, `TERM`, `LANG`, `LC_ALL`, `LC_CTYPE`, `COLUMNS`,
 `LINES`, `SYSTEMROOT`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `LOCALAPPDATA`,
-and `GOCACHE`, each passed only when it is set in the parent environment. No
+`GOCACHE`, and `GOROOT`, each passed only when it is set in the parent environment. No
 other variable reaches an agent command, so shell-resident credentials such
 as `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_*`, and provider API keys are not
 exposed to commands. There is no per-variable passthrough; a command that
 needs one value should set it inline in the command string. See the user
 guide's [command environment](USER_GUIDE.md) section for what this breaks and
 how to work around it.
+
+On Windows, AppContainer resolves executable paths, explicit readable roots,
+PATH entries, and an explicit GOROOT through opened handles before launch.
+This keeps junction aliases consistent with the granted SDK location without
+adding readable roots or changing their access rights. Passing GOROOT does not
+authorize an otherwise inaccessible SDK.
 
 ### Durable conversation and retained tool output
 
@@ -1561,3 +1575,17 @@ GitHub/Sigstore provenance authenticates workflow origin but does not satisfy
 operating-system platform-signing policy. See [Installing
 Collomia](INSTALLING.md), [beta limitations](BETA.md), and [the maintainer
 release process](RELEASING.md).
+
+### Executable discovery and shell startup
+
+`inspect_environment` performs bounded executable-name lookups using the
+launching process PATH; it does not read executable contents, run a binary,
+source shell startup files or expose other environment values. Discovery is
+metadata, not permission or evidence of successful sandbox execution. The usual
+tool allowlists, read permission and hooks still apply.
+
+POSIX command tools use `/bin/sh -c` rather than a login shell. This preserves
+PATH precedence and prevents login profiles from reintroducing credentials
+removed by `command_env: minimal`. All execution surfaces share the configured
+runner. Lookup does not weaken sandbox read restrictions; executables installed
+outside allowed sandbox roots can still require an appropriate readable root.

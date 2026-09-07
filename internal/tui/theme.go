@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -291,30 +292,34 @@ var gaugeEighths = []rune{' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'}
 // background via OSC 11 so unpainted cells match the theme. Terminals
 // without OSC 11 support ignore the sequence. No-op when stdout is not a
 // terminal (tests, pipes).
-func setTerminalBackground(hex string) {
+func setTerminalBackground(hex string, output ...io.Writer) {
 	if hex == "" {
 		return
 	}
-	emitOSC(fmt.Sprintf("\x1b]11;%s\x07", hex))
+	emitOSC(fmt.Sprintf("\x1b]11;%s\x07", hex), output...)
 }
 
 // ResetTerminalBackground restores the terminal's default background color
 // (OSC 111). Call it after the Bubble Tea program exits.
-func ResetTerminalBackground() {
-	emitOSC("\x1b]111\x07")
+func ResetTerminalBackground(output ...io.Writer) {
+	emitOSC("\x1b]111\x07", output...)
 }
 
 // emitOSC writes an OSC sequence to the terminal. Inside tmux the sequence is
 // wrapped in tmux's DCS passthrough envelope (each ESC doubled) so it reaches
 // the outer terminal; tmux 3.3+ additionally requires `allow-passthrough on`.
-func emitOSC(seq string) {
+func emitOSC(seq string, output ...io.Writer) {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return
 	}
 	if os.Getenv("TMUX") != "" {
 		seq = "\x1bPtmux;" + strings.ReplaceAll(seq, "\x1b", "\x1b\x1b") + "\x1b\\"
 	}
-	fmt.Fprint(os.Stdout, seq)
+	var writer io.Writer = os.Stdout
+	if len(output) > 0 && output[0] != nil {
+		writer = output[0]
+	}
+	fmt.Fprint(writer, seq)
 }
 
 func formatTokens(n int) string {

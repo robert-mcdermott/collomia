@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,19 @@ import (
 	"github.com/robert-mcdermott/collomia/internal/event"
 	"github.com/robert-mcdermott/collomia/internal/provider"
 )
+
+func TestRunResultMarksProviderRefusalAsUnsuccessful(t *testing.T) {
+	var output bytes.Buffer
+	err := (provider.Response{Content: "Cannot comply.", Refused: true, Stop: "stop"}).CompletionError("fixture")
+	emitRunResult(event.NewJSONLWriter(&output), nil, options{ephemeral: true}, "Cannot comply.", false, true, err, time.Now())
+	var final event.Event
+	if decodeErr := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &final); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if final.Result == nil || !final.Result.Refused || !final.Result.Partial || final.Result.Status != "error" || final.Result.Outcome != "blocked" || final.Result.Failure == nil || final.Result.Failure.Kind != event.FailureProvider {
+		t.Fatalf("refusal was presented as successful work: %+v", final.Result)
+	}
+}
 
 func TestParseFlagsBeforeSubcommandAndTerminator(t *testing.T) {
 	opts, err := parse([]string{"--cwd", "/tmp/work", "--mode", "work", "run", "--autopilot", "--", "prompt", "-with-dash"})

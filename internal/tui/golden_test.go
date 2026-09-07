@@ -17,7 +17,7 @@ import (
 func TestTerminalGoldenScreens(t *testing.T) {
 	t.Run("replayed chat 80x24", func(t *testing.T) {
 		m := goldenReplayModel(t, 80, 24)
-		assertGoldenScreen(t, "replay_chat_80x24.txt", m.View())
+		assertGoldenScreen(t, "replay_chat_80x24.txt", m)
 	})
 
 	t.Run("question overlay 80x24", func(t *testing.T) {
@@ -27,17 +27,17 @@ func TestTerminalGoldenScreens(t *testing.T) {
 			reply:    make(chan string, 1),
 		}})
 		m = updated.(Model)
-		assertGoldenScreen(t, "question_80x24.txt", m.View())
+		assertGoldenScreen(t, "question_80x24.txt", m)
 	})
 
 	t.Run("replayed chat 40x12", func(t *testing.T) {
 		m := goldenReplayModel(t, 40, 12)
-		assertGoldenScreen(t, "replay_chat_40x12.txt", m.View())
+		assertGoldenScreen(t, "replay_chat_40x12.txt", m)
 	})
 
 	t.Run("resumed session 80x24", func(t *testing.T) {
 		m := goldenResumedModel(t, 80, 24)
-		assertGoldenScreen(t, "resumed_session_80x24.txt", m.View())
+		assertGoldenScreen(t, "resumed_session_80x24.txt", m)
 	})
 
 	t.Run("side-by-side diff 120x32", func(t *testing.T) {
@@ -57,7 +57,7 @@ func TestTerminalGoldenScreens(t *testing.T) {
 		if m.diffView == nil || m.diffView.mode != "side-by-side" {
 			t.Fatalf("expected side-by-side diff, got %+v", m.diffView)
 		}
-		assertGoldenScreen(t, "diff_120x32.txt", m.View())
+		assertGoldenScreen(t, "diff_120x32.txt", m)
 	})
 
 	t.Run("activity 80x24", func(t *testing.T) {
@@ -69,7 +69,7 @@ func TestTerminalGoldenScreens(t *testing.T) {
 			{Time: base.Add(2 * time.Second), Category: activity.CategoryTool, Status: activity.StatusError, Title: "run_command failed", Detail: "unit tests failed", FailureID: "err-0123456789abcdef"},
 		}
 		m.openActivityView()
-		assertGoldenScreen(t, "activity_80x24.txt", m.View())
+		assertGoldenScreen(t, "activity_80x24.txt", m)
 	})
 }
 
@@ -113,9 +113,28 @@ func goldenReplayModel(t *testing.T, width, height int) Model {
 	return updated.(Model)
 }
 
-func assertGoldenScreen(t *testing.T, name, got string) {
+// Screen fixtures exercise rendering, not the size of the live system prompt.
+// That prompt includes host OS/architecture, temporary paths and available
+// skills, which can cross a percentage boundary on different CI runners.
+// Keep the real context estimator and gauge, but supply a fixed total input.
+func setGoldenContext(t *testing.T, m Model) {
 	t.Helper()
-	got = normalizeGoldenScreen(got)
+	const tokens = 2048
+	m.runtime.Agent.SetMessages(nil)
+	base, window := m.runtime.Agent.ContextEstimate()
+	if base > tokens || window != 32768 {
+		t.Fatalf("golden context fixture needs review: base=%d window=%d", base, window)
+	}
+	m.runtime.Agent.SetMessages([]provider.Message{{Role: "user", Content: strings.Repeat("x", 4*(tokens-base))}})
+	if got, _ := m.runtime.Agent.ContextEstimate(); got != tokens {
+		t.Fatalf("golden context = %d, want %d", got, tokens)
+	}
+}
+
+func assertGoldenScreen(t *testing.T, name string, m Model) {
+	t.Helper()
+	setGoldenContext(t, m)
+	got := normalizeGoldenScreen(m.View())
 	path := filepath.Join("testdata", "golden", name)
 	// Regenerating is deliberate and never automatic: run
 	// COLLO_UPDATE_GOLDEN=1 go test ./internal/tui/ and review the diff, so a

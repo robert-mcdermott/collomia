@@ -5,7 +5,7 @@ End-to-end graphs with governed read fan-out are supported as an optional
 mode. Isolated-writer candidate waves remain experimental after the documented
 audit pass. Standard mode remains the permanent default.
 **Roadmap owner:** Phase 6 — Multi-agent orchestration  
-**Last updated:** 2026-08-25
+**Last updated:** 2026-09-07
 **Canonical roadmap:** [`../ROADMAP.md`](../ROADMAP.md#phase-6--multi-agent-orchestration)
 
 This document is the durable implementation charter and decision record for
@@ -1014,11 +1014,13 @@ OG-3A.4 completion-gap and executable-topology correction:
   workspace `cd`, an environment assignment, and `2>&1`. The controller then
   accepted that node but immediately blocked the next isolated writer because
   primary scaffolding had necessarily left the parent workspace dirty.
-- Safe verification canonicalization now removes only an exact redundant
+- At this milestone, safe verification canonicalization removed only an exact redundant
   `cd` to the current workspace (or `.`) followed by `&&`, plus a final literal
   `2>&1`. Those wrappers preserve the verifier's exit status. Other
   directories, pipes, semicolons, `||`, and status-masking composition remain
-  ineligible and receive direct-command guidance.
+  ineligible and received direct-command guidance. The Kanban26 maintenance
+  below extends this to literal workspace subdirectories and corrects advice
+  that discarded execution context.
 - A durable completion-gap fingerprint and provider-iteration watermark now
   bound remediation. Once the runtime records an unmet gate, only evidence
   capable of changing that gate renews its four-cycle lease: recognized
@@ -2556,6 +2558,142 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
+Release preparation (2026-09-07): v0.5.0 retains the milestone status and authority
+boundaries above. Kanban21 continuation maintenance is user-accepted; integrated
+Standard Developer and Work acceptance is recorded in the
+[improvement plan](IMPROVEMENT_PLAN.md#current-handoff--read-this-first).
+Exact-tag release qualification remains required. Dated maintenance entries
+below describe their original candidate state, including gates not separately
+accepted at the time; they do not reopen completed orchestration milestones.
+
+- Active maintenance (2026-09-06): Kanban29 repairs Standard project-scope
+  accounting after a passing build. Automatic scope is limited to native
+  Standard builds and is established before authorization/execution; graph and
+  graph-worker verification rules are unchanged. Typed malformed verification
+  metadata is corrective input feedback, never graph task evidence. No milestone
+  reopening, schema change or authority expansion. Full finishing regressions,
+  retained failure/freshness/permission gates and acceptance are tracked in the
+  improvement plan.
+
+- Active maintenance (2026-09-06): Kanban28's ordinary failed HTTP smoke test
+  locked out its diagnostic command because networking was mistaken for an
+  uncertain execution outcome. All observed ordinary native shell exits now
+  permit diagnosis and repair; no command is automatically replayed. Required
+  graph evidence, readiness, failure receipts, per-action permissions and
+  integration checkpoints remain runtime-owned. The native HTTP failure →
+  diagnosis → repair → deliberate retry → verification → completion regression
+  covers Standard and the primary graph controller. No schema change, public
+  mode expansion or milestone reopening. The earlier dependency allowlist is
+  removed. Candidate verification and acceptance are tracked in the improvement
+  plan; interruptions and failed external tools with unknown effects stay guarded.
+
+- Active maintenance (2026-09-06): Kanban27 exposed a Standard completion
+  requirement that could not be satisfied: task-note errors were tracked as
+  failures while note saves were forbidden as recovery evidence. Housekeeping
+  is now outside both task-failure and task-evidence accounting in Standard and
+  graph execution; working-note/history tools remain available to workers.
+  They cannot renew progress or substitute for state-bound checks. Readiness,
+  required evidence, permissions and durable graph outcomes remain runtime-owned.
+  Native note-error → failed check → repair → passed check → note conflict →
+  final-answer tests cover the primary graph controller as well as Standard.
+  No schema change, public mode expansion or milestone reopening. Standard
+  legacy note-failure migration and acceptance are in the improvement plan.
+
+- Active maintenance (2026-09-06): Kanban26's correction advice discarded the
+  frontend directory, then npm exit 254 was mistaken for a signal. Native exit
+  classification now distinguishes valid signal statuses from ordinary high
+  codes. Suggestions preserve execution context; literal workspace subdirectory
+  `cd ... &&` checks can qualify in the graph recognizer. Outside or unresolved
+  targets remain refused. Runtime readiness, freshness, failure receipts and
+  permission authority remain unchanged. No schema or milestone changes.
+  Acceptance is tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
+
+- Active maintenance (2026-09-06): Kanban25 exposed malformed native file
+  replacement arguments and a Standard recovery fence after an ordinary failed
+  dependency install. Native file-input/precondition errors now return corrective
+  feedback before execution without a graph failure obligation. Required graph
+  verification, permissions, write-ahead execution tracking and actual failed
+  tool receipts retain their existing authority. Native-tool correction tests
+  complete through the graph controller; Standard restart recovery is tested
+  separately. This does not enable public Work/graph execution or reopen a
+  milestone. Live acceptance is tracked in [the improvement plan](IMPROVEMENT_PLAN.md).
+
+- Active maintenance (2026-09-06): Kanban23's live stack identifies blocked
+  terminal stdout behind the Kiro/cmux PTY chain. Bound interactive output waits
+  and cancel the agent when the display fails; do not change graph permission,
+  readiness, freshness or recovery authority. Ordinary `update_plan` patches
+  preserve omitted step IDs/fields; explicit replacement remains available,
+  while runtime board `Set` and graph revisions keep complete replacement
+  semantics. Context documentation distinguishes ordinary 80% pressure from
+  explicit graph boundaries/budget pressure and unsupported model prose.
+  Focused PTY, cancellation and plan-update reproductions passed with race
+  detection. Full verification and live acceptance are tracked in the
+  [Kanban23 checklist](IMPROVEMENT_PLAN.md#kanban23-terminal-and-plan-reliability--september-6).
+
+- Active maintenance (2026-09-06): Kanban22 exposed immediate task failure on
+  a model's output limit in Standard Developer execution. Add at most two
+  accounted continuation requests per turn across profiles and graph workers;
+  discard rejected tool calls and request a smaller next step. Exhaustion must
+  preserve work as a resource pause, including an extendable graph outcome,
+  rather than insert a permanent provider-failure blocker. Refusals, unknown
+  terminal states, interrupted requests and incomplete compaction summaries
+  remain unaccepted. No model setting or permission is widened automatically.
+  Implementation passed the full offline suite, targeted race checks, vet,
+  documentation checks and native/Linux/Windows builds. Tests cover successful
+  continuation across profiles, graph primary/worker execution, immutable prior
+  effects, discarded calls, monotonic retry limits, cancellation, accounting and
+  restored graph extension/completion. A local Ollama-compatible HTTP stream
+  regression also passed with the observed reasoning-only stop and token counts.
+  Live acceptance remains pending in the
+  [Kanban22 checklist](IMPROVEMENT_PLAN.md#kanban22-response-limit-continuation--september-6).
+
+- Accepted maintenance (2026-09-06): Kanban21 exposed a command-dependent probe
+  assigned to a worker without command access, eager research invalidated by
+  unrelated primary writes, and a budget extension that left worker and
+  attempt ceilings exhausted. The authorized correction adds bounded executable
+  discovery without execution, prefers ready primary work before unrelated read
+  fan-out, and makes explicit budget grants replenish worker and attempt
+  allowances as well as the aggregate envelope. Read-wall accounting counts
+  worker execution rather than idle/review time. Old attempts and spent usage
+  remain immutable; grants cannot replay ambiguous actions or abandon retained
+  writer worktrees. Command execution preserves the launching PATH without login
+  startup files. No command authority is added to planning/read-only workers.
+  Graph workers honor their recorded provider-request lease, including
+  compaction, rather than inheriting the manual-delegate cap. Schema 1 adds
+  optional worker grant fields; legacy restore does not silently grant budget.
+  Implementation passed the full offline suite, targeted race checks, vet and
+  native/Linux/Windows builds. Regressions cover repeated grants, durable app
+  restart/extension, immutable accepted work, failed persistence, ambiguous
+  effects, retained writers and the actual worker loop. A read-only probe also
+  recovered the supplied saved snapshot without changing user data. See the
+  [maintenance checklist](IMPROVEMENT_PLAN.md#kanban21-reliability-candidate--september-6)
+  for acceptance evidence. On 2026-09-06 the user confirmed successful manual
+  testing and accepted this follow-up. Separate Standard/Work live checks remain
+  tracked independently. This is maintenance, not a new graduation claim.
+
+- Standard maintenance (2026-09-06): the authorized completion simplification
+  accepts explicitly scoped command evidence for current files and automatically
+  recovers demonstrably repaired native file failures. This is a Standard-only
+  acceptance path; graph command recognition, readiness, freshness, recovery,
+  integration, budgets, terminal authority, and graduation status are unchanged.
+  See [COMPLETION.md](COMPLETION.md) and the active
+  [improvement plan](IMPROVEMENT_PLAN.md) for the implementation/manual gate.
+
+- Runtime maintenance (2026-09-04): W4 adds Standard Work final-artifact
+  rechecks and optional plan `artifacts` intent metadata. Developer and
+  Orchestrated Goal acceptance still use their existing contracts; artifact
+  roles grant no graph execution or write authority. The shared plan schema is
+  additive and keeps older plans readable. W4 evidence and its user-testing
+  gate are in [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md); no orchestration
+  milestone or supported/experimental classification changes.
+- Runtime maintenance (2026-09-04): improvement-plan W3 adds a shared provider
+  terminal-state check before primary tool execution or completion assessment.
+  A truncated/refused/incomplete response records a non-retryable provider
+  failure and cannot accept a node; incomplete compaction preserves its source
+  context. `TestGoalGraphRejectsTruncatedCompletion` covers the compatibility
+  boundary. This adds no orchestration milestone or authority; existing
+  supported/experimental status and non-goals remain unchanged. The W3 test
+  evidence and user-acceptance gate are in [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
 - Last completed slice: **the second writer-wave audit pass**. It found and
   fixed the restart validator's rejection of integrated and waived graphs,
   made waiver-backed completion explicit, and confirmed budget-exhaustion

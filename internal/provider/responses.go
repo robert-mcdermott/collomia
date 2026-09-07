@@ -208,6 +208,14 @@ func responseFromPayload(payload responsesPayload, label, operation string, onDe
 		InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens,
 		CachedTokens: payload.Usage.InputTokensDetails.CachedTokens, ReasoningTokens: payload.Usage.OutputTokensDetails.ReasoningTokens,
 	}}
+	if payload.IncompleteDetails != nil {
+		out.StopDetail = payload.IncompleteDetails.Reason
+	}
+	for _, item := range payload.Output {
+		for _, part := range item.Content {
+			out.Refused = out.Refused || part.Type == "refusal" || part.Refusal != ""
+		}
+	}
 	for _, item := range payload.Output {
 		switch item.Type {
 		case "message":
@@ -215,6 +223,9 @@ func responseFromPayload(payload responsesPayload, label, operation string, onDe
 				out.Content += part.Text + part.Refusal
 			}
 		case "function_call":
+			if !out.acceptsToolCalls() {
+				continue
+			}
 			id := item.CallID
 			if id == "" {
 				id = item.ID
@@ -278,6 +289,7 @@ func parseResponsesStream(r io.Reader, label string, onDelta func(Delta)) (Respo
 		}
 		switch typ {
 		case "response.output_text.delta", "response.refusal.delta":
+			out.Refused = out.Refused || typ == "response.refusal.delta"
 			out.Content += envelope.Delta
 			if envelope.Delta != "" && onDelta != nil {
 				onDelta(Delta{Text: envelope.Delta})
@@ -327,6 +339,11 @@ func parseResponsesStream(r io.Reader, label string, onDelta func(Delta)) (Respo
 				return err
 			}
 			out.Stop, out.Usage = complete.Stop, complete.Usage
+			out.StopDetail = complete.StopDetail
+			out.Refused = out.Refused || complete.Refused
+			if typ == "response.incomplete" {
+				out.Stop = "incomplete"
+			}
 			if len(complete.ToolCalls) > 0 {
 				out.ToolCalls = complete.ToolCalls
 			}
@@ -362,6 +379,14 @@ func parseResponsesStream(r io.Reader, label string, onDelta func(Delta)) (Respo
 	}
 	if !terminal {
 		return Response{}, fmt.Errorf("Responses stream ended without a terminal event")
+	}
+	if !out.acceptsToolCalls() {
+		out.ToolCalls = nil
+		if onDelta != nil && (out.Usage.InputTokens > 0 || out.Usage.OutputTokens > 0) {
+			usage := out.Usage
+			onDelta(Delta{Usage: &usage})
+		}
+		return out, nil
 	}
 	if len(out.ToolCalls) == 0 {
 		indexes := make([]int, 0, len(tools))

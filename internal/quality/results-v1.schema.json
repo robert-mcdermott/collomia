@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Collo quality evaluation results v1",
+  "type": "object",
+  "required": ["schema_version", "suite_version", "suite_digest", "collo_version", "collo_commit", "provider", "provider_type", "model", "model_settings_digest", "platform", "settings", "task_ids", "started", "state", "trials"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "suite_version": {"type": "string"},
+    "suite_digest": {"type": "string"},
+    "collo_version": {"type": "string"},
+    "collo_commit": {"type": "string"},
+    "provider": {"type": "string"},
+    "provider_type": {"type": "string"},
+    "model": {"type": "string"},
+    "model_settings_digest": {"type": "string"},
+    "platform": {"type": "string"},
+    "settings": {
+      "type": "object",
+      "required": ["trials", "token_budget_per_task", "total_token_budget", "cost_budget_per_task_usd", "timeout_seconds_per_task", "max_iterations_per_turn"],
+      "properties": {
+        "trials": {"type": "integer", "minimum": 1, "maximum": 10},
+        "token_budget_per_task": {"type": "integer", "minimum": 1000, "maximum": 1000000},
+        "total_token_budget": {"type": "integer", "minimum": 1000, "maximum": 10000000},
+        "cost_budget_per_task_usd": {"type": "number", "minimum": 0},
+        "timeout_seconds_per_task": {"type": "integer", "minimum": 1, "maximum": 1800},
+        "max_iterations_per_turn": {"type": "integer", "minimum": 1, "maximum": 100}
+      },
+      "additionalProperties": false
+    },
+    "task_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "started": {"type": "string", "format": "date-time"},
+    "state": {"enum": ["running", "stopped", "complete"]},
+    "stop_reason": {"type": "string"},
+    "trials": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "required": ["task", "trial", "mode", "category", "expected_outcome", "outcome", "answer", "machine_pass", "false_done", "false_blocked_candidate", "checks", "usage", "usage_complete", "duration_ms", "provider_calls", "tool_calls", "repeated_tool_calls", "questions", "controller_interventions", "permission_denials", "review_prompt", "directory"],
+        "properties": {
+          "task": {"type": "string"}, "trial": {"type": "integer", "minimum": 1},
+          "mode": {"enum": ["developer", "work"]}, "category": {"type": "string"},
+          "expected_outcome": {"enum": ["done", "blocked"]}, "outcome": {"type": "string"},
+          "error": {"type": "string"}, "answer": {"type": "string"},
+          "machine_pass": {"type": "boolean"}, "false_done": {"type": "boolean"}, "false_blocked_candidate": {"type": "boolean"},
+          "checks": {"type": ["array", "null"], "items": {"type": "object", "required": ["name", "passed"], "properties": {"name": {"type": "string"}, "passed": {"type": "boolean"}, "detail": {"type": "string"}}, "additionalProperties": false}},
+          "usage": {"type": "object", "description": "Provider token accounting and optional configured-price cost estimate; absence of cost_available is not zero cost."},
+          "usage_complete": {"type": "boolean"}, "duration_ms": {"type": "integer", "minimum": 0},
+          "provider_calls": {"type": "integer", "minimum": 0}, "tool_calls": {"type": "integer", "minimum": 0},
+          "repeated_tool_calls": {"type": "integer", "minimum": 0}, "questions": {"type": "integer", "minimum": 0},
+          "controller_interventions": {"type": "integer", "minimum": 0}, "permission_denials": {"type": "integer", "minimum": 0},
+          "review_prompt": {"type": "string"}, "directory": {"type": "string"},
+          "review": {"type": "object", "required": ["accepted", "note", "time"], "properties": {"accepted": {"type": "boolean"}, "unnecessary_questions": {"type": "integer", "minimum": 0}, "wasted_repeats": {"type": "integer", "minimum": 0}, "note": {"type": "string"}, "time": {"type": "string", "format": "date-time"}}, "additionalProperties": false}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

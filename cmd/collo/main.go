@@ -35,6 +35,11 @@ func main() {
 		if errors.As(err, &exitErr) && exitErr.Code > 0 {
 			os.Exit(exitErr.Code)
 		}
+		// stderr can share the same stopped PTY as stdout. The diagnostic is
+		// already durable; writing it here would hang again after clean teardown.
+		if errors.Is(err, tui.ErrTerminalOutputStalled) {
+			os.Exit(exitFailure)
+		}
 		fmt.Fprintln(os.Stderr, "collo:", failureid.Display(err))
 		os.Exit(exitCode(err))
 	}
@@ -108,6 +113,7 @@ type options struct {
 	auditSession, auditActor, auditTool                      string
 	auditSince                                               string
 	auditLimit                                               int
+	maxIterations, maxTurns                                  int
 	webPort, mcpTimeout                                      int
 	plan, global, help, version, jsonl, ephemeral            bool
 	strict, revoke, status, debug, markdown, yes             bool
@@ -130,6 +136,20 @@ func run(args []string) error {
 		return withCommandError(err, exitUsage, event.FailureUsage)
 	}
 	runStarted := time.Now()
+	switch opts.command {
+	case "eval":
+		evalArgs := opts.args
+		if len(evalArgs) > 0 && evalArgs[0] == "run" {
+			forwarded := []string{"run"}
+			for _, pair := range [][2]string{{"--cwd", opts.cwd}, {"--provider", opts.provider}, {"--model", opts.model}} {
+				if pair[1] != "" {
+					forwarded = append(forwarded, pair[0], pair[1])
+				}
+			}
+			evalArgs = append(forwarded, evalArgs[1:]...)
+		}
+		return runEvalCommand(evalArgs)
+	}
 	if opts.help {
 		fmt.Print(helpText)
 		return nil
@@ -287,13 +307,21 @@ func run(args []string) error {
 		}
 	}
 	broker := tui.NewApprovalBroker()
-	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, ProviderCredential: setupCredential, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
+	runtime, err := app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, ProviderCredential: setupCredential, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, MaxIterations: opts.maxIterations, MaxTurnIterations: opts.maxTurns, Plan: opts.plan, Debug: opts.debug, Resume: opts.resume, Continue: opts.cont, Approver: broker.Approve, Asker: func(ctx context.Context, question string, options []string) (string, error) {
 		return broker.Ask(ctx, tui.Question{Text: question, Options: options})
 	}})
 	if err != nil {
 		return err
 	}
 	defer runtime.Close()
+	ctx, cancelUI := context.WithCancel(ctx)
+	defer cancelUI()
+	output := tui.NewGuardedOutput(os.Stdout, 30*time.Second, func(err error) {
+		notice := event.New(event.KindWarning)
+		notice.Text = "Terminal output unavailable; cancelling the active turn and retaining the session for resume in a working terminal: " + err.Error()
+		runtime.LogEvent(notice)
+		cancelUI()
+	})
 	initial := strings.Join(opts.args, " ")
 	altScreen := runtime.Config.Options.AlternateScreen
 	if opts.altScreen != nil {
@@ -320,11 +348,18 @@ func run(args []string) error {
 	// terminal that no longer exists. WithContext is what turns a cancelled
 	// shutdown context into a returned Run, and a returned Run is what reaches
 	// the deferred Close above.
-	programOptions = append(programOptions, tea.WithContext(ctx))
-	program := tea.NewProgram(tui.New(runtime, broker, initial), programOptions...)
+	programOptions = append(programOptions, tea.WithContext(ctx), tea.WithOutput(output))
+	model := tui.NewWithOutput(ctx, runtime, broker, initial, output)
+	program := tea.NewProgram(model, programOptions...)
 	_, err = program.Run()
-	tui.ResetTerminalBackground()
-	if shutdownRequested(err, ctx) {
+	wasShutdown := shutdownRequested(err, ctx)
+	cancelUI()
+	model.WaitForRuns(5 * time.Second)
+	tui.ResetTerminalBackground(output)
+	if outputErr := output.Err(); outputErr != nil {
+		return fmt.Errorf("%w: %v", tui.ErrTerminalOutputStalled, outputErr)
+	}
+	if wasShutdown {
 		return nil
 	}
 	return err
@@ -424,7 +459,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 	}
 
 	var err error
-	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
+	runtime, err = app.New(ctx, app.Options{Workspace: opts.cwd, Provider: opts.provider, Model: opts.model, Agent: opts.agent, Autonomy: opts.autonomy, TaskMode: opts.taskMode, MaxIterations: opts.maxIterations, MaxTurnIterations: opts.maxTurns, Plan: opts.plan, Debug: opts.debug, Ephemeral: opts.ephemeral, Resume: opts.resume, Continue: opts.cont})
 	if err != nil {
 		return classifyCommandError(err)
 	}
@@ -479,6 +514,7 @@ func runNonInteractive(ctx context.Context, opts options) (runErr error) {
 }
 
 func emitRunResult(writer *event.JSONLWriter, runtime *app.Runtime, opts options, answer string, refused, progressed bool, runErr error, started time.Time) {
+	refused = refused || errors.Is(runErr, provider.ErrResponseRefused)
 	mode := string(taskmode.Developer)
 	if parsed, err := taskmode.Parse(opts.taskMode); err == nil {
 		mode = parsed.String()
@@ -566,6 +602,11 @@ func parse(args []string) (options, error) {
 	opts := options{command: "tui"}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if opts.command == "tui" && len(opts.args) == 0 && arg == "eval" {
+			opts.command = "eval"
+			opts.args = append(opts.args, args[i+1:]...)
+			return opts, nil
+		}
 		if opts.command == "tui" && len(opts.args) == 0 && (arg == "tui" || arg == "run" || arg == "init" || arg == "setup" || arg == "version" || arg == "config" || arg == "trust" || arg == "doctor" || arg == "capabilities" || arg == "support" || arg == "policy" || arg == "auth" || arg == "audit" || arg == "sessions" || arg == "skills" || arg == "mcp" || arg == "review" || arg == "verify" || arg == "completion" || arg == "schema" || arg == "replay") {
 			opts.command = arg
 			continue
@@ -580,6 +621,24 @@ func parse(args []string) (options, error) {
 			opts.help = true
 		case arg == "-v" || arg == "--version":
 			opts.version = true
+		case arg == "--max-turns" || arg == "--max-no-progress" || strings.HasPrefix(arg, "--max-turns=") || strings.HasPrefix(arg, "--max-no-progress="):
+			name, value, hasValue := strings.Cut(arg, "=")
+			if !hasValue {
+				if i+1 >= len(args) {
+					return opts, fmt.Errorf("%s requires an integer from 1 to 10000", name)
+				}
+				i++
+				value = args[i]
+			}
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 || n > 10000 {
+				return opts, fmt.Errorf("%s requires an integer from 1 to 10000", name)
+			}
+			if name == "--max-turns" {
+				opts.maxTurns = n
+			} else {
+				opts.maxIterations = n
+			}
 		case arg == "--plan":
 			opts.plan = true
 		case arg == "--jsonl":
@@ -820,6 +879,12 @@ func parse(args []string) (options, error) {
 
 func tuiChildArgs(opts options) []string {
 	args := []string{"tui", "--cwd", opts.cwd}
+	if opts.maxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(opts.maxTurns))
+	}
+	if opts.maxIterations > 0 {
+		args = append(args, "--max-no-progress", strconv.Itoa(opts.maxIterations))
+	}
 	if opts.provider != "" {
 		args = append(args, "--provider", opts.provider)
 	}
@@ -867,6 +932,7 @@ Usage:
   collo [flags] [initial prompt]      start the interactive TUI
   collo --web [flags] [initial prompt]  open the interactive TUI in a local browser
   collo run [flags] <prompt>          run once (or read the prompt from stdin)
+  collo eval list|run|report|compare|review  opt-in real-model quality scorecards; see collo eval --help
   collo setup [--provider <name>]     find, verify, and configure a provider interactively
   collo init [--with-reference]       write project .collomia.json
   collo init --global [--with-reference]  write the user-wide .collomia/config.json
@@ -898,6 +964,8 @@ Flags:
   --model <id>                         model or deployment ID
   --agent <name>                       named primary agent profile
   --mode developer|work                task profile (default: developer; persisted per session)
+  --max-turns N                      Standard provider cycles per user turn (default 256)
+  --max-no-progress N                 consecutive cycles without novel progress (default 24)
   --autonomy ask|workspace|autopilot   permission policy
   --autopilot                          shorthand for --autonomy autopilot
   --workspace                          shorthand for --autonomy workspace

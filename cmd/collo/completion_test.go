@@ -117,6 +117,7 @@ func TestCompletionSubcommandsMatchDispatch(t *testing.T) {
 		{"mcp", "runMCPCommand", "mcp.go"},
 		{"auth", "runAuthCommand", "auth.go"},
 		{"audit", "runAuditCommand", "audit.go"},
+		{"eval", "evalCommand", "eval.go"},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			clauses := caseClausesIn(t, tc.file, tc.function)
@@ -181,8 +182,8 @@ func TestSchemaContractsAreNotRestated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(script, "schema) COMPREPLY=( $(compgen -W \"events config\"") {
-		t.Errorf("bash completion does not offer both published contracts:\n%s", script)
+	if !strings.Contains(script, "schema) COMPREPLY=( $(compgen -W \""+strings.Join(schemaContracts, " ")+"\"") {
+		t.Errorf("bash completion does not offer all published contracts:\n%s", script)
 	}
 }
 

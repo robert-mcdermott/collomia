@@ -144,9 +144,11 @@ func RunAppContainer(policy Policy, argv []string) error {
 		if absErr != nil {
 			return fmt.Errorf("resolve readable root %q: %w", root, absErr)
 		}
-		if real, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
-			abs = real
+		real, resolveErr := finalAppContainerPath(abs)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve AppContainer readable root %s: %w", abs, resolveErr)
 		}
+		abs = real
 		key := strings.ToLower(filepath.Clean(abs))
 		if seen[key] {
 			continue
@@ -161,7 +163,7 @@ func RunAppContainer(policy Policy, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("find sandboxed executable %q: %w", argv[0], err)
 	}
-	target, err = filepath.Abs(target)
+	target, err = finalAppContainerPath(target)
 	if err != nil {
 		return fmt.Errorf("resolve sandboxed executable: %w", err)
 	}
@@ -200,7 +202,7 @@ func RunAppContainer(policy Policy, argv []string) error {
 }
 
 // canonicalizeAppContainerPathEnvironment resolves directory junctions and
-// symlinks in absolute PATH entries before the sandboxed process inherits the
+// symlinks in absolute PATH entries and explicit GOROOT before the child inherits the
 // environment. Windows-hosted toolchains commonly expose a C: junction to
 // bytes stored on D:. Extra readable roots are resolved to the D: target when
 // their ACLs are granted; leaving the child PATH on the C: alias makes cmd.exe
@@ -209,18 +211,35 @@ func RunAppContainer(policy Policy, argv []string) error {
 // This changes no executable authority and grants no additional root. It only
 // makes process lookup use the same resolved spelling as the sandbox ACL.
 func canonicalizeAppContainerPathEnvironment() (func(), error) {
-	original, ok := os.LookupEnv("PATH")
-	if !ok {
-		return func() {}, nil
+	originals := map[string]string{}
+	restore := func() {
+		for key, value := range originals {
+			_ = os.Setenv(key, value)
+		}
 	}
-	canonical := canonicalAppContainerPath(original, filepath.EvalSymlinks)
-	if canonical == original {
-		return func() {}, nil
+	for _, key := range []string{"PATH", "GOROOT"} {
+		original, ok := os.LookupEnv(key)
+		if !ok || original == "" {
+			continue
+		}
+		canonical := original
+		if key == "PATH" {
+			canonical = canonicalAppContainerPath(original, finalAppContainerPath)
+		} else if filepath.IsAbs(original) {
+			if resolved, err := finalAppContainerPath(original); err == nil {
+				canonical = resolved
+			}
+		}
+		if canonical == original {
+			continue
+		}
+		originals[key] = original
+		if err := os.Setenv(key, canonical); err != nil {
+			restore()
+			return nil, fmt.Errorf("canonicalize AppContainer %s: %w", key, err)
+		}
 	}
-	if err := os.Setenv("PATH", canonical); err != nil {
-		return nil, fmt.Errorf("canonicalize AppContainer PATH: %w", err)
-	}
-	return func() { _ = os.Setenv("PATH", original) }, nil
+	return restore, nil
 }
 
 func canonicalAppContainerPath(value string, resolve func(string) (string, error)) string {

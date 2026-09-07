@@ -50,12 +50,15 @@ func TestResponsesStreamEmitsReasoningWarningToolAndUsage(t *testing.T) {
 		`event: response.incomplete`, `data: {"type":"response.incomplete","response":{"status":"incomplete","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"README.md\"}"}],"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":4,"output_tokens":2}}}`, "",
 	}, "\n")
 	var reasoning, warning string
-	var toolEvents, usageEvents int
+	var toolEvents, usageEvents, completedToolEvents int
 	response, err := parseResponsesStream(strings.NewReader(stream), "responses-test", func(delta Delta) {
 		reasoning += delta.Reasoning
 		warning += delta.Warning
 		if delta.ToolCall != nil {
 			toolEvents++
+			if delta.ToolCall.Done {
+				completedToolEvents++
+			}
 		}
 		if delta.Usage != nil {
 			usageEvents++
@@ -64,7 +67,9 @@ func TestResponsesStreamEmitsReasoningWarningToolAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reasoning != "checking" || !strings.Contains(warning, "max_output_tokens") || toolEvents < 2 || usageEvents != 1 || len(response.ToolCalls) != 1 || response.Usage != (Usage{InputTokens: 4, OutputTokens: 2}) {
+	// Even complete-looking tool JSON is not executable when the overall
+	// response was incomplete. Streaming diagnostics and usage still survive.
+	if reasoning != "checking" || !strings.Contains(warning, "max_output_tokens") || toolEvents != 2 || completedToolEvents != 0 || usageEvents != 1 || len(response.ToolCalls) != 0 || response.Termination() != TerminationTruncated || response.Usage != (Usage{InputTokens: 4, OutputTokens: 2}) {
 		t.Fatalf("response=%+v reasoning=%q warning=%q toolEvents=%d usageEvents=%d", response, reasoning, warning, toolEvents, usageEvents)
 	}
 }

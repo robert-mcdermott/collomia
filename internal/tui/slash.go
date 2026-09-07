@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/robert-mcdermott/collomia/internal/app"
+	"github.com/robert-mcdermott/collomia/internal/session"
 )
 
 func (m *Model) slash(line string) (bool, tea.Cmd) {
@@ -118,7 +119,50 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		} else {
 			m.addSystem("Developer mode enabled. Standard execution now prefers repository tools and build, lint, and test evidence; permissions are unchanged.")
 		}
+	case "/recovery":
+		if len(args) == 0 {
+			status, err := m.runtime.RecoveryStatus()
+			if err != nil {
+				m.addError(err)
+			} else {
+				m.addPanel("Recovery", status)
+			}
+			break
+		}
+		if m.busy || len(args) < 2 || (args[0] != "acknowledge" && args[0] != "keep") {
+			m.addSystem("Use /recovery, /recovery acknowledge REASON, or /recovery keep REASON between turns. Reconciliation keeps current files and discards earlier workspace checkpoints; completion obligations remain.")
+			break
+		}
+		if err := m.runtime.ReconcileRecovery(args[0] == "acknowledge", strings.Join(args[1:], " ")); err != nil {
+			m.addError(err)
+		} else {
+			m.addSystem("Recovery inspection recorded. Current files kept; prior workspace checkpoint history discarded. Completion obligations still require fresh evidence. No action was replayed.")
+		}
 	case "/context":
+		if len(args) > 0 {
+			if len(args) != 1 || (args[0] == "clear" && m.busy) {
+				m.addSystem("Use /context [task|clear]; clear is available between turns.")
+				break
+			}
+			if m.runtime.Context == nil || m.runtime.Session == nil {
+				m.addSystem("Session task context is unavailable.")
+				break
+			}
+			switch args[0] {
+			case "task":
+				m.addPanel("Task context", m.runtime.Context.Pinned())
+			case "clear":
+				current := m.runtime.Session.TaskContext()
+				if _, err := m.runtime.Session.ReplaceTaskContext(current.Revision, session.TaskContext{}); err != nil {
+					m.addSystem(err.Error())
+				} else {
+					m.addSystem("Working notes cleared. Original user requests and session history are retained.")
+				}
+			default:
+				m.addSystem("Usage: /context [task|clear]")
+			}
+			break
+		}
 		usage := m.runtime.Agent.Usage()
 		estimate, window := m.runtime.Agent.ContextEstimate()
 		// "unknown" is not a neutral report. A zero window makes automatic
@@ -159,6 +203,8 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		inspector += fmt.Sprintf("\n  conversation       %d user / %d assistant messages", breakdown.MessagesByRole["user"], breakdown.MessagesByRole["assistant"])
 		if breakdown.Summaries > 0 {
 			inspector += fmt.Sprintf("\n  compaction         %d summary block(s) replacing older history", breakdown.Summaries)
+		} else {
+			inspector += "\n  compaction         no summary blocks in the current conversation"
 		}
 		if breakdown.ArtifactCount > 0 {
 			inspector += fmt.Sprintf("\n  retained results   %d artifact(s), %s on disk and outside the prompt", breakdown.ArtifactCount, formatByteCount(breakdown.ArtifactBytes))
@@ -166,7 +212,7 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		if breakdown.ImageCount > 0 {
 			inspector += fmt.Sprintf("\n  images             %d typed attachment(s); pre-usage estimate reserves ~1K tokens each", breakdown.ImageCount)
 		}
-		inspector += "\n\n/compact frees the window; the full transcript always survives in the session log."
+		inspector += "\n\nctx estimates the current input prompt, not cumulative token spending or live reasoning output. Standard automatic compaction normally starts above 80% of the configured context window when enough history can be reclaimed. Orchestrated Goal can also compact at a node boundary or under aggregate token-budget pressure. Model prose claiming compaction is not a runtime event. /compact requests summarization; the full transcript survives in the session log."
 		m.addPanel("Context & usage", fmt.Sprintf("Provider usage this session: %d input / %d output%s tokens%s%s%s\nEstimated current prompt for one request: ~%d tokens of %s\nMessages: %d%s%s", usage.InputTokens, usage.OutputTokens, reasoning, cacheLine, cost, graphBudget, estimate, windowText, m.runtime.Agent.MessageCount(), sessionID, inspector))
 	case "/plan":
 		enabled := !m.runtime.Agent.Plan()
@@ -688,6 +734,28 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		estimate, window := m.runtime.Agent.ContextEstimate()
 		m.addSystem(fmt.Sprintf("Compacted %d messages into a summary. Estimated context is now ~%d tokens (window %d). The full transcript remains in the session log.", count, estimate, window))
+	case "/limits":
+		if len(args) != 0 && len(args) != 1 && len(args) != 2 {
+			m.addError(fmt.Errorf("usage: /limits [total [no-progress]]"))
+			break
+		}
+		noProgress, total := m.runtime.Agent.ExecutionLimits()
+		if len(args) > 0 {
+			var err error
+			total, err = strconv.Atoi(args[0])
+			if err == nil && len(args) == 2 {
+				noProgress, err = strconv.Atoi(args[1])
+			}
+			if err != nil {
+				m.addError(fmt.Errorf("limits must be integers"))
+				break
+			}
+			if err = m.runtime.Agent.SetExecutionLimits(noProgress, total); err != nil {
+				m.addError(err)
+				break
+			}
+		}
+		m.addSystem(fmt.Sprintf("Standard execution: %d total provider cycles per user turn; %d consecutive cycles without novel progress. Changes take effect at the next cycle and last until profile switch or restart. Continue a paused task with another message.", total, noProgress))
 	case "/config":
 		showAll := len(args) == 1 && strings.EqualFold(args[0], "all")
 		if len(args) > 0 && !showAll {
@@ -715,7 +783,11 @@ func busySlashAllowed(line string) bool {
 		return false
 	}
 	switch strings.ToLower(fields[0]) {
-	case "/help", "/status", "/context", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
+	case "/context":
+		return len(fields) == 1 || (len(fields) == 2 && fields[1] == "task")
+	case "/limits":
+		return len(fields) <= 3
+	case "/recovery", "/help", "/status", "/tasks", "/tools", "/attachments", "/transcript", "/activity", "/diff":
 		return len(fields) == 1
 	case "/orchestrate":
 		return len(fields) == 1 || (len(fields) == 2 && (strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "pause") || strings.EqualFold(fields[1], "cancel"))) || (len(fields) == 3 && strings.EqualFold(fields[1], "status"))

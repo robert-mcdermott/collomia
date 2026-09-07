@@ -373,12 +373,14 @@ func (m *Model) openRestorePicker() {
 
 // restoreCost describes what restoring to a turn would reverse, tersely enough
 // to share a picker row with the turn's prompt. It says "no tracked file
-// changes" rather than nothing at all, because a resumed session's earlier
-// turns are genuinely outside this process's reach and a blank description
-// would read as a restore that does everything.
+// changes" rather than nothing at all, and reports unavailable checkpoint
+// coverage separately so missing history cannot imply a complete restore.
 func (m *Model) restoreCost(turn int) string {
 	if m.runtime.Changes == nil {
 		return "change tracking unavailable"
+	}
+	if err := m.runtime.Changes.CheckpointAvailability(turn); err != nil {
+		return "unavailable: " + err.Error()
 	}
 	files, mutations := m.runtime.Changes.PendingSince(turn)
 	if files == 0 {

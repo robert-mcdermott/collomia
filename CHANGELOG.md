@@ -5,6 +5,80 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
+## v0.5.0
+
+### Added
+
+- Live, collapsible thinking summaries for reasoning events emitted by provider
+  adapters. Provider-side enablement and reasoning display in reopened sessions
+  remain separate follow-up work.
+- Retained task notes, original-request previews and session evidence retrieval
+  across compaction/resume. See [Task context](docs/TASK_CONTEXT.md).
+- Durable Standard completion obligations, bounded workspace checkpoints and
+  `/recovery` inspection/reconciliation. Interrupted actions require inspection;
+  external effects cannot be rolled back or automatically replayed. See
+  [Recovery](docs/RECOVERY.md).
+- Opt-in `collo eval` with 12 balanced coding/Work tasks, contained workspaces,
+  budgets, traces, independent checks, human review and matched comparisons.
+  An initial 24-trial baseline is recorded separately from prose-quality review.
+  See [Quality evaluations](docs/QUALITY_EVALUATIONS.md).
+- Task-specific `run_command.verification` in Standard Developer and Work.
+  Supported plain project builds automatically capture input scope when explicit
+  verification metadata is absent. Explicit scopes remain authoritative, and
+  passing checks certify only their recorded scope. See [Completion](docs/COMPLETION.md).
+- General-purpose local PNG/JPEG/GIF inspection with `view_image`, and bounded
+  XLSX/Open XML structural validation. Pixel delivery depends on model support;
+  structural checks do not prove calculation or visual correctness.
+- Separate total-turn and no-progress limits, `--max-turns`, `--max-no-progress`
+  and live `/limits` controls. Standard execution defaults to 256 total turns.
+
+### Fixed
+
+- Standard completion distinguishes requested deliverables from disposable
+  helpers, accepts scoped project evidence, and preserves receipts across
+  unrelated edits. Final bytes, target identity and input freshness remain
+  checked. HTML/source validation checks text rather than claiming execution.
+- Verification-only gaps report “Verification incomplete”; final success text
+  is held until accepted. Diagnostics identify uncovered paths and narrower
+  receipts, and routine verification details are collapsed in the TUI.
+- Observed ordinary native shell exits allow diagnosis and repair without manual
+  recovery acknowledgement. Actual failed work still needs resolution;
+  interruptions and opaque external-tool failures retain uncertainty guards.
+- Housekeeping errors and native input rejected before execution no longer
+  create task-failure obligations. Malformed file replacements are rejected
+  before mutation, including patch-batch preflight.
+- Recovery uses exact operation arguments or supported alternative evidence.
+  Verification guidance preserves working directories and environment context;
+  non-signal exit statuses such as npm's 254 are classified correctly.
+- Output/context limits allow up to two bounded continuations per turn; incomplete
+  tool calls are discarded without execution. Persistent limits pause resumably.
+  Empty completed responses receive bounded retries. Refused or failed responses
+  cannot become successful completion, and incomplete compaction cannot replace
+  conversation context.
+- Native command execution inherits the caller's PATH through a non-login shell;
+  executable discovery and Orchestrated Goal scheduling, wall accounting and
+  explicit budget continuation are repaired.
+- Partial plan updates preserve omitted steps. Terminal output stalls and UI
+  teardown are bounded; real-PTY startup and resize regressions are covered.
+  Context reporting distinguishes current input occupancy from cumulative usage.
+- `read_file` pagination reaches beyond the first MiB with bounded pages,
+  EOF/continuation metadata and guidance for oversized lines.
+- Evaluation failure traces include classification/correlation metadata, and
+  scorecards distinguish task passes from individual artifact checks.
+
+### Documentation and acceptance
+
+- Work remains general-purpose: no bundled reporting workflow or example-project
+  initializer is required. Tools and user-installed skills support model-selected
+  methods. The proposed prescriptive workflow was withdrawn.
+- Updated usage, completion, recovery and evaluation guides, and consolidated
+  current release status separately from historical candidate records.
+- Standard Developer acceptance was verified through Kanban30 on September 6;
+  Work acceptance was reported by the user on September 7. Orchestrated Goal's
+  continuation follow-up passed manual testing through Kanban21. These results
+  do not establish universal model/platform reliability; exact-tag release CI
+  remains required. See the [improvement plan](docs/IMPROVEMENT_PLAN.md).
+
 ## v0.4.1
 
 ### Fixed

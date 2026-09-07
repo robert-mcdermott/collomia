@@ -173,7 +173,7 @@ func TestRestoreOnAResumedSessionReportsThatNothingWasReversed(t *testing.T) {
 	id := m.runtime.Session.Meta.ID
 
 	// Reopen the session the way a resume does. The conversation's turns come
-	// back; the in-memory record of which files they touched does not.
+	// back along with the durable checkpoint's explicit empty mutation history.
 	if err := m.runtime.SwitchSession(id); err != nil {
 		t.Fatal(err)
 	}

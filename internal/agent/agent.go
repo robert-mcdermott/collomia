@@ -92,6 +92,8 @@ type Agent struct {
 	onMessage              func(provider.Message)
 	onCompaction           func(summary provider.Message, replaced int)
 	pinnedContext          func() string
+	onUserPrompt           func()
+	completionStore        CompletionStore
 	completionPlan         *plan.Board
 	goalGraph              *goalgraph.Graph
 	graphWorker            bool
@@ -143,6 +145,10 @@ type Options struct {
 	// OnMessage observes every message appended to the conversation, for
 	// durable session persistence.
 	OnMessage func(provider.Message)
+	// OnUserPrompt observes genuine primary prompt/steering entry points,
+	// after OnMessage persisted them. Runtime role=user notices do not call it.
+	OnUserPrompt    func()
+	CompletionStore CompletionStore
 	// OnCompaction observes context compactions (summary + replaced count).
 	OnCompaction func(summary provider.Message, replaced int)
 	// PinnedContext returns authoritative session state that must survive
@@ -211,7 +217,7 @@ func New(opts Options) *Agent {
 	if opts.TaskMode == "" {
 		opts.TaskMode = taskmode.Developer
 	}
-	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, taskMode: opts.TaskMode, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
+	return &Agent{client: opts.Client, providerName: opts.ProviderName, model: opts.Model, providerConfig: opts.ProviderConfig, registry: opts.Registry, permissions: opts.Permissions, workspace: opts.Workspace, catalog: opts.Catalog, projectInstructions: opts.ProjectInstructions, maxIterations: opts.MaxIterations, maxTurnIterations: opts.MaxTurnIterations, maxToolOutput: opts.MaxToolOutput, tokenBudget: opts.TokenBudget, costBudgetUSD: opts.CostBudgetUSD, disabled: disabled, taskMode: opts.TaskMode, planMode: opts.PlanMode, subagent: opts.Subagent, graphWorker: opts.GraphWorker, onMessage: opts.OnMessage, onUserPrompt: opts.OnUserPrompt, completionStore: opts.CompletionStore, onCompaction: opts.OnCompaction, pinnedContext: opts.PinnedContext, completionPlan: opts.CompletionPlan, goalGraph: opts.GoalGraph, goalStateToken: opts.GoalStateToken, artifacts: opts.Artifacts, attachments: opts.Attachments, lifecycle: opts.Hooks, auditRedact: opts.AuditRedact, onUsage: opts.OnUsage, onAction: opts.OnAction, takeSteering: opts.TakeSteering, persistenceError: opts.PersistenceError, auditFailure: opts.AuditFailure, sessionID: opts.SessionID}
 }
 
 func standardHardIterationLimit(noProgressLimit int) int {
@@ -255,6 +261,15 @@ func (a *Agent) appendMessage(message provider.Message) {
 	a.mu.Unlock()
 	if observe != nil {
 		observe(message)
+	}
+}
+
+func (a *Agent) recordUserPrompt() {
+	a.mu.RLock()
+	hook := a.onUserPrompt
+	a.mu.RUnlock()
+	if hook != nil {
+		hook()
 	}
 }
 
@@ -351,19 +366,33 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		return "", wrapped
 	}
 	a.appendMessage(provider.Message{Role: "user", Content: prompt, Parts: retainedParts})
+	a.recordUserPrompt()
 	if err := a.checkPersistence(); err != nil {
 		return "", reportError(send, err)
 	}
 	a.mu.RLock()
 	completion := newCompletionController(a.completionPlan, a.workspace, a.planMode, a.taskMode)
-	maxTurnIterations := a.maxTurnIterations
+	completion.ctx = ctx
+	store := a.completionStore
 	a.mu.RUnlock()
+	if !a.graphEnabled() {
+		if err := completion.restoreCompletion(store); err != nil {
+			return "", reportError(send, err)
+		}
+		if notice := completion.recoveryNotice(); notice != "" {
+			a.appendMessage(provider.Message{Role: "user", Content: notice})
+		}
+	}
 	standardLastProgressIteration := 0
 	standardProgressVersion := completion.progressVersion
 	// A controller-intercepted final answer is already visible and already paid
 	// for. If the model repairs only completion metadata, retain that candidate
 	// and release it as soon as the controller is satisfied instead of asking the
 	// provider to generate the same answer again.
+	emptyResponseRetries := 0
+	// Per-turn, not consecutive: intermittent successes must not make a model
+	// that repeatedly hits its output limit consume unbounded continuations.
+	responseLimitContinuations := 0
 	pendingFinal := ""
 	pendingFinalReusable := false
 	// Ordinary turns use max_iterations as a consecutive no-progress lease and
@@ -374,13 +403,20 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 	// unbounded write churn or repeated identical inspection.
 	for iteration := 1; ; iteration++ {
 		if !a.graphEnabled() {
+			noProgressLimit, maxTurnIterations := a.ExecutionLimits()
 			if iteration > maxTurnIterations {
-				budgetErr := reportError(send, fmt.Errorf("%w after the hard limit of %d provider iterations; the turn was still making progress or had not stopped", ErrIterationBudgetExceeded, maxTurnIterations))
+				advice := "Raise /limits (or --max-turns) and continue to give this task more time"
+				if a.graphWorker {
+					advice = "The graph retains this attempt; /orchestrate extend grants another execution allowance"
+				} else if a.subagent {
+					advice = "The parent retains the worker result and can arrange further bounded work"
+				}
+				budgetErr := reportError(send, fmt.Errorf("%w after the hard limit of %d provider iterations; work is saved. %s", ErrIterationBudgetExceeded, maxTurnIterations, advice))
 				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
 				return "", budgetErr
 			}
-			if iteration > 1 && iteration-1-standardLastProgressIteration >= a.maxIterations {
-				budgetErr := reportError(send, fmt.Errorf("%w: no novel progress for %d consecutive provider iterations; work remains", ErrIterationBudgetExceeded, a.maxIterations))
+			if iteration > 1 && iteration-1-standardLastProgressIteration >= noProgressLimit {
+				budgetErr := reportError(send, fmt.Errorf("%w: no novel progress for %d consecutive provider iterations; work remains", ErrIterationBudgetExceeded, noProgressLimit))
 				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
 				return "", budgetErr
 			}
@@ -493,10 +529,23 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		// whether a cached prefix survived is when the request arrives, not
 		// how long the model then took to answer it.
 		a.cacheGapStatsOrInit().observeRequest()
-		var streamedUsage atomic.Bool
-		a.beginProviderIteration()
+		var streamedUsage, streamedToolCall atomic.Bool
+		// Standard final prose is a candidate until completion accepts it.
+		// Reasoning and tool progress still stream; graph rendering is unchanged.
+		holdText := completion.enabled && !a.graphEnabled()
+		publishText := func(content string) {
+			if content != "" {
+				e := event.New(event.KindTextDelta)
+				e.Text = content
+				send(e)
+			}
+		}
+		if err := a.beginProviderIteration(); err != nil {
+			a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
+			return "", reportError(send, err)
+		}
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
-			if delta.Text != "" {
+			if delta.Text != "" && !holdText {
 				e := event.New(event.KindTextDelta)
 				e.Text = delta.Text
 				send(e)
@@ -507,6 +556,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				send(e)
 			}
 			if delta.ToolCall != nil {
+				streamedToolCall.Store(true)
 				e := event.New(event.KindToolCallDelta)
 				e.ToolCall = &event.ToolCallDelta{Index: delta.ToolCall.Index, ID: delta.ToolCall.ID, Name: delta.ToolCall.Name, ArgumentsDelta: delta.ToolCall.Arguments, Done: delta.ToolCall.Done}
 				send(e)
@@ -586,7 +636,19 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		if onUsage != nil {
 			onUsage(usage)
 		}
-		a.appendMessage(provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls})
+		if holdText && len(response.ToolCalls) > 0 {
+			publishText(response.Content)
+		}
+		terminationErr := response.CompletionError(a.providerName)
+		assistant := provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls}
+		if terminationErr != nil {
+			// Keep partial prose, but never persist unaccepted calls as pending
+			// execution that session recovery would need to reconcile later.
+			assistant.ToolCalls = nil
+		}
+		if terminationErr == nil || strings.TrimSpace(assistant.Content) != "" {
+			a.appendMessage(assistant)
+		}
 		if err := a.checkPersistence(); err != nil {
 			return response.Content, reportError(send, err)
 		}
@@ -612,6 +674,57 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				a.exhaustGoalGraph(err.Error(), send)
 				return response.Content, reportError(send, err)
 			}
+		}
+		if !a.graphEnabled() && response.EmptyCompleted() && !streamedToolCall.Load() {
+			if emptyResponseRetries < 2 {
+				emptyResponseRetries++
+				warning := event.New(event.KindWarning)
+				warning.Text = fmt.Sprintf("Provider returned an empty completed response (stop=%q, input=%d, output=%d). Retrying response %d of 2; completed tools will not be replayed.", response.Stop, response.Usage.InputTokens, response.Usage.OutputTokens, emptyResponseRetries)
+				send(warning)
+				continue
+			}
+			terminationErr = fmt.Errorf("provider response unavailable after 3 empty responses; work and recovery state are retained. Check the provider/proxy or switch provider before continuing: %w", terminationErr)
+		} else {
+			emptyResponseRetries = 0
+		}
+		if terminationErr != nil {
+			if errors.Is(terminationErr, provider.ErrResponseTruncated) {
+				if responseLimitContinuations < 2 {
+					responseLimitContinuations++
+					notice := fmt.Sprintf("[Runtime response continuation %d of 2] The provider reached a response limit (stop=%q, input=%d, output=%d). This response's tool calls were discarded and none were executed. Prior completed tools and their results remain valid. Continue from the recorded state with one small next step: keep reasoning brief, issue a small complete tool call when needed, and split large file writes into smaller edits. Do not restart the task, repeat completed actions, or treat partial prose as evidence of completed work. If only an answer remains, give a concise complete answer.", responseLimitContinuations, response.Stop, response.Usage.InputTokens, response.Usage.OutputTokens)
+					a.appendMessage(provider.Message{Role: "user", Content: notice})
+					if err := a.checkPersistence(); err != nil {
+						return response.Content, reportError(send, err)
+					}
+					warning := event.New(event.KindWarning)
+					warning.Text = fmt.Sprintf("Model reached its response limit; continuing with a smaller next step (%d of 2). Prior work retained; incomplete tool calls discarded.", responseLimitContinuations)
+					send(warning)
+					continue
+				}
+				advice := "Continue to try another bounded turn, or switch model/adjust its response settings if this persists"
+				if a.graphEnabled() || a.graphWorker {
+					advice = "Use /orchestrate extend to resume with another allowance; switch model/adjust its response settings if this persists"
+				}
+				terminationErr = &provider.Error{Provider: a.providerName, Operation: "completion", Kind: provider.ErrorProtocol, Message: fmt.Sprintf("model response limit persisted after 2 automatic continuations (stop=%q, input=%d, output=%d); work is retained and incomplete tool calls were discarded. %s", response.Stop, response.Usage.InputTokens, response.Usage.OutputTokens, advice), Err: provider.ErrResponseTruncated}
+				if a.graphEnabled() {
+					if err := a.goalGraph.ExhaustBudget(context.WithoutCancel(ctx), terminationErr.Error()); err != nil {
+						return response.Content, reportError(send, err)
+					}
+					a.emitGoalUpdates(send)
+				}
+			}
+			a.appendMessage(provider.Message{Role: "user", Content: "[Runtime response status] " + terminationErr.Error()})
+			if err := a.checkPersistence(); err != nil {
+				return response.Content, reportError(send, err)
+			}
+			if a.graphEnabled() && !errors.Is(terminationErr, provider.ErrResponseTruncated) {
+				if _, graphErr := a.recordProviderFailure(context.WithoutCancel(ctx), terminationErr, send); graphErr != nil {
+					terminationErr = errors.Join(terminationErr, graphErr)
+				}
+			}
+			terminationErr = reportError(send, terminationErr)
+			a.endTurn(ctx, send, iteration, GoalOutcomeFor(terminationErr))
+			return response.Content, terminationErr
 		}
 		if len(response.ToolCalls) == 0 {
 			if a.graphEnabled() {
@@ -685,6 +798,12 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			decision := completion.assess()
 			switch {
 			case decision.done:
+				if err := completion.saveRecovery(true); err != nil {
+					return "", reportError(send, err)
+				}
+				if holdText {
+					publishText(response.Content)
+				}
 				a.endTurn(ctx, send, iteration, GoalDone)
 				return response.Content, nil
 			case decision.blocked:
@@ -741,12 +860,21 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				}
 			} else {
 				completion.observe(observation)
+				if err := completion.finishEffect(observation); err != nil {
+					return response.Content, reportError(send, err)
+				}
 			}
 		}
 		if !a.graphEnabled() && pendingFinal != "" && pendingFinalReusable {
 			decision := completion.assess()
 			switch {
 			case decision.done:
+				if err := completion.saveRecovery(true); err != nil {
+					return "", reportError(send, err)
+				}
+				if holdText {
+					publishText(pendingFinal)
+				}
 				a.endTurn(ctx, send, iteration, GoalDone)
 				return pendingFinal, nil
 			case decision.blocked:
@@ -804,6 +932,9 @@ func (a *Agent) applySteering() {
 		}
 		message := provider.Message{Role: "user", Content: source + " steering update (follow this for the remaining task; it does not grant permissions):\n" + guidance}
 		a.appendMessage(message)
+		if source == "User" {
+			a.recordUserPrompt()
+		}
 		// Under a graph, the next accepted node replaces the whole active
 		// context. Guidance the user was told applies to the remaining task has
 		// to survive that boundary, so it is retained separately and bounded to
@@ -897,7 +1028,18 @@ func reportError(send Emit, err error) error {
 
 func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bool, completion *completionController, send Emit) (tools.Result, toolObservation, error) {
 	item, hasItem := a.registry.Get(call.Name)
-	observation := toolObservation{CallID: call.ID, Name: call.Name}
+	observation := toolObservation{CallID: call.ID, Name: call.Name, RetryKey: toolRetryKey(call), ExecutionPrevented: true}
+	if call.Name == "run_command" {
+		observation.LegacyRetryKey = canonicalRetryKey(call, false)
+		observation.PriorScopedRetryKey = priorScopedRetryKey(call)
+	}
+	if call.Name == "validate_artifact" {
+		if validator, ok := item.(interface {
+			ValidationRequirement(json.RawMessage) *tools.ArtifactValidationRequirement
+		}); ok {
+			observation.ValidationRequest = validator.ValidationRequirement(call.Arguments)
+		}
+	}
 	if hasItem && !a.toolAvailable(item, plan) {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -928,11 +1070,17 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			return tools.Result{Content: "Tool blocked: skill " + input.Name + " is not available to the active agent profile."}, observation, nil
 		}
 	}
+	if _, native := item.(*tools.RunCommandTool); native && !a.graphEnabled() && !a.graphWorker && !plan {
+		call.Arguments = automaticProjectVerification(call.Arguments, a.workspace)
+	}
 	action, err := a.registry.Assess(call.Name, call.Arguments)
 	if err != nil {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
 		observation.FailureDetail = err.Error()
+		observation.ArgumentRejected = true
+		observation.InputCorrection = tools.IsInputError(err)
+		observation.IgnoreGraphFailure = observation.InputCorrection
 		observation.Retryable = true
 		return tools.Result{Content: "Tool error: " + err.Error()}, observation, nil
 	}
@@ -999,6 +1147,47 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			return tools.Result{Content: "Tool error: " + overridden.Error()}, observation, nil
 		}
 	}
+	var scoped *scopedVerification
+	if _, native := item.(*tools.RunCommandTool); native && !a.graphEnabled() {
+		scopeReadDenied := false
+		var scopeErr error
+		scoped, scopeErr = prepareScopedVerification(ctx, args, action, a.workspace, func(paths []string) error {
+			if len(paths) == 0 {
+				return nil
+			}
+			scopedAction := action
+			scopedAction.Paths = paths
+			scopedGrant, err := a.permissions.Authorize(ctx, "run_command", scopedAction)
+			decision := event.New(event.KindPermissionDecision)
+			decision.Permission = &event.Permission{Tool: "run_command", Summary: "read project verification inputs", Risk: string(scopedAction.Risk), Source: scopedGrant.Source, Rule: scopedGrant.Rule, Allowed: err == nil}
+			send(decision)
+			if err != nil {
+				scopeReadDenied = true
+				return err
+			}
+			if err := a.checkPersistence(); err != nil {
+				return err
+			}
+			err = a.lifecycle.Gate(ctx, hooks.Payload{Event: "tool_start", Workspace: a.workspace, Subject: hookTool, Tool: hookTool, Summary: "read project verification inputs", Args: args, Paths: paths})
+			scopeReadDenied = err != nil
+			return err
+		})
+		if scopeErr != nil {
+			if !scopeReadDenied {
+				observation.RejectedVerification, _ = tools.ParseCommandVerification(args)
+				var input *verificationInputError
+				observation.InputCorrection = errors.As(scopeErr, &input)
+				observation.IgnoreGraphFailure = observation.InputCorrection
+			}
+			observation.Failed = true
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = scopeErr.Error()
+			return tools.Result{Content: "Tool error: " + scopeErr.Error()}, observation, nil
+		}
+	}
+	if scoped != nil {
+		observation.VerificationPurpose = scoped.purpose
+	}
 	graphStarted, graphErr := a.beginGoalTool(ctx, call.Name, action, send)
 	if graphErr != nil {
 		observation.Failed = true
@@ -1021,8 +1210,16 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 		e.Tool = &event.Tool{Name: call.Name, Output: chunk}
 		send(e)
 	}
+	if !a.graphEnabled() {
+		if err := completion.beginEffect(call.Name, action, observation.RetryKey); err != nil {
+			return tools.Result{}, observation, err
+		}
+	}
 	observation.Started = time.Now().UTC()
+	observation.ExecutionPrevented = false
+	observation.Effects = executionEffects(call.Name, action)
 	result, err := a.registry.ExecuteResultStream(ctx, call.Name, args, onOutput)
+	observation.CommandExited = call.Name == "run_command" && tools.CommandExitedNormally(err)
 	observation.Finished = time.Now().UTC()
 	a.permissions.RecordOutcome(permissionTool, action, err)
 	if len(result.Content) > a.maxToolOutput {
@@ -1046,7 +1243,11 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += "\n… tool output truncated …"
 		}
 	}
+	returnedParts := len(result.Parts)
 	result.Parts = a.retainToolParts(call.Name, result.Parts, send)
+	if returnedParts > 0 && len(result.Parts) == 0 {
+		result.Content += "\nNo image pixels were delivered to the model (provider support or attachment retention was unavailable). Do not claim visual inspection; preserve the image for human review."
+	}
 	if err != nil {
 		observation.Failed = true
 		observation.FailureKind = goalgraph.FailureTool
@@ -1056,8 +1257,15 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += "\n"
 		}
 		result.Content += "Tool error: " + err.Error()
+		if completionMetaTool(call.Name) {
+			result.Content += "\nThis housekeeping error does not invalidate task work or require a recovery receipt. Correct it only if needed for the task; finish when the requested work and checks are complete."
+		} else if commandFailureAllowsRepair(observation) {
+			result.Content += "\nThe command finished unsuccessfully; diagnosis and repair may continue without recovery acknowledgement. No automatic retry was performed. Local or remote effects may have partially completed: inspect the result before deliberately retrying, especially an external mutation. A normal exit does not prove the work succeeded."
+		} else if observation.Effects.Unknown {
+			result.Content += "\nEffect status: this executed tool may have changed local or external state before failing. Inspect outputs or use a safe read-back before another write; do not blindly replay an external action with an uncertain outcome."
+		}
 	}
-	if call.Name == "run_command" {
+	if call.Name == "run_command" && scoped == nil {
 		assessment := assessVerificationCommand(action.Command, a.workspace)
 		observation.Verification = assessment.Recognized
 		observation.VerificationCheck = assessment
@@ -1106,13 +1314,36 @@ func (a *Agent) executeTool(ctx context.Context, call provider.ToolCall, plan bo
 			result.Content += notice
 		}
 	}
+	if scoped != nil && err == nil {
+		if scopeErr := scoped.finish(ctx); scopeErr != nil {
+			observation.Failed = true
+			observation.CommandExited = true // command completed; its evidence was rejected
+			observation.FailureKind = goalgraph.FailureTool
+			observation.FailureDetail = scopeErr.Error()
+			observation.Verification = false
+			result.Evidence = nil
+			err = scopeErr
+			result.Content += "\nTool error: " + scopeErr.Error()
+		} else {
+			observation.ScopedFiles = scoped.files
+			result.Evidence = &tools.Evidence{Kind: "scoped_verification", Subject: action.Command, Detail: scoped.purpose, Files: scoped.digests(a.workspace), Checks: map[string]string{"execution": "passed", "file_freshness": "passed", "coverage": "not_assessed"}}
+			result.Content += scoped.summary()
+		}
+	}
 	if err == nil && call.Name == "validate_artifact" && result.Evidence != nil && result.Evidence.Kind == "artifact_validated" {
 		observation.ArtifactValidation = true
+		observation.ArtifactEvidence = result.Evidence
+		var artifactArgs struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(args, &artifactArgs) == nil {
+			observation.ArtifactPath = artifactArgs.Path
+		}
 		if completion != nil && completion.awaitingVerificationGuidance() {
 			if result.Content != "" {
 				result.Content += "\n\n"
 			}
-			result.Content += "Collomia validation evidence: recorded for this artifact and its current digest. A later write to the same tracked artifact makes this receipt stale."
+			result.Content += "Collomia validation evidence: recorded for this artifact and its current digest. Work completion rechecks the final bytes, including changes made by shell commands or outside the agent."
 		}
 	}
 	observation.ResultSummary = result.Content
@@ -1165,7 +1396,7 @@ func eventEvidence(value *tools.Evidence) *event.Evidence {
 	if value == nil {
 		return nil
 	}
-	return &event.Evidence{Kind: value.Kind, Subject: value.Subject, Digest: value.Digest, Detail: value.Detail}
+	return &event.Evidence{Kind: value.Kind, Subject: value.Subject, Digest: value.Digest, Detail: value.Detail, Checks: value.Checks, Files: value.Files}
 }
 
 func trackedFileMutationTool(name string) bool {
@@ -1283,13 +1514,13 @@ func graphOwnedTool(name string) bool {
 }
 func planTool(name string) bool {
 	switch name {
-	case "read_file", "list_files", "search_files", "search_symbols", "read_tool_result", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
+	case "read_file", "view_image", "list_files", "search_files", "search_symbols", "read_tool_result", "read_task_context", "update_task_context", "read_session", "search_session", "diagnostics", "load_skill", "delegate", "inspect_delegate_changes", "compare_delegate_changes",
 		"find_definition", "find_references",
 		// Research is most of what planning is. The web tools change nothing
 		// on the machine, and a plan written without checking a library's
 		// current API is the plan that has to be thrown away during execution.
 		"web_search", "web_fetch",
-		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
+		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification", "inspect_environment":
 		return true
 	}
 	return false
@@ -2059,11 +2290,18 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		}
 	}
 	var evidenceMu sync.Mutex
+	childNoProgress, childTotal := min(maxIter, 16), 0
+	if task.GraphNode && task.MaxIterationsOverride > 0 {
+		// A graph claim is a durable resource lease. The manual-delegate cap
+		// must neither shorten an explicitly extended lease nor let the generic
+		// 2x turn default exceed the iterations reserved for this worker.
+		childNoProgress, childTotal = maxIter, maxIter
+	}
 	child := New(Options{
 		Client: client, ProviderName: providerName, Model: model, Workspace: childWorkspace,
 		ProviderConfig: providerConfig, Registry: childRegistry, Permissions: childManager,
 		Catalog: childCatalog, ProjectInstructions: instructions,
-		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
+		MaxIterations: childNoProgress, MaxTurnIterations: childTotal, MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
 		DisabledTools: disabled, PlanMode: childPlan, Subagent: true, GraphWorker: task.GraphNode,
 		TaskMode:         activeTaskMode,
 		PersistenceError: persistenceError,
@@ -2206,6 +2444,8 @@ func delegateTerminalStatus(err error) string {
 		return DelegateBudgetExhausted
 	case errors.Is(err, ErrCostBudgetExceeded):
 		return DelegateBudgetExhausted
+	case errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, provider.ErrResponseTruncated):
+		return DelegateBudgetExhausted
 	case errors.Is(err, context.Canceled):
 		return DelegateCancelled
 	case errors.Is(err, context.DeadlineExceeded):
@@ -2265,15 +2505,16 @@ func (a *Agent) SetUsage(usage provider.Usage) {
 // ProfileSettings is the effective runtime surface of a named primary
 // profile. Runtime owns restoration of the ordinary defaults.
 type ProfileSettings struct {
-	Name          string
-	Instructions  string
-	Catalog       skills.Catalog
-	Tools         []string
-	DisabledTools []string
-	Skills        []string
-	MaxIterations int
-	TokenBudget   int
-	CostBudgetUSD float64
+	Name              string
+	Instructions      string
+	Catalog           skills.Catalog
+	Tools             []string
+	DisabledTools     []string
+	Skills            []string
+	MaxIterations     int
+	MaxTurnIterations int
+	TokenBudget       int
+	CostBudgetUSD     float64
 }
 
 // ApplyProfile changes only local agent behavior; the Runtime separately
@@ -2305,7 +2546,10 @@ func (a *Agent) ApplyProfile(settings ProfileSettings) {
 	a.profileInstructions = settings.Instructions
 	a.catalog = settings.Catalog
 	a.maxIterations = settings.MaxIterations
-	a.maxTurnIterations = standardHardIterationLimit(settings.MaxIterations)
+	a.maxTurnIterations = settings.MaxTurnIterations
+	if a.maxTurnIterations <= 0 {
+		a.maxTurnIterations = standardHardIterationLimit(settings.MaxIterations)
+	}
 	a.tokenBudget = settings.TokenBudget
 	a.costBudgetUSD = settings.CostBudgetUSD
 	a.disabled = disabled
@@ -2384,10 +2628,16 @@ func (a *Agent) ProviderIterations() int {
 	return a.providerIterations
 }
 
-func (a *Agent) beginProviderIteration() {
+func (a *Agent) beginProviderIteration() error {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Compaction consumes the same recorded graph-worker lease as generation.
+	// Check at admission so a compaction cannot push a worker over its grant.
+	if a.graphWorker && a.maxTurnIterations > 0 && a.providerIterations >= a.maxTurnIterations {
+		return fmt.Errorf("%w: graph worker used its %d-provider-request allowance; /orchestrate extend grants more execution budget", ErrIterationBudgetExceeded, a.maxTurnIterations)
+	}
 	a.providerIterations++
-	a.mu.Unlock()
+	return nil
 }
 
 // CacheGaps reports how this session's request cadence sits against the
@@ -2794,7 +3044,9 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 		reasoningEffort = a.providerConfig.Reasoning.Effort
 	}
 	req := provider.Request{Model: model, System: prompts.Text(prompts.CompactSystem), Messages: []provider.Message{{Role: "user", Content: instructions + "\n\n---\n" + serialized.String()}}, MaxTokens: requestMaxTokens, ReasoningEffort: reasoningEffort}
-	a.beginProviderIteration()
+	if err := a.beginProviderIteration(); err != nil {
+		return 0, err
+	}
 	response, err := client.Chat(ctx, req, nil)
 	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 	if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {
@@ -2833,6 +3085,12 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 		return 0, fmt.Errorf("%w: estimated spend $%.6f exceeded or could not be verified against $%.6f", ErrCostBudgetExceeded, usage.CostUSD, costBudget)
 	}
 	failures := recentFailureEvidence(messages[:cut])
+	if err := response.CompletionError(client.Name()); err != nil {
+		return 0, err
+	}
+	if response.Termination() != provider.TerminationCompleted {
+		return 0, errors.New("compaction returned tool calls instead of a summary; original context retained")
+	}
 	summaryContent := "[Context summary — earlier conversation compressed to save space]\n" + response.Content
 	if failures != "" {
 		summaryContent += "\n\n[Recent failure evidence retained verbatim]\n" + failures

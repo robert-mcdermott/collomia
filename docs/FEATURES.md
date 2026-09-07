@@ -1,6 +1,12 @@
 # Collomia — High-Level Feature and Security Summary
 
-_Reviewed against Collomia v0.3.1. Features are implemented unless identified
+Standard completion accepts task-specific checks through
+`run_command.verification`, alongside native artifact checks. It preserves
+file freshness and automatically recognizes verified native file repairs.
+See [Completion](COMPLETION.md); Orchestrated Goal retains its own gates.
+
+_Updated for v0.5.0 release preparation, 2026-09-07; source reviewed at `fe0164d`
+with this documentation update. Features are implemented unless identified
 as experimental or unsupported; the generated
 [capability matrix](CAPABILITIES.md) is the canonical current status._
 
@@ -120,12 +126,13 @@ as experimental or unsupported; the generated
 - **Planning and agent workflow**
 
   - Developer and Work are persisted task profiles independent of execution strategy, planning state, and permission autonomy. Developer remains the software/repository default; `--mode work` and `/mode work` support non-Git Q&A, research, analysis, automation, knowledge retrieval, document artifacts, and governed external actions without changing the safety boundary.
-  - Work matches evidence to the outcome: `validate_artifact` emits a typed path- and SHA-256-bound structural/content receipt for bounded text, Markdown, JSON, CSV/TSV, DOCX, PPTX, PDF, and binary files; analysis records inputs/calculations, research records sources/inference, and external actions retain receipts/read-back. Artifact validation explicitly does not claim factual correctness or visual quality.
+  - Work matches evidence to the outcome: `validate_artifact` emits a typed path- and SHA-256-bound structural/content receipt for bounded text, Markdown, JSON, CSV/TSV, XLSX, DOCX, PPTX, PDF, and binary files; analysis records inputs/calculations, research records sources/inference, and external actions retain receipts/read-back. Artifact validation explicitly does not claim factual correctness or visual quality.
   - The initial Work profile uses Standard execution and refuses Orchestrated Goal and write-capable delegation while those mechanisms depend on Git state tokens and isolated worktrees.
-  - Structured plans can be created and updated through a dedicated planning tool.
+  - Structured plans can be created and updated through a dedicated planning tool; partial updates preserve omitted steps unless replacement is explicit.
+  - Housekeeping errors and native input rejected before execution are correction feedback, not task-failure obligations. Supported plain Standard project builds capture input scope before execution when explicit verification metadata is absent; explicit scopes remain authoritative.
   - Plans are persisted with sessions and can remain pinned in the interface.
-  - In primary execution mode, a bounded completion controller refuses an ordinary final response while an active plan is unfinished, a terminal plan step lacks evidence/reason, a tracked write is newer than successful verification, or a tool failure lacks a validated structured disposition. Failed calls are named by ID; `update_plan.resolved_failures` binds retries/alternatives to exact successful tool-call receipts and distinguishes unnecessary skipped attempts from genuine blockers. Recovery notices advertise bounded exact receipt candidates and distinguish provider-envelope call IDs from provenance identifiers embedded inside tool output. Refused or unrecognized verification is explained in the next tool result, and recognized proof receives a current-state receipt.
-  - The controller provides at most two deterministic continuation notices while actual completion gaps do not reach a new low; changing an invalid receipt guess, rewording a diagnostic, or adding a side failure cannot renew the allowance. Work validation gaps list only the bounded workspace-relative tracked paths still outstanding, omit artifacts with accepted current receipts, and preserve a separate unknown-path warning. A verification-only terminal gap reports `needs_verification` rather than `blocked`. A final answer intercepted only for failed-tool bookkeeping is reused after a metadata-only resolution instead of regenerated. Planning mode remains able to finish with pending implementation steps, and an old terminal plan does not block an unrelated later question.
+  - In primary execution mode, a bounded completion controller refuses an ordinary final response while an active plan is unfinished, a terminal plan step lacks evidence/reason, a relevant project change lacks current verification, or an actual task failure lacks automatic recovery or a validated structured disposition. Failed calls are named by ID; `update_plan.resolved_failures` binds retries/alternatives to exact successful tool-call receipts and distinguishes unnecessary skipped attempts from genuine blockers. Recovery notices advertise bounded exact receipt candidates and distinguish provider-envelope call IDs from provenance identifiers embedded inside tool output. Refused or unrecognized verification is explained in the next tool result, and recognized proof receives a current-state receipt.
+  - The controller provides at most two deterministic continuation notices while actual completion gaps do not reach a new low; changing an invalid receipt guess, rewording a diagnostic, or adding a side failure cannot renew the allowance. Standard validation gaps list only the bounded workspace-relative tracked paths still outstanding, omit artifacts with accepted current receipts, and preserve a separate unknown-path warning. A verification-only terminal gap reports `needs_verification` rather than `blocked`. A final answer intercepted only for failed-tool bookkeeping is reused after a metadata-only resolution instead of regenerated. Planning mode remains able to finish with pending implementation steps, and an old terminal plan does not block an unrelated later question.
   - **Orchestrated Goal** is Collomia's optional evidence-gated durable execution workflow. The model proposes a bounded dependency graph; the runtime owns readiness, immutable attempts, evidence freshness, conservative recovery, aggregate accounting, and the terminal outcome. Standard mode remains the permanent default.
   - End-to-end graphs using the serial primary lane and at most two independently ready governed `read_only` workers are supported. The TUI-only flow requires `/orchestrate <goal>` followed by explicit approval; repository content, configuration, instructions, skills, hooks, model output, and persisted graph bytes cannot opt the user in.
   - Candidate-only `isolated_write` waves remain experimental. At most two pairwise-disjoint terminal writers work from one clean stable Git commit in retained worktrees, keep ordinary permission and hook checks, must stay inside declared scopes, and must pass the repository's detected verification in each child tree. A passing wave stops at `awaiting_review` with the parent unchanged.
@@ -313,3 +320,8 @@ as experimental or unsupported; the generated
   - The audit ledger records what the permission layer decided and what the resulting execution returned. It is not a system-call audit: a program that was approved and then opened a socket or read a file on its own is outside its view. A ledger write failure is reported and declared rather than silently dropped, but no setting causes it to stop an action.
   - Publication classification is a policy layer, not egress enforcement. It describes what a command's text says it will do, so a program that uploads an artifact without naming the operation on its command line is outside its view, and its catalogue of publishing tools is finite.
   - There is no hosted enterprise identity plane, centralized SSO/RBAC service, or remote policy administration layer.
+
+Standard task-scoped completion accepts native artifact receipts in both modes.
+Disposable `.collomia-tmp/` helpers and declared scratch files do not require
+separate checks; requested outputs and unrelated application changes remain
+tracked. See [Completion](COMPLETION.md).

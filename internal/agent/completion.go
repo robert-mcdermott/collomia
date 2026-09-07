@@ -36,9 +36,9 @@ var (
 	// from a model choosing to stop. Token and cost ceilings have their own
 	// sentinels in agent.go; all three map to budget_exhausted.
 	ErrIterationBudgetExceeded = errors.New("agent iteration budget exhausted")
-	// ErrAggregateBudgetExceeded is the whole Orchestrated Goal envelope across
-	// proposal, primary, and automatic-worker work.
-	ErrAggregateBudgetExceeded = errors.New("orchestrated goal aggregate budget exhausted")
+	// ErrAggregateBudgetExceeded identifies an Orchestrated Goal resource stop.
+	// The attached reason names the aggregate, worker, or attempt allowance.
+	ErrAggregateBudgetExceeded = errors.New("orchestrated goal execution allowance exhausted")
 	// ErrGoalAwaitingReview is the successful stop of a candidate wave. It is a
 	// sentinel rather than a failure because nothing went wrong: verified
 	// candidates are retained and selecting one is the user's decision.
@@ -73,7 +73,7 @@ func GoalOutcomeFor(err error) GoalOutcome {
 		return GoalDone
 	case errors.Is(err, ErrGoalNeedsVerification):
 		return GoalNeedsVerification
-	case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded), errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, ErrAggregateBudgetExceeded):
+	case errors.Is(err, ErrTokenBudgetExceeded), errors.Is(err, ErrCostBudgetExceeded), errors.Is(err, ErrIterationBudgetExceeded), errors.Is(err, ErrAggregateBudgetExceeded), errors.Is(err, provider.ErrResponseTruncated):
 		return GoalBudgetExhausted
 	case errors.Is(err, context.Canceled):
 		return GoalCancelled
@@ -83,24 +83,43 @@ func GoalOutcomeFor(err error) GoalOutcome {
 }
 
 type toolObservation struct {
-	CallID             string
-	Name               string
-	Action             tools.Action
-	Failed             bool
-	FailureKind        goalgraph.FailureKind
-	FailureDetail      string
-	ResultSummary      string
-	Retryable          bool
-	Started            time.Time
-	Finished           time.Time
-	GraphRecorded      bool
-	IgnoreGraphFailure bool
-	Verification       bool
-	ArtifactValidation bool
-	VerificationCheck  verificationAssessment
+	ObservedSequence     uint64
+	CallID               string
+	RetryKey             string
+	LegacyRetryKey       string
+	PriorScopedRetryKey  string
+	RejectedVerification *tools.CommandVerification
+	VerificationPurpose  string
+	Name                 string
+	Action               tools.Action
+	Failed               bool
+	FailureKind          goalgraph.FailureKind
+	FailureDetail        string
+	ResultSummary        string
+	Retryable            bool
+	Started              time.Time
+	Finished             time.Time
+	GraphRecorded        bool
+	IgnoreGraphFailure   bool
+	Verification         bool
+	ArtifactValidation   bool
+	ArtifactEvidence     *tools.Evidence
+	ArtifactPath         string
+	ValidationRequest    *tools.ArtifactValidationRequirement
+	ScopedFiles          []artifactReceipt
+	Effects              toolEffects
+	ArgumentRejected     bool // native assessment rejected before permission/execution
+	InputCorrection      bool // typed native input error: no attempted operation to reconcile
+	ExecutionPrevented   bool
+	CommandExited        bool // native runner observed an ordinary nonzero exit
+	VerificationCheck    verificationAssessment
 }
 
 type completionController struct {
+	observationSequence  uint64
+	store                CompletionStore
+	pending              *pendingEffect
+	effectStarted        bool
 	board                *plan.Board
 	workspace            string
 	taskMode             taskmode.Mode
@@ -111,6 +130,8 @@ type completionController struct {
 	dirty                bool
 	dirtyUnknown         bool
 	dirtyPaths           map[string]struct{}
+	artifacts            artifactTracker
+	ctx                  context.Context
 	waived               bool
 	recognizedEver       bool
 	noteAtMutation       string
@@ -127,11 +148,18 @@ type completionController struct {
 }
 
 type unresolvedToolFailure struct {
-	id           string
-	tool         string
-	risk         tools.Risk
-	detail       string
-	planRevision uint64
+	observedSequence     uint64
+	id                   string
+	tool                 string
+	risk                 tools.Risk
+	detail               string
+	planRevision         uint64
+	retryKey             string
+	validationRequest    *tools.ArtifactValidationRequirement
+	repairPaths          []string
+	repairReady          bool
+	argumentRejected     bool
+	rejectedVerification *tools.CommandVerification
 }
 
 type completionDecision struct {
@@ -156,6 +184,9 @@ func newCompletionController(board *plan.Board, workspace string, planning bool,
 	controller.lastRevision = revision
 	if current != nil {
 		controller.initialOpen = current.AssessCompletion().State == plan.CompletionIncomplete
+		if controller.initialOpen {
+			controller.syncArtifactBrief(current)
+		}
 	}
 	return controller
 }
@@ -168,35 +199,52 @@ func (c *completionController) observe(observation toolObservation) {
 	if !c.enabled {
 		return
 	}
-	if observation.Failed {
-		// A write tool may fail after making a partial mutation. Conservatively
-		// stale verification even when the tool reports failure.
+	c.observationSequence++
+	observation.ObservedSequence = c.observationSequence
+	if observation.Name == "update_plan" && !observation.Failed {
+		c.syncArtifactBrief(c.board.Current())
+	}
+	if !observation.ExecutionPrevented {
 		if observation.Action.Risk == tools.RiskWrite {
 			c.markDirty(observation.Action.Paths)
 		}
+		if len(observation.Effects.Paths) > 0 {
+			c.markDirty(observation.Effects.Paths)
+		}
+	}
+	if observation.Failed {
+		// A provider may reuse an ID after restart; an older success with that
+		// ID cannot stand in for the new failed operation.
+		delete(c.successes, observation.CallID)
+		// A write tool may fail after making a partial mutation. Conservatively
+		// stale verification even when the tool reports failure.
 		c.recordFailure(observation)
 		return
 	}
 	if strings.TrimSpace(observation.CallID) != "" {
-		if _, exists := c.successes[observation.CallID]; !exists {
+		if !slices.Contains(c.successOrder, observation.CallID) {
 			c.successOrder = append(c.successOrder, observation.CallID)
 		}
 		c.successes[observation.CallID] = observation
 	}
-	// A same-tool success is an unambiguous retry. Cross-tool recovery is never
-	// guessed from permission-risk labels; update_plan must bind that alternative
-	// to the exact failed and successful call IDs.
+	// Exact operations and native artifact checks covering the original
+	// requirements recover automatically. Other recovery is never guessed from
+	// tool names or permission-risk labels; update_plan binds its receipt IDs.
 	c.recoverFailures(observation)
 	c.resolveFailuresFromPlan()
-	if observation.Action.Risk == tools.RiskWrite {
-		c.markDirty(observation.Action.Paths)
-	}
-	if observation.Name == "run_command" && observation.Verification {
+	if observation.Name == "run_command" && observation.Verification && c.taskMode != taskmode.Work && len(observation.ScopedFiles) == 0 {
 		c.clearDirty()
 		c.recognizedEver = true
 	}
-	if c.taskMode == taskmode.Work && observation.ArtifactValidation {
-		c.acceptArtifactValidation(observation.Action.Paths)
+	if observation.ArtifactValidation {
+		c.recordArtifactReceipt(observation)
+	}
+	if len(observation.ScopedFiles) > 0 {
+		c.recordScopedVerification(observation.ScopedFiles)
+	}
+	c.markFileRepairs(observation)
+	if len(observation.ScopedFiles) > 0 || observation.ArtifactValidation {
+		c.recoverVerifiedFileFailures()
 	}
 	if observation.Name == "update_plan" && c.dirty && c.board != nil {
 		if current := c.board.Current(); current != nil && completionDisclosure(current, c.taskMode) != "" && completionDisclosure(current, c.taskMode) != c.noteAtMutation {
@@ -210,7 +258,12 @@ func (c *completionController) observe(observation toolObservation) {
 // a successful write always does because its content is intentionally absent
 // from toolObservation. The separate hard turn envelope still bounds churn.
 func (c *completionController) observeProgress(observation toolObservation) {
-	if observation.Action.Risk == tools.RiskWrite {
+	if completionMetaTool(observation.Name) && observation.Name != "update_plan" {
+		// Saving notes or searching history is not new task progress, even when
+		// each save increments a revision or returns a different excerpt.
+		return
+	}
+	if !observation.ExecutionPrevented && (observation.Action.Risk == tools.RiskWrite || len(observation.Effects.Paths) > 0) {
 		c.progressVersion++
 		return
 	}
@@ -221,6 +274,9 @@ func (c *completionController) observeProgress(observation toolObservation) {
 			c.progressVersion++
 			return
 		}
+	}
+	if completionMetaTool(observation.Name) {
+		return // only an actual plan revision above counts as planning progress
 	}
 	fingerprint := sha256.Sum256([]byte(strings.Join([]string{
 		observation.Name,
@@ -244,6 +300,17 @@ func (c *completionController) awaitingVerificationGuidance() bool {
 }
 
 func (c *completionController) recordFailure(observation toolObservation) {
+	if completionMetaTool(observation.Name) {
+		// Metadata is neither proof of task success nor a failed task action.
+		// Requiring a task receipt for it creates an impossible recovery gate:
+		// these tools are deliberately excluded from recovery evidence below.
+		return
+	}
+	if observation.InputCorrection && observation.ExecutionPrevented {
+		// Correctable tool syntax/preconditions are feedback, not evidence that
+		// work executed and failed. Keep plans, dirty files and prior failures.
+		return
+	}
 	id := strings.TrimSpace(observation.CallID)
 	if id == "" {
 		c.nextFailureID++
@@ -258,12 +325,27 @@ func (c *completionController) recordFailure(observation toolObservation) {
 	if c.board != nil {
 		_, revision = c.board.Snapshot()
 	}
-	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision}
-	for i := range c.failures {
-		if c.failures[i].id == failure.id {
-			c.failures[i] = failure
-			return
+	failure := unresolvedToolFailure{id: id, tool: observation.Name, risk: observation.Action.Risk, detail: strings.TrimSpace(observation.Action.Summary), planRevision: revision, retryKey: observation.RetryKey, validationRequest: observation.ValidationRequest, rejectedVerification: observation.RejectedVerification, argumentRejected: observation.ArgumentRejected, observedSequence: observation.ObservedSequence}
+	if observation.FailureKind == goalgraph.FailureTool && !observation.ExecutionPrevented && !observation.Effects.Unknown && len(observation.Effects.Paths) <= 64 {
+		switch observation.Name {
+		case "write_file", "edit_file", "apply_patch", "format_file":
+			for _, path := range observation.Effects.Paths {
+				failure.repairPaths = append(failure.repairPaths, completionPath(path))
+			}
 		}
+	}
+	for suffix := 2; ; suffix++ {
+		collision := false
+		for _, existing := range c.failures {
+			if existing.id == failure.id {
+				collision = true
+				break
+			}
+		}
+		if !collision {
+			break
+		}
+		failure.id = fmt.Sprintf("%s#%d", id, suffix)
 	}
 	c.failures = append(c.failures, failure)
 }
@@ -271,8 +353,7 @@ func (c *completionController) recordFailure(observation toolObservation) {
 func (c *completionController) recoverFailures(observation toolObservation) {
 	remaining := c.failures[:0]
 	for _, failure := range c.failures {
-		sameTool := observation.Name == failure.tool
-		if !sameTool {
+		if !matchesRetry(failure, observation) && !c.recoversRejectedVerification(failure, observation) {
 			remaining = append(remaining, failure)
 		}
 	}
@@ -332,20 +413,23 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 		recoveryID := strings.TrimSpace(resolution.RecoveryToolCallID)
 		recovery, ok := c.successes[recoveryID]
 		if !ok {
-			issue := prefix + " references recovery_tool_call_id " + recoveryID + " without a successful current-turn tool receipt"
+			issue := prefix + " references recovery_tool_call_id " + recoveryID + " without a successful retained tool receipt"
 			if actualID, actual := c.receiptForOutputMarker(recoveryID); actual {
 				issue += "; that value is embedded in the output of successful tool call " + actualID + " and is not its receipt ID"
 			}
 			return issue
 		}
+		if failure.observedSequence > 0 && recovery.ObservedSequence <= failure.observedSequence {
+			return prefix + " references a success that predates the failure; use a later successful recovery operation"
+		}
 		if completionMetaTool(recovery.Name) {
 			return prefix + " cannot use completion metadata tool " + recovery.Name + " as recovery evidence"
 		}
-		if resolution.Disposition == "recovered_by_retry" && recovery.Name != failure.tool {
-			return prefix + " says recovered_by_retry but successful tool " + recovery.Name + " is not the failed tool"
-		}
-		if resolution.Disposition == "recovered_by_alternative" && recoveryID == failure.id {
-			return prefix + " says recovered_by_alternative but references the failed call itself"
+		// The explicit link provides semantic recovery intent in both cases.
+		// Changed arguments make this an alternative, regardless of the model's
+		// label. Rejecting only the label adds no evidence or safety guarantee.
+		if recoveryID == failure.id {
+			return prefix + " references the failed call itself"
 		}
 		if step.Status != "done" && step.Status != "skipped" {
 			return prefix + fmt.Sprintf(" recovery step %d is %s rather than done or skipped", step.ID, step.Status)
@@ -364,8 +448,10 @@ func (c *completionController) validateFailureResolution(current *plan.Plan, fai
 	return ""
 }
 
+// Completion metadata can describe work but cannot prove or invalidate it.
+// Keep this boundary identical for Standard, graph execution and restoration.
 func completionMetaTool(name string) bool {
-	return name == "update_plan" || name == "detect_verification"
+	return name == "update_plan" || name == "detect_verification" || name == "update_task_context" || name == "read_task_context" || name == "read_session" || name == "search_session"
 }
 
 // receiptForOutputMarker recognizes the exact mistake that opaque external
@@ -503,7 +589,7 @@ func (c *completionController) outstandingWorkValidationIssue() string {
 
 	var issue string
 	if len(paths) > 0 {
-		issue = "changed artifacts still needing current task-appropriate validation: " + strings.Join(paths, ", ")
+		issue = "changed files not covered by current verification: " + strings.Join(paths, ", ")
 		if total > len(paths) {
 			issue += fmt.Sprintf(" (and %d more)", total-len(paths))
 		}
@@ -565,6 +651,12 @@ func (c *completionController) assess() completionDecision {
 	if c == nil || !c.enabled {
 		return completionDecision{done: true}
 	}
+	if c.store != nil && c.artifacts.overflow {
+		return completionDecision{blocked: true, reason: "durable completion tracking exceeded its bound; split the work into a new session rather than treating omitted obligations as complete"}
+	}
+	if c.pending != nil {
+		return completionDecision{blocked: true, reason: "uncertain outcome from " + c.pending.Tool + "; inspect current state, then /recovery acknowledge REASON; no automatic replay"}
+	}
 	var issues []string
 	planIssueCount := 0
 	current, revision := c.board.Snapshot()
@@ -577,15 +669,14 @@ func (c *completionController) assess() completionDecision {
 		issues = append(issues, assessment.Issues...)
 		planIssueCount = len(assessment.Issues)
 	}
+	// Recheck final bytes even when the last operation was a read, a shell
+	// command, a failed write, or an out-of-band edit. Permission risk is not
+	// evidence that a previously validated artifact stayed unchanged.
+	artifactIssues := c.checkArtifacts(current, activePlan)
+	issues = append(issues, artifactIssues...)
 	verificationGap := c.dirty && !c.waived
 	if verificationGap {
-		if c.taskMode == taskmode.Work {
-			issues = append(issues, c.outstandingWorkValidationIssue())
-		} else if c.recognizedEver {
-			issues = append(issues, "files changed after the last successful recognized verification command")
-		} else {
-			issues = append(issues, "no successful recognized verification has run since the latest tracked file change")
-		}
+		issues = append(issues, c.outstandingWorkValidationIssue())
 	}
 	for _, failure := range c.failures {
 		detail := failure.id + ": " + failure.tool
@@ -603,7 +694,7 @@ func (c *completionController) assess() completionDecision {
 	// deliberately excluded: changing one guessed receipt ID into another is
 	// not corrective progress, and adding then resolving a new failure cannot
 	// buy an unlimited sequence of fresh controller retries.
-	gapCount := planIssueCount + len(c.failures)
+	gapCount := planIssueCount + len(c.failures) + len(artifactIssues)
 	if verificationGap {
 		if c.taskMode == taskmode.Work {
 			validationGaps := len(c.dirtyPaths)
@@ -622,7 +713,7 @@ func (c *completionController) assess() completionDecision {
 		c.interventions = 0
 	}
 	if c.interventions >= maxCompletionInterventions {
-		if verificationGap && len(c.failures) == 0 && planIssueCount == 0 {
+		if (verificationGap || len(artifactIssues) > 0) && len(c.failures) == 0 && planIssueCount == 0 {
 			return completionDecision{needsVerification: true, reason: "completion still needs verification after two controller interventions: " + strings.Join(issues, "; ")}
 		}
 		return completionDecision{blocked: true, reason: "completion remained unproven after two controller interventions without corrective progress: " + strings.Join(issues, "; ")}
@@ -632,8 +723,8 @@ func (c *completionController) assess() completionDecision {
 		c.bestInterventionGaps = gapCount
 	}
 	return completionDecision{
-		notice:         completionNotice(issues, c.interventions, c.taskMode, c.recoveryReceipts()),
-		reuseCandidate: planIssueCount == 0 && !verificationGap && len(c.failures) > 0 && len(c.resolutionIssues) == 0,
+		notice:         completionNotice(issues, c.interventions, c.taskMode, c.recoveryReceipts(), len(c.failures) > 0),
+		reuseCandidate: planIssueCount == 0 && !verificationGap && len(artifactIssues) == 0 && len(c.failures) > 0 && len(c.resolutionIssues) == 0,
 	}
 }
 
@@ -650,33 +741,39 @@ func blockedPlanReason(current *plan.Plan) string {
 	return "the active plan is blocked — " + strings.Join(reasons, "; ")
 }
 
-func completionNotice(issues []string, intervention int, mode taskmode.Mode, receipts []recoveryReceipt) string {
+func completionNotice(issues []string, intervention int, mode taskmode.Mode, receipts []recoveryReceipt, failed ...bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Collomia completion controller (intervention %d of %d): this response cannot finish the turn yet.\nRecorded gaps:\n", intervention, maxCompletionInterventions)
 	for _, issue := range issues {
 		b.WriteString("- " + issue + "\n")
 	}
-	if len(receipts) > 0 {
-		b.WriteString("Successful current-turn tool receipts available for an explicit recovery:\n")
-		for _, receipt := range receipts {
-			fmt.Fprintf(&b, "- `%s`: %s", receipt.callID, receipt.tool)
-			if receipt.summary != "" {
-				b.WriteString(" (" + receipt.summary + ")")
+	if len(failed) == 0 || failed[0] {
+		b.WriteString("A successful retry of the same executed operation clears its failure automatically (command timeout and verification metadata may change); no plan update is needed solely to record that retry. A different path, command, or other argument is a different operation even when the tool name is unchanged. ")
+		b.WriteString("Native artifact validation also recovers a corrected check of the same file when every required text, minimum-size, and format check is preserved or strengthened. Dropping a requirement does not recover its failure. A successful native file edit/replacement followed by current verification of all affected paths also recovers an earlier executed file-edit failure automatically. ")
+		if len(receipts) > 0 {
+			b.WriteString("Successful retained tool receipts available for an explicit recovery:\n")
+			for _, receipt := range receipts {
+				fmt.Fprintf(&b, "- `%s`: %s", receipt.callID, receipt.tool)
+				if receipt.summary != "" {
+					b.WriteString(" (" + receipt.summary + ")")
+				}
+				b.WriteByte('\n')
 			}
-			b.WriteByte('\n')
+			b.WriteString("Use the exact tool-call ID shown above only when that call truly recovered the named failure. An ID printed inside tool output (for example, a COLLOMIA_EXTERNAL_WEB_DATA marker) is content provenance, not a recovery_tool_call_id. If no listed receipt is a real recovery, run one necessary retry or alternative and use that successful call's provider-envelope ID. ")
 		}
-		b.WriteString("Use the exact tool-call ID shown above only when that call truly recovered the named failure. An ID printed inside tool output (for example, a COLLOMIA_EXTERNAL_WEB_DATA marker) is content provenance, not a recovery_tool_call_id. If no listed receipt is a real recovery, run one necessary retry or alternative and use that successful call's provider-envelope ID. ")
+		// The status this asks for decides how the whole turn is reported, so it
+		// has to name both. A step marked blocked makes the run end blocked, which
+		// is right for work that cannot be done and wrong for an action that
+		// turned out to be unnecessary or was achieved another way — and telling
+		// the model only about `blocked` produced exactly that: finished
+		// deliverables reported as failures because an abandoned side attempt was
+		// recorded with the only word on offer.
+		b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence. For each named failure ID, add an update_plan.resolved_failures entry tied to a terminal step: use `recovered_by_retry` or `recovered_by_alternative` with the successful `recovery_tool_call_id`; use `skipped_unnecessary` only when the action was not needed and its step is `skipped`; use `blocked` only when the work genuinely cannot be completed and its step is `blocked`, since a blocked step ends this turn as blocked. Include the exact failure_id, step_id, and evidence; prose alone does not resolve a failed call. ")
+	} else {
+		b.WriteString("Finish the listed requirements and update any active plan with observed evidence. ")
 	}
-	// The status this asks for decides how the whole turn is reported, so it
-	// has to name both. A step marked blocked makes the run end blocked, which
-	// is right for work that cannot be done and wrong for an action that
-	// turned out to be unnecessary or was achieved another way — and telling
-	// the model only about `blocked` produced exactly that: finished
-	// deliverables reported as failures because an abandoned side attempt was
-	// recorded with the only word on offer.
-	b.WriteString("Continue with tools. Finish the remaining work and update the plan with evidence. For each named failure ID, add an update_plan.resolved_failures entry tied to a terminal step: use `recovered_by_retry` or `recovered_by_alternative` with the successful `recovery_tool_call_id`; use `skipped_unnecessary` only when the action was not needed and its step is `skipped`; use `blocked` only when the work genuinely cannot be completed and its step is `blocked`, since a blocked step ends this turn as blocked. Include the exact failure_id, step_id, and evidence; prose alone does not resolve a failed call. ")
-	if mode == taskmode.Work {
-		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. Validate each listed file deliverable with validate_artifact after its final write. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific validation_note describing what was checked and what remains a matter of judgment. ")
+	if mode == taskmode.Work || mode == taskmode.Developer {
+		b.WriteString("When exact paths are listed, address only those remaining tracked paths; do not revalidate a path absent from the list solely to clear this gap. For an application, scope a meaningful run_command check to its source directories instead of checking every file separately. Verify each listed file or directory using a meaningful run_command check with verification.paths and verification.purpose, or use validate_artifact for structural/content checks. Either can satisfy current file evidence; do not run both for bookkeeping. A validation_note or unscoped command cannot waive declared deliverables or stale receipts. Use update_plan.artifacts to distinguish requested deliverables from scratch helpers, and keep that intent consistent. For analysis, research, or external actions, record the observed calculation, source, receipt, or read-back in the relevant plan step. If no meaningful machine validation applies, update the plan with a fresh, specific verification_note (Developer) or validation_note (Work) describing what was checked and what remains a matter of judgment. ")
 	} else {
 		b.WriteString("If changed files genuinely have no meaningful automated verification, update the plan with a specific verification_note explaining why. ")
 	}
@@ -723,12 +820,8 @@ func assessVerificationCommand(command, workspace string) verificationAssessment
 		}
 		return verificationAssessment{Unrecognized: true}
 	}
-	// The composition is ineligible. Naming the direct form is the difference
-	// between a model that corrects itself on the next call and one that
-	// repeats an equivalent command until its progress lease runs out, so the
-	// whole command is searched rather than only its leading segment: the
-	// verifier can be first (`pytest || true`) or last (`export CACHE=... &&
-	// pytest`).
+	// Offer an intact direct prefix when possible. Extracting a later verifier
+	// can silently lose directory/environment setup and manufacture a failure.
 	if suggestion := verificationChainSuggestion(candidate, workspace); suggestion != "" {
 		return verificationAssessment{VerificationLike: true, Reason: refusal, Suggestion: suggestion}
 	}
@@ -765,10 +858,13 @@ func safeVerificationChain(command, workspace string) (string, string) {
 	if strings.Contains(final, "$(") {
 		return "", "the verification command is assembled by command substitution, so the runtime cannot tell which check would run"
 	}
+	cwd := workspace
 	for _, segment := range segments[:len(segments)-1] {
-		if relocatesVerification(strings.TrimSpace(segment), workspace) {
+		next, ok := verificationDirectory(strings.TrimSpace(segment), cwd, workspace)
+		if !ok {
 			return "", "the command changes directory before verifying, so its result would not describe the workspace the evidence is bound to"
 		}
+		cwd = next
 	}
 	return final, ""
 }
@@ -790,66 +886,6 @@ func unsafeVerificationOperator(command string) bool {
 		}
 	}
 	return false
-}
-
-// relocatesVerification reports whether a leading segment would run the final
-// command somewhere other than the workspace. The redundant workspace `cd` that
-// run_command already supplies is the one relocation that changes nothing.
-func relocatesVerification(segment, workspace string) bool {
-	fields := strings.Fields(segment)
-	for len(fields) > 0 && shellEnvironmentAssignment(fields[0]) {
-		fields = fields[1:]
-	}
-	if len(fields) == 0 {
-		return false
-	}
-	switch fields[0] {
-	case "pushd", "popd", "chdir":
-		return true
-	case "cd":
-		if len(fields) != 2 {
-			return true
-		}
-		cleanWorkspace := filepath.Clean(strings.TrimSpace(workspace))
-		allowed := []string{".", "'.'", `"."`}
-		if cleanWorkspace != "." && cleanWorkspace != "" {
-			allowed = append(allowed, cleanWorkspace, "'"+cleanWorkspace+"'", `"`+cleanWorkspace+`"`)
-		}
-		return !slices.Contains(allowed, fields[1])
-	}
-	return false
-}
-
-// verificationChainSuggestion finds the recognized check inside a command the
-// gate refused, so the correction can name the exact direct form to run.
-func verificationChainSuggestion(command, workspace string) string {
-	for _, segment := range splitVerificationSegments(command) {
-		if directVerificationCommand(segment, workspace) {
-			return strings.Join(strings.Fields(segment), " ")
-		}
-	}
-	return ""
-}
-
-func splitVerificationSegments(command string) []string {
-	var segments []string
-	for _, field := range strings.FieldsFunc(command, func(r rune) bool {
-		return r == '\n' || r == ';' || r == '&' || r == '|'
-	}) {
-		// A redirection ends the command it belongs to. Drop it along with any
-		// attached file-descriptor digits (`2>&1`) rather than leaving them as
-		// spurious verification arguments.
-		if cut := strings.IndexAny(field, "<>"); cut >= 0 {
-			for cut > 0 && field[cut-1] >= '0' && field[cut-1] <= '9' {
-				cut--
-			}
-			field = field[:cut]
-		}
-		if trimmed := strings.TrimSpace(field); trimmed != "" {
-			segments = append(segments, trimmed)
-		}
-	}
-	return segments
 }
 
 // A final stderr-to-stdout merge changes presentation, not the command's exit
@@ -1057,7 +1093,7 @@ func refusedVerificationNotice(command, reason, workspace string) string {
 }
 
 func workValidationNotice(command, reason string) string {
-	return fmt.Sprintf("Collomia task-appropriate validation was not recorded for %s: %s. For a file deliverable, run validate_artifact on the final artifact. For analysis, research, retrieval, or an external action with no meaningful machine validator, update the completed plan step with the observed calculation, source, receipt, or read-back and add a fresh specific validation_note describing what was checked and what remains a matter of judgment.", boundedVerificationCommand(command), reason)
+	return fmt.Sprintf("Collomia task-appropriate validation was not recorded for %s: %s. For a file deliverable, use run_command.verification with its paths and purpose for a task-specific check, or validate_artifact for structural/content checks. For analysis, research, retrieval, or an external action with no meaningful machine validator, update the completed plan step with the observed calculation, source, receipt, or read-back and add a fresh specific validation_note describing what was checked and what remains a matter of judgment.", boundedVerificationCommand(command), reason)
 }
 
 func boundedVerificationCommand(command string) string {

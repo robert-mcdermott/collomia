@@ -1,10 +1,41 @@
 # Collomia beta status and known limitations
 
+The v0.5.0 release candidate combines task-scoped completion checks, durable
+recovery, bounded response-limit continuation, inherited-PATH execution and
+terminal reliability improvements. Standard Developer passed user acceptance
+through Kanban30 on September 6; Work mode passed user-reported testing on
+September 7. No transcript or model was supplied for the Work check. The
+Orchestrated Goal continuation follow-up passed manual testing through Kanban21.
+See [the improvement plan](IMPROVEMENT_PLAN.md#current-handoff--read-this-first)
+for evidence and [completion behavior](COMPLETION.md) for the supported contract.
+These checks do not establish a cross-model success rate or replace exact-tag
+cross-platform release CI.
+
 Collomia is suitable for a public **technical beta** aimed at developers and
 technical users who want an interactive, inspectable local terminal agent.
 Beta means the core permission, session, provider, editing, Work, MCP, and
 multi-agent paths are usable and heavily tested; it does not mean unattended
 execution is risk-free or that every roadmap feature is complete.
+
+W7a retained task context passed its offline and user manual-testing gates.
+Bounded model notes and original evidence survive compaction/resume, but notes
+can be stale, long/older requests require retrieval, and model use is not
+guaranteed. W7b adds durable Standard obligations and bounded workspace
+checkpoints; it passed its offline and user manual-testing gates. Interrupted actions require
+inspection, retained history has explicit limits, and external effects cannot
+be restored. See [Task context](TASK_CONTEXT.md) and [Standard recovery](RECOVERY.md).
+
+Work mode remains general-purpose and uses available tools and user-installed
+skills. The proposed bundled reporting workflow was withdrawn before acceptance.
+Retained image inspection and XLSX structural checks are general tools; they do
+not prescribe an analysis or document-generation method. Images require model
+support, and structural validation does not prove calculations or appearance.
+
+Observed ordinary native shell exits permit inspection and repair without a
+manual recovery acknowledgement. Failed checks still require resolution;
+interruptions and failed opaque external tools retain the recovery guard. Each
+action retains its permissions, and remote mutations are not automatically
+replayed. Command analysis cannot identify every effect hidden inside scripts.
 
 ## Appropriate beta use
 
@@ -23,6 +54,39 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
 
 ## Important limitations
 
+- `collo eval` is an experimental, controlled Standard-mode quality harness
+  with 12 synthetic coding/Work tasks. Machine checks and human acceptance are
+  separate; source-writing rubrics need review. It does not measure live web
+  research, the user's full MCP/skills environment, durable restart, forced
+  compaction, or Orchestrated Goal. Live calls are opt-in and missing usage
+  stops a batch. The initial GLM baseline passed 24/24 machine checks but prose
+  review found unsupported details and a technical explanation error; these fixtures do
+  not establish a SOTA ranking. See [Quality evaluations](QUALITY_EVALUATIONS.md).
+
+- Work's final-artifact gate checks current-turn validated files and declared
+  deliverables, not every file a script might create or every remote effect.
+  Artifact roles are model-authored task intent. Rechecks are bounded to 64
+  receipt paths and 64 declarations per turn, with at most 64 MiB per file;
+  they are point-in-time checks, not locks against later edits. They establish
+  byte/target freshness, not factual or visual quality. Receipts are not trusted
+  across restart; open-plan deliverables need fresh validation. External
+  response loss remains uncertain until safe read-back or user clarification;
+  this gate does not add connector-specific reconciliation or automatic replay.
+- Rejected terminal provider responses stop explicitly rather than continuing
+  automatically. Partial text and prior workspace effects remain; inspect them
+  before continuing. Legacy compatible endpoints with nonempty payloads and no
+  stop reason remain supported, and natural-language refusals without a provider
+  refusal field cannot be identified reliably. Standard retry recovery requires
+  the same tool and complete arguments; changed operations need an explicit
+  alternative receipt. `read_file` can page through large inputs, but a single
+  returned line must fit within its 1 MiB page and scanning to a late line takes
+  time proportional to the preceding input.
+- Live thinking summaries display only readable `reasoning.delta` text emitted
+  by the selected adapter/model. They do not enable provider thinking, preserve
+  signed/opaque reasoning state, or restore summaries in reopened chat
+  transcripts. Current-chat retention is capped at 64 KiB per contiguous
+  summary, with explicit truncation. Follow the gated
+  [improvement plan](IMPROVEMENT_PLAN.md) for provider/state follow-up work.
 - Sandboxing defaults to capability-aware `auto`, while command network access
   and broad command reads remain available for compatibility. External caches
   may need narrow writable grants, sandboxed commands receive the minimal
@@ -127,13 +191,15 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   isolation, recovery, and publication contract.
 - Standard mode's `max_iterations` is a consecutive no-progress lease rather
   than a whole-turn guillotine. Novel tool evidence renews it; equivalent
-  repeated output does not, and a hard envelope at twice the configured value
-  still stops continuous churn. After a verification gap is named, Collomia
+  repeated output does not. Independent `max_turn_iterations` (256 by default)
+  stops continuous churn; `--max-turns` and live `/limits` let users raise it. After a verification gap is named, Collomia
   explains why an ad hoc or composed passing command did not count and emits a
   receipt when a recognized check does count. If proof alone remains missing,
   the terminal outcome is `needs_verification`, not a claim that the work is
-  blocked. The recognizer remains deliberately conservative: arbitrary
-  always-passing shell commands do not become proof.
+  blocked. Unscoped recognition remains conservative. Explicit scoped checks can use
+  custom scripts; their exit status and file freshness are observed, but test
+  adequacy is not certified. A trivial always-passing check is insufficient
+  evidence of functionality even when its process receipt is valid.
 - Prompt caching is requested on the Anthropic Messages routes only, with the
   provider's default five-minute lifetime, so a session resumed after a longer
   pause pays a full uncached prompt again. OpenAI-family endpoints cache

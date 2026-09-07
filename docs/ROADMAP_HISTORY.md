@@ -1,5 +1,96 @@
 # Collomia Roadmap History
 
+### 2026-09-07 — v0.5.0 preparation and Work acceptance
+
+The user committed the v0.5.0 version bump (`fe0164d`) and reported successful
+Work-mode testing. No transcript or provider/model was provided for this check;
+it is user acceptance, not independently inspected trace evidence. Together
+with Kanban30 Developer acceptance this closes the integrated Standard manual
+gate. Release notes and current documentation now distinguish this status from
+historical candidates. Exact-tag release CI remains required after the PR merge;
+no release publication or new orchestration milestone is claimed.
+
+### 2026-09-06 — Kanban30 Standard Developer acceptance
+
+The user reported successful testing of recovery-reliability candidate `.5`.
+Transcript `20260907-053039-c1665a` confirms clean Standard Developer completion
+with Ollama `deepseek-v4-flash:0731-cloud`: 9 API tests, a passing frontend build,
+10/10 HTTP smoke checks, launcher verification and completed docs/ignore checks.
+A real cascade-delete bug and a mutable-data verification scope were repaired.
+One completion intervention was resolved without user input; no terminal error
+was emitted and the final completion state held no obligations. The frontend
+used explicit scope; automatic inference remains offline-tested. Work-mode live
+acceptance is still pending. This closes the Developer acceptance gate, not an
+orchestration milestone or a cross-model quality measurement.
+
+### 2026-09-06 — Kanban29 project verification scope
+
+The Kanban29 run passed 11 API tests and the TypeScript/Vite build but ended
+`needs_verification` because it declared `frontend/` and provided narrower
+receipts. Standard now captures project inputs before supported plain builds,
+including manifest/lockfile freshness, through normal permissions. Explicit
+scopes are preserved. Missing covering receipts explain narrower scopes instead
+of suggesting that the app may be missing or changed. Malformed check metadata
+and native shell syntax rejected before execution return correction feedback;
+actual failed checks and permission/filesystem errors remain obligations.
+
+Native agent-loop regression tests exercise the full finish sequence and
+counterexamples for failure, drift, scope and permissions. No schema changes,
+new graph authority or live-model quality claim. Candidate gates are recorded
+in the [improvement plan](IMPROVEMENT_PLAN.md).
+
+### 2026-09-06 — Kanban28 ordinary command failures must allow diagnosis
+
+- A local HTTP smoke test exited 1 after its server failed to start. The next
+  diagnostic command was refused by Standard's uncertain-action fence because
+  the failed command contained `curl`. Reproduction isolated SQLite's missing
+  database parent directory; the app was still under development.
+- Replace the local/dependency-fetch exception list with native execution state:
+  every ordinary observed shell exit settles execution. Keep real failure and
+  evidence obligations, per-action permissions, and uncertain interruption or
+  external/MCP-tool outcomes. Never automatically replay a failed command;
+  assess partial local/remote effects before a deliberate retry.
+- Remove the dependency-fetch allowlist. Add native loopback HTTP agent tests
+  covering failure, shell diagnosis, repair, deliberate retry, fresh verification
+  and completion without extra controller rounds across Standard and graph
+  fixtures. Add recovery/restart counterexamples for interrupted and opaque
+  external failures. Earlier history describing network/publication shell
+  failures as necessarily uncertain is superseded by this policy.
+- No schema changes or edits to user sessions, workspaces, configuration or
+  installed binary. Full candidate verification and user acceptance are tracked
+  in the [improvement plan](IMPROVEMENT_PLAN.md).
+
+### 2026-09-06 — Kanban27 task completion versus internal housekeeping
+
+- The app's API, frontend and serving checks passed. The final blocked state
+  contained only two malformed note updates, corrected earlier in the session.
+  Exact retry identity could not match the corrected notes, while recovery
+  explicitly prohibited note saves as proof: an impossible completion condition.
+- Planning/note/history errors are now feedback without task-failure obligations
+  in Standard and graph execution. They cannot establish evidence or renew
+  task progress. Standard restoration filters obsolete metadata failures without
+  rewriting history or clearing real failures, pending effects or file checks.
+- Explicit successful recovery references no longer fail only because a changed
+  operation was labeled retry rather than alternative. Later successful
+  non-metadata receipts and semantic intent remain required.
+- Native agent termination and counterexample tests pass, along with the full
+  offline suite, agent/tools/session/goalgraph/TUI/CLI race checks, vet, six
+  platform builds/checksums and native real-PTY startup checks. User acceptance
+  remains tracked separately in the improvement plan.
+
+### 2026-09-06 — Kanban26 verification retry context and npm exit 254
+
+- A passing Vite build piped through `tail` led to runtime advice that removed
+  `cd frontend`. npm then failed with ENOENT/254; the all-high-codes-are-signals
+  heuristic fenced the model's correctly targeted retry.
+- Native status classification now distinguishes valid shell signal statuses
+  from ordinary high exits. Suggestions preserve directory, environment and
+  quoted arguments; unsafe extraction/replay is omitted. Literal workspace
+  subdirectory checks qualify while outside/dynamic targets remain refused.
+- Native frontend, high-exit, PTY and restart/alternative recovery regressions
+  cover the observed failure. Live acceptance remains tracked separately in
+  [the improvement plan](IMPROVEMENT_PLAN.md).
+
 This archive preserves the detailed assessment, dated implementation log, and
 historical phase annotations that previously lived in `ROADMAP.md`. It is a
 record of what changed and why, not the current task queue.
@@ -12,6 +103,335 @@ For current priorities, remaining deliverables, and sequencing, see
 **Scope:** Current repository compared with the original product requirements,
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
+
+### 2026-09-06 — Kanban25 dependency recovery and native file arguments
+
+- An update patch supplied `content` instead of `new_text`, emptying the project
+  manifest and ignore file. `uv add` then returned status 2; a broad network
+  classification fenced the agent's subsequent repair after read-back.
+- File tools now reject missing/misplaced replacement text before mutation.
+  Typed native input/precondition errors are feedback rather than permanent
+  failure obligations; deliberate empty replacements remain valid. Required
+  verification, denied actions and executed failures keep their existing rules.
+- Recognized dependency/repository fetches settle ordinary observed exits while
+  retaining failed-operation and validation obligations. Publishing, opaque
+  remote clients and interrupted outcomes remain guarded. Routine command errors
+  no longer carry generic sandbox settings advice without an access diagnostic.
+- Native-tool scripted correction/completion and restart regressions pass,
+  alongside the full offline suite, focused race checks and real-PTY CLI smoke
+  checks. Live acceptance and legacy-session reconciliation are tracked in the
+  [improvement plan](IMPROVEMENT_PLAN.md).
+
+### 2026-09-06 — Terminal-reliability candidate startup repair
+
+- The first output wrapper preserved only `Fd`, but Bubble Tea detects a
+  terminal using the complete `term.File` interface. Initial window sizing
+  silently stopped and the actual TUI remained on “Starting Collomia…”.
+  This regression was introduced by the wrapper, independently of the earlier
+  output stall or the configured model/provider.
+- The wrapper now retains the full interface while borrowing the terminal;
+  closing the adapter does not close shared stdout. A compile-time contract
+  prevents accidentally dropping the required methods again.
+- A real PTY regression failed before the fix and passes after it, covering
+  initial sizing and resizing without manually supplying `WindowSizeMsg`.
+  The rebuilt CLI also passed Developer and Work startup, resize, local-command
+  interaction and clean exit checks. Candidate `.2` replaces `.1`; broader
+  live-model acceptance remains tracked separately in the improvement plan.
+
+### 2026-09-06 — Kanban23 terminal stalls and partial plan updates
+
+- Live sampling and debugger inspection found Collo blocked writing fd 1 to
+  a PTY controlled by `kiro-cli-term` inside cmux. The terminal bridge was not
+  draining output; the renderer lock and full UI queue then stalled the agent.
+  This establishes an output stall, not the cause of the bridge's failure or
+  every previously reported lockup. The inspected process was left running.
+- Interactive output now times out after 30 seconds, records a warning,
+  cancels the run and avoids blocked teardown/error writes. Agent event delivery
+  respects cancellation when the UI queue is full. A real stopped-reader PTY,
+  renderer teardown and queue cancellation have race-tested reproductions.
+- Plan updates now merge fields and step IDs; explicit `replace: true` selects
+  full replacement. This prevents the observed 7 → 2 → 4 accidental loss of
+  future work. Stored plan format and runtime graph replacement are unchanged.
+- There were no recorded compactions despite model claims. `/context` and the
+  pinned-state prompt distinguish current input from cumulative spending and
+  actual runtime summaries. Acceptance is tracked in the improvement plan.
+
+### 2026-09-06 — Kanban22 model response-limit recovery
+
+- Executable discovery succeeded. Standard Developer execution then stopped
+  when Ollama reported `length` at exactly 32,000 output tokens, after 9,107
+  input tokens and seven successful read-only tool calls. No app writes had run.
+- The shared agent now makes at most two accounted continuation requests with
+  smaller-step guidance. Rejected calls never execute or become pending history;
+  previous effects remain. Repeated limits pause rather than report blocked work.
+- Graph and worker resource stops remain extendable; team and returned worker
+  statuses use the same classification. Refusals, unknown terminal states and
+  incomplete summaries remain unaccepted. No model configuration is widened.
+- Automated verification and live acceptance are recorded in
+  [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md#kanban22-response-limit-continuation--september-6).
+
+### 2026-09-06 — Kanban21 execution and graph continuation maintenance
+
+- User acceptance: "manually tested it and it works." This maintenance is
+  complete; separate Standard/Work checks remain independently tracked.
+- The observed Node problem was a capability mismatch: a read-only worker had
+  no command tool, and workspace file-probe refusals did not establish missing
+  software. `inspect_environment` now discovers executables without execution;
+  proposal guidance reserves version/compatibility commands for primary work.
+- The shared POSIX runner now uses a non-login shell, retaining inherited PATH
+  and avoiding startup-file effects after minimal-environment filtering.
+- Eager independent reads could be invalidated by a ready primary writer before
+  use. Ready primary work now runs first. Freshness and read concurrency remain.
+- The 64K read lane stopped at 63,925 tokens while the million-token aggregate
+  had ample room. Extension could neither replenish worker resources nor pass
+  the node's two-attempt ceiling. Explicit grants now cover both, retain all
+  usage, and preserve immutable attempts. Failed/unsafe grants are atomic.
+- Read wall measures execution, including retired reads, rather than idle time.
+  Safe exhausted attempts stop as extendable budget outcomes. TUI limits use a
+  pause label with work retained; public outcome contracts stay stable.
+- Focused regressions and a read-only probe of the actual saved graph pass.
+  Full verification and the candidate/live gates are recorded in
+  [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
+
+### 2026-09-06 — Larger-project Standard continuation reliability
+
+- The Kanban test delivered useful work but exhausted the coupled 48-cycle
+  ceiling, retained impossible directory-file obligations and old failures,
+  then received repeated empty provider responses.
+- Project-directory scopes now cover bounded input trees and retained directory
+  declarations with native freshness checks. Child read policy and hooks apply;
+  build/cache/dependency outputs are excluded and nested symlinks are not followed.
+- Command execution identity excludes timeout and verification metadata.
+  Corrected native assessment rejections recover on a successful call of the
+  same tool. Bounded historical success facts support explicit alternative
+  recovery after pauses; current file verification remains fresh.
+- Standard total cycles default to 256 independently of the 24-cycle no-progress
+  lease. CLI flags and live `/limits` expose user controls.
+- Empty completed provider responses get at most two counted retries, without
+  tool replay. Exhaustion is labeled provider unavailability.
+- Tests and live acceptance: [improvement plan](IMPROVEMENT_PLAN.md).
+  This is Standard reliability work; graph authority and budgets are unchanged.
+
+### 2026-09-06 — Task-scoped Standard completion reliability
+
+- A live Developer dashboard run passed its scoped check but ended as
+  `needs_verification` because helper scripts remained dirty; the TUI called it
+  “Blocked.” An earlier artifact check was ignored by Developer completion and
+  quoted multiline Python was incorrectly refused by scoped-check preflight.
+- The follow-up shares artifact and scratch-role handling across profiles,
+  standardizes `.collomia-tmp/`, fixes Standard quoted-command parsing, and
+  recovers preflight-only rejections with matching scoped replacements. Real
+  failed checks, unrelated source changes, and stale deliverables remain tracked.
+- Standard final-answer text waits for completion acceptance. Verification-only
+  gaps receive a distinct UI label and accurate path-specific guidance.
+- Candidate and acceptance evidence: [improvement plan](IMPROVEMENT_PLAN.md).
+  Live acceptance is pending; graph authority is unchanged.
+
+### 2026-09-06 — Standard task-specific completion evidence
+
+- The user requested less completion friction while retaining the evidence-gated
+  product contract. Standard now accepts explicitly scoped native command checks
+  as an alternative to generic artifact validation for current files. The model
+  selects scope and test purpose; the runtime observes successful execution and
+  byte/target/parent freshness. Test adequacy remains a disclosed limitation.
+- Successful native file replacement/edit plus fresh evidence can recover an
+  executed file-edit failure without exact-ID plan bookkeeping. Unrelated passes,
+  weaker failed requirements, permission/hook denials, and ambiguous effects do
+  not qualify. Command timeout-only changes preserve operation identity.
+- Added schema-v1 `scoped_verification` evidence and a bounded file digest map;
+  updated the quality receipt grader. Restart restores obligations and repair
+  facts, never passing receipts. Graph acceptance and authority remain unchanged.
+- Audited current versus historical documentation, corrected outdated feature
+  version labels, and added a documentation index and completion contract.
+- Automated qualification and user acceptance are tracked in the current
+  [improvement plan](IMPROVEMENT_PLAN.md). This entry does not assert a live-model
+  efficiency gain or acceptance before the user tests the separate build.
+
+### 2026-09-06 — general validation recovery and quieter completion checks
+
+- User testing produced a working single-file Asteroids game, but format
+  corrections left two obsolete validation failures open. The user requested
+  corrected-check recognition and less intrusive presentation.
+- HTML and common source/configuration files now infer UTF-8 text checks;
+  `html` is an explicit text alias, not HTML parsing or browser execution.
+  Native successful checks can cover earlier validation requirements for the
+  same file without a recovery-only plan update. Required text, minimum size,
+  and parser requirements cannot be weakened. Bounded hashed requirements
+  survive resume; older records retain exact-operation recovery.
+- Routine controller diagnostics collapse in live/restored TUI chat and appear
+  as informational activity. Expansion, transcript search/copy, model context,
+  and event logs retain details. Actual failures and blocks remain visible.
+  The separate test build is `v0.4.2-work-general.2`; no later wave started.
+- Full tests, affected-package race checks, vet, and Linux/Windows Go cross-builds
+  passed. Synthetic native-tool tests cover corrected-format recovery, resume,
+  and refusal to erase missing requirements. Live user acceptance is pending.
+
+### 2026-09-06 — W6 workflow withdrawn; general primitives retained
+
+- The user authorized removing the bundled reporting workflow in favor of
+  general-purpose Work mode, model-selected approaches, and user-installed skills.
+  W6 was not accepted. Earlier entries below describe superseded experiments.
+- Removed the built-in skill, Python/Office toolkit, runtime setup/diagnostics,
+  and workflow-specific prompt. Retained ordinary command-failure recovery,
+  generic image inspection with unavailable-image notices, XLSX structural
+  validation, and explicit check scopes. No generation workflow is prescribed.
+- Preserved user files, sessions, prior builds and evaluation outputs. Archived
+  withdrawn code under ignored dist storage. A separate `collo-work-general`
+  test build supersedes the W6 workflow binaries; installed Collo is unchanged.
+- Full regression tests, affected-package race checks, vet, documentation
+  checks, and Linux/Windows Go cross-builds passed after removal. No provider
+  calls were made; live general-purpose Work acceptance remains pending.
+- Broader Work evaluation is proposed before another feature wave. The
+  [retained-capability checks](IMPROVEMENT_PLAN.md#retained-capability-checks)
+  are the current manual gate. Orchestration milestones are unchanged.
+
+### 2026-09-05 — W6 command-failure recovery correction
+
+- Live sunspot testing exposed a Standard recovery guard that blocked an
+  ordinary script repair after an observed assertion failure. The native
+  command runner now distinguishes ordinary nonzero exits from interruptions.
+- Completed local failures allow inspection, repair and deliberate retries;
+  unresolved failure IDs and deliverable validation requirements remain.
+  Timeout, cancellation, signal-like exits, and failed known network/publication
+  operations retain the uncertainty guard. No automatic external replay is added.
+- Old persisted markers lack native exit classification and require one
+  inspected acknowledgement. The user's workspace and session were not edited.
+  The W6.3 test build remains subject to user acceptance; no later wave started.
+
+### 2026-09-05 — W6 existing-folder UX revision
+
+- The user successfully tried the documented initial workflow, but found the
+  exported example README and duplicate Work verb confusing for actual tasks.
+- Replaced the unreleased `work init` command with a shipped `work-artifacts`
+  skill. Work mode can load guidance and prepare optional hidden, versioned
+  helpers through `setup artifacts` in the user's existing folder. No example
+  data or root README is created. `doctor artifacts` provides read-only checks.
+- Ordinary skill overrides, profile filtering, command permissions, and sandbox
+  controls remain in effect. The skill supports task-specific scripts rather
+  than requiring the grouped-summary example.
+- Full regressions, vet, and built-in skill validation passed. An operational
+  fixture reconciled total 39 and produced valid XLSX/DOCX/PDF outputs under the
+  required command sandbox without networking; actual pages were reviewed.
+- The revised `v0.4.2-wave6.2` test build is ready for the existing-folder manual
+  gate. W6 acceptance and matched W5 quality comparison remain pending; no
+  orchestration milestones or later waves changed.
+
+### 2026-09-05 — W6 Work artifact workflow
+
+- After W7b acceptance and commit `304d7af`, the user selected W6.
+- Added an exportable locked uv toolkit for CSV/XLSX analysis, LibreOffice
+  recalculation, independent total reconciliation, cited DOCX/PDF generation,
+  actual page rendering, and simple existing-file revision. Setup and scripts
+  retain the ordinary command permission boundary.
+- Native `view_image` exposes bounded local pixels through existing typed
+  attachments; XLSX validation and explicit receipt scopes distinguish parsed
+  structure from unperformed calculations/source/visual assessments.
+- Offline Go tests, affected-package race checks, vet, and Linux/Windows Go
+  cross-builds passed. A freshly exported kit and new uv environment passed
+  real LibreOffice creation/revision/rendering checks on darwin/arm64. Example
+  memo/workbook previews were visually inspected. Separate `v0.4.2-wave6` build
+  delivered; installed binary and `VERSION` are unchanged.
+- Live acceptance and matched W5 baseline comparison remain pending in
+  improvement plan at that time; those gates were superseded by withdrawal.
+  Orchestration milestones are unchanged.
+
+### 2026-09-05 — W7b durable Standard recovery
+
+- Following W7a acceptance and commit `0f618aa`, the user selected W7b.
+- Added persisted completion obligations, write-ahead uncertain-action markers,
+  fresh-evidence requirements, bounded durable workspace checkpoints, delta
+  replay, and explicit user inspection/keep controls. Restore/undo journal their
+  own interruption; no command or external action is replayed automatically.
+- Full tests, affected-package race checks, vet, and Linux/Windows cross-builds
+  passed. A separate `v0.4.2-wave7b` binary was delivered for the user gate in
+  [the improvement plan](IMPROVEMENT_PLAN.md). The user subsequently confirmed
+  successful manual testing on 2026-09-05, accepting W7b and full W7.
+  Provider/model was not specified. Orchestration milestones and integration
+  authority are unchanged; W6 remains proposed, not started.
+
+### 2026-09-04 — W5 accepted; W7a retained context
+
+- After committing W5 as `0c72f04`, the user directed the next wave. The
+  baseline remains preserved; individual artifact review decisions stay separate.
+- Split W7 at a user gate: W7a adds durable, bounded model notes, genuine user
+  request previews, session evidence search/read, and inspect/clear controls.
+  W7b completion obligations and workspace checkpoints remain planned.
+- Session/app regressions cover repeated compaction and restart, history
+  provenance, revision/storage failures, pagination, fork/rewind, and isolation.
+  Full tests, race tests, vet, and the separate test build passed. The user
+  subsequently reported “manual testing passes,” accepting W7a on 2026-09-04.
+  Provider/model was not specified; W7b is unblocked but has not started.
+  Orchestration scheduling, restore authority, and milestones are unchanged.
+
+### 2026-09-04 — W5 quality runner, awaiting live baseline
+
+- The user's first Ollama / GLM-5.3-flash smoke produced correct coding and
+  arithmetic outputs but exhausted both 40000-token task allowances before
+  finishing. Review exposed missing final failure metadata in error traces;
+  the writer now emits replay-compatible classifications and correlation IDs.
+  Focused evaluator/CLI race tests passed. Original results are preserved and
+  a higher-budget diagnostic smoke then passed both tasks with validated
+  traces. The full repeated baseline then passed 24/24 machine checks, and all
+  24 traces validated. Prose review found an invented memo date and an incorrect
+  explanation of an equivalent integer comparison. Context/call overhead and
+  controller friction remain measured efficiency targets; user acceptance is
+  pending. See the improvement plan for exact build, model, limits, and evidence.
+- Following W4 acceptance and commit `ab9d5ca`, the user approved proceeding
+  with the quality baseline and selected balanced coding/Work tasks.
+- Added 12 versioned synthetic tasks, independent graders and human rubrics,
+  repeated fresh-workspace trials, bounded opt-in provider calls, local traces,
+  usage completeness, false-done/blocker signals, reviewable acceptance/cost
+  scorecards, and matched comparisons. Result schema v1 is published by
+  `collo schema eval`; runtime traces retain the existing event contract.
+- Offline regression evidence and the manual gate are tracked in the
+  [improvement plan](IMPROVEMENT_PLAN.md). The live baseline and subsequent
+  W5 acceptance are recorded above and in the improvement plan; no
+  orchestration authority or milestone status changes.
+
+### 2026-09-04 — W4 final-deliverable acceptance
+
+- After accepting and committing W3, the user selected W4. Work completion
+  now retains typed validation digests and rechecks final bytes, original path
+  target, and parent identity, including shell and out-of-band edits.
+- Optional plan `artifacts` entries distinguish deliverables from scratch
+  files. Declared outputs require current receipts even when shell-created;
+  notes, unrelated test commands, and silent demotion cannot waive those gaps.
+- Execution observations carry possible file effects or unknown scope apart
+  from permission risk. Denied executions do not count as writes; failed opaque
+  executions disclose uncertainty and request inspection before another write.
+- W4 regression tests exercise real shell mutation/revalidation, missing and
+  replaced files, unchanged bytes, scratch intent, bounded reads, and backward
+  compatible plans. The user confirmed all manual tests passed and accepted
+  W4 on 2026-09-04. Full evidence and the acceptance record live in the
+  [improvement plan](IMPROVEMENT_PLAN.md). No orchestration milestone, permission
+  grant, external reconciliation, or automatic action replay was added.
+
+### 2026-09-04 — W3 completion and large-input maintenance
+
+- User reprioritized W3 ahead of W2 after accepting the live-thinking display.
+  The improvement plan remains the current queue and user-testing handoff.
+- Added a shared terminal-response check before tools or completion, retained
+  partial text/usage, rejected incomplete compaction, and preserved explicit
+  provider refusal in headless results. Rejected responses stop without an
+  automatic retry; no provider reasoning settings or permissions change.
+- Standard retry recovery now binds the complete operation arguments. Corrected
+  board updates retain their own recovery path; alternatives and unnecessary
+  exploration remain explicit, distinct dispositions.
+- File reads now bound each output page independently of the input offset,
+  report EOF/continuation, and can skip oversized lines with bounded memory.
+- W3 adds provider, agent, graph-compatibility, CLI, and real-file regressions.
+  Its validation evidence and pending user gate are tracked in the plan.
+
+### 2026-09-04 — Improvement waves and live thinking display
+
+- Added the [improvement plan](IMPROVEMENT_PLAN.md) as the current queue for
+  review-driven work, with per-wave checklists, evidence, handoff, and explicit
+  user acceptance before advancing to the next major item.
+- W1 consumes existing reasoning events in a separate, bounded TUI summary;
+  live preview, details expansion, and current-transcript search/copy are covered
+  by regression tests and terminal snapshots. TUI/CLI race suites and vet passed.
+- Status is ready for user testing. Provider enablement, opaque/signed state,
+  and reopened summary display remain W2; orchestration contracts are unchanged.
 
 ### 2026-08-26 — Windows AppContainer resolves junction-backed toolchains
 

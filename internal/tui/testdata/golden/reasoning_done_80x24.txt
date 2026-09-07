@@ -1,0 +1,21 @@
+ ✿ collomia  Chat  Session  Help
+────────────────────────────────────────────────────────────────────────────────
+╔═╗╔═╗╦  ╦  ╔═╗╔╦╗╦╔═╗
+║  ║ ║║  ║  ║ ║║║║║╠═╣
+╚═╝╚═╝╩═╝╩═╝╚═╝╩ ╩╩╩ ╩
+✿ collo dev · ollama/qwen3-coder
+type a prompt · / commands · ctrl+t tabs · ctrl+o tool output
+
+ YOU
+Check the report totals.
+
+THINKING SUMMARY
+▸ ctrl+o to expand
+
+ ✿ COLLOMIA
+The totals agree with the inputs.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│❯ Ask Collomia to build, debug, explain…  (/ for commands)                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ ✿   ollama/qwen3-coder   ASK ⛨  ctx ▋░░░░░░░░░ 6%     / commands · ctrl+c quit

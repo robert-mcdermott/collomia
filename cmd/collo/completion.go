@@ -58,6 +58,7 @@ var completionCommands = []completionCommand{
 	// subcommand list that cannot drift even in principle.
 	{name: "schema", subcommands: schemaContracts},
 	{name: "replay", files: true},
+	{name: "eval", subcommands: []string{"list", "run", "report", "compare", "review"}},
 	{name: "version"},
 }
 
@@ -67,7 +68,7 @@ var completionShells = []string{"bash", "zsh", "fish", "powershell"}
 
 var completionFlags = []string{
 	"--help", "--version", "--cwd", "--provider", "--model", "--agent", "--mode", "--autonomy",
-	"--autopilot", "--workspace", "--plan", "--resume", "--continue", "--web",
+	"--max-turns", "--max-no-progress", "--autopilot", "--workspace", "--plan", "--resume", "--continue", "--web",
 	"--web-port", "--no-open", "--alt-screen", "--no-alt-screen", "--jsonl", "--ephemeral",
 	"--debug", "--global", "--strict", "--yes", "--with-reference",
 	"--check", "--output", "--include-logs",

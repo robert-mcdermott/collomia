@@ -384,7 +384,7 @@ func goalGraphTerminalError(outcome goalgraph.Outcome, reason string) error {
 }
 
 func (a *Agent) beginGoalTool(ctx context.Context, callName string, action tools.Action, send Emit) (bool, error) {
-	if !a.graphEnabled() || goalgraph.MetaTool(callName) {
+	if !a.graphEnabled() || goalgraph.MetaTool(callName) || completionMetaTool(callName) {
 		return false, nil
 	}
 	_, attempt, active := a.goalGraph.Active()
@@ -412,7 +412,7 @@ func (a *Agent) beginGoalTool(ctx context.Context, callName string, action tools
 }
 
 func (a *Agent) finishGoalTool(ctx context.Context, observation toolObservation, send Emit) error {
-	if !a.graphEnabled() || goalgraph.MetaTool(observation.Name) {
+	if !a.graphEnabled() || goalgraph.MetaTool(observation.Name) || completionMetaTool(observation.Name) {
 		a.emitGoalUpdates(send)
 		return nil
 	}
@@ -449,7 +449,7 @@ func firstNonemptyGraphText(values ...string) string {
 }
 
 func (a *Agent) recordGoalFailure(ctx context.Context, observation toolObservation, send Emit) error {
-	if !a.graphEnabled() || goalgraph.MetaTool(observation.Name) || observation.GraphRecorded || observation.IgnoreGraphFailure {
+	if !a.graphEnabled() || goalgraph.MetaTool(observation.Name) || completionMetaTool(observation.Name) || observation.GraphRecorded || observation.IgnoreGraphFailure {
 		a.emitGoalUpdates(send)
 		return nil
 	}

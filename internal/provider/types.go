@@ -113,6 +113,9 @@ type Response struct {
 	ToolCalls []ToolCall
 	Usage     Usage
 	Stop      string
+	// StopDetail retains an explicit incomplete reason, independently of text.
+	StopDetail string
+	Refused    bool
 }
 
 // ToolCallDelta is the provider-neutral streaming representation of a tool

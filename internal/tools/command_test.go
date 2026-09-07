@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +15,46 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/sandbox"
 )
+
+func TestCommandExitClassification(t *testing.T) {
+	tool, err := NewRunCommandTool(t.TempDir(), nil, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pty := range []bool{false, true} {
+		if pty && !ptySupported {
+			continue
+		}
+		for _, code := range []int{1, 2, 126, 127, 128, 200, 254, 255} {
+			_, err := tool.Execute(t.Context(), json.RawMessage(fmt.Sprintf(`{"command":"exit %d","pty":%t}`, code, pty)))
+			var exit interface {
+				error
+				ExitCode() int
+			}
+			if !CommandExitedNormally(err) || !errors.As(err, &exit) || exit.ExitCode() != code {
+				t.Fatalf("pty=%v code=%d: lost observed exit or underlying error: %v", pty, code, err)
+			}
+		}
+	}
+	if CommandExitedNormally(errors.New("command failed: exit status 1")) {
+		t.Fatal("output text must not establish a native exit")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = tool.Execute(ctx, json.RawMessage(`{"command":"exit 1"}`))
+	if CommandExitedNormally(err) {
+		t.Fatal("cancellation classified as an ordinary exit")
+	}
+	if runtime.GOOS != "windows" {
+		for _, command := range []string{"kill -TERM $$", "exit 143"} {
+			raw, _ := json.Marshal(map[string]string{"command": command})
+			_, err := tool.Execute(t.Context(), raw)
+			if err == nil || CommandExitedNormally(err) {
+				t.Fatalf("signal-like exit classified as ordinary: %s: %v", command, err)
+			}
+		}
+	}
+}
 
 func TestRunCommandHardDenial(t *testing.T) {
 	tool, err := NewRunCommandTool(t.TempDir(), []string{`(?i)rm\s+-rf\s+/`}, 1024)
@@ -81,6 +123,9 @@ func TestTimeoutKillsProcessGroup(t *testing.T) {
 	_, err = tool.Execute(t.Context(), []byte(fmt.Sprintf(`{"command":"sleep %s & sleep %s","timeout_seconds":1}`, marker, marker)))
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected timeout, got %v", err)
+	}
+	if CommandExitedNormally(err) {
+		t.Fatal("timeout classified as an ordinary exit")
 	}
 	if elapsed := time.Since(start); elapsed > 8*time.Second {
 		t.Fatalf("timeout took %s; descendants were not killed promptly", elapsed)
@@ -503,5 +548,18 @@ func TestRunCommandPTYTimeoutKillsGroup(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("timeout took too long: %s", elapsed)
+	}
+}
+
+func TestMinimalEnvKeepsExplicitGoSDK(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "go-sdk")
+	t.Setenv("GOROOT", root)
+	t.Setenv("COLLO_SECRET_TOKEN", "not-in-child")
+	env := minimalEnv()
+	if !containsEnv(env, "GOROOT", root) {
+		t.Fatal("explicit Go SDK omitted from minimal environment")
+	}
+	if containsEnv(env, "COLLO_SECRET_TOKEN", "not-in-child") {
+		t.Fatal("minimal environment leaked credential")
 	}
 }

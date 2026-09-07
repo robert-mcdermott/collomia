@@ -19,6 +19,12 @@ Orchestrated Goal adds optional evidence-gated durable execution in which the
 runtime—not model prose—owns readiness, evidence freshness, recovery, budgets,
 and the terminal outcome.
 
+In Standard execution, the agent can select task-specific checks and the
+runtime records their outcomes against current files. It does not require a
+second generic file check when suitable scoped evidence already exists. See
+[evidence-based completion](docs/COMPLETION.md) and the
+[documentation guide](docs/README.md).
+
 ## Why Collomia stands out
 
 - **Native containment on every major desktop OS.** Commands can run under
@@ -42,8 +48,9 @@ and the terminal outcome.
   and broad tool grants cannot silently cover.
 - **Evidence-gated Standard mode.** A final-sounding response does not complete
   an active goal while plan work is open, verification is stale after a write,
-  or a tool failure remains unresolved. A verification command Collomia cannot
-  accept is explained in its tool result, accepted proof receives an explicit
+  or an actual task failure remains unresolved. Housekeeping mistakes and native
+  input rejected before execution are correction feedback. A verification command
+  Collomia cannot accept is explained in its tool result, accepted proof receives an explicit
   receipt, and work that is complete but still unverified is reported as
   `needs_verification` rather than falsely `blocked`. Standard mode stays fast
   and model-directed while the runtime checks the evidence it can actually
@@ -174,10 +181,16 @@ answer. Select it at startup with `collo --mode work`, in a session with
 `/mode work`, and in headless use with `collo run --mode work ...`. The choice
 is persisted per session. See the [Work mode contract](docs/WORK_MODE.md).
 
+Work mode uses the available tools and user-installed skills to choose an approach
+for your request. It does not require a starter project or bundled workflow.
+See [Work mode](docs/WORK_MODE.md) for capabilities and evidence requirements.
+
 **Standard execution** is the default: describe the task and Collomia works through
 its ordinary governed tool loop. `max_iterations` is a consecutive no-progress
-lease, so productive work can continue beyond it; a hard envelope at twice the
-configured value still bounds a turn.
+lease (24 cycles by default). The independent `max_turn_iterations` bounds each
+user turn at 256 provider responses by default. Use `--max-turns 500` for a longer
+task or `/limits 500` in the TUI, including while it runs. See
+[completion and recovery](docs/COMPLETION.md).
 
 **Orchestrated Goal** is an explicit per-session option for work where a durable,
 inspectable graph and runtime-owned completion gates justify the additional
@@ -206,6 +219,12 @@ contracts are Git-backed; Collomia refuses that combination explicitly.
 
 ## Documentation
 
+`collo eval list` previews the balanced coding/Work quality tasks without model
+calls. Use `collo eval run --live --provider NAME --output NEW_DIRECTORY` for
+bounded trials, then `report`, `review`, and `compare` to inspect scorecards and
+record acceptance. See [Quality evaluations](docs/QUALITY_EVALUATIONS.md) for
+the two-task smoke test and repeated baseline workflow.
+
 | Topic | Documentation |
 | --- | --- |
 | Install, upgrade, rollback, uninstall | [Installing](docs/INSTALLING.md) |
@@ -221,6 +240,9 @@ contracts are Git-backed; Collomia refuses that combination explicitly.
 | Linux Landlock setup | [Linux sandbox guide](docs/LINUX_SANDBOX.md) |
 | MCP protocol coverage | [MCP protocol](docs/MCP_PROTOCOL.md) |
 | Testing and evaluation | [Testing](docs/TESTING.md) |
+| Restart recovery and workspace checkpoints | [Standard recovery](docs/RECOVERY.md) |
+| Retained task notes and earlier evidence | [Task context](docs/TASK_CONTEXT.md) |
+| Real-model quality scorecards | [Quality evaluations](docs/QUALITY_EVALUATIONS.md) |
 | Release process and verification | [Releasing](docs/RELEASING.md) |
 | Current priorities and implementation history | [Roadmap](ROADMAP.md) · [history](docs/ROADMAP_HISTORY.md) |
 
@@ -243,3 +265,15 @@ the private process in [SECURITY.md](SECURITY.md).
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+Standard completion uses the same file-evidence rules in Developer and Work.
+Disposable helpers belong in `.collomia-tmp/` and do not need separate acceptance;
+requested outputs and project changes still receive appropriate checks. See
+[completion behavior and scratch files](docs/COMPLETION.md).
+
+Executable discovery is available during planning through `inspect_environment`.
+Command tools preserve the PATH used to launch Collo; version checks run through
+ordinary primary execution. Orchestrated Goal's `/orchestrate extend` replenishes
+worker and attempt allowances as well as the aggregate envelope, retaining
+accepted work. See [runtime discovery](docs/USER_GUIDE.md#runtime-discovery-and-command-path)
+and the [current testing handoff](docs/IMPROVEMENT_PLAN.md).

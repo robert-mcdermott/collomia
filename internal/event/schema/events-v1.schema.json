@@ -148,9 +148,11 @@
       "required": ["kind", "subject"],
       "additionalProperties": true,
       "properties": {
-        "kind": { "enum": ["verification", "artifact_validated", "effect_recorded", "postcondition_confirmed", "source_grounded", "user_judgment"] },
+        "kind": { "enum": ["verification", "scoped_verification", "artifact_validated", "effect_recorded", "postcondition_confirmed", "source_grounded", "user_judgment"] },
         "subject": { "type": "string", "minLength": 1 },
         "digest": { "type": "string" },
+        "files": { "type": "object", "maxProperties": 16, "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "description": "Scoped command verification files and their observed digests; coverage is model-selected, not certified." },
+        "checks": { "type": "object", "additionalProperties": { "enum": ["passed", "not_assessed"] }, "description": "Explicit assessment scope, such as structure, calculations, content, sources, and visual. Passed content means only the requested exact text was found." },
         "detail": { "type": "string" }
       }
     },

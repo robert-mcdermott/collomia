@@ -281,7 +281,7 @@ func (p *Process) Wait() (int, error) {
 				if code != 0 {
 					// The message matches exec.ExitError so a PTY failure reads
 					// the same as the ordinary command path's failure.
-					p.waitErr = fmt.Errorf("exit status %d", code)
+					p.waitErr = &ExitError{Code: int(code)}
 				}
 			}
 		}
@@ -452,3 +452,10 @@ func environmentBlock(env []string) (*uint16, error) {
 	block = append(block, 0)
 	return &block[0], nil
 }
+
+// ExitError records a process exit observed by Wait, independently of its text.
+// ConPTY uses native process handles rather than os/exec.ProcessState.
+type ExitError struct{ Code int }
+
+func (e *ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
+func (e *ExitError) ExitCode() int { return e.Code }

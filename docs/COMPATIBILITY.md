@@ -1,5 +1,55 @@
 # Compatibility and migration policy
 
+Kanban29 changes no schema or saved-state version. Standard native commands may
+receive runtime-generated verification metadata before authorization when no
+explicit verification field was supplied and a supported project build is
+recognized. The original transcript tool call remains as requested; the native
+result reports the automatically captured scope. Explicit scope is unchanged.
+No historical success becomes a current receipt, and older directory obligations
+still require fresh evidence after resume. Invalid verification arguments and
+shell syntax rejected before execution no longer add failed-task obligations;
+older saved failures retain their existing recovery behavior. See
+[completion](COMPLETION.md) for supported command shapes and limits.
+
+Kanban28 changes no schema version. Native shell commands that finish with an
+ordinary nonzero exit now settle execution regardless of network/publication
+classification. Failure/evidence obligations and per-action permissions remain.
+Legacy pending markers lack native exit classification and require one-time
+inspection/reconciliation; transcript text is not trusted exit metadata. Failed
+external/MCP tools with unknown effects and genuinely interrupted commands keep
+their guards. See [recovery](RECOVERY.md) and the [handoff](IMPROVEMENT_PLAN.md).
+
+Kanban27 changes no schema version. Existing Standard recovery records are read
+with obsolete planning/note/history failures filtered; their original transcript
+events remain intact. Real failures, pending effects and fresh-file requirements
+are retained. Existing `recovered_by_retry`/`recovered_by_alternative` fields are
+still accepted; either label can link an explicitly justified changed operation
+to a successful later non-metadata receipt. Metadata tools are neither task
+failure obligations nor completion evidence in Standard and graph execution.
+
+Kanban26 maintenance changes no public schema or persisted state version.
+Native ordinary exit 254 no longer creates an uncertain-action marker. Literal
+workspace subdirectory verification chains are accepted, and direct-command
+suggestions retain their execution context. Legacy pending markers still need
+one-time reconciliation because they lack native completion classification.
+
+Native file tools now enforce the replacement fields already described by their
+contracts: `write_file.content`, `edit_file.new_text`, and patch update
+`old_text`/`new_text` must be explicit strings. Patch `content` is create-only;
+unknown or contradictory fields are rejected before mutation. Explicit empty
+strings remain valid. These typed input errors return corrective feedback rather
+than a durable executed-failure obligation. No session/event schema version changes.
+Older persisted uncertain-command markers are retained on upgrade because they
+lack the native exit classification needed for automatic settlement; see
+[Standard recovery](RECOVERY.md) for one-time reconciliation.
+
+Current Standard completion adds optional `run_command.verification` input and
+a schema-v1 evidence kind, `scoped_verification`, with an optional bounded
+`files` digest map. Consumers validating evidence kinds must refresh
+`collo schema events`; the event schema version and `run.result` outcomes are
+unchanged. Older binaries do not implement this scoped completion contract.
+See [Completion](COMPLETION.md) for exact scope and freshness guarantees.
+
 Collomia stores configuration, sessions, automation events, attachments, and
 support metadata on the user's machine. This document defines which formats
 are stable, how version changes are handled, and what to do before upgrading
@@ -20,6 +70,55 @@ without rewriting it.
 | Runtime-owned goal-graph snapshots | `schema: 1` | OG-1 onward snapshots are carried by additive `goal_graph` session records. The complete graph is validated before restore; unsupported or structurally inconsistent snapshots are rejected rather than scheduled, and a saved TUI graph remains inert until explicit `/orchestrate resume`. OG-2B1 adds optional execution/read-envelope/worker-usage fields; a pre-fan-out snapshot restores omitted execution as serial `primary`, so an upgrade cannot create automatic workers. OG-2B2a adds optional pause request/reached/reason fields; omission restores as not paused. OG-2B2b1 adds aggregate accounting plus attempt iteration/cost-estimate fields; a legacy snapshot reconstructs only stored attempt usage and does not invent missing proposal or iteration history. OG-2B2b2 adds fixed aggregate limits, active-time state, and per-read cost/iteration bounds. OG-3A adds explicit narrow writer scopes, a fixed writer envelope, writer accounting, stable-base identity, retained-candidate and child-verification facts, and the `candidate` attempt state. OG-3A.1 raises the hard token ceiling for newly created graphs but does not rewrite a nonzero stored limit, so a graph created under the earlier 192,000-token envelope resumes with 192,000 rather than acquiring the new 1,000,000-token allowance. OG-3A.3 adds optional attempt `last_progress_iteration` and pending-action base workspace/generation fields. OG-3A.4 adds optional `completion_gap` and `completion_gap_iteration` attempt fields; omission means no previously recorded exact gap and grants no inferred remediation progress. Omission never invents prior exact progress; an active legacy attempt with successful tool evidence receives one fresh bounded progress lease on its next accounted provider cycle, while the stored aggregate envelope remains unchanged. Omitted limits restore to the current configured/default envelope; legacy nodes remain serial, interrupted writers become blockers, restore freezes active time at the last durable update, and stored limits are rejected when implausible or inconsistent with the recorded envelope grant rather than for exceeding a build default (see the OG-3B4 note below). |
 | Referenced tool-result artifacts | `schema_version: 1` | The stored object must match the supported version, ID, size, and quota checks before it is returned. |
 | Support-bundle manifest | Versioned in the manifest | Intended for diagnostics, not restoration. Readers should tolerate additive fields and reject unsupported incompatible versions. |
+
+Optional `tool.evidence.checks` in schema-1 events reports narrow `passed` or
+`not_assessed` scopes. Absence in old records makes no new claim. Native
+`view_image` reuses existing typed attachment records; no session format change
+is required. XLSX structural validation extends the existing artifact tool
+without requiring an external runtime. See [Work mode](WORK_MODE.md) for limits.
+
+W7b adds runtime-owned `completion_state` and `workspace_checkpoint_delta`
+records under session record schema 1. Both payloads use `schema_version: 1`.
+Completion failures may now include an optional `validation` requirement identity
+(path/text SHA-256 hashes, effective format, minimum size). These are bounded
+requirements, not receipts. Older records remain valid and use exact-operation
+recovery when the identity is absent. The optional identities are omitted if
+needed to fit the existing completion-state limit; obligations are retained.
+Failures may also carry optional bounded `repair_paths` and `repair_ready`
+(native file-replacement observations, never a validation receipt). Older
+records without repair identities keep explicit recovery. Legacy exact command
+retry hashes remain accepted; new command identities ignore timeout and verification metadata. Existing
+full-argument and timeout-normalized hashes remain accepted for exact retries.
+Completion state carries task profile, dirty/unknown flags, bounded paths and
+artifact roles, unresolved operation identities, pending effect metadata, and
+an optional user acknowledgement. No validation receipts or grants are restored.
+Checkpoint deltas carry header state (directory identity, coverage floor,
+interrupted-restore flag, optional keep reason), a dropped prefix, a kept prefix,
+and appended binary-safe entries. Invalid delta references, incompatible versions,
+retention bounds, or an incompatible workspace root fail closed. A full
+`workspace_checkpoint` payload is also understood for compatibility with the
+projection representation. See the typed definitions in `internal/agent/recovery.go`,
+`internal/diffmodel/checkpoint.go`, and `internal/session/recovery.go`.
+
+Fork preserves these records; rewind replays only its selected prefix. A coupled
+restore writes its own checkpoint journal into the new branch before workspace
+mutation. Legacy sessions get no invented obligations or file history; their new
+checkpoint coverage begins at resume. Downgrades can ignore additive record types,
+so using an older build does not preserve the new recovery guarantees.
+[Standard recovery](RECOVERY.md) defines the current limits and operator controls.
+
+W7a adds `task_context` and `user_request` record types within session record
+schema 1. The task-context payload has `schema_version: 1`, a revision, and
+bounded model-authored notes. Invalid/unsupported payloads and invalid request
+references fail loading before opening for append. `user_request` identifies a
+1-based transcript message explicitly observed at the genuine prompt/steering
+entry point; legacy user-role messages are not inferred to have that provenance.
+Sessions without these records remain readable. Fork copies notes/history;
+rewind copies only the selected prefix. Clearing notes appends an empty next
+revision, leaving prior records intact. These records confer no permissions or
+artifact validation, and do not change graph or workspace restore contracts.
+Older builds may ignore the additive records; do not assume downgrade preserves
+new context behavior. See [Task context](TASK_CONTEXT.md) for fields and limits.
 
 OG-3A.6 does not change either schema version. Ending a graph's role as the
 session's current resumable graph appends a `goal_graph` record with no graph
@@ -730,3 +829,97 @@ Any change to a persisted or machine-readable structure should include:
 
 Compatibility tests are credential-free and run on macOS, Linux, and Windows.
 The release workflow repeats them against the exact tagged source.
+
+## Standard task-scoped completion follow-up (September 6)
+
+Completion state schema 1 adds optional `rejected_verification` to native
+preflight-failure identities (1–16 paths and a bounded purpose). Omission grants
+no inferred recovery; older binaries may retain a rejection until explicitly
+resolved. Upgraded sessions use the same scratch/deliverable roles in Developer
+and Work, with `.collomia-tmp/` as the default disposable-helper directory.
+Declared deliverables retain precedence. Passing receipts are never restored.
+The `needs_verification` outcome is unchanged; the TUI now labels it
+“Verification incomplete.” No new event kind or graph state is introduced. In Standard runs, usage/tool
+events may now precede final `text.delta` events because final prose is released
+only after completion acceptance; consumers must use event kinds rather than
+assuming text precedes usage.
+
+## Standard larger-project recovery follow-up (September 6)
+
+Configuration adds `options.max_turn_iterations` (default 256); the embedded
+configuration schema is generated from this field. Older binaries reject an
+unknown configuration key, so remove it before downgrading. The no-progress
+setting keeps its meaning. No graph budget is migrated or extended.
+
+Completion state schema 1 adds optional `successes` (at most 64 bounded
+historical operation facts), monotonic `sequence` ordering, and failure
+`argument_rejected`. Neither carries
+a permission grant, passing current-file receipt, or process-local identity.
+Older readers ignore these fields and can require explicit recovery again.
+Records without the fields remain valid; old transcript text is not imported
+as a passing receipt. This is additive; no user session is rewritten on upgrade.
+
+The existing `scoped_verification` evidence kind can contain a directory
+snapshot digest in its `files` map. Directory entries represent included
+project inputs, not generic artifact-file hashes; see
+[scope and exclusions](COMPLETION.md). New/retargeted input paths require a
+new permission-checked run. A directory declaration retained by an older
+version can be fulfilled by a fresh project check after upgrade.
+
+Empty-response recovery adds no event kind or public outcome: bounded retries
+emit warnings and usage; exhaustion remains a structured provider protocol
+failure with a clearer TUI label. Refusal handling is unchanged; response-limit
+continuation is described below.
+
+## September 6 terminal and plan-update maintenance
+
+Interactive rendering, theme, bell and clipboard output share a bounded writer.
+A terminal that stops accepting bytes for 30 seconds causes a durable warning
+and run cancellation; later display writes fail immediately and process error
+reporting avoids the blocked terminal. Session and headless output are not routed
+through this display guard. One blocked native write can remain until exit.
+
+The `update_plan` tool accepts optional `replace` (default false). Supplied fields
+and steps merge by ID; omitted fields and steps remain. Existing step updates
+require only `id`, while new steps still validate title/status and new plans still
+validate their goal. `replace: true` uses complete-plan replacement. Stored plan
+schema, `Board.Set` and runtime-owned graph revision semantics are unchanged.
+Older binaries still interpret tool calls as full replacement; regenerate tool
+catalogs from the running version. Failed updates remain atomic.
+
+## September 6 model response-limit continuation
+
+An explicit output/context-limit stop can now trigger at most two additional
+requests per turn. Existing warning, usage and message records carry the
+continuation; no new schema fields or event kinds are introduced. Unaccepted
+tool calls remain absent from pending history, and previous effects remain.
+If the response limit persists, the public outcome is now `budget_exhausted`
+instead of `blocked`, with the existing structured provider protocol metadata
+and a model-response-limit TUI label. Approved graphs retain an extendable budget
+outcome; worker and team statuses agree. Refusals, unknown terminal states and
+incomplete compaction summaries remain unaccepted.
+
+## September 6 execution allowance and environment maintenance
+
+Graph schema 1 adds optional `aggregate_budget.grant` fields:
+`attempts_per_node`, `read_starts`, `read_tokens`, `read_wall_seconds`, and
+`writer_starts`. They record one worker/attempt allowance, initialized from
+the graph's stored limits on its first explicit extension using this build.
+Restoring an old graph never grants resources. Subsequent user extensions add
+the same recorded allowance; limits and grant counts are validated, spent usage
+is retained, and failed grants do not mutate live state. Concurrency, revision,
+permission and verification bounds are unchanged. Older binaries may reject
+newly extended writer limits; resume those sessions with this build or newer.
+
+Read-wall consumption is derived from the union of immutable read-attempt
+execution windows, including retired nodes. Restore cuts an interrupted read
+at the last durable observation; review and downtime do not count as execution.
+Ready primary work now precedes unrelated automatic reads in deterministic
+plan order. This changes scheduling order, not accepted dependencies or freshness.
+
+`inspect_environment` is an additive read-only tool. POSIX command execution
+changes from login `/bin/sh -lc` to non-login `/bin/sh -c`, retaining the
+launcher's PATH and avoiding startup-file side effects. Windows keeps its
+existing `cmd.exe /d /s /c` behavior. Public event schemas and budget-exhausted
+outcome values are unchanged; graph error wording distinguishes the specific
+allowance in the recorded reason rather than calling every stop aggregate.

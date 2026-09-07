@@ -53,7 +53,15 @@ Standard execution do not require Git.
   require observed evidence; `blocked` is reserved for a genuine impasse;
   `skipped` records an unnecessary or superseded action.
 - Failed tool calls named by the completion controller carry stable
-  current-turn IDs. `update_plan.resolved_failures` binds each relevant ID to
+  runtime IDs. A successful retry with the same tool and executed operation
+  clears that operation automatically, without a recovery-only plan update.
+  Native artifact validation also recognizes a corrected check of the same
+  file when it preserves all required text, does not lower the minimum size,
+  and preserves or strengthens the format checks. Unsupported format spellings
+  retain the native extension-inferred checks; JSON/Office parsing cannot be
+  replaced by a text-only check. Other tools retain exact-operation matching.
+  A different file, command, or argument does not clear it just because the tool
+  name matches. `update_plan.resolved_failures` binds each remaining relevant ID to
   a terminal step and, for a retry or alternative, the exact successful tool
   call that recovered it. A skipped unnecessary attempt and a genuine blocker
   remain distinct structured dispositions; plan prose alone cannot erase a
@@ -64,12 +72,20 @@ Standard execution do not require Git.
 
 ## Evidence contract
 
+The provider must also report a usable completed answer or tool request.
+Truncation, filtering/refusal, and incomplete/failed output stop with retained
+partial text and usage, without executing that response's proposed tools or
+claiming `done`. This is shared runtime behavior, including direct Q&A; no
+synthetic plan is required to detect it. Rejected responses are not automatically
+continued. Existing workspace changes remain for inspection and deliberate
+continuation.
+
 Evidence is matched to the requested outcome rather than forced through a
 software test framework:
 
 | Outcome | Preferred evidence |
 | --- | --- |
-| Text, Markdown, JSON, CSV/TSV, DOCX, PPTX, PDF, or other file | `validate_artifact` after the final write, bound to the exact path and SHA-256 digest. |
+| Text, Markdown, JSON, CSV/TSV, XLSX, DOCX, PPTX, PDF, or other file | A task-specific `run_command.verification` check, or `validate_artifact` for structural/content checks, after the final write. Either binds evidence to current file bytes. |
 | Analysis or data work | Identified inputs plus reproducible calculations, reconciliations, invariants, and data-quality caveats. |
 | Research or retrieval | Sources actually consulted, citations where available, explicit separation of sourced fact from inference, and material uncertainty. |
 | External action | Returned receipt/identifier and a safe read-back or typed postcondition when the service provides one. |
@@ -80,30 +96,69 @@ that a regular non-empty file exists at a particular digest and performs the
 following format checks:
 
 - valid UTF-8 and basic structure for text and Markdown;
+- HTML and common source/configuration extensions are inferred as UTF-8 text;
+  explicit `format: "html"` is a text-check alias, not HTML parsing or execution;
 - a single parseable JSON value;
 - parseable CSV or TSV records;
-- required Open XML package parts and parseable XML for DOCX and PPTX, with
+- required Open XML package parts and parseable XML for XLSX, DOCX and PPTX, with
   inspectable text extraction;
+- XLSX worksheet relationship targets (without formula recalculation);
 - PDF header and end marker presence;
 - size and digest only for an unknown binary format.
 
 Callers may require exact text in formats whose content can be inspected. A
 successful validation emits a typed `artifact_validated` receipt on the
 `tool.result` event. Validation is path-specific: writing one artifact cannot
-invalidate or satisfy another, and a later write to the same artifact makes
-its prior receipt stale. If a completion attempt still has dirty tracked
+invalidate or satisfy another. At completion, the runtime rehashes validated
+deliverables and checks the original path target and parent identity. Script
+mutations, deletion, external edits, and retargeted symlinks cannot leave a
+stale receipt accepted. Rewriting identical bytes at the same target preserves
+the receipt. If a completion attempt still has dirty tracked
 artifacts, the controller lists only those remaining paths relative to the
 workspace and omits paths with accepted current receipts, so remediation does
 not repeat validation of an already-cleared deliverable. Mutations whose tools
-did not report paths remain an explicit unknown-path gap. Conventional
-build/lint/test commands remain valid evidence when Work happens to produce
-code.
+did not report paths remain an explicit unknown-path gap. A successful task-specific command with `verification.paths` and a purpose can
+satisfy the same file obligation without another artifact-tool call. Unscoped
+commands do not close the Work file gate. See [Completion](COMPLETION.md) for
+the interface, limits, and the distinction between a passing check and coverage.
+
+For multi-step file-producing tasks, the optional `artifacts` field in `update_plan`
+serves as a small task brief:
+
+```json
+"artifacts": [
+  {"path": "report.md", "role": "deliverable"},
+  {"path": "analysis.sh", "role": "scratch"}
+]
+```
+
+Declare requested outputs, including files created by shell commands, and keep
+the declarations in subsequent complete plan updates. Declared deliverables
+require current scoped-command or artifact-validation receipts even if no file-write
+tool observed their creation. Scratch files do not need deliverable acceptance.
+Without a declaration, tracked writes retain the previous validation behavior;
+validating an unclassified file through either supported evidence path makes it
+an implicit deliverable for this turn. Simple tasks need no plan just to check a file.
+A declared deliverable cannot be silently removed or demoted during the turn.
+Roles express model-authored intent, grant no permissions, and do not prove that
+every user-requested output was identified. Direct Q&A needs no task brief.
+
+Execution effects are tracked separately from permission risk. Known file
+operations identify possible affected paths, including partial failures;
+commands and opaque tools have unknown effect scope. Unknown scope does not
+mean a command failed or every file changed: final digest checks determine
+whether registered artifacts remain current. This is not a workspace-wide
+mutation scanner. Failed opaque executions include a read-back/uncertainty
+notice. External receipt IDs and command success do not prove remote state;
+use safe read-back where available, and disclose uncertainty or block when it
+cannot be resolved. No external action is automatically replayed by this gate.
 
 Structural validation does **not** establish factual correctness, source
 quality, accessibility, visual polish, or fitness for a human decision. When
 no meaningful machine validation applies, a fresh `validation_note` records
 what was checked and what remains subjective. It is visibly labelled as
 model-authored disclosure, not runtime proof.
+It cannot waive a missing declared deliverable or a stale digest receipt.
 
 When the controller intercepts a completed answer solely for unresolved
 tool-failure bookkeeping, Collomia retains that answer. A valid metadata-only
@@ -115,12 +170,37 @@ unrelated tool activity neither clears a failure nor purchases more retries.
 ## Durable and automation contracts
 
 - Session metadata adds optional `task_mode`; omission means Developer.
+- Session plans and `update_plan` accept optional `artifacts` entries with
+  `path` and `role` (`deliverable` or `scratch`). Older plans remain readable.
+  Roles persist; runtime digest receipts are current-turn evidence and are not
+  trusted across restart. The first resumed turn of an open plan must validate
+  its deliverables again. Completed historical plans do not gate unrelated Q&A.
 - Headless `run.result` adds optional `mode` (`developer` or `work`).
 - A successful evidence-producing tool result may add `tool.evidence` with a
   narrow `kind`, `subject`, optional `digest`, and optional `detail`.
 - Tracked file tools and `/undo` emit `file.change` path-manifest events. These
   are observations for audit/recovery consumers; replay never performs them.
 - Schema-v1 consumers must continue tolerating these additive fields.
+
+## General tools and user-installed skills
+
+Start Work mode in the folder relevant to your task and describe the outcome.
+The model chooses an approach using available tools and user-installed skills;
+no task-specific runtime, sample project, or built-in reporting procedure is
+required. System maintenance, analysis, research, Q&A, and automation use the
+same governed tool loop. Specialized dependencies and procedures can come from
+skills you install or tools the agent selects for the task.
+
+`view_image` supplies bounded local PNG/JPEG/GIF pixels for screenshots, diagrams,
+charts, photographs, or rendered pages. It requires an image-capable model;
+when pixels cannot be delivered, the model receives an explicit limitation.
+Loading an image does not establish visual quality.
+
+Native artifact receipts include optional `checks` fields distinguishing
+structure and required-text checks from unassessed calculations, sources, and
+visual quality. These tools provide evidence without prescribing how an
+analysis or document must be produced. Collo does not bundle Office-generation
+libraries or require LibreOffice; an installed skill may have its own dependencies.
 
 ## Initial boundaries and future work
 
@@ -151,3 +231,11 @@ covering:
 - stale/path-specific artifact evidence and macOS path-alias normalization;
 - Markdown, JSON, CSV, DOCX, PPTX, PDF, binary bounds, and malformed artifacts;
 - additive event/schema fields and durable file-change manifests.
+
+## Temporary working files
+
+The agent uses `.collomia-tmp/` for disposable scripts and intermediate files.
+They do not need separate completion checks. Requested outputs still need
+appropriate evidence, and failed commands remain visible. The same convention
+works in Developer mode; helper files elsewhere can be explicitly declared
+`scratch` through the plan. See [completion rules](COMPLETION.md).

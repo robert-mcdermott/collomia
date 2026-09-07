@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -87,6 +88,10 @@ func transcriptBlockTitle(entry block) string {
 		return "YOU · STEERING"
 	case "assistant":
 		return "COLLOMIA"
+	case "reasoning":
+		return "THINKING SUMMARY"
+	case "status-detail":
+		return "COMPLETION CHECK"
 	case "tool":
 		name, _, _ := strings.Cut(entry.content, "\x00")
 		return "TOOL · " + name
@@ -105,6 +110,9 @@ func transcriptBlockTitle(entry block) string {
 }
 
 func rawBlockText(entry block) string {
+	if entry.role == "reasoning" && entry.reasoningTruncated {
+		return entry.content + "\n" + reasoningTruncationNotice
+	}
 	if entry.role == "tool" {
 		_, summary, _ := strings.Cut(entry.content, "\x00")
 		return summary
@@ -175,11 +183,11 @@ func (m Model) handleTranscriptKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		state.viewport.LineDown(1)
 	case "y":
-		err := copyTerminalText(rawBlockText(m.blocks[state.cursor]))
+		err := copyTerminalText(rawBlockText(m.blocks[state.cursor]), m.terminalOutput)
 		state.notice = clipboardNotice(err, "message copied")
 		return m, nil
 	case "Y":
-		err := copyTerminalText(m.rawTranscript())
+		err := copyTerminalText(m.rawTranscript(), m.terminalOutput)
 		state.notice = clipboardNotice(err, "transcript copied")
 		return m, nil
 	default:
@@ -278,7 +286,7 @@ func clipboardNotice(err error, success string) string {
 // copyTerminalText uses OSC 52 so copying needs no platform-specific helper.
 // Terminals may disable clipboard writes; the no-alt-screen mode remains a
 // selection-friendly fallback in that case.
-func copyTerminalText(value string) error {
+func copyTerminalText(value string, output ...io.Writer) error {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return errors.New("stdout is not a terminal")
 	}
@@ -286,7 +294,7 @@ func copyTerminalText(value string) error {
 		return fmt.Errorf("selection is %d KiB; terminal clipboard limit is %d KiB", (len(value)+1023)/1024, maxClipboardBytes/1024)
 	}
 	payload := base64.StdEncoding.EncodeToString([]byte(value))
-	emitOSC("\x1b]52;c;" + payload + "\x07")
+	emitOSC("\x1b]52;c;"+payload+"\x07", output...)
 	return nil
 }
 

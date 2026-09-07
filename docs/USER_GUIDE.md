@@ -1286,7 +1286,8 @@ with the brackets removed: `http://[2001:db8::1]/x` declares `2001:db8::1`.
 
 | Field | Meaning |
 | --- | --- |
-| `max_iterations` | Consecutive provider/model response cycles Standard mode or an Orchestrated Goal primary attempt may take without novel progress; defaults to `24`. It is not a tool-call count. A Standard turn also has a hard envelope of twice this value (48 by default). |
+| `max_iterations` | Consecutive provider/model response cycles Standard mode or an Orchestrated Goal primary attempt may take without novel progress; defaults to `24`. It is not a tool-call count. Standard total cycles are limited independently by `max_turn_iterations`. |
+| `max_turn_iterations` | Total provider response cycles per Standard user turn; default `256`, `0` uses the default, maximum `10000`. Use `--max-turns N` or live `/limits N` to override. |
 | `max_tool_output_bytes` | Per-result preview cap used by shell output and active model context; defaults to `65536`. Larger returned strings use bounded session artifacts when durable sessions are available. |
 | `delegate_max_concurrency` | Session-wide delegated-task limit, `1`–`6`; defaults to `4`. It applies across simultaneous `delegate` calls. |
 | `delegate_provider_concurrency` | Optional map of provider name to a tighter `1`–`6` task limit. Omitted providers use the global limit. |
@@ -2552,7 +2553,7 @@ through, and only when they are set in the parent environment:
 | Terminal | `TERM` `COLUMNS` `LINES` |
 | Locale | `LANG` `LC_ALL` `LC_CTYPE` |
 | Windows essentials | `SYSTEMROOT` `COMSPEC` `PATHEXT` `USERPROFILE` `LOCALAPPDATA` |
-| Build cache | `GOCACHE` |
+| Go SDK and build cache | `GOROOT` `GOCACHE` |
 
 Everything else is dropped, which is the point: `GITHUB_TOKEN`, `NPM_TOKEN`,
 `AWS_*`, `ANTHROPIC_API_KEY`, and any other credential in your shell never
@@ -2563,7 +2564,7 @@ What predictably stops working: proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`,
 configuration (`AWS_PROFILE`, `AWS_REGION`,
 `GOOGLE_APPLICATION_CREDENTIALS`), toolchain overrides (`GOPATH`, `GOPROXY`,
 `CARGO_HOME`, `JAVA_HOME`, `NODE_OPTIONS`), and anything injected by direnv,
-asdf, or nvm shims. Note that `GOCACHE` is kept while `GOPATH` and `GOPROXY`
+asdf, or nvm shims. Note that `GOROOT` and `GOCACHE` are kept while `GOPATH` and `GOPROXY`
 are not — a deliberate narrow carve-out for Go builds, not general toolchain
 support.
 
@@ -2850,6 +2851,26 @@ that is safe mid-turn is accepted, and the rest stay in the composer.
 
 Delegated agents are steered separately with `/agents steer` and `alt+a`.
 
+### Thinking summaries
+
+When a provider emits readable reasoning, the Chat tab shows it in a separate
+**THINKING SUMMARY** block. The live preview shows the latest six wrapped lines;
+finished summaries collapse when the agent moves on to tools or an answer.
+Press `ctrl+o` to expand or collapse summaries and tool output together. The
+control follows your configured `toggle_tool_output` binding.
+
+The current `/transcript` view includes summaries for search and copy, separately
+labelled from answers. Each contiguous summary retains up to 64 KiB of display
+text; excess text is explicitly marked as truncated, including when copied.
+
+This displays only text the provider actually sends. It does not enable thinking
+at the API or promise access to the model's full internal reasoning. Some models
+reason without emitting readable text, and current adapters have additional
+configuration/state limitations. Reopened chat transcripts do not yet restore
+these summaries, although reasoning events continue to use the existing event
+log path. Provider configuration, continuation state, and summary restoration
+are tracked in Wave 2 of the [improvement plan](IMPROVEMENT_PLAN.md).
+
 ### Keyboard reference
 
 | Key | Action |
@@ -2864,7 +2885,7 @@ Delegated agents are steered separately with `/agents steer` and `alt+a`.
 | `ctrl+t` | Cycle Chat, Session, and Help. |
 | `alt+s` | Open the saved-session picker without replacing the current draft. |
 | `alt+a` | Inspect an active delegated agent, prepare steering guidance, or explicitly stop it without stopping siblings or the parent. |
-| `ctrl+o` | Expand or collapse finished tool output. |
+| `ctrl+o` | Expand or collapse tool output, thinking summaries, and completion-check details. |
 | `ctrl+y` | Open the full-screen transcript search/copy view. |
 | `ctrl+d` | Open the interactive session diff viewer. |
 | `alt+r` | Show or hide the context rail. It appears on its own at 146 columns and is unavailable below 116. |
@@ -2909,7 +2930,8 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/mode [developer\|work]` | Show or switch the task profile. The choice is persisted with the session and changes neither provider nor permissions. |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
-| `/context` | Show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
+| `/recovery` | Inspect durable obligations and checkpoint availability. Between turns, `acknowledge REASON` reconciles an uncertain action; `keep REASON` keeps files and discards prior checkpoints. Neither validates work nor grants permission. |
+| `/context [task\|clear]` | `task` inspects retained notes and request previews; `clear` clears only notes between turns. Without arguments, show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |
 | `/plan [on\|off]` | Toggle the read-only plan tool surface. |
 | `/orchestrate [goal\|approve\|status [node]\|pause\|resume\|retry node\|extend\|integrate node\|verify\|waive reason\|reconcile\|discard node [confirm]\|done\|cancel]` | Propose, approve, inspect, cooperatively pause/resume, safely retry an eligible blocked node, grant an exhausted graph another bounded envelope, publish a verified candidate into your workspace, verify the combined result or waive it, observe what is left in each retained worktree, discard one you no longer want, release a graph that has finished (`done`, also spelled `release`), or cancel Orchestrated Goal. |
 | `/tasks` | Show the structured plan. |
@@ -2980,8 +3002,18 @@ versions load as Developer. `/mode developer` changes only the task profile—
 conversation, usage, provider, model, plan state, autonomy, permissions,
 sandboxing, hooks, audit, and trust remain intact.
 
-Work matches evidence to the outcome. `validate_artifact` checks a completed
-file after its final write and emits a path- and SHA-256-bound typed receipt.
+Work matches evidence to the outcome. A task-specific `run_command` check with
+`verification.paths` and a purpose, or `validate_artifact` for structural/content
+checks, supplies path- and SHA-256-bound evidence after the final write.
+Use either method; no duplicate generic check is required. See
+[Evidence-based completion](COMPLETION.md) for examples and exact limits.
+Work completion rechecks those final bytes and path identity, including shell
+and external edits. For file-producing tasks, `update_plan.artifacts` may list
+`{"path":"report.md","role":"deliverable"}` and
+`{"path":"helper.sh","role":"scratch"}`. Declared deliverables need current
+receipts; scratch files are excluded from deliverable acceptance. Keep the
+declarations in subsequent complete plan updates. A validation note or unscoped
+test command cannot waive a missing declared output or a stale receipt.
 Analysis should retain identified inputs and reproducible calculations;
 research should identify consulted sources and separate fact from inference;
 external actions should retain a receipt/identifier and safely read back the
@@ -3152,11 +3184,12 @@ Run verification as the direct command whose exit status should become proof.
 Leading environment assignments, virtual-environment executable paths, and
 direct Python module invocation are recognized, so commands such as
 `UV_CACHE_DIR=.uv-cache uv run pytest -v`, `.venv/bin/pytest -v`, and
-`.venv/bin/python -m pytest -v` can qualify. Collomia also safely removes an
-exact redundant `cd` to the current workspace (or `.`) followed by `&&`, and a
-final literal `2>&1`; these wrappers preserve the verifier's exit status.
-Other directories, pipes, semicolons, `||`, and shell composition remain
-ineligible because a later operation can hide that status.
+`.venv/bin/python -m pytest -v` can qualify. Literal `cd` into an existing workspace subdirectory followed by `&&` and a
+final literal `2>&1` preserve the verifier's exit status and can qualify.
+Outside or unresolved directory targets cannot establish workspace evidence.
+Pipes, semicolons, `||`, and other status-masking composition remain ineligible.
+Suggested direct retries retain directory/environment setup and quoted
+arguments; Collo omits a suggestion when it cannot preserve that context safely.
 If a successful command looks like verification but is ineligible, its tool
 result says why and shows the direct form to run; for example,
 `pytest -v 2>&1; echo "$?"` is rejected and suggests `pytest -v`.
@@ -3335,10 +3368,15 @@ archiving ends the session's pointer to them, and the graph is the only thing
 that knows they exist. Observing is all that is required; a reconciled tree
 full of changes archives fine.
 
-The fixed aggregate automatic-read envelope is visible in `/orchestrate
-status`: at most two concurrent workers, eight starts, 64,000 read tokens, and
-fifteen minutes total read wall time. Each child is also capped at five minutes
-and eight iterations, and each node retains the two-attempt bound. Provider,
+The initial automatic-read allowance is visible in `/orchestrate status`: at
+most two concurrent workers, eight starts, 64,000 read tokens, and fifteen
+minutes of actual read-worker execution. Overlapping workers count once;
+primary work, user review, pauses and process downtime do not consume this read
+wall allowance. Each child initially receives up to five minutes and eight
+iterations, and each node starts with a two-attempt allowance. Explicit user
+extensions add worker and attempt resources as well as aggregate resources.
+Ready primary work runs before unrelated read investigations, keeping research
+close to its consumer and avoiding immediate invalidation by a scaffold edit. Provider,
 profile, scheduler, permission, and cancellation limits can be tighter. The
 graph records why it delegated and the worker identity, usage, evidence,
 retry, and terminal state.
@@ -3366,9 +3404,12 @@ tool calls: one response may contain several tool calls. In both Standard mode
 and Orchestrated Goal it is a consecutive no-progress lease. A novel successful
 tool result, plan revision, fresh verification, or resolution of a recoverable
 failure renews the lease; repeating equivalent evidence does not. Standard
-mode also has a non-renewable hard envelope of twice `max_iterations` (48
-provider cycles at the default), so productive work is not cut off at cycle 24
-but repeated writes cannot run forever. Token and estimated-cost budgets remain
+mode also has an independent `max_turn_iterations` ceiling (256 by default),
+so productive work is not cut off at cycle 24 but cannot run forever. Use
+`--max-turns 500` at startup or `/limits 500` while running. `/limits 500 30`
+also changes the no-progress lease; `--max-no-progress 30` does so at startup.
+Overrides last until profile switch or restart. Continue a budget-paused task
+with another message. See [the full contract](COMPLETION.md#long-tasks-and-provider-interruptions). Token and estimated-cost budgets remain
 the tighter controls when configured. Orchestrated Goal instead uses its
 configured whole-graph iteration ceiling as the outer limit across proposal,
 primary attempts, compaction, and automatic workers.
@@ -3498,8 +3539,14 @@ envelope of the same size and continues. There is no limit on how often you may
 decide to continue, and the count of grants is recorded in the graph. An
 extension is not a resume — each unfinished node starts a new attempt, so it
 rereads whatever state it needs rather than assuming the earlier context, and a
-node that had already spent its attempt bound stays blocked rather than
-becoming ready again.
+budget-stopped node receives more attempts even if its original attempt allowance
+was spent. Read starts/tokens/wall and writer starts also receive another
+original allowance; per-worker iteration/time caps grow with the grant, subject
+to the remaining aggregate allowance and tighter profile limits. Spent usage
+never resets, accepted nodes stay accepted, and existing attempts are not replayed.
+An ambiguous action still requires reconciliation. Retained writer work must
+be reviewed or explicitly discarded before another writer attempt can replace
+it; adding budget is not permission to abandon that work.
 
 Size the envelope up front in configuration when you know a job is large:
 
@@ -3995,6 +4042,17 @@ collo run --mode work --autopilot "Create and validate status.md"
 Uninspectable commands still require interactive approval even in autopilot,
 so they fail headlessly. This is intentional.
 
+### Quality evaluations
+
+`collo eval list` lists the balanced coding/Work suite without model calls.
+`collo eval run --live --provider NAME --output NEW_DIRECTORY` runs controlled
+Standard-mode trials with explicit budgets, independent checks, and local
+scorecards. `report`, `review`, and `compare` inspect results, record your
+acceptance decision, and compare builds with matching model settings and limits.
+See [Quality evaluations](QUALITY_EVALUATIONS.md) for a two-task smoke test,
+repeated baseline, result schema, and interpretation limits. Live baseline and
+W5 acceptance are separate from the offline test suite.
+
 ### JSONL event stream
 
 `--jsonl` emits one schema-versioned JSON object per line on stdout:
@@ -4208,7 +4266,7 @@ collo sessions list|show|fork|rewind|rename|archive|unarchive|delete
 collo skills list|show|new|install|update|remove|enable|disable
 collo mcp list|show|add|remove|enable|disable|test
 collo completion bash|zsh|fish|powershell
-collo schema events|config
+collo schema events|config|eval
 collo replay [--check] <trace|->
 collo version
 ```
@@ -4255,13 +4313,13 @@ question broker can make the model-visible subset smaller.
 
 | Tool | Purpose and important bounds |
 | --- | --- |
-| `read_file` | UTF-8 text with line numbers; defaults to 400 lines, maximum 5,000; files over 1 MiB must be read in chunks. |
+| `read_file` | Text with line numbers; defaults to 400 lines, maximum 5,000; the 1 MiB content cap applies per page, with additional EOF/next-offset metadata. Offsets can reach beyond the first MiB. A returned line must fit within the page; oversized lines have explicit skip guidance. |
 | `list_files` | Directory tree including hidden source files; skips VCS metadata, dependency trees, build output, caches, virtual environments, and session data; depth 1-8; maximum 5,000 entries. |
 | `search_files` | Go-regular-expression search with path/glob and result limits. |
 | `write_file` | Create/replace text with rooted, same-directory atomic publication, diff preview, change tracking, hunk review, and undo support. |
 | `edit_file` | Replace one exact unique fragment with rooted atomic publication; refuses missing or ambiguous matches. |
 | `apply_patch` | Validate related create/update/delete operations before applying them through rooted atomic replacement and safe deletion, with rollback on a later publish failure. |
-| `validate_artifact` | Validate a non-empty completed file after its final write, record its SHA-256 digest, and parse bounded text/Markdown/JSON/CSV/DOCX/PPTX/PDF structure. Exact required text is supported where content is inspectable. The receipt does not prove factual or visual quality. |
+| `validate_artifact` | Validate a non-empty completed file after its final write, record its SHA-256 digest, and parse bounded text/Markdown/JSON/CSV/XLSX/DOCX/PPTX/PDF structure. HTML and common source extensions use UTF-8 text checks, not parsing or execution. Exact required text is supported where content is inspectable. The receipt does not prove factual or visual quality. |
 | `run_command` | Shell command in workspace; default timeout 120 seconds, maximum 1,800; bounded/live output; optional PTY on Unix or pseudoconsole on Windows 10 1809 and later. |
 | `git_status` | Read-only branch/ahead/behind/change status. |
 | `git_diff` | Read-only unstaged/staged/ref diff or stat, optionally one path. |
@@ -4269,6 +4327,7 @@ question broker can make the model-visible subset smaller.
 | `git_blame` | Read-only attribution, optionally line-bounded. |
 | `git_commit` | Commit exactly the files named in `paths` and nothing else, via `git commit -- <paths>`: unrelated working-tree changes stay uncommitted and anything the user staged by hand stays staged. `paths` is required. Declaring the paths is what lets the approval prompt preview the real change and `protect_credentials` see a credential file entering history. Never pushes. |
 | `git_branch` | Create a branch at the current commit and switch to it, leaving the working tree untouched. Refuses an existing branch, because checking one out changes files outside Collomia's tracking and would stop `/restore` from reversing earlier turns. |
+| `inspect_environment` | Locate 1–16 executable names on Collo's inherited PATH without executing them; available in planning and read-only workers. Discovery does not prove versions, compatibility or sandbox access. |
 | `detect_verification` | Detect real build/lint/test commands from project files. |
 | `start_process` | Start a session-lifetime background command under command safety/sandbox policy. |
 | `list_processes` | List background process IDs, command, status, and uptime. |
@@ -4298,6 +4357,35 @@ that an unseen operation succeeded—narrow the request or inspect the reference
 
 ### Evidence-gated completion
 
+`update_plan` progress updates merge by step ID. Omitted steps, acceptance
+criteria and other fields remain in the plan; existing steps may supply just
+their ID and changed fields. New steps still require a title and status. To
+start a new task or intentionally restructure/remove steps, the agent sends
+`replace: true` with a complete plan. Invalid updates leave the prior plan intact.
+This does not change runtime-owned Orchestrated Goal revisions or readiness.
+
+Before accepting an answer or executing its proposed tool calls, Collomia checks
+the provider's machine-reported terminal state. Output/context-limit truncation
+receives at most two automatic continuation requests per turn, asking for a
+smaller next step. Each request consumes ordinary iteration/token/cost budgets;
+the allowance does not reset after usable responses. Partial text and reported
+usage are retained; rejected tool calls are neither executed nor saved as pending
+calls. Prior tool effects remain in the workspace. No model setting is raised.
+Persistent truncation displays **Paused at model response limit**, with a
+`budget_exhausted` result. Continue with a normal prompt in Standard execution,
+or `/orchestrate extend` for an approved graph. If it persists, change the model
+or response settings; increasing context alone does not fix an output limit.
+
+Refusal/filtering, incomplete/failed responses, and explicit unrecognized stop
+states do not receive this continuation. A refused response also sets
+`run.result.refused`; rejected responses never produce successful `done` results.
+Token/cost budget exhaustion retains precedence when its budget is exceeded.
+
+An incomplete compaction summary cannot replace the original context. Known
+stream endings are checked by adapters; compatible endpoints that omit a stop
+reason but return a nonempty completed payload retain their legacy behavior.
+Refusal is detected from provider fields, not guessed from answer prose.
+
 In primary execution mode, a model response with no tool calls is a proposed
 finish, not automatically a completed turn. Collomia checks the proposal
 against structured state it can observe:
@@ -4306,26 +4394,45 @@ against structured state it can observe:
 - `done` steps require evidence; `blocked` and `skipped` steps require a reason
   in the same `evidence` field. Dependencies must be known and acyclic, and a
   step cannot be active or done before its dependencies are done or skipped.
-- In Developer, a successful tracked write makes earlier verification stale. A
-  subsequent direct, conventional build/lint/test command must succeed, or the
+- In Developer, a relevant project change needs current verification. A
+  direct, conventional build/lint/test command can establish this, or a
+  scoped task-specific command or appropriate artifact check can cover the
+  changed files. For eligible work without meaningful automated checks, the
   plan must carry a specific `verification_note` explaining why no meaningful
   automated check applies. The note is model-authored disclosure, not
   machine-observed proof.
-- In Work, a final `validate_artifact` receipt clears the stale-write gate only
-  for the exact changed artifact paths it covers. Conventional test evidence is
-  still accepted when Work produces code. Analysis, research, and external
+- In both modes, a final `validate_artifact` receipt or successful
+  `run_command.verification` check clears the stale-write gate only
+  for the exact changed artifact paths it covers. Neither method requires a
+  duplicate check through the other tool. Disposable `.collomia-tmp/` helpers
+  and declared scratch files are excluded from independent completion checks.
+  Analysis, research, and external
   actions record their calculations, sources, receipts, or read-back in plan
   evidence; a fresh `validation_note` covers a genuinely subjective remainder
   without pretending to be runtime proof. If other tracked paths remain, the
   completion notice names a bounded, sorted, workspace-relative list of those
   paths and omits artifacts whose current receipts were accepted. A mutation
   that did not report paths remains a separate explicit unknown-path gap.
-- After a tool failure, the completion notice names the failed tool-call ID.
+- A successful retry of the same tool operation clears
+  its failed operation automatically, without a plan update solely for recovery.
+  JSON object key order and spacing do not matter; different paths, commands,
+  or other arguments are different operations. Default/explicit arguments and
+  alternative path spellings are conservatively distinct, except equivalent
+  native artifact checks. Command timeout and verification metadata changes do not change executed-operation
+  identity. Successful corrected calls also recover native argument/preflight rejections
+  of the same tool; permission and hook denials remain separate. An executed native file-edit failure also recovers after a successful
+  native edit/replacement covers all its paths and fresh verification passes.
+  Unrelated successes, permission denials, and opaque external effects do not
+  qualify. See [automatic recovery](COMPLETION.md#recovery-without-unnecessary-bookkeeping). A valid corrected
+  `update_plan` repairs its own task-local board update.
+- After an unresolved tool failure, the completion notice names the failed tool-call ID.
   The agent records an exact `resolved_failures` entry in `update_plan`:
   `recovered_by_retry` or `recovered_by_alternative` names the successful
-  `recovery_tool_call_id`; `skipped_unnecessary` points to a skipped step; and
-  `blocked` points to a blocked step. The runtime validates those current-turn
-  references, so prose and a merely similar permission-risk label cannot
+  `recovery_tool_call_id`. A changed operation is treated as an alternative
+  even if the model selected the retry label; a label mismatch does not force
+  another turn. `skipped_unnecessary` points to a skipped step; and
+  `blocked` points to a blocked step. The runtime validates those retained
+  references (up to 64 successful facts survive a pause or restart; fresh file checks remain required), so prose and a merely similar permission-risk label cannot
   silently clear a failure. When successful recovery candidates exist, the
   notice lists their exact provider-envelope call IDs. An identifier printed
   inside a tool's content, such as a `COLLOMIA_EXTERNAL_WEB_DATA` provenance
@@ -4337,6 +4444,13 @@ reported. Any `blocked` step makes the turn end blocked; a `skipped` step with
 a reason does not. An abandoned side attempt — a reference that turned out not
 to be needed, a tool call replaced by a better one — belongs in `skipped`, so a
 finished deliverable is not reported as a failed run.
+
+Planning, working-note and session-history errors remain visible feedback but do
+not create task-failure obligations. Correct notes when useful; no recovery
+receipt or repeated verification is needed solely for housekeeping. Notes also
+cannot prove task completion or renew progress. Older persisted metadata failures
+are filtered on resume without acknowledgement; real failures and current-file
+checks remain enforced.
 
 When a gap remains, Collomia adds a deterministic controller notice and gives
 the agent another iteration. It permits at most two final attempts until the
@@ -5542,8 +5656,11 @@ declared dependencies are unfinished. This is metadata for coordination; it
 does not create an autonomous plan scheduler or mark the plan complete by
 itself.
 
-Queueing plus execution has a 10-minute default timeout, and each child has at
-most 16 model/tool iterations (or a lower configured/profile limit). Sub-agents
+Queueing plus execution has a 10-minute default timeout. Manual children have
+at most 16 consecutive cycles without novel progress and a 32-cycle total
+envelope (or lower configured/profile limits). Automatic graph workers instead
+honor their recorded attempt allowance, including compaction requests; an
+explicit `/orchestrate extend` can enlarge subsequent allowances. Sub-agents
 do not receive the `delegate` tool, so delegation is not recursive.
 
 Named profiles specialize a sub-agent without defining another provider:
@@ -5846,7 +5963,7 @@ changes across how many files each choice would reverse; a turn number on its
 own does not tell you what restoring to it costs.
 
 **It fails closed.** The workspace is verified before the conversation
-branches, so a restore that cannot complete leaves *both* halves untouched. If
+branches, so a drift refusal leaves *both* halves untouched. If
 any file changed outside Collomia since the checkpoint, the operation is
 refused and every affected file is named:
 
@@ -5863,6 +5980,10 @@ would discard those edits. Save or revert them, then run /restore again —
 or use /rewind to branch the conversation alone.
 ```
 
+I/O failure or process termination after application starts can still leave a
+partial restore. W7b journals this state and blocks continuation until inspection
+and `/recovery keep REASON`; see [Standard recovery](RECOVERY.md).
+
 A partially applied restore would leave a tree that neither the conversation
 nor the user describes, and silently overwriting your own edits would be worse
 than either. Naming every file rather than the first one found is deliberate:
@@ -5870,10 +5991,10 @@ acting on one file and then discovering a second is the same trap.
 
 Two limits are real and stated rather than hidden:
 
-- **Only this process's file changes are reversible.** Change tracking lives in
-  memory, so restoring to a turn belonging to a session you resumed reports
-  that no tracked file changes needed reversing. It does not claim to have
-  rewound writes it never observed.
+- **Only retained tracked file changes are reversible.** W7b persists bounded
+  binary bytes, existence, and modes across restart. Retention gaps, unavailable
+  large entries, replaced workspace roots, and external byte/mode edits refuse
+  restoration. Legacy sessions have no retroactive checkpoint coverage.
 - **External effects are never reversed.** Shell commands, package installs,
   network calls, deployments, and remote MCP effects are outside the tracked
   filesystem. `/restore` moves the conversation and the files; it does not move
@@ -5929,6 +6050,25 @@ major upgrade when its sessions are important. Downgrading a state directory
 already used by a newer release is not guaranteed; see the
 [compatibility and migration policy](COMPATIBILITY.md).
 
+### Retained task context and earlier evidence
+
+Durable Developer and Work sessions expose `update_task_context`,
+`read_task_context`, `search_session`, and `read_session`. The model can save
+bounded, revisioned working notes and retrieve original evidence after
+compaction or resume. `/context task` inspects notes and genuine user-request
+previews; `/context clear` clears the notes, retaining original history.
+`/new` starts a separate session. Ephemeral runs omit these tools.
+
+Model notes are fallible claims, not permission or validation receipts. Later
+user corrections take precedence; historical observations need fresh checks
+before being described as current. See [Task context](TASK_CONTEXT.md) for
+arguments, size limits, provenance, restart behavior, and W7a manual checks.
+W7b adds [Standard recovery](RECOVERY.md): unfinished completion obligations
+survive turns/restart and require fresh validation. `/recovery` inspects them;
+`/restore` and `/undo` use bounded durable checkpoints. Uncertain actions and
+interrupted restores need explicit inspection/reconciliation. No external
+effect is automatically replayed or undone.
+
 ### Context estimation and compaction
 
 `context_window` tells Collomia the model's usable context size. Provider token
@@ -5963,6 +6103,25 @@ Compaction changes only the model's active context. The full durable transcript
 is retained in the session JSONL file. Compaction itself consumes a provider
 request and tokens; graph-triggered compaction is included in durable graph
 accounting.
+
+The TUI `ctx` percentage estimates the current input prompt against the configured
+context window, using the last reported input plus subsequent message estimates.
+It is not cumulative token spending and does not count streamed reasoning that
+is not resent as input. In Standard execution, automatic compaction normally
+starts above 80% when enough history can be reclaimed. Graph boundary and
+aggregate-budget compactions can happen earlier. `/context` reports summary
+blocks; a model saying "resuming after compaction" is not runtime evidence that
+compaction occurred. Pinned task state is refreshed on every request.
+
+### Unresponsive terminal output
+
+If the terminal or an intervening PTY bridge stops accepting output, interactive
+display writes time out after 30 seconds. Collo records a session warning,
+cancels the active turn and exits with failure status instead of hanging
+indefinitely. It avoids writing an error back into that same blocked terminal.
+Resume the saved session in a working terminal; check terminal integrations or
+bridges if the problem recurs. This does not silently finish the task or replay
+an interrupted action. Headless JSONL and durable session writes are unchanged.
 
 ### Session image storage
 
@@ -6435,3 +6594,70 @@ Deleting those locations is irreversible and removes provider definitions,
 skills, instructions, sessions, audit history, trust decisions, MCP pins, and
 logs. Project-owned `.collomia.json`, `.collomia.example.jsonc`, instruction
 files, and project skills remain in each repository until removed there.
+
+## General-purpose Work tasks
+
+Start `collo --mode work` in an existing folder and describe your request.
+Work mode supports system maintenance, analysis, research, Q&A, automation,
+and file creation through available tools and user-installed skills. The model
+chooses the method; there is no bundled reporting workflow to initialize.
+Skills can supply specialized methods, templates, and dependency instructions.
+See [Work mode](WORK_MODE.md) for the task and evidence contract.
+
+`view_image` supplies local PNG/JPEG/GIF pixels for screenshots, diagrams, charts,
+and other images to an image-capable model. Images are limited to 5 MiB and
+16 million pixels. When no pixels reach the model, it receives an explicit
+limitation. Image loading alone does not establish visual quality.
+Corrected native validation of the same file can recover earlier failed attempts
+when required text, minimum size, and format checks are preserved. Routine
+completion notices collapse to “Checking remaining work”; use `ctrl+o` to inspect
+the full diagnostic, or search/copy it in the transcript. Actual blocks stay visible.
+
+`validate_artifact` supports XLSX structure and worksheet relationships alongside
+other supported formats; it does not calculate formulas. Typed check scopes
+report what was and was not assessed.
+
+All native shell commands with an observed ordinary exit can be inspected and
+repaired without `/recovery acknowledge`, including failed HTTP smoke tests,
+remote clients and npm ENOENT exit 254. A high numeric exit code alone does not
+indicate a signal. This settles execution, not success or partial effects:
+inspect before deliberately retrying an external mutation. No automatic retry
+occurs and normal permissions still govern every next action. Interrupted
+commands and failed external/MCP tools with unknown effects still require
+reconciliation. Prefer `start_process` and `process_output` for development
+servers so startup errors remain available. Native file tools reject missing or
+misplaced replacement text before writing and return those input errors for
+correction without a persistent failure obligation. See [Standard recovery](RECOVERY.md).
+
+### Completion and temporary helpers
+
+Standard captures project-input evidence for supported plain builds when no
+explicit verification scope is given. For example, `cd frontend && npm run build`
+with a local `package.json` captures the frontend source/configuration/manifest/
+lockfile state before and after the build, excluding dependencies and generated
+outputs. Explicit scopes remain unchanged; `frontend/src` alone is not a receipt
+for a declared `frontend` directory. Gaps now explain that distinction. Other
+check forms use explicit `run_command.verification`; see
+[the supported automatic command forms](COMPLETION.md). Check syntax rejected
+before execution is correction feedback and does not need a recovery receipt.
+
+Standard Developer and Work use the same task-scoped file evidence. The agent
+uses `.collomia-tmp/` for disposable helpers, which do not need separate
+validation. “Verification incomplete” identifies a remaining check; “Blocked”
+indicates an impediment. See [Completion](COMPLETION.md) for evidence scope,
+recovery, and the distinction between content and behavioral checks.
+
+### Runtime discovery and command PATH
+
+Collo inherits PATH from the process that launches it. POSIX commands use a
+non-login `/bin/sh -c`; foreground commands, PTYs, background processes and
+delegated/combined verification share this contract. Shell startup files are
+not sourced for each action, and shell aliases/functions are not executables
+on PATH. Export the desired runtime directory before launching Collo.
+
+The agent can call `inspect_environment` with, for example,
+`{"executables":["node","npm","uv"]}` during planning in either task profile.
+A missing project file or a refused out-of-workspace file read does not prove a
+runtime is uninstalled. Version and compatibility checks run through the
+ordinary command tool during primary execution; they should be folded into the
+node that needs the runtime, not assigned to a worker without command access.

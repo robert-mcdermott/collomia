@@ -546,9 +546,11 @@ type toolAccumulator struct {
 
 func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 	var out Response
+	terminal := false
 	tools := map[int]*toolAccumulator{}
 	err := sseLines(r, func(_ string, data string) error {
 		if data == "[DONE]" {
+			terminal = true
 			return nil
 		}
 		var chunk struct {
@@ -560,6 +562,7 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 			Choices []struct {
 				Delta struct {
 					Content          string            `json:"content"`
+					Refusal          string            `json:"refusal"`
 					Reasoning        string            `json:"reasoning"`
 					ReasoningContent string            `json:"reasoning_content"`
 					ToolCalls        []openAIToolDelta `json:"tool_calls"`
@@ -591,6 +594,13 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 			}
 		}
 		for _, choice := range chunk.Choices {
+			if choice.Delta.Refusal != "" {
+				out.Refused = true
+				out.Content += choice.Delta.Refusal
+				if onDelta != nil {
+					onDelta(Delta{Text: choice.Delta.Refusal})
+				}
+			}
 			if choice.Delta.Content != "" {
 				out.Content += choice.Delta.Content
 				if onDelta != nil {
@@ -606,6 +616,7 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 			}
 			if choice.FinishReason != "" {
 				out.Stop = choice.FinishReason
+				terminal = true
 			}
 			for _, td := range choice.Delta.ToolCalls {
 				acc := tools[td.Index]
@@ -630,6 +641,13 @@ func parseOpenAIStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 	})
 	if err != nil {
 		return Response{}, err
+	}
+	if !terminal {
+		out.Stop = "incomplete"
+		return out, nil
+	}
+	if !out.acceptsToolCalls() {
+		return out, nil
 	}
 	indexes := make([]int, 0, len(tools))
 	for index := range tools {
@@ -673,6 +691,7 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 		Choices []struct {
 			Message struct {
 				Content   string `json:"content"`
+				Refusal   string `json:"refusal"`
 				ToolCalls []struct {
 					ID       string `json:"id"`
 					Function struct {
@@ -697,6 +716,10 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 	}
 	choice := payload.Choices[0]
 	out.Content, out.Stop = choice.Message.Content, choice.FinishReason
+	if choice.Message.Refusal != "" {
+		out.Refused = true
+		out.Content += choice.Message.Refusal
+	}
 	if out.Content != "" && onDelta != nil {
 		onDelta(Delta{Text: out.Content})
 	}

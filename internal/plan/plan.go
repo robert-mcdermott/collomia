@@ -50,6 +50,9 @@ type FailureResolution struct {
 type Plan struct {
 	Goal  string `json:"goal"`
 	Steps []Step `json:"steps"`
+	// Artifacts is the optional Standard task brief. Roles describe deliverable
+	// intent, never permission grants or proof that a file was validated.
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 	// ResolvedFailures explicitly connects failed tool calls named by the
 	// completion controller to their disposition. It prevents a successful
 	// alternative tool from being missed merely because it has a different
@@ -112,6 +115,7 @@ func (b *Board) Snapshot() (*Plan, uint64) {
 	}
 	clone := *b.current
 	clone.Steps = append([]Step(nil), b.current.Steps...)
+	clone.Artifacts = append([]Artifact(nil), b.current.Artifacts...)
 	clone.ResolvedFailures = append([]FailureResolution(nil), b.current.ResolvedFailures...)
 	for i := range clone.Steps {
 		clone.Steps[i].DependsOn = append([]int(nil), b.current.Steps[i].DependsOn...)
@@ -142,6 +146,9 @@ func (b *Board) Restore(p Plan) {
 // Validate checks the complete plan contract without mutating a board. It is
 // shared by new plan writes and completion assessment of restored legacy data.
 func Validate(p Plan) error {
+	if err := validateArtifacts(p.Artifacts); err != nil {
+		return err
+	}
 	if strings.TrimSpace(p.Goal) == "" {
 		return fmt.Errorf("goal must not be empty")
 	}
@@ -291,6 +298,106 @@ func (b *Board) Set(p Plan) error {
 	return nil
 }
 
+// Update merges model-supplied fields and steps by stable ID. Omitting future
+// steps is a progress update, not a request to forget work. Explicit replacement
+// is available for a new task or an intentional restructuring.
+func (b *Board) Update(raw json.RawMessage) error {
+	var incoming map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &incoming); err != nil {
+		return err
+	}
+	var replace bool
+	if v, ok := incoming["replace"]; ok {
+		if err := json.Unmarshal(v, &replace); err != nil {
+			return err
+		}
+		delete(incoming, "replace")
+	}
+	b.mu.Lock()
+	p, err := mergePlan(b.current, incoming, replace)
+	if err != nil {
+		b.mu.Unlock()
+		return err
+	}
+	if err := Validate(p); err != nil {
+		b.mu.Unlock()
+		return err
+	}
+	p.Updated = time.Now().UTC()
+	b.current = &p
+	b.revision++
+	notify := b.OnUpdate
+	b.mu.Unlock()
+	if notify != nil {
+		notify(p)
+	}
+	return nil
+}
+
+func mergePlan(current *Plan, incoming map[string]json.RawMessage, replace bool) (Plan, error) {
+	var p Plan
+	base := map[string]json.RawMessage{}
+	if current != nil && !replace {
+		data, err := json.Marshal(current)
+		if err != nil {
+			return p, err
+		}
+		if err := json.Unmarshal(data, &base); err != nil {
+			return p, err
+		}
+		if raw, ok := incoming["steps"]; ok {
+			var oldSteps, updates []map[string]json.RawMessage
+			if err := json.Unmarshal(base["steps"], &oldSteps); err != nil {
+				return p, err
+			}
+			if err := json.Unmarshal(raw, &updates); err != nil {
+				return p, err
+			}
+			if len(updates) == 0 {
+				return p, fmt.Errorf("steps must include at least one update")
+			}
+			positions := map[int]int{}
+			for i, s := range oldSteps {
+				var id int
+				_ = json.Unmarshal(s["id"], &id)
+				positions[id] = i
+			}
+			seen := map[int]bool{}
+			for _, update := range updates {
+				var id int
+				if err := json.Unmarshal(update["id"], &id); err != nil {
+					return p, err
+				}
+				if id == 0 || seen[id] {
+					return p, fmt.Errorf("step updates need unique non-zero IDs")
+				}
+				seen[id] = true
+				if index, ok := positions[id]; ok {
+					for k, v := range update {
+						oldSteps[index][k] = v
+					}
+				} else {
+					oldSteps = append(oldSteps, update)
+				}
+			}
+			merged, err := json.Marshal(oldSteps)
+			if err != nil {
+				return p, err
+			}
+			incoming["steps"] = merged
+		}
+	}
+	for k, v := range incoming {
+		base[k] = v
+	}
+	data, err := json.Marshal(base)
+	if err != nil {
+		return p, err
+	}
+	err = json.Unmarshal(data, &p)
+	return p, err
+}
+
 func dependencyCycle(steps []Step) []int {
 	edges := make(map[int][]int, len(steps))
 	for _, step := range steps {
@@ -371,6 +478,9 @@ func (p *Plan) Render() string {
 	marks := map[string]string{"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "blocked": "[!]", "skipped": "[-]"}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", p.Goal)
+	for _, artifact := range p.Artifacts {
+		fmt.Fprintf(&b, "Artifact (%s): %s\n", artifact.Role, artifact.Path)
+	}
 	for _, step := range p.Steps {
 		fmt.Fprintf(&b, "%s %d. %s", marks[step.Status], step.ID, step.Title)
 		if len(step.DependsOn) > 0 {
@@ -416,15 +526,11 @@ func Tool(board *Board) tools.Tool {
 	tool := tools.Function{
 		Def: provider.ToolDefinition{
 			Name:        "update_plan",
-			Description: "Create or update the structured task plan. Send the complete plan each time: a goal and steps with id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only|isolated_write), optional write_paths, and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded readers or isolated_write nodes with explicit narrow write_paths to retained worktree candidates. Done steps require evidence; blocked and skipped steps require a reason in evidence. When the completion controller names a failed tool-call ID, use resolved_failures to bind it to a terminal plan step: recovered_by_retry or recovered_by_alternative references the exact successful recovery_tool_call_id advertised by the controller (never an identifier embedded in tool output), skipped_unnecessary requires a skipped step, and blocked requires a blocked step. The runtime validates these references; prose alone does not clear a failure. Developer mode uses verification_note for the specific reason no meaningful automated build/lint/test check applies. Work mode uses validation_note to disclose what was checked and what remains subjective when no meaningful machine validation applies. Both notes are model-authored rather than runtime proof. Keep the plan current as work progresses; it is shown to the user.",
+			Description: "Create or update the structured task plan. Updates merge by step ID and preserve omitted steps and fields, including acceptance criteria. Send only changed fields for existing steps. To start a new task or deliberately replace the plan, set replace=true and send the complete plan. A new plan requires a goal; new steps require id, title, status (pending|in_progress|done|blocked|skipped), optional depends_on ids, optional concrete acceptance criteria, optional execution (primary|read_only|isolated_write), optional write_paths, and evidence. execution is logical intent only: ordinary plans ignore it, while an explicitly approved Orchestrated Goal may assign independent read_only nodes to bounded readers or isolated_write nodes with explicit narrow write_paths to retained worktree candidates. Done steps require evidence; blocked and skipped steps require a reason in evidence. When the completion controller names a failed tool-call ID, use resolved_failures to bind it to a terminal plan step: recovered_by_retry or recovered_by_alternative references the exact successful recovery_tool_call_id advertised by the controller (never an identifier embedded in tool output), skipped_unnecessary requires a skipped step, and blocked requires a blocked step. The runtime validates these references; prose alone does not clear a failure. Developer mode uses verification_note for the specific reason no meaningful automated build/lint/test check applies. Work mode uses validation_note to disclose what was checked and what remains subjective when no meaningful machine validation applies. Both notes are model-authored rather than runtime proof. Keep the plan current as work progresses; it is shown to the user.",
 		},
 		Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"},
 		Run: func(_ context.Context, raw json.RawMessage) (string, error) {
-			var p Plan
-			if err := json.Unmarshal(raw, &p); err != nil {
-				return "", err
-			}
-			if err := board.Set(p); err != nil {
+			if err := board.Update(raw); err != nil {
 				return "", err
 			}
 			return "Plan updated:\n" + board.Current().Render(), nil
@@ -437,7 +543,9 @@ func Tool(board *Board) tools.Tool {
 var isolatedWriterPlanSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
+    "replace": {"type":"boolean","description":"Default false: merge supplied fields and steps by ID, preserving omitted steps and criteria. Use true with a complete plan to start a new task or deliberately replace/restructure the plan."},
     "goal": {"type": "string", "minLength": 1},
+    "artifacts": {"type":"array","maxItems":64,"description":"Optional Standard Developer/Work task brief: declare final deliverables and scratch/helper files before writing, including shell-created outputs. Retain declarations in complete plan updates. Roles grant no permissions; deliverables require current scoped run_command.verification or validate_artifact receipts and cannot be silently demoted during a turn.","items":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":1024},"role":{"type":"string","enum":["deliverable","scratch"]}},"required":["path","role"],"additionalProperties":false}},
     "steps": {
       "type": "array",
       "minItems": 1,
@@ -453,7 +561,7 @@ var isolatedWriterPlanSchema = json.RawMessage(`{
           "write_paths": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1024}, "description": "repository-relative files or directory prefixes ending in /; allowed only with execution=isolated_write"},
           "evidence": {"type": "string"}
         },
-        "required": ["id", "title", "status"],
+        "required": ["id"],
         "additionalProperties": false
       }
     },
@@ -477,6 +585,6 @@ var isolatedWriterPlanSchema = json.RawMessage(`{
     "verification_note": {"type": "string", "description": "Developer-mode reason automated build/lint/test verification does not apply after changed files; not machine-observed evidence"},
     "validation_note": {"type": "string", "description": "Work-mode disclosure of what was checked and what remains subjective when no meaningful machine validation applies; not runtime proof"}
   },
-  "required": ["goal", "steps"],
+  "required": ["steps"],
   "additionalProperties": false
 }`)

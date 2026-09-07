@@ -55,6 +55,7 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		return nil, nil, nil, fmt.Errorf("command policy: %w", err)
 	}
 	tracker := diffmodel.NewTracker(guard.Workspace)
+	command.Guard = guard
 	procs := NewProcessManager()
 	// One client is shared by both web tools: its transport, bounds, and
 	// public-internet address guard are the capability, and a second
@@ -68,7 +69,9 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		GitLogTool{Workspace: guard.Workspace}, GitBlameTool{Workspace: guard.Workspace},
 		GitCommitTool{Guard: guard}, GitBranchTool{Guard: guard},
 		DetectVerificationTool{Workspace: guard.Workspace},
+		InspectEnvironmentTool{},
 		ValidateArtifactTool{Guard: guard},
+		ViewImageTool{Guard: guard},
 		StartProcessTool{Manager: procs, Runner: command}, ListProcessesTool{Manager: procs},
 		ProcessOutputTool{Manager: procs}, StopProcessTool{Manager: procs},
 		SearchSymbolsTool{Index: index.New(guard.Workspace)},

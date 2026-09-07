@@ -29,6 +29,9 @@ func TestValidateArtifactMarkdownProducesBoundedEvidence(t *testing.T) {
 	if result.Evidence == nil || result.Evidence.Kind != "artifact_validated" || result.Evidence.Subject != "report.md" || !strings.HasPrefix(result.Evidence.Digest, "sha256:") {
 		t.Fatalf("evidence=%+v", result.Evidence)
 	}
+	if result.Evidence.Checks["content"] != "passed" || result.Evidence.Checks["structure"] != "passed" || result.Evidence.Checks["calculations"] != "not_assessed" || result.Evidence.Checks["sources"] != "not_assessed" || result.Evidence.Checks["visual"] != "not_assessed" {
+		t.Fatalf("incorrect assessment scopes: %+v", result.Evidence.Checks)
+	}
 	for _, want := range []string{"valid UTF-8 Markdown", "1 heading", "2/2 present", "visual polish were not established"} {
 		if !strings.Contains(result.Content, want) {
 			t.Errorf("result missing %q:\n%s", want, result.Content)
@@ -36,6 +39,64 @@ func TestValidateArtifactMarkdownProducesBoundedEvidence(t *testing.T) {
 	}
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"path":"report.md","required_text":["Missing section"]}`)); err == nil {
 		t.Fatal("missing required text was accepted")
+	}
+}
+
+func TestValidateXLSXRequiresLinkedWorksheetsAndDoesNotClaimCalculation(t *testing.T) {
+	parts := map[string]string{
+		"[Content_Types].xml":        `<Types/>`,
+		"xl/workbook.xml":            `<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" r:id="r1"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"/></Relationships>`,
+		"xl/worksheets/sheet1.xml":   `<worksheet><sheetData><row><c t="inlineStr"><is><t>Hours</t></is></c><c><f>1/0</f></c></row></sheetData></worksheet>`,
+	}
+	dir := t.TempDir()
+	guard, err := NewPathGuard(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ValidateArtifactTool{Guard: guard}
+	write := func() {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "book.xlsx"), openXMLFixture(t, parts), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write()
+	result, err := tool.ExecuteResultStream(t.Context(), json.RawMessage(`{"path":"book.xlsx","required_text":["Hours"]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Evidence.Checks["calculations"] != "not_assessed" || !strings.Contains(result.Content, "not recalculated") {
+		t.Fatalf("overclaimed XLSX scope: %+v", result)
+	}
+	parts["xl/_rels/workbook.xml.rels"] = `<Relationships><Relationship Id="r1" Target="worksheets/missing.xml" Type="a/worksheet"/></Relationships>`
+	write()
+	if _, err := tool.Execute(t.Context(), json.RawMessage(`{"path":"book.xlsx"}`)); err == nil {
+		t.Fatal("dangling worksheet accepted")
+	}
+}
+
+// Opt-in interoperability check against a real bundle from the locked kit;
+// ordinary Go tests do not require a Python/LibreOffice installation.
+func TestWorkKitArtifactInterop(t *testing.T) {
+	dir := os.Getenv("COLLO_WORK_BUNDLE")
+	if dir == "" {
+		t.Skip("set COLLO_WORK_BUNDLE to a generated Work bundle")
+	}
+	guard, err := NewPathGuard(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ValidateArtifactTool{Guard: guard}
+	for _, name := range []string{"report.xlsx", "memo.docx", "memo.pdf"} {
+		raw, _ := json.Marshal(map[string]any{"path": name})
+		result, err := tool.ExecuteResultStream(t.Context(), raw, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if result.Evidence == nil || result.Evidence.Checks["structure"] != "passed" || result.Evidence.Checks["visual"] != "not_assessed" {
+			t.Fatalf("%s: %+v", name, result)
+		}
 	}
 }
 

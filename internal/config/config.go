@@ -355,9 +355,10 @@ type Hook struct {
 var HookEvents = []string{"session_start", "user_prompt", "permission_decision", "tool_start", "tool_end", "file_change", "compaction", "subagent_start", "subagent_end", "stop", "session_end"}
 
 type Options struct {
-	// MaxIterations is a consecutive no-progress lease. Standard mode also
-	// keeps a hard provider-turn envelope at twice this value.
+	// MaxIterations is a consecutive no-progress lease.
+	// MaxTurnIterations independently bounds a Standard user turn.
 	MaxIterations      int `json:"max_iterations,omitempty"`
+	MaxTurnIterations  int `json:"max_turn_iterations,omitempty"`
 	MaxToolOutputBytes int `json:"max_tool_output_bytes,omitempty"`
 	// DelegateMaxConcurrency is the session-wide delegated-task limit. It
 	// defaults to four and is capped by the six-task delegate request limit.
@@ -450,6 +451,7 @@ func Defaults() Config {
 		Agents: map[string]AgentDefinition{},
 		Options: Options{
 			MaxIterations:      24,
+			MaxTurnIterations:  256,
 			MaxToolOutputBytes: 64 * 1024,
 			AgentIntegration:   "manual",
 			AlternateScreen:    true,
@@ -891,6 +893,9 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 	if c.Permissions.Commands == "" {
 		c.Permissions.Commands = "open"
 	}
+	if c.Options.MaxTurnIterations == 0 {
+		c.Options.MaxTurnIterations = 256
+	}
 	if c.Options.MaxIterations <= 0 {
 		c.Options.MaxIterations = 24
 	}
@@ -1296,6 +1301,9 @@ func (c Config) ValidateFields() []FieldError {
 	// The orchestration envelope is the user's decision, so validation only
 	// refuses values no honest configuration would hold. Reaching a bound
 	// pauses the graph for a person; it does not discard the work already done.
+	if c.Options.MaxTurnIterations < 0 || c.Options.MaxTurnIterations > 10000 {
+		errs = append(errs, FieldError{"options.max_turn_iterations", "must be between 0 and 10000"})
+	}
 	if c.Options.OrchestrationMaxIterations < 0 || c.Options.OrchestrationMaxIterations > 10_000 {
 		errs = append(errs, FieldError{"options.orchestration_max_iterations", "must be zero (default) or between 1 and 10000"})
 	}

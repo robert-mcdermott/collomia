@@ -1110,7 +1110,7 @@ func TestEndToEndRunIsFullyRepresentedByEventSchema(t *testing.T) {
 		}
 		kinds = append(kinds, e.Kind)
 	}
-	wantOrder := []event.Kind{event.KindTurnStart, event.KindPermissionDecision, event.KindToolStart, event.KindToolResult, event.KindTextDelta, event.KindUsage, event.KindTurnEnd}
+	wantOrder := []event.Kind{event.KindTurnStart, event.KindPermissionDecision, event.KindToolStart, event.KindToolResult, event.KindUsage, event.KindTextDelta, event.KindTurnEnd}
 	pos := 0
 	for _, kind := range kinds {
 		if pos < len(wantOrder) && kind == wantOrder[pos] {

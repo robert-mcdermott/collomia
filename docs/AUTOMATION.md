@@ -97,7 +97,12 @@ Do not assume every reserved kind appears in every current CLI stream.
 Work mode's `validate_artifact` can add `tool.evidence` with kind
 `artifact_validated`, the validated path as `subject`, a `sha256:` digest, and
 a bounded structural `detail`. Recognized Developer or Work build/lint/test
-commands can similarly report kind `verification`. These receipts claim only
+commands can similarly report kind `verification`. Explicit Standard scoped
+checks report `scoped_verification`: `subject` is the command, `detail` is the
+model-selected purpose, and optional `files` maps up to 16 paths to SHA-256
+digests. `checks.execution` and `checks.file_freshness` are `passed`, while
+`checks.coverage` is `not_assessed`. Consumers must not interpret the purpose as
+certified test coverage. See [Completion](COMPLETION.md). These receipts claim only
 what the originating tool observed. `file.change` is a durable path manifest
 for tracked file tools and `/undo`; replay never repeats the mutation.
 

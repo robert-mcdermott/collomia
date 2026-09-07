@@ -1269,15 +1269,20 @@ func TestWorkModeArtifactValidationIsPathSpecific(t *testing.T) {
 	controller := newCompletionController(board, t.TempDir(), false, taskmode.Work)
 	first := filepath.Join(controller.workspace, "first.md")
 	second := filepath.Join(controller.workspace, "second.md")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("validated text"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	controller.observe(toolObservation{Name: "apply_patch", Action: tools.Action{Risk: tools.RiskWrite, Paths: []string{first, second}}})
 	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, `"first.md"`) || !strings.Contains(decision.notice, `"second.md"`) || !strings.Contains(decision.notice, "intervention 1 of 2") {
 		t.Fatalf("initial outstanding paths were not rendered: %+v", decision)
 	}
-	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{first}}, ArtifactValidation: true})
+	controller.observe(artifactObservation(t, controller.workspace, first))
 	if decision := controller.assess(); decision.done || !strings.Contains(decision.notice, `"second.md"`) || strings.Contains(decision.notice, `"first.md"`) || !strings.Contains(decision.notice, "accepted current receipts are omitted") || !strings.Contains(decision.notice, "intervention 1 of 2") {
 		t.Fatalf("one validated path incorrectly completed both artifacts: %+v", decision)
 	}
-	controller.observe(toolObservation{Name: "validate_artifact", Action: tools.Action{Risk: tools.RiskRead, Paths: []string{second}}, ArtifactValidation: true})
+	controller.observe(artifactObservation(t, controller.workspace, second))
 	if decision := controller.assess(); !decision.done {
 		t.Fatalf("both validated paths did not complete the gate: %+v", decision)
 	}
@@ -1420,7 +1425,7 @@ func TestStandardVerificationGapHasItsOwnTerminalOutcome(t *testing.T) {
 	if !errors.Is(err, ErrGoalNeedsVerification) || GoalOutcomeFor(err) != GoalNeedsVerification || result != "done; smoke checks passed" || client.calls != 6 {
 		t.Fatalf("result=%q calls=%d outcome=%s error=%v", result, client.calls, GoalOutcomeFor(err), err)
 	}
-	if strings.Contains(err.Error(), "files changed after the last successful") || !strings.Contains(err.Error(), "no successful recognized verification") {
+	if strings.Contains(err.Error(), "files changed after the last successful") || !strings.Contains(err.Error(), "mutating tool did not report its paths") {
 		t.Fatalf("verification outcome is not truthful: %v", err)
 	}
 }
@@ -1659,7 +1664,7 @@ func TestCompletionControllerRejectsRecoveryWithoutSuccessfulReceipt(t *testing.
 	}
 	controller.observe(toolObservation{CallID: "plan-update", Name: "update_plan", Action: tools.Action{Risk: tools.RiskRead, Summary: "update the task plan"}})
 	decision := controller.assess()
-	if decision.done || !strings.Contains(decision.notice, "without a successful current-turn tool receipt") || !strings.Contains(decision.notice, "edit-attempt") {
+	if decision.done || !strings.Contains(decision.notice, "without a successful retained tool receipt") || !strings.Contains(decision.notice, "edit-attempt") {
 		t.Fatalf("unproven recovery was accepted: %+v", decision)
 	}
 }
@@ -1772,9 +1777,10 @@ func TestWorkModeTranscriptRecoveryReturnsOriginalAnswerOnce(t *testing.T) {
 
 func TestCompletionControllerRetainsEveryUnresolvedFailure(t *testing.T) {
 	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
-	controller.observe(toolObservation{Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}, Failed: true})
+	retryKey := toolRetryKey(provider.ToolCall{Name: "run_command", Arguments: json.RawMessage(`{"command":"go test ./..."}`)})
+	controller.observe(toolObservation{Name: "run_command", RetryKey: retryKey, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}, Failed: true})
 	controller.observe(toolObservation{Name: "external_lookup", Action: tools.Action{Risk: tools.RiskExternal, Summary: "look up dependency"}, Failed: true})
-	controller.observe(toolObservation{Name: "run_command", Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}})
+	controller.observe(toolObservation{Name: "run_command", RetryKey: retryKey, Action: tools.Action{Risk: tools.RiskExecute, Summary: "run tests"}})
 	decision := controller.assess()
 	if decision.done || decision.blocked || !strings.Contains(decision.notice, "external_lookup") || strings.Contains(decision.notice, "run_command (run tests)") {
 		t.Fatalf("decision=%+v", decision)
@@ -1794,7 +1800,7 @@ func TestCompletionControllerTreatsFailedWriteAsPotentialMutation(t *testing.T) 
 	controller := newCompletionController(plan.NewBoard(), t.TempDir(), false, "")
 	controller.observe(toolObservation{Name: "edit_file", Action: tools.Action{Risk: tools.RiskWrite, Summary: "edit a file"}, Failed: true})
 	decision := controller.assess()
-	if decision.done || decision.blocked || !strings.Contains(decision.notice, "no successful recognized verification") || !strings.Contains(decision.notice, "edit_file") {
+	if decision.done || decision.blocked || !strings.Contains(decision.notice, "mutating tool did not report its paths") || !strings.Contains(decision.notice, "edit_file") {
 		t.Fatalf("decision=%+v", decision)
 	}
 }
@@ -1962,11 +1968,9 @@ func TestVerificationRecognitionAcceptsPreparationBeforeTheVerifier(t *testing.T
 	if elsewhere.Recognized || !strings.Contains(elsewhere.Reason, "changes directory") {
 		t.Fatalf("relocated verification assessment=%+v", elsewhere)
 	}
-	// A refused command names the direct form wherever the verifier sits,
-	// because the session that failed was never told which part was the
-	// problem.
+	// Do not extract a later verifier while silently discarding its environment.
 	trailing := assessVerificationCommand("export FOO=bar; uv run pytest -q", workspace)
-	if trailing.Recognized || !trailing.VerificationLike || trailing.Suggestion != "uv run pytest -q" {
+	if trailing.Recognized || trailing.Suggestion != "" {
 		t.Fatalf("trailing verifier assessment=%+v", trailing)
 	}
 	// A final command assembled by substitution cannot be classified at all,

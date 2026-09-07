@@ -22,6 +22,7 @@ import (
 )
 
 type RunCommandTool struct {
+	Guard          *PathGuard // shared file-read policy for explicit verification scope
 	Workspace      string
 	DeniedPatterns []*regexp.Regexp
 	MaxOutputBytes int
@@ -57,6 +58,18 @@ type RunCommandTool struct {
 	EgressAllowlist egress.Allowlist
 	// EgressObserve receives each brokered decision for the audit ledger.
 	EgressObserve func(egress.Decision)
+}
+
+// completedCommandError records an observed nonzero process exit. It says
+// nothing about successful work, rollback, or whether repeating effects is safe.
+// Only the native runner creates this marker; tool output text is not evidence.
+type completedCommandError struct{ error }
+
+func (e *completedCommandError) Unwrap() error { return e.error }
+
+func CommandExitedNormally(err error) bool {
+	var completed *completedCommandError
+	return errors.As(err, &completed)
 }
 
 // egressPlan is the resolved decision about brokering one command: whether to
@@ -111,7 +124,7 @@ func NewRunCommandTool(workspace string, patterns []string, maxOutput int) (*Run
 }
 
 func (t RunCommandTool) Definition() provider.ToolDefinition {
-	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. The process already starts in the workspace; run verification directly without a leading cd or a trailing shell status wrapper so its result can be recognized as evidence. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. OS sandbox policy may deny outside-workspace reads or writes and command networking; required read-only dependencies belong in permissions.sandbox_readable_roots, writable external caches in sandbox_writable_roots, and outbound access is controlled by sandbox_allow_network. For uv under the sandbox, prefer a workspace-local cache prefix such as UV_CACHE_DIR=\"$PWD/.uv-cache\" uv run …. Provider and remote MCP traffic are unaffected. Set pty=true for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal"}},"required":["command"],"additionalProperties":false}`)}
+	return provider.ToolDefinition{Name: "run_command", Description: "Run one shell command in the workspace and return combined stdout/stderr. The process already starts in the workspace; run verification directly without a trailing shell status wrapper so its result can be recognized as evidence. For a nested project, use cd frontend && npm run build (with the actual subdirectory); keep working-directory and environment setup when retrying. Commands have a timeout and output cap. Destructive system commands are denied even in autopilot mode. OS sandbox policy may deny outside-workspace reads or writes and command networking; required read-only dependencies belong in permissions.sandbox_readable_roots, writable external caches in sandbox_writable_roots, and outbound access is controlled by sandbox_allow_network. For uv under the sandbox, prefer a workspace-local cache prefix such as UV_CACHE_DIR=\"$PWD/.uv-cache\" uv run …. Provider and remote MCP traffic are unaffected. In Standard execution, plain recognized project builds automatically capture their project-input scope when verification is omitted. Explicit scopes remain unchanged. For other task-specific checks, set verification with file or project-directory paths and a purpose: the runtime records a passing exit against unchanged file bytes or project inputs, so no extra validate_artifact call is needed. For an application, scope source directories (for example app, frontend, tests) instead of enumerating files. Directory checks exclude common dependency, cache and build-output directories; explicitly scope an excluded deliverable separately. Nested symlinks are not followed. Use a direct check command or script that exits nonzero on failure. This scope does not replace Orchestrated Goal verification. Set pty=true for programs that need a terminal — interactive-only CLIs, or tools whose output depends on isatty.", InputSchema: schema(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":1800},"verification":{"type":"object","description":"Optional Standard-only task-specific check; file/project input scope is intent, passing status and freshness are runtime-observed","properties":{"paths":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}},"purpose":{"type":"string","minLength":1,"maxLength":512}},"required":["paths","purpose"],"additionalProperties":false},"pty":{"type":"boolean","description":"Run attached to a pseudo-terminal"}},"required":["command"],"additionalProperties":false}`)}
 }
 func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 	var a struct {
@@ -124,7 +137,29 @@ func (t RunCommandTool) Assess(raw json.RawMessage) (Action, error) {
 		return Action{}, errors.New("command must not be empty")
 	}
 	analysis := shell.AnalyzeInWorkspace(a.Command, t.Workspace)
-	return ActionFromAnalysis("run: "+a.Command, a.Command, analysis), nil
+	action := ActionFromAnalysis("run: "+a.Command, a.Command, analysis)
+	verification, err := ParseCommandVerification(raw)
+	if err != nil {
+		return action, err
+	}
+	if verification != nil {
+		guard := t.Guard
+		if guard == nil {
+			guard, err = NewPathGuard(t.Workspace, false)
+			if err != nil {
+				return action, err
+			}
+		}
+		for _, path := range verification.Paths {
+			target, outside, err := guard.ResolveRead(path)
+			if err != nil {
+				return action, err
+			}
+			action.Paths = append(action.Paths, target)
+			action.Outside = action.Outside || outside
+		}
+	}
+	return action, nil
 }
 
 // ActionFromAnalysis builds the permission-facing description of a shell
@@ -259,7 +294,7 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 			out += "\n(scoped egress refused " + strings.Join(refused, ", ") + "; permissions.sandbox_egress is \"scoped\" and no allow rule names " + plural(len(refused), "that host", "those hosts") + ". Add {\"action\":\"allow\",\"host\":\"" + refused[0] + "\"} to permissions.rules)"
 		}
 	}
-	if sandboxed && err != nil && !refusedEgress {
+	if sandboxed && err != nil && !refusedEgress && mentionsAccessDenial(out) {
 		// The generic hint is suppressed after an egress refusal: that message
 		// already names the host and the rule to add, and pointing at
 		// sandbox_allow_network would send the user to the switch scoped egress
@@ -273,12 +308,33 @@ func (t RunCommandTool) run(ctx context.Context, raw json.RawMessage, onOutput f
 		return out, fmt.Errorf("command timed out after %d seconds; its process group was terminated", a.Timeout)
 	}
 	if err != nil {
+		var exit interface {
+			error
+			ExitCode() int
+		}
+		// Shells often encode a child signal as 128+signal. Keep those, direct
+		// signals, cancellation, timeouts, and launch/wait failures uncertain.
+		if runCtx.Err() == nil && errors.As(err, &exit) && ordinaryCommandExit(exit.ExitCode()) {
+			return out, &completedCommandError{fmt.Errorf("command failed: %w", err)}
+		}
 		return out, fmt.Errorf("command failed: %w", err)
 	}
 	if out == "" {
 		out = "(command completed with no output)"
 	}
 	return out, nil
+}
+
+// Failed tests and package metadata errors do not establish a containment
+// problem. Only offer access troubleshooting when the output names one.
+func mentionsAccessDenial(output string) bool {
+	output = strings.ToLower(output)
+	for _, text := range []string{"operation not permitted", "permission denied", "access is denied", "access denied", "read-only file system", "sandbox denial", "sandbox: deny"} {
+		if strings.Contains(output, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func uvSandboxCacheHint(command, workspace string) string {
@@ -429,7 +485,7 @@ func plural(n int, singular, many string) string {
 // minimalEnv keeps only the variables a build needs, so credentials in the
 // parent environment never reach agent commands.
 func minimalEnv() []string {
-	keep := []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "COLUMNS", "LINES", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "GOCACHE"}
+	keep := []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "COLUMNS", "LINES", "SYSTEMROOT", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "GOCACHE", "GOROOT"}
 	var env []string
 	for _, key := range keep {
 		if value, ok := os.LookupEnv(key); ok {
@@ -443,7 +499,9 @@ func shellArgv(command string) []string {
 	if runtime.GOOS == "windows" {
 		return []string{"cmd.exe", "/d", "/s", "/c", command}
 	}
-	return []string{"/bin/sh", "-lc", command}
+	// A login shell can rewrite PATH and reload credentials that minimalEnv
+	// deliberately removed. Commands inherit the environment Collo launched in.
+	return []string{"/bin/sh", "-c", command}
 }
 
 type limitedBuffer struct {

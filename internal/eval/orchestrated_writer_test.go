@@ -374,7 +374,7 @@ func TestOrchestratedGoalFailedWriterLeavesParentUntouchedEvaluation(t *testing.
 		}
 	}
 	if succeeded.State != goalgraph.NodeAwaitingReview {
-		t.Fatalf("the verified sibling is %q, want awaiting_review", succeeded.State)
+		t.Fatalf("the verified sibling is %q, want awaiting_review; reason=%q nodes=%+v", succeeded.State, snapshot.Reason, snapshot.Nodes)
 	}
 	if failed.State != goalgraph.NodeBlocked {
 		t.Fatalf("the failed writer is %q, want blocked", failed.State)

@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-08-25
+**Status updated:** 2026-09-07
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -8,6 +8,34 @@ the dependency order. The detailed dated implementation record has moved to
 summarized here only when it affects the next decision.
 
 ## Product direction
+
+The September review improvements are tracked in
+[`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md), with implementation waves
+and explicit user-testing gates. Read its current handoff before continuing
+that work. It supplements this roadmap and preserves the orchestration
+strategy's existing authority boundaries and milestone status.
+
+W1, W3, W4, and W5 are user-accepted. W5's balanced 12-task baseline passed
+24/24 machine checks, with prose quality and efficiency findings recorded
+separately. W7a retained task context and retrievable session evidence passed
+manual testing and is accepted. W7b's durable obligations and workspace
+checkpoints passed manual testing on 2026-09-05, completing full W7.
+On 2026-09-06, the user withdrew W6's bundled reporting workflow in favor of
+model-selected methods and user-installed skills. The cleanup retains general
+command recovery, image inspection, and artifact validation improvements.
+The v0.5.0 release consolidates Standard completion and recovery improvements,
+project build evidence, configurable execution limits, bounded provider-response
+continuation, inherited-PATH execution, stable plan updates and terminal fixes.
+Standard Developer passed user acceptance through Kanban30 on September 6;
+Work passed user-reported testing on September 7 (no transcript/model supplied).
+The Kanban21 Orchestrated Goal continuation fixes passed manual testing on
+September 6. Automatic build-scope inference is covered by offline regressions;
+Kanban30 used explicit scope. These results do not establish a cross-model
+success rate. The next action is PR/release preparation and exact-tag release
+qualification, not another feature wave. See the
+[improvement plan](docs/IMPROVEMENT_PLAN.md#current-handoff--read-this-first)
+for current acceptance and historical candidate evidence.
+Wave numbers identify work rather than a mandatory execution order.
 
 Collomia is a cross-platform, provider-neutral local terminal agent for
 software development and general knowledge work, built around explicit trust,
@@ -51,7 +79,8 @@ also shipped:
 - persisted Developer and Work task profiles: Developer retains the
   repository/build-test default, while Work supports non-Git folders, direct
   Q&A, research, analysis, external actions, and document/artifact outcomes
-  with task-appropriate evidence and path-bound validation receipts;
+  with task-appropriate evidence and current file receipts from scoped command
+  checks or native artifact validation;
 - normalized provider capabilities, streaming, retries, health, contracts,
   Azure Entra refresh, Bedrock SigV4/bearer authentication, optional macOS/
   Windows keychain credential storage, opt-in provider-safe reasoning controls,
@@ -91,7 +120,9 @@ Verification refusal now explains itself in the next tool result, accepted
 proof receives a current-state receipt, and an unresolved verification-only
 gap is `needs_verification` rather than `blocked`. The same slice changes
 `max_iterations` from a whole-Standard-turn cutoff into a consecutive
-no-progress lease, with a non-renewable hard envelope at twice its value. The
+no-progress lease, initially with a non-renewable hard envelope at twice its
+value. The September 6 follow-up makes the Standard outer limit independent
+(`max_turn_iterations`, default 256). The
 regression suite covers the reported static-site sequence, accepted proof,
 terminal classification, repeated-output exhaustion, sustained progress, and
 continuous-write bounding.
@@ -1802,6 +1833,12 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 6 — Multi-agent orchestration
 
+September 6 sustaining work, manually tested and accepted by the user, fixes
+Kanban21 runtime discovery, unnecessary read
+reexecution, and ineffective worker/attempt budget extensions. The existing
+permission, freshness, publication and supported/experimental boundaries remain.
+Evidence and the live-testing gate are in [the improvement plan](docs/IMPROVEMENT_PLAN.md).
+
 The completed Phase 6 product and architecture contract is
 [Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md), Collomia's optional
 **evidence-gated durable execution** mode. It is the canonical cross-session
@@ -2390,6 +2427,14 @@ status.
   leaves the machine.
 
 ## Recommended next sequence
+
+The Kanban21 runtime-discovery and graph-continuation maintenance passed manual
+testing, was accepted on 2026-09-06, and is committed as `c037a7c`. The active
+maintenance slice includes Kanban22 response-limit continuation and Kanban23
+terminal/plan reliability; finish verification and their live acceptance in
+[`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) before selecting more work.
+The prior Standard larger-project and Work acceptance gates remain open.
+Wave numbers do not impose a strict execution order.
 
 The Orchestrated Goal program has no open milestone: OG-1 through OG-5 are
 complete, all nine graduation clauses are met, governed read fan-out is a

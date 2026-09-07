@@ -30,6 +30,7 @@ func WriteStarter(path string, global bool) error {
 		SandboxWritableRoots             []string `json:"sandbox_writable_roots,omitempty"`
 	}
 	type starterOptions struct {
+		MaxTurnIterations           int               `json:"max_turn_iterations"`
 		MaxIterations               int               `json:"max_iterations"`
 		MaxToolOutputBytes          int               `json:"max_tool_output_bytes"`
 		DelegateMaxConcurrency      int               `json:"delegate_max_concurrency"`
@@ -68,6 +69,7 @@ func WriteStarter(path string, global bool) error {
 		}
 		cfg.Options = &starterOptions{
 			MaxIterations:               24,
+			MaxTurnIterations:           256,
 			MaxToolOutputBytes:          64 * 1024,
 			DelegateMaxConcurrency:      4,
 			DelegateProviderConcurrency: map[string]int{},
@@ -489,7 +491,10 @@ const configReferenceJSONC = `
   },
 
   "options": {
+    // Consecutive no-progress cycles; independent of the total turn limit.
     "max_iterations": 24,
+    // Standard provider response cycles per user turn, 1–10000; 0 uses 256.
+    "max_turn_iterations": 256,
     // Active-context preview per returned tool string. Durable sessions may
     // retain a quota-bound larger copy for read_tool_result; ephemeral runs do not.
     "max_tool_output_bytes": 65536,

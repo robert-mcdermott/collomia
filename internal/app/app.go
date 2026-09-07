@@ -48,6 +48,7 @@ type Runtime struct {
 	Sessions    *session.Store
 	Session     *session.Session
 	Artifacts   *session.ArtifactManager
+	Context     *session.ContextManager
 	Attachments *session.AttachmentManager
 	Changes     *diffmodel.Tracker
 	Plan        *plan.Board
@@ -235,8 +236,9 @@ type Options struct {
 	// into the session opened immediately afterwards. It is never persisted and
 	// avoids putting the value in the process environment on platforms without
 	// an OS credential store.
-	ProviderCredential     string
-	Plan, Debug, Ephemeral bool
+	MaxIterations, MaxTurnIterations int
+	ProviderCredential               string
+	Plan, Debug, Ephemeral           bool
 	// Resume loads an existing session ID; Continue resumes the most
 	// recently updated session. Otherwise a new session is created.
 	Resume   string
@@ -474,11 +476,16 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	}
 	artifacts := session.NewArtifactManager()
 	artifacts.Use(sess)
+	taskContext := session.NewContextManager(redactor.Redact)
+	taskContext.Use(sess)
 	attachments := session.NewAttachmentManager()
 	attachments.Use(sess)
 	var artifactSink *session.ArtifactManager
 	if sess != nil {
 		registry.Add(session.ArtifactTool(artifacts))
+		for _, tool := range session.ContextTools(taskContext) {
+			registry.Add(tool)
+		}
 		artifactSink = artifacts
 		// Commands historically captured only the model-preview limit. Keep live
 		// output at that size, but retain enough returned data for the agent layer
@@ -504,12 +511,12 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if profile.MaxIterations > 0 {
 		maxIterations = profile.MaxIterations
 	}
-	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, TaskMode: activeTaskMode, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
+	agentOptions := agent.Options{Client: client, ProviderName: providerName, Model: model, ProviderConfig: p, Workspace: workspace, Registry: registry, Permissions: permissions, Catalog: activeCatalog, ProjectInstructions: instructions, MaxIterations: maxIterations, MaxTurnIterations: cfg.Options.MaxTurnIterations, MaxToolOutput: cfg.Options.MaxToolOutputBytes, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD, DisabledTools: cfg.Options.DisabledTools, TaskMode: activeTaskMode, PlanMode: opts.Plan, Hooks: lifecycle, AuditRedact: redactor.Redact, Artifacts: artifactSink, Attachments: attachments, CompletionPlan: board, GoalGraph: goal, GoalStateToken: goalStateToken, PinnedContext: func() string {
 		current := board.Current()
 		if current == nil {
-			return ""
+			return taskContext.Pinned()
 		}
-		return "Active structured plan:\n" + current.Render()
+		return "Active structured plan:\n" + current.Render() + "\n\n" + taskContext.Pinned()
 	}}
 	// The primary agent reaches the same iteration-boundary hook delegated
 	// children use, so guidance typed mid-turn lands where the conversation
@@ -517,9 +524,16 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	steering := agent.NewSteeringQueue()
 	agentOptions.TakeSteering = steering.Take
 	if sess != nil {
+		agentOptions.CompletionStore = sess
 		agentOptions.OnMessage = sess.AppendMessage
+		agentOptions.OnUserPrompt = taskContext.RecordUserRequest
 		agentOptions.OnCompaction = sess.AppendCompaction
-		agentOptions.PersistenceError = sess.Err
+		agentOptions.PersistenceError = func() error {
+			if err := sess.Err(); err != nil {
+				return err
+			}
+			return tracker.CheckpointError()
+		}
 	}
 	agentOptions.SessionID = sessionID
 	agentOptions.AuditFailure = auditFailure
@@ -530,8 +544,20 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	agentRuntime.ApplyProfile(agent.ProfileSettings{
 		Name: activeAgent, Instructions: profile.Instructions, Catalog: activeCatalog,
 		Tools: profile.Tools, DisabledTools: cfg.Options.DisabledTools, Skills: profile.Skills,
-		MaxIterations: maxIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
+		MaxIterations: maxIterations, MaxTurnIterations: cfg.Options.MaxTurnIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
 	})
+	if opts.MaxIterations > 0 || opts.MaxTurnIterations > 0 {
+		noProgress, total := agentRuntime.ExecutionLimits()
+		if opts.MaxIterations > 0 {
+			noProgress = opts.MaxIterations
+		}
+		if opts.MaxTurnIterations > 0 {
+			total = opts.MaxTurnIterations
+		}
+		if err := agentRuntime.SetExecutionLimits(noProgress, total); err != nil {
+			return nil, err
+		}
+	}
 	if sess != nil && (opts.Resume != "" || opts.Continue) {
 		agentRuntime.SetMessages(sess.Active())
 		agentRuntime.SetUsage(sess.Usage())
@@ -541,11 +567,14 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		logger.Warn("startup warning", "warning", warning.Error())
 	}
 	lifecycle.Fire(ctx, hooks.Payload{Event: "session_start", Workspace: workspace, Subject: "session_start", Detail: map[string]any{"session_id": sessionID, "provider": providerName, "model": model}})
-	runtime = &Runtime{Workspace: workspace, TaskMode: activeTaskMode, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
+	runtime = &Runtime{Workspace: workspace, TaskMode: activeTaskMode, Config: cfg, Agent: agentRuntime, Registry: registry, Permissions: permissions, Skills: catalog, MCP: mcpManager, Redactor: redactor, Logger: logger, LogPath: logPath, Sessions: store, Session: sess, Context: taskContext, Artifacts: artifacts, Attachments: attachments, Changes: tracker, Plan: board, GoalGraph: goal, Team: team, Processes: processes, Warnings: warnings, Hooks: lifecycle, ActiveAgent: activeAgent, Steering: steering, Audit: ledger, auditHealth: health, goalStateToken: goalStateToken}
 	agentRuntime.SetGoalWriterVerifier(func(verifyCtx context.Context, id string) ([]agent.DelegateVerification, error) {
 		return runtime.VerifyDelegateSuite(verifyCtx, id, nil)
 	})
-	runtime.alignChangeTurns()
+	if err := runtime.alignChangeTurns(); err != nil {
+		runtime.Close()
+		return nil, err
+	}
 	// An integration that never recorded an outcome is the one workspace state
 	// nothing else can explain, so it is surfaced at startup rather than
 	// waiting for the user to wonder why a file looks half-changed.
@@ -557,21 +586,25 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	return runtime, nil
 }
 
-// alignChangeTurns points the change tracker's turn numbering at the active
-// session's completed turns, so a checkpoint the user picks from the session's
-// history means the same turn to both halves of a restore. A resumed session
-// carries turns whose file mutations this process never recorded; the tracker
-// keeps an empty history for them, which is what makes a restore report that it
-// reversed nothing instead of implying it reversed everything.
-func (r *Runtime) alignChangeTurns() {
+// alignChangeTurns binds both recovery projections to the active durable session.
+// Rebinding replaces history; legacy sessions start coverage at resume.
+func (r *Runtime) alignChangeTurns() error {
 	if r == nil || r.Changes == nil {
-		return
+		return nil
 	}
-	turns := 0
-	if r.Session != nil {
-		turns = r.Session.Meta.Turns
+	if r.Session == nil {
+		r.Changes.SetCompletedTurns(0)
+		return nil
 	}
-	r.Changes.SetCompletedTurns(turns)
+	r.Agent.SetCompletionStore(r.Session)
+	sess := r.Session
+	r.Agent.SetPersistenceGuard(func() error {
+		if err := sess.Err(); err != nil {
+			return err
+		}
+		return r.Changes.CheckpointError()
+	})
+	return r.Changes.BindCheckpoint(sess.LoadWorkspaceCheckpoint(), sess.Meta.Turns, sess.SaveWorkspaceCheckpoint)
 }
 
 // OrchestratedProposalPrompt begins the read-only design half of the explicit
@@ -582,7 +615,7 @@ func OrchestratedProposalPrompt(goal string) string {
 
 %s
 
-Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Proposal-phase inspection is grounding, not an already-completed graph node: do not add a node merely to repeat investigation you just performed. Include a pending read_only node only when fresh bounded investigation must run after approval as an explicit dependency. Use the smallest coherent graph: prefer 1–3 substantive outcome nodes for a scoped change and 4–6 only for a broad goal. Use more only when a distinct dependency, permission, write-scope, isolation, or recovery boundary requires it; 12 steps is a hard maximum, not a target. Coalesce serial changes that touch the same scope and share one verification surface instead of creating a node for every file, layer, or command. Within a node, batch independent reads and related edits when the available tools support it. Do not begin future-node work: after a node's final successful verifier, return a tool-free completion proposal immediately so the runtime can advance the graph. Every proposed execution step should be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary, read_only, or isolated_write. At approval the runtime initializes every node pending regardless of model-authored plan status; proposal prose and evidence never become runtime completion. For every primary node that can change files, include a direct build, lint, or test command that can verify that node after its last mutation. If the project has no applicable test surface yet, the first mutating node must create a focused smoke test so the detected verifier has real work to run; a server-start or model-authored success claim alone cannot satisfy the runtime evidence gate. Use read_only only for bounded repository investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Default to primary for end-to-end build and change goals. Use isolated_write only when the user explicitly requests terminal retained candidates for manual review: each needs an explicit narrow write_paths contract disjoint from sibling writers, the candidate-only graph may include read_only prerequisites but no primary nodes, and every isolated_write node must be a terminal leaf. Never make later work depend on isolated_write because the current preview does not select or integrate candidates or let them unlock dependents. One bounded wave of at most two eligible nodes may create independently verified worktree candidates from one clean Git base and then stop for review. Use primary for parent-workspace changes, final integration, combined verification, ambiguity, overlapping scopes, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected read/write fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
+Remain in read-only planning mode. Investigate only as needed, then call update_plan with the complete proposal. Proposal-phase inspection is grounding, not an already-completed graph node: do not add a node merely to repeat investigation you just performed. Include a pending read_only node only when fresh bounded investigation must run after approval as an explicit dependency. Use the smallest coherent graph: prefer 1–3 substantive outcome nodes for a scoped change and 4–6 only for a broad goal. Use more only when a distinct dependency, permission, write-scope, isolation, or recovery boundary requires it; 12 steps is a hard maximum, not a target. Coalesce serial changes that touch the same scope and share one verification surface instead of creating a node for every file, layer, or command. Within a node, batch independent reads and related edits when the available tools support it. Do not begin future-node work: after a node's final successful verifier, return a tool-free completion proposal immediately so the runtime can advance the graph. Every proposed execution step should be pending, use stable non-zero IDs, declare dependencies, include at least one concrete acceptance criterion describing observable evidence for completion, and set execution to primary, read_only, or isolated_write. At approval the runtime initializes every node pending regardless of model-authored plan status; proposal prose and evidence never become runtime completion. For every primary node that can change files, include a direct build, lint, or test command that can verify that node after its last mutation. If the project has no applicable test surface yet, the first mutating node must create a focused smoke test so the detected verifier has real work to run; a server-start or model-authored success claim alone cannot satisfy the runtime evidence gate. Use read_only only for bounded repository investigation that can safely run from the shared workspace without changing files or running commands; independent dependency-ready read_only nodes may use at most two automatic workers after approval. Use inspect_environment for executable discovery during planning; it does not run commands or prove versions. Do not probe executable files with read_file, infer that a tool is missing from a workspace-scope refusal, or ask the user to run a check that primary execution can perform. Fold runtime versions and compatibility checks into the primary node that uses the tool; never assign command-dependent acceptance criteria to read_only. Default to primary for end-to-end build and change goals. Use isolated_write only when the user explicitly requests terminal retained candidates for manual review: each needs an explicit narrow write_paths contract disjoint from sibling writers, the candidate-only graph may include read_only prerequisites but no primary nodes, and every isolated_write node must be a terminal leaf. Never make later work depend on isolated_write because the current preview does not select or integrate candidates or let them unlock dependents. One bounded wave of at most two eligible nodes may create independently verified worktree candidates from one clean Git base and then stop for review. Use primary for parent-workspace changes, final integration, combined verification, ambiguity, overlapping scopes, or inherently serial work. Do not implement anything. After updating the plan, summarize its critical path, expected read/write fan-out, verification expectations, and any material ambiguity for the user to review.`, strings.TrimSpace(goal))
 }
 
 // OrchestratedExecutionPrompt is submitted only after the user explicitly
@@ -607,7 +640,7 @@ func OrchestratedRetryPrompt(goal string, nodeID int) string {
 // OrchestratedExtendPrompt tells the primary agent that a person granted more
 // allowance. The completed work stands; only the envelope changed.
 func OrchestratedExtendPrompt(goal string) string {
-	return fmt.Sprintf("The user explicitly granted the Orchestrated Goal another bounded execution envelope after the previous one was exhausted. Accepted nodes and their evidence stand; each unfinished node resumes in a new attempt, so reread whatever workspace state that attempt needs rather than assuming the earlier context. Continue the runtime-owned graph toward this outcome: %s", strings.TrimSpace(goal))
+	return fmt.Sprintf("The user explicitly granted the Orchestrated Goal another bounded execution envelope after the previous one was exhausted. Accepted nodes and their evidence stand; each unfinished node resumes in a new attempt, so reread whatever workspace state that attempt needs rather than assuming the earlier context. If an earlier read-only node required an unavailable capability (such as executing a version check), use a bounded graph revision to fold that check into the appropriate primary node while preserving its acceptance criteria; do not repeat an investigation that cannot perform the required observation. Continue the runtime-owned graph toward this outcome: %s", strings.TrimSpace(goal))
 }
 
 // ReviewPrompt is the canned prompt behind `collo review` and `/review`:
@@ -1731,6 +1764,9 @@ func (r *Runtime) SwitchSession(id string) error {
 		r.Session.Close()
 	}
 	r.Session = sess
+	if r.Context != nil {
+		r.Context.Use(sess)
+	}
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}
@@ -1746,8 +1782,7 @@ func (r *Runtime) SwitchSession(id string) error {
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
-	r.alignChangeTurns()
-	return nil
+	return r.alignChangeTurns()
 }
 
 // NewSession starts a fresh session, leaving the previous one saved.
@@ -1770,6 +1805,9 @@ func (r *Runtime) NewSession() error {
 		r.Session.Close()
 	}
 	r.Session = sess
+	if r.Context != nil {
+		r.Context.Use(sess)
+	}
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}
@@ -1781,8 +1819,7 @@ func (r *Runtime) NewSession() error {
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
-	r.alignChangeTurns()
-	return nil
+	return r.alignChangeTurns()
 }
 
 // RewindSession creates and switches to a non-destructive branch ending at a
@@ -1801,6 +1838,9 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	}
 	r.Session.Close()
 	r.Session = sess
+	if r.Context != nil {
+		r.Context.Use(sess)
+	}
 	if r.Artifacts != nil {
 		r.Artifacts.Use(sess)
 	}
@@ -1813,7 +1853,9 @@ func (r *Runtime) RewindSession(turn int) (sourceID, rewoundID string, err error
 	r.Agent.SetPersistenceGuard(sess.Err)
 	attachBoard(r.Plan, sess)
 	attachTeam(r.Team, sess)
-	r.alignChangeTurns()
+	if err := r.alignChangeTurns(); err != nil {
+		return sourceID, sess.Meta.ID, err
+	}
 	return sourceID, sess.Meta.ID, nil
 }
 
@@ -1829,14 +1871,13 @@ type CheckpointRestore struct {
 
 // RestoreCheckpoint returns the conversation and the workspace together to a
 // completed turn: it creates the same non-destructive conversation branch
-// `/rewind` does, and reverses every file mutation this process recorded after
-// that turn.
+// `/rewind` does, and reverses retained tracked file mutations after that turn.
 //
 // The workspace is verified before the conversation branches, so the failure
 // this is guarded against — a file edited outside Collomia since the checkpoint
 // — leaves both halves untouched and names the files. Command, network, and
 // other external side effects are never reversed; only tracked file mutations
-// are, and only those recorded by this process.
+// are, within the durable retention and workspace identity bounds.
 func (r *Runtime) RestoreCheckpoint(turn int) (CheckpointRestore, error) {
 	if r.Sessions == nil || r.Session == nil {
 		return CheckpointRestore{}, fmt.Errorf("session persistence is unavailable")
@@ -1851,12 +1892,26 @@ func (r *Runtime) RestoreCheckpoint(turn int) (CheckpointRestore, error) {
 	if err := r.Changes.VerifyRestore(turn); err != nil {
 		return result, err
 	}
+	uncertain, err := agent.CompletionUncertain(r.Session)
+	if err != nil {
+		return result, err
+	}
+	if uncertain {
+		return result, errors.New("an action has an uncertain outcome; inspect /recovery before restoring workspace history")
+	}
+	saved := r.Session.LoadWorkspaceCheckpoint()
 	sourceID, sessionID, err := r.RewindSession(turn)
 	result.SourceID = sourceID
 	if err != nil {
 		return result, err
 	}
 	result.SessionID = sessionID
+	if err := r.Changes.BindCheckpoint(saved, turn, r.Session.SaveWorkspaceCheckpoint); err != nil {
+		return result, err
+	}
+	if err := r.Changes.PersistCheckpoint(); err != nil {
+		return result, err
+	}
 	restored, err := r.Changes.RestoreTo(turn)
 	result.Files = restored.Files
 	result.Mutations = restored.Mutations
@@ -2012,7 +2067,7 @@ func (r *Runtime) SelectAgent(name string) error {
 	r.Agent.ApplyProfile(agent.ProfileSettings{
 		Name: name, Instructions: profile.Instructions, Catalog: catalog,
 		Tools: profile.Tools, DisabledTools: r.Config.Options.DisabledTools, Skills: profile.Skills,
-		MaxIterations: maxIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
+		MaxIterations: maxIterations, MaxTurnIterations: r.Config.Options.MaxTurnIterations, TokenBudget: profile.TokenBudget, CostBudgetUSD: profile.CostBudgetUSD,
 	})
 	r.ActiveAgent = name
 	return nil

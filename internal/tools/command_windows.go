@@ -12,6 +12,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// Ordinary shell/application statuses are distinct from native exception and
+// control-termination statuses. Windows has no POSIX 128+signal convention.
+func ordinaryCommandExit(code int) bool { return code > 0 && code <= 255 }
+
 // setProcessGroup gives the command its own process group and terminates the
 // whole tree on cancellation via taskkill /T. Full job-object containment is
 // tracked in the roadmap's phase 1 exit gate.

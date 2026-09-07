@@ -453,6 +453,7 @@ func anthropicContentParts(message Message) ([]any, error) {
 
 func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func(Delta)) (Response, error) {
 	var out Response
+	terminal := false
 	tools := map[int]*toolAccumulator{}
 	err := sseLines(r, func(event, data string) error {
 		var envelope struct {
@@ -491,6 +492,7 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 		if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 			return fmt.Errorf("decode Anthropic stream event %s: %w", event, err)
 		}
+		terminal = terminal || event == "message_stop" || envelope.Type == "message_stop"
 		if envelope.Error != nil {
 			return &Error{Kind: streamErrorKind(envelope.Error.Type), Retryable: false, Message: sanitizeProviderText(envelope.Error.Message, 2048)}
 		}
@@ -546,12 +548,23 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 			}
 			if envelope.Delta.StopReason != "" {
 				out.Stop = envelope.Delta.StopReason
+				terminal = true
 			}
 		}
 		return nil
 	})
 	if err != nil {
 		return Response{}, err
+	}
+	if !terminal {
+		out.Stop = "incomplete"
+	}
+	if !out.acceptsToolCalls() {
+		if onDelta != nil && (out.Usage.InputTokens > 0 || out.Usage.OutputTokens > 0) {
+			usage := out.Usage
+			onDelta(Delta{Usage: &usage})
+		}
+		return out, nil
 	}
 	indexes := make([]int, 0, len(tools))
 	for i := range tools {

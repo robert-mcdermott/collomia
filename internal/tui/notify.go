@@ -18,9 +18,9 @@ func (m *Model) alert(text string) {
 	switch strings.ToLower(m.runtime.Config.Options.Notifications) {
 	case "off":
 	case "bell":
-		ring()
+		m.ring()
 	default:
-		ring()
+		m.ring()
 		notify(text)
 	}
 }

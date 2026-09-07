@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -35,6 +37,8 @@ import (
 type block struct {
 	role, title, content string
 	tool, summary        string
+	// Reasoning is display-only provider text, bounded independently of answers.
+	reasoningTruncated bool
 	// status and elapsed are set on "tool" header blocks as the turn runs.
 	// Replayed sessions leave both zero: the transcript records what a tool
 	// did but not how long it took, and inventing a duration there would be
@@ -65,6 +69,9 @@ const (
 var tabNames = [tabCount]string{"Chat", "Session", "Help"}
 
 type Model struct {
+	runContext       context.Context
+	terminalOutput   io.Writer
+	runLifetime      *sync.WaitGroup
 	runtime          *app.Runtime
 	broker           *ApprovalBroker
 	viewport         viewport.Model
@@ -132,11 +139,18 @@ type Model struct {
 }
 
 func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
+	return NewWithOutput(context.Background(), runtime, broker, initial, os.Stdout)
+}
+
+// NewWithOutput binds agent cancellation and theme writes to the same guarded
+// interactive lifetime as the renderer.
+func NewWithOutput(ctx context.Context, runtime *app.Runtime, broker *ApprovalBroker, initial string, output io.Writer) Model {
 	theme := resolveTheme(runtime.Config.Options.Theme)
 	in := newComposer()
 	spin := spinner.New()
 	spin.Spinner = spinner.Points
 	m := Model{
+		runContext: ctx, terminalOutput: output, runLifetime: &sync.WaitGroup{},
 		runtime: runtime, broker: broker, input: in, spinner: spin,
 		started: time.Now(), chatFollow: true, sessionDrafts: map[string]string{}, sessionAttachments: map[string][]pendingAttachment{},
 		workspaceLoading: true, workspaceGeneration: 1,
@@ -153,6 +167,19 @@ func New(runtime *app.Runtime, broker *ApprovalBroker, initial string) Model {
 	return m
 }
 
+// WaitForRuns lets command teardown wait for cancellation to reach the agent
+// and its durable transcript before closing the session. Call after Run exits.
+func (m Model) WaitForRuns(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() { m.runLifetime.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // applyTheme installs a theme and restyles every themed component.
 func (m *Model) applyTheme(t Theme) {
 	m.theme = t
@@ -161,9 +188,9 @@ func (m *Model) applyTheme(t Theme) {
 	m.restyleComposer()
 	m.renderer = nil // force glamour rebuild with the new style
 	if t.Background == "" {
-		ResetTerminalBackground()
+		ResetTerminalBackground(m.terminalOutput)
 	} else {
-		setTerminalBackground(t.Background)
+		setTerminalBackground(t.Background, m.terminalOutput)
 	}
 }
 
@@ -286,25 +313,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.
 			if msg.err != nil {
-				switch agent.GoalOutcomeFor(msg.err) {
-				case agent.GoalBudgetExhausted:
-					m.alert("Turn stopped: budget exhausted")
-				case agent.GoalCancelled:
-					m.alert("Turn cancelled")
-				default:
-					m.alert("Turn blocked: " + failureid.Display(msg.err))
+				if errors.Is(msg.err, provider.ErrResponseEmpty) {
+					m.alert("Provider response unavailable; work retained")
+				} else if errors.Is(msg.err, provider.ErrResponseTruncated) {
+					m.alert("Paused at model response limit; work retained")
+				} else {
+					switch agent.GoalOutcomeFor(msg.err) {
+					case agent.GoalBudgetExhausted:
+						m.alert("Paused at execution limit; work retained")
+					case agent.GoalNeedsVerification:
+						m.alert("Verification incomplete")
+					case agent.GoalCancelled:
+						m.alert("Turn cancelled")
+					default:
+						m.alert("Turn blocked: " + failureid.Display(msg.err))
+					}
 				}
 			} else if elapsed > 10*time.Second {
 				m.alert(fmt.Sprintf("Turn finished after %s", elapsed))
 			}
 			if msg.err != nil {
 				label := "Blocked"
-				if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {
-					label = "Budget exhausted"
+				role := "error"
+				if errors.Is(msg.err, provider.ErrResponseEmpty) {
+					label, role = "Provider response unavailable", "system"
+				} else if errors.Is(msg.err, provider.ErrResponseTruncated) {
+					label, role = "Paused at model response limit", "system"
+				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalNeedsVerification {
+					label = "Verification incomplete"
+					role = "system"
+				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {
+					label, role = "Paused at execution limit", "system"
 				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalCancelled {
 					label = "Cancelled"
 				}
-				m.blocks = append(m.blocks, block{role: "error", content: label + ": " + failureid.Display(msg.err)})
+				m.blocks = append(m.blocks, block{role: role, content: label + ": " + failureid.Display(msg.err)})
 			} else if strings.TrimSpace(msg.final) == "" {
 				m.blocks = append(m.blocks, block{role: "system", content: fmt.Sprintf("✓ turn complete in %s", elapsed)})
 			}
@@ -737,15 +780,20 @@ func (m *Model) startTurn(value string) tea.Cmd {
 	m.busy = true
 	m.turnStarted = time.Now()
 	m.input.Focus()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.runContext)
 	m.cancel = cancel
 	m.runEvents = make(chan runMsg, 64)
 	events := m.runEvents
 	runtime := m.runtime
+	m.runLifetime.Add(1)
 	go func() {
+		defer m.runLifetime.Done()
 		final, err := runtime.Agent.RunWithParts(ctx, value, parts, func(e runtimeevent.Event) {
 			runtime.LogEvent(e)
-			events <- runMsg{event: &e}
+			select {
+			case events <- runMsg{event: &e}:
+			case <-ctx.Done():
+			}
 		})
 		if persistenceErr := runtime.PersistenceError(); persistenceErr != nil {
 			persistenceErr = fmt.Errorf("session persistence failed: %w", persistenceErr)
@@ -764,7 +812,10 @@ func (m *Model) startTurn(value string) tea.Cmd {
 		} else {
 			err = failureid.Ensure(err)
 		}
-		events <- runMsg{done: true, final: final, err: err}
+		select {
+		case events <- runMsg{done: true, final: final, err: err}:
+		case <-ctx.Done():
+		}
 		close(events)
 	}()
 	return tea.Batch(waitRun(events), m.progressTick())
@@ -788,6 +839,8 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 	wasActivityBottom := m.activityView != nil && m.activityView.cursor == len(m.activities)-1
 	m.activities = activity.Append(m.activities, e, activity.DefaultLimit)
 	switch e.Kind {
+	case runtimeevent.KindReasoningDelta:
+		m.appendReasoning(e.Text)
 	case runtimeevent.KindTextDelta:
 		if len(m.blocks) == 0 || m.blocks[len(m.blocks)-1].role != "assistant" {
 			m.blocks = append(m.blocks, block{role: "assistant"})
@@ -832,7 +885,11 @@ func (m *Model) handleEvent(e runtimeevent.Event) {
 			m.streaming = false
 		}
 	case runtimeevent.KindWarning:
-		m.blocks = append(m.blocks, block{role: "system", content: e.Text})
+		if summary := runtimeevent.CompletionNoticeSummary(e.Text); summary != "" {
+			m.blocks = append(m.blocks, block{role: "status-detail", summary: summary, content: e.Text})
+		} else {
+			m.blocks = append(m.blocks, block{role: "system", content: e.Text})
+		}
 	}
 	if m.transcript != nil {
 		atBottom := m.transcript.viewport.AtBottom()
@@ -1011,6 +1068,14 @@ func (m *Model) chatContent() string {
 				m.styles.muted.Render(m.wrapProse("↳ delivered at the agent's next step; grants no permissions", 0)) + "\n\n")
 		case "assistant":
 			b.WriteString(m.styles.botBadge.Render("✿ COLLOMIA") + "\n" + m.renderMarkdown(block.content) + "\n\n")
+		case "reasoning":
+			b.WriteString(m.renderReasoning(i) + "\n\n")
+		case "status-detail":
+			b.WriteString(m.styles.system.Render(m.wrapProse("· "+block.summary+" ("+m.binding("toggle_tool_output")+" for details)", 0)) + "\n")
+			if m.expandTools {
+				b.WriteString(m.styles.system.Render(m.wrapProse(block.content, 0)) + "\n")
+			}
+			b.WriteString("\n")
 		case "tool":
 			b.WriteString(m.renderToolHeader(block) + "\n")
 		case "tool-result":
@@ -1466,7 +1531,7 @@ func (m *Model) helpContent() string {
 		{m.binding("next_tab"), "cycle Chat / Session / Help tabs"},
 		{m.binding("session_picker"), "open saved sessions without replacing the draft"},
 		{m.binding("agent_control"), "inspect active agents; use /agents to steer, verify, compare, stop, or apply"},
-		{m.binding("toggle_tool_output"), "expand / collapse finished tool output"},
+		{m.binding("toggle_tool_output"), "expand / collapse tool output, thinking summaries, and completion details"},
 		{m.binding("transcript_view"), "open transcript search/copy mode"},
 		{m.binding("diff_view"), "open the interactive diff viewer"},
 		{m.binding("context_rail"), "show / hide the context rail (automatic above " + fmt.Sprintf("%d", railAutoWidth) + " columns)"},
@@ -1928,4 +1993,8 @@ func indent(value, prefix string) string {
 // ring sounds the terminal bell so an unattended approval, question, or
 // finished long turn gets the user's attention. Terminals map this to their
 // configured notification (sound, badge, or nothing) — never intrusive.
-func ring() { _, _ = os.Stderr.WriteString("\a") }
+func (m Model) ring() {
+	if m.terminalOutput != nil {
+		_, _ = io.WriteString(m.terminalOutput, "\a")
+	}
+}

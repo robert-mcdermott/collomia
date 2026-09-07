@@ -1,11 +1,98 @@
 # Testing and evaluation
 
+Standard scoped verification regressions live in
+`internal/agent/scoped_verification_test.go` and
+`internal/agent/task_completion_test.go`. They exercise real commands,
+current file evidence in both task profiles, nonzero status and fresh retries,
+masked exits, in-check drift, unrelated paths, symlink changes, restart, and
+verified native file repair. [Completion](COMPLETION.md) defines the contract;
+[the current manual checklist](IMPROVEMENT_PLAN.md#task-scoped-completion-checks)
+keeps user acceptance separate from automated evidence.
+
 Collomia's default test suite is credential-free and offline. Provider
 protocol tests use in-process HTTP fixtures, MCP tests use the official SDK's
 in-memory transports, and agent evaluations use a scripted provider while
 driving the real permission and built-in tool pipeline.
 
+## Improvement-wave acceptance
+
+[The improvement plan](IMPROVEMENT_PLAN.md) records the active wave, automated
+evidence, manual checks, and explicit user acceptance before the next wave.
+For W1 thinking display, run:
+
+```sh
+go test -count=1 ./internal/tui -run '^TestReasoning'
+```
+
+These offline fixtures exercise readable reasoning through
+the TUI event path, tool/answer ordering, collapse/expand, search/copy text,
+UTF-8 truncation, custom bindings, narrow screens, and live/finished golden
+screens. They do not establish live provider enablement or state continuity.
+
 ## Standard local checks
+
+Artifact tests cover native XLSX relationships and check scopes, bounded image
+reads and model delivery, explicit unavailable-image notices, and event
+round-trip. Recovery tests cover ordinary command-failure repair after resume
+while retaining failed-operation and validation obligations, plus interruption
+and known-external-action guards. Run the standard Go checks below; no bundled
+Python or Office runtime is required. Manual checks for the retained capabilities
+are recorded in the [improvement plan](IMPROVEMENT_PLAN.md#retained-capability-checks).
+
+Validation-recovery fixtures cover source-file text inference, explicit HTML
+text-only scope, same-file format correction without controller intervention,
+required-text/size/parser downgrade rejection, persisted hashed requirements,
+and bounded fallback to exact-operation recovery. TUI/activity fixtures cover
+collapsed live/restored notices, expanded/searchable diagnostics, and visible
+ordinary warnings and terminal errors.
+
+W7b adds `recovery_test.go` in agent/app/session and `checkpoint_test.go` in
+diffmodel. Production-app fixtures cover non-Git Work restart, cancellation
+after a real write, retained validation obligations, fresh proof, durable
+restore/branch resume, and external-edit refusal. Controller fixtures cover
+pre-execution sync failure, uncertain replay refusal, deliverable retention,
+stale-receipt rejection, and cross-turn failure-ID collisions. Checkpoint
+fixtures cover binary bytes, mode checks, replaced roots, caps/coverage floors,
+interrupted multi-file application, explicit keep, delta reconstruction, and
+invalid references. Existing full suites remain the graph/permission regression
+gate; live manual acceptance is separate in [Standard recovery](RECOVERY.md).
+
+W7a adds `internal/session/task_context_test.go` and
+`internal/app/task_context_test.go`. Scripted providers drive production-app
+Work sessions through two compactions, close/reopen, and exact earlier source
+and correction retrieval. Session tests cover revision conflict, write/sync
+failure, bounds, redaction, UTF-8 paging, cancellation, session switches,
+ephemeral omission, fork, and rewind. [Task context](TASK_CONTEXT.md) provides
+the live user gate, including external source edits and historical/current
+separation. W5's controlled sessionless runner does not measure W7a retention;
+its previous baseline is preserved and is not claimed as evidence of this slice.
+
+W5 adds offline runner regressions in `internal/quality` and CLI tests in
+`cmd/collo/eval_test.go`: isolated repeated trials, independent acceptance
+failures, missing-usage stop before proposed tools, budget reservation, sandbox
+preflight, protected inputs, contained grader reads, trace redaction/replay,
+published result-schema validation, review decisions, and comparison controls.
+Failed-run replay fixtures cover budget exhaustion, blockers, timeouts,
+cancellation, and provider failures, including failure-ID correlation.
+They make no model requests. [Quality evaluations](QUALITY_EVALUATIONS.md)
+documents the separate opt-in live suite and human review; passing runtime
+tests does not establish model quality or complete W5 acceptance.
+
+W4 adds final-artifact digest and target/parent identity checks, real shell
+mutation followed by required revalidation, unchanged-byte retention, missing
+and non-regular outputs, cancellation/size bounds, declared deliverable versus
+scratch roles, non-waivable missing receipts, legacy plan compatibility, and
+opaque partial-failure uncertainty. These are offline tests; user-model
+acceptance is recorded separately in the improvement plan.
+
+W3 adds provider terminal-state/refusal/stream-ending fixtures, real agent
+probes in Developer and Work, a graph failure-compatibility probe, compaction
+retention and cumulative-budget checks, exact versus alternative recovery, and
+real large-file pagination. `internal/agent/wave3_test.go`,
+`internal/provider/termination_test.go`, `internal/tools/filepage_test.go`, and
+the CLI refusal-result regression exercise the new behavior. These are offline
+runtime checks, not evidence of live model quality. The wave's actual commands,
+results, and manual checks are recorded in the improvement plan.
 
 Run from the repository root:
 
@@ -353,7 +440,11 @@ produced binary on all three operating systems. Only then can it attest the
 artifacts and create a draft release.
 
 Golden terminal fixtures normalize line endings and padding so the same
-semantic screen is stable across operating systems. Use semantic assertions
+semantic screen is stable across operating systems. Their context input is
+fixed at 2,048 estimated tokens in a 32,768-token window: real prompt lengths
+include host and temporary-path details and must not determine screen snapshots.
+The fixture still uses the real estimator and gauge and fails explicitly if
+the base prompt outgrows its input budget. Use semantic assertions
 instead of a golden when color, terminal width, clock time, or platform text
 is not the behavior under test.
 
