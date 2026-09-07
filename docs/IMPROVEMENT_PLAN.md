@@ -10,16 +10,22 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **PR CI follow-up (2026-09-07):** run `34159552184` passes Ubuntu,
-  macOS, quality and the earlier Windows short-path/checkpoint/ConPTY fixes.
-  Remaining Windows failures share sandboxed Go discovery. The native diagnostic
-  shows `EvalSymlinks` retaining the SDK alias, absolute Go launch failing SDK
-  discovery, and shell PATH lookup failing. The follow-up uses Windows final
-  handle paths for executable lookup, explicit readable roots and PATH/GOROOT;
-  minimal commands also retain an explicitly configured GOROOT. No sandbox grant
-  is broadened. A real-junction regression covers resolution and environment
-  restoration; native SDK discovery and Go preflight remain mandatory CI gates.
-  The revised fix still requires Windows CI acceptance before merge.
+- **PR CI follow-up (2026-09-07):** run `34160727968` passes macOS and
+  Ubuntu. Windows now passes agent/tool checks, the full agent evaluations,
+  quality preflight and sandboxed shell Go lookup. Its two remaining failures
+  are diagnostic fixtures: junction creation used the wrong cmd.exe quoting,
+  and direct trimmed-SDK execution omitted an explicit GOROOT. The test fixes
+  preserve the unmodified shell-PATH check and all sandbox grants. Native Windows
+  acceptance of these fixture corrections remains required.
+- **Quality follow-up:** the separate Ubuntu quality job failed
+  `TestOrchestratedGoalFailedWriterLeavesParentUntouchedEvaluation`: the expected
+  successful sibling was blocked. The same suite passed in the Ubuntu test job.
+  Thirty isolated local repetitions and three complete local evaluation-suite
+  repetitions passed. The assertion now includes graph and per-node reasons so
+  recurrence identifies the underlying failure. Windows amd64/arm64 test builds,
+  Windows-targeted vet and documentation checks pass. This intermittent quality
+  failure is not claimed fixed or waived; the next quality CI result remains
+  required qualification evidence.
 
 - **Current work:** prepare the `wave39` PR and v0.5.0 release documentation.
 - **Status:** reliability implementation committed in `c90beea`; `VERSION` bumped

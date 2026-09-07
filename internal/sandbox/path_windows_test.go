@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -23,7 +24,12 @@ func TestAppContainerPathsResolveRealDirectoryJunction(t *testing.T) {
 	}
 	// Junction creation does not require the symlink privilege. Exercise the
 	// real kernel resolver rather than a mocked C:-to-D: string substitution.
-	out, err := exec.Command("cmd.exe", "/d", "/s", "/c", fmt.Sprintf(`mklink /J "%s" "%s"`, alias, target)).CombinedOutput()
+	// cmd.exe does not use Go's default CommandLineToArgvW quoting.
+	// Supply its /s /c outer quotes explicitly so the embedded path quotes
+	// reach mklink intact, including the deliberate spaces in these paths.
+	cmd := exec.Command("cmd.exe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: fmt.Sprintf(`cmd.exe /d /s /c "mklink /J "%s" "%s""`, alias, target)}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("create junction: %v: %s", err, out)
 	}

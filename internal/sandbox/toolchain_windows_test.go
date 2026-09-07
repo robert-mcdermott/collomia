@@ -28,11 +28,12 @@ func TestAppContainerGoSDKDiscovery(t *testing.T) {
 	}
 	t.Logf("Go SDK=%q resolved SDK=%q parent lookup=%q", sdk, resolved, lookup)
 	for _, tc := range []struct {
-		name string
-		argv []string
+		name        string
+		argv        []string
+		explicitSDK bool
 	}{
-		{"resolved SDK executable", []string{filepath.Join(resolved, "bin", "go.exe"), "version"}},
-		{"shell PATH lookup", []string{"cmd.exe", "/d", "/s", "/c", "where.exe go & go version"}},
+		{"resolved SDK executable", []string{filepath.Join(resolved, "bin", "go.exe"), "version"}, true},
+		{"shell PATH lookup", []string{"cmd.exe", "/d", "/s", "/c", "where.exe go & go version"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace := t.TempDir()
@@ -45,6 +46,12 @@ func TestAppContainerGoSDKDiscovery(t *testing.T) {
 			cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 			cmd.Dir = workspace
 			cmd.Env = windowsAppContainerTestEnv(t)
+			if tc.explicitSDK {
+				// This baseline tests access to the authorized SDK, independent
+				// of a trimmed Go binary's root auto-discovery. The shell case
+				// above still tests normal PATH lookup without this override.
+				cmd.Env = append(cmd.Env, "GOROOT="+sdk)
+			}
 			out, err := cmd.CombinedOutput()
 			t.Logf("sandbox output:\n%s", out)
 			if err != nil || !strings.Contains(string(out), "go version go") {
