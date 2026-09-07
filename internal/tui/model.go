@@ -293,7 +293,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					switch agent.GoalOutcomeFor(msg.err) {
 					case agent.GoalBudgetExhausted:
-						m.alert("Turn stopped: budget exhausted")
+						m.alert("Paused at execution limit; work retained")
 					case agent.GoalNeedsVerification:
 						m.alert("Verification incomplete")
 					case agent.GoalCancelled:
@@ -314,7 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					label = "Verification incomplete"
 					role = "system"
 				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalBudgetExhausted {
-					label = "Budget exhausted"
+					label, role = "Paused at execution limit", "system"
 				} else if agent.GoalOutcomeFor(msg.err) == agent.GoalCancelled {
 					label = "Cancelled"
 				}

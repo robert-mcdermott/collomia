@@ -10,20 +10,15 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Current work:** Larger-project Standard completion and continuation reliability (Developer and Work).
-- **Status:** implementation, automated verification, and the candidate build
-  are complete; live user acceptance is pending. The small Developer rerun remains accepted as a small-task
-  result; it did not establish larger-project reliability. Overall live acceptance
-  and the Work-mode rerun remain pending. W1, W3, W4, W5, and full W7 remain
-  accepted; W2, W8, and W9 remain planned. The withdrawn reporting workflow stays
-  withdrawn.
-- **Next action:** obtain user acceptance on a larger Developer task and a Work
-  task using the candidate and manual checks below.
+- **Current work:** Kanban21 Orchestrated Goal continuation and shared runtime discovery.
+- **Status:** complete and user-accepted on 2026-09-06. The user reported
+  successful manual testing: "manually tested it and it works." The separate
+  larger-project Standard and Work acceptance checks below remain pending.
+- **Next action:** commit the accepted maintenance changes.
   Do not begin another feature wave by default.
-- **Test build:** `dist/collo-standard-reliability`, version
-  `v0.4.3-standard-reliability.1`, based on `b7abf6d`.
-  Prior binaries and user sessions are preserved. The installed binary and
-  user's `VERSION` are unchanged.
+- **Test build:** `dist/collo-orchestration-reliability`, candidate version
+  `v0.4.3-orchestration-reliability.1`, based on `9172f57` plus these changes.
+  Prior binaries, installed binary, user sessions, and `VERSION` are preserved.
 - **User acceptance:** W1 accepted on 2026-09-04. The user reported it “worked
   great” with GLM-5.3-flash from Ollama and confirmed visible reasoning.
   W3 accepted on 2026-09-04 after successful pagination and follow-up manual
@@ -36,6 +31,83 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   emitted by an adapter. It does not enable thinking at the API, add synchronous
   reasoning extraction, or restore thinking in reopened chat transcripts.
   Those are W2 work. A silent summary area does not prove absent computation.
+
+## Kanban21 reliability candidate — September 6
+
+The supplied session did not run `node` or `npm`. Planning tried out-of-workspace
+file probes, then proposed a command-dependent toolchain check as `read_only`.
+That worker could not execute a version check. After the user supplied versions,
+an unrelated backend mutation invalidated the accepted read and triggered a
+second investigation. The read lane spent 63,925 of its separate 64,000 tokens;
+only 355,341 of the graph's 1,000,000 aggregate tokens had been spent. Extension
+refused the two-attempt node and did not replenish read/worker allowances.
+
+Implementation and acceptance checklist:
+
+- [x] Bounded `inspect_environment` lookup is available in Developer, Work,
+  planning and graph read-only execution. It executes nothing; version checks
+  remain primary commands and proposal guidance folds them into useful work.
+- [x] All configured command surfaces preserve inherited PATH using a non-login
+  POSIX shell. Windows command spelling is unchanged.
+- [x] Ready primary work precedes unrelated read fan-out; reads keep their
+  freshness gates and concurrent execution when their consumers need them.
+- [x] Explicit extension grants aggregate, attempt and worker resources, retains
+  spent usage/accepted nodes, and creates fresh attempts. Refusal/persistence
+  failure changes no live state; interrupted effects and retained writer work
+  cannot be replayed or abandoned by granting tokens.
+- [x] Read wall counts execution windows, not primary work, pauses or downtime.
+  Retired reads retain their spent time. Legacy restore grants nothing.
+- [x] Graph workers honor the recorded provider-request allowance, including
+  compaction, rather than an unrelated manual-delegate cap. Regression tests
+  exercise 3- and 40-request leases, a lower profile cap, and compaction admission.
+- [x] Exhausted stale/recovered safe-read attempts reach an extendable resource
+  stop rather than a scheduler dead end. TUI resource stops use a system pause
+  label; public `budget_exhausted` outcomes remain unchanged.
+- [x] Focused native-tool/application/graph/TUI regressions pass, including three
+  successive extensions after the original two attempts, disk round trips,
+  failed persistence, ambiguous-action refusal, and secret stripping.
+- [x] A read-only local probe loaded the actual Kanban21 snapshot and proved
+  extension preserves node 1 and schedules node 2 with 4 attempts and 128,000
+  read tokens. No user session/workspace bytes were changed; the temporary
+  incident-specific probe was removed from the source tree.
+- [x] Full offline suite, targeted race checks across agent/app/graph/tools/TUI,
+  and `go vet ./...` passed. Native candidate and Linux/Windows cross-builds
+  passed. A durable application test closes, reopens, extends, completes and
+  reopens an exhausted two-attempt graph without losing accepted work.
+- [x] User acceptance: Kanban21 reliability follow-up, 2026-09-06. The user
+  reported successful manual testing; fresh versus resumed execution and the
+  provider/model were not separately specified.
+- [ ] User acceptance: larger Standard Developer and Work tasks.
+
+Manual checks after building/installing the candidate:
+
+1. In an ordinary Developer or Work session, ask Collo to check whether `node`,
+   `npm` and `uv` are available. It should locate them using `inspect_environment`
+   and use a normal command for necessary versions. A refused file read must not
+   turn into an assertion that software is uninstalled.
+2. Run the original Kanban request as a fresh `/orchestrate` goal. Inspect the
+   proposed graph: versions/build setup should be part of primary work, not a
+   separate command-dependent read-only investigation. Approve and verify that
+   research is not repeatedly invalidated by independent scaffold work.
+3. For a deterministic budget check, use a small user-configured
+   `options.orchestration_max_iterations` for a disposable graph, then
+   `/orchestrate extend` at the stop. The TUI should say it paused at an execution
+   limit, status should show larger allowances, and accepted nodes should remain
+   accepted. Restore the configuration afterwards. No special budget is needed
+   for ordinary tasks; defaults remain 96 aggregate provider calls/1M charged
+   tokens/30 active minutes.
+4. Optional recovery of the existing Kanban21 session with the new binary:
+
+   ```sh
+   ./dist/collo-orchestration-reliability --cwd /Users/rmcdermo/mycode/kanban21 --resume 20260906-225833-a61c10
+   ```
+
+   Then enter `/orchestrate extend`. This grants more budget; `/orchestrate resume`
+   alone cannot extend an exhausted graph. Older proposal mistakes remain in the
+   saved plan; extension guidance tells the primary to repair command-dependent
+   read nodes with a bounded revision while preserving their criteria.
+5. Reuse the larger-project Standard and Work checks below. `/limits` controls
+   Standard execution; `/orchestrate extend` controls graph continuation.
 
 ## Larger-project candidate — September 6
 

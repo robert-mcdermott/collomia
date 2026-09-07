@@ -484,7 +484,9 @@ func shellArgv(command string) []string {
 	if runtime.GOOS == "windows" {
 		return []string{"cmd.exe", "/d", "/s", "/c", command}
 	}
-	return []string{"/bin/sh", "-lc", command}
+	// A login shell can rewrite PATH and reload credentials that minimalEnv
+	// deliberately removed. Commands inherit the environment Collo launched in.
+	return []string{"/bin/sh", "-c", command}
 }
 
 type limitedBuffer struct {

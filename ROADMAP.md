@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-09-05
+**Status updated:** 2026-09-06
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -28,7 +28,11 @@ Developer testing: task-scoped evidence in both profiles, disposable helpers,
 quoted-check parsing, preflight recovery, and truthful completion status. The
 larger-project follow-up adds source-tree verification, retained recovery facts,
 independent total-turn limits and live controls, and bounded empty-response
-retries. Live acceptance remains pending. Runtime
+retries. The Kanban21 follow-up repairs shared runtime discovery/PATH,
+read scheduling, worker wall accounting and explicit graph budget extensions.
+The user confirmed successful manual testing of the Kanban21 follow-up on
+2026-09-06; separate Standard/Work live checks remain tracked in the improvement
+plan. Runtime
 evidence and unrelated project obligations remain enforced.
 Broader Work evaluation follows its manual acceptance gate. See the [improvement plan](docs/IMPROVEMENT_PLAN.md#retained-capability-checks).
 Wave numbers identify work rather than a mandatory execution order.
@@ -1829,6 +1833,12 @@ claiming enforcement the policy layer does not provide.
 
 ### Phase 6 — Multi-agent orchestration
 
+September 6 sustaining work, manually tested and accepted by the user, fixes
+Kanban21 runtime discovery, unnecessary read
+reexecution, and ineffective worker/attempt budget extensions. The existing
+permission, freshness, publication and supported/experimental boundaries remain.
+Evidence and the live-testing gate are in [the improvement plan](docs/IMPROVEMENT_PLAN.md).
+
 The completed Phase 6 product and architecture contract is
 [Orchestrated Goal](docs/ORCHESTRATION_STRATEGY.md), Collomia's optional
 **evidence-gated durable execution** mode. It is the canonical cross-session
@@ -2418,10 +2428,11 @@ status.
 
 ## Recommended next sequence
 
-The user accepted W1 and W3, then selected **W4 — effects and deliverable
-acceptance** from [`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) on
-2026-09-04. That plan owns the implementation and user-testing handoff for
-this maintenance work; wave numbers do not impose a strict execution order.
+The Kanban21 runtime-discovery and graph-continuation maintenance passed manual
+testing and was accepted on 2026-09-06. Commit this completed slice before
+selecting further work from [`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md).
+The prior Standard larger-project and Work acceptance gates remain open.
+Wave numbers do not impose a strict execution order.
 
 The Orchestrated Goal program has no open milestone: OG-1 through OG-5 are
 complete, all nine graduation clauses are met, governed read fan-out is a

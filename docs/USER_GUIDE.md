@@ -3367,10 +3367,15 @@ archiving ends the session's pointer to them, and the graph is the only thing
 that knows they exist. Observing is all that is required; a reconciled tree
 full of changes archives fine.
 
-The fixed aggregate automatic-read envelope is visible in `/orchestrate
-status`: at most two concurrent workers, eight starts, 64,000 read tokens, and
-fifteen minutes total read wall time. Each child is also capped at five minutes
-and eight iterations, and each node retains the two-attempt bound. Provider,
+The initial automatic-read allowance is visible in `/orchestrate status`: at
+most two concurrent workers, eight starts, 64,000 read tokens, and fifteen
+minutes of actual read-worker execution. Overlapping workers count once;
+primary work, user review, pauses and process downtime do not consume this read
+wall allowance. Each child initially receives up to five minutes and eight
+iterations, and each node starts with a two-attempt allowance. Explicit user
+extensions add worker and attempt resources as well as aggregate resources.
+Ready primary work runs before unrelated read investigations, keeping research
+close to its consumer and avoiding immediate invalidation by a scaffold edit. Provider,
 profile, scheduler, permission, and cancellation limits can be tighter. The
 graph records why it delegated and the worker identity, usage, evidence,
 retry, and terminal state.
@@ -3533,8 +3538,14 @@ envelope of the same size and continues. There is no limit on how often you may
 decide to continue, and the count of grants is recorded in the graph. An
 extension is not a resume — each unfinished node starts a new attempt, so it
 rereads whatever state it needs rather than assuming the earlier context, and a
-node that had already spent its attempt bound stays blocked rather than
-becoming ready again.
+budget-stopped node receives more attempts even if its original attempt allowance
+was spent. Read starts/tokens/wall and writer starts also receive another
+original allowance; per-worker iteration/time caps grow with the grant, subject
+to the remaining aggregate allowance and tighter profile limits. Spent usage
+never resets, accepted nodes stay accepted, and existing attempts are not replayed.
+An ambiguous action still requires reconciliation. Retained writer work must
+be reviewed or explicitly discarded before another writer attempt can replace
+it; adding budget is not permission to abandon that work.
 
 Size the envelope up front in configuration when you know a job is large:
 
@@ -4315,6 +4326,7 @@ question broker can make the model-visible subset smaller.
 | `git_blame` | Read-only attribution, optionally line-bounded. |
 | `git_commit` | Commit exactly the files named in `paths` and nothing else, via `git commit -- <paths>`: unrelated working-tree changes stay uncommitted and anything the user staged by hand stays staged. `paths` is required. Declaring the paths is what lets the approval prompt preview the real change and `protect_credentials` see a credential file entering history. Never pushes. |
 | `git_branch` | Create a branch at the current commit and switch to it, leaving the working tree untouched. Refuses an existing branch, because checking one out changes files outside Collomia's tracking and would stop `/restore` from reversing earlier turns. |
+| `inspect_environment` | Locate 1–16 executable names on Collo's inherited PATH without executing them; available in planning and read-only workers. Discovery does not prove versions, compatibility or sandbox access. |
 | `detect_verification` | Detect real build/lint/test commands from project files. |
 | `start_process` | Start a session-lifetime background command under command safety/sandbox policy. |
 | `list_processes` | List background process IDs, command, status, and uptime. |
@@ -5622,8 +5634,11 @@ declared dependencies are unfinished. This is metadata for coordination; it
 does not create an autonomous plan scheduler or mark the plan complete by
 itself.
 
-Queueing plus execution has a 10-minute default timeout, and each child has at
-most 16 model/tool iterations (or a lower configured/profile limit). Sub-agents
+Queueing plus execution has a 10-minute default timeout. Manual children have
+at most 16 consecutive cycles without novel progress and a 32-cycle total
+envelope (or lower configured/profile limits). Automatic graph workers instead
+honor their recorded attempt allowance, including compaction requests; an
+explicit `/orchestrate extend` can enlarge subsequent allowances. Sub-agents
 do not receive the `delegate` tool, so delegation is not recursive.
 
 Named profiles specialize a sub-agent without defining another provider:
@@ -6572,3 +6587,18 @@ uses `.collomia-tmp/` for disposable helpers, which do not need separate
 validation. “Verification incomplete” identifies a remaining check; “Blocked”
 indicates an impediment. See [Completion](COMPLETION.md) for evidence scope,
 recovery, and the distinction between content and behavioral checks.
+
+### Runtime discovery and command PATH
+
+Collo inherits PATH from the process that launches it. POSIX commands use a
+non-login `/bin/sh -c`; foreground commands, PTYs, background processes and
+delegated/combined verification share this contract. Shell startup files are
+not sourced for each action, and shell aliases/functions are not executables
+on PATH. Export the desired runtime directory before launching Collo.
+
+The agent can call `inspect_environment` with, for example,
+`{"executables":["node","npm","uv"]}` during planning in either task profile.
+A missing project file or a refused out-of-workspace file read does not prove a
+runtime is uninstalled. Version and compatibility checks run through the
+ordinary command tool during primary execution; they should be folded into the
+node that needs the runtime, not assigned to a worker without command access.

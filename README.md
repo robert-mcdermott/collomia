@@ -269,3 +269,10 @@ Standard completion uses the same file-evidence rules in Developer and Work.
 Disposable helpers belong in `.collomia-tmp/` and do not need separate acceptance;
 requested outputs and project changes still receive appropriate checks. See
 [completion behavior and scratch files](docs/COMPLETION.md).
+
+Executable discovery is available during planning through `inspect_environment`.
+Command tools preserve the PATH used to launch Collo; version checks run through
+ordinary primary execution. Orchestrated Goal's `/orchestrate extend` replenishes
+worker and attempt allowances as well as the aggregate envelope, retaining
+accepted work. See [runtime discovery](docs/USER_GUIDE.md#runtime-discovery-and-command-path)
+and the [current testing handoff](docs/IMPROVEMENT_PLAN.md).

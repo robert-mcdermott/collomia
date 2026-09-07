@@ -36,9 +36,9 @@ var (
 	// from a model choosing to stop. Token and cost ceilings have their own
 	// sentinels in agent.go; all three map to budget_exhausted.
 	ErrIterationBudgetExceeded = errors.New("agent iteration budget exhausted")
-	// ErrAggregateBudgetExceeded is the whole Orchestrated Goal envelope across
-	// proposal, primary, and automatic-worker work.
-	ErrAggregateBudgetExceeded = errors.New("orchestrated goal aggregate budget exhausted")
+	// ErrAggregateBudgetExceeded identifies an Orchestrated Goal resource stop.
+	// The attached reason names the aggregate, worker, or attempt allowance.
+	ErrAggregateBudgetExceeded = errors.New("orchestrated goal execution allowance exhausted")
 	// ErrGoalAwaitingReview is the successful stop of a candidate wave. It is a
 	// sentinel rather than a failure because nothing went wrong: verified
 	// candidates are retained and selecting one is the user's decision.

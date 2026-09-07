@@ -69,6 +69,7 @@ func Builtins(workspace string, cfg appconfig.Config) (*Registry, *diffmodel.Tra
 		GitLogTool{Workspace: guard.Workspace}, GitBlameTool{Workspace: guard.Workspace},
 		GitCommitTool{Guard: guard}, GitBranchTool{Guard: guard},
 		DetectVerificationTool{Workspace: guard.Workspace},
+		InspectEnvironmentTool{},
 		ValidateArtifactTool{Guard: guard},
 		ViewImageTool{Guard: guard},
 		StartProcessTool{Manager: procs, Runner: command}, ListProcessesTool{Manager: procs},

@@ -1,5 +1,15 @@
 # Real-model quality evaluations
 
+The September 6 orchestration reliability maintenance has separate offline
+regressions in `internal/goalgraph/continuation_test.go`,
+`internal/agent/worker_budget_test.go`, and
+`internal/app/graph_extension_test.go`. They cover repeated budget grants,
+provider-request leases including compaction, and saved-session continuation.
+Runtime discovery and PATH preservation also have native-tool and application
+tests across Developer, Work, planning and graph execution. These passing tests
+do not constitute a live model quality score; user acceptance is tracked in the
+[improvement plan](IMPROVEMENT_PLAN.md#kanban21-reliability-candidate--september-6).
+
 The receipt grader accepts both native artifact validation and Standard
 `scoped_verification.files` evidence and compares the recorded digest with final
 bytes. This does not grade browser behavior or calculation methodology by itself;

@@ -826,3 +826,28 @@ version can be fulfilled by a fresh project check after upgrade.
 Empty-response recovery adds no event kind or public outcome: bounded retries
 emit warnings and usage; exhaustion remains a structured provider protocol
 failure with a clearer TUI label. Refusal and truncation handling is unchanged.
+
+## September 6 execution allowance and environment maintenance
+
+Graph schema 1 adds optional `aggregate_budget.grant` fields:
+`attempts_per_node`, `read_starts`, `read_tokens`, `read_wall_seconds`, and
+`writer_starts`. They record one worker/attempt allowance, initialized from
+the graph's stored limits on its first explicit extension using this build.
+Restoring an old graph never grants resources. Subsequent user extensions add
+the same recorded allowance; limits and grant counts are validated, spent usage
+is retained, and failed grants do not mutate live state. Concurrency, revision,
+permission and verification bounds are unchanged. Older binaries may reject
+newly extended writer limits; resume those sessions with this build or newer.
+
+Read-wall consumption is derived from the union of immutable read-attempt
+execution windows, including retired nodes. Restore cuts an interrupted read
+at the last durable observation; review and downtime do not count as execution.
+Ready primary work now precedes unrelated automatic reads in deterministic
+plan order. This changes scheduling order, not accepted dependencies or freshness.
+
+`inspect_environment` is an additive read-only tool. POSIX command execution
+changes from login `/bin/sh -lc` to non-login `/bin/sh -c`, retaining the
+launcher's PATH and avoiding startup-file side effects. Windows keeps its
+existing `cmd.exe /d /s /c` behavior. Public event schemas and budget-exhausted
+outcome values are unchanged; graph error wording distinguishes the specific
+allowance in the recorded reason rather than calling every stop aggregate.

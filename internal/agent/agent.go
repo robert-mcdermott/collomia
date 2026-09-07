@@ -402,7 +402,13 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		if !a.graphEnabled() {
 			noProgressLimit, maxTurnIterations := a.ExecutionLimits()
 			if iteration > maxTurnIterations {
-				budgetErr := reportError(send, fmt.Errorf("%w after the hard limit of %d provider iterations; work is saved. Raise /limits (or --max-turns) and continue to give this task more time", ErrIterationBudgetExceeded, maxTurnIterations))
+				advice := "Raise /limits (or --max-turns) and continue to give this task more time"
+				if a.graphWorker {
+					advice = "The graph retains this attempt; /orchestrate extend grants another execution allowance"
+				} else if a.subagent {
+					advice = "The parent retains the worker result and can arrange further bounded work"
+				}
+				budgetErr := reportError(send, fmt.Errorf("%w after the hard limit of %d provider iterations; work is saved. %s", ErrIterationBudgetExceeded, maxTurnIterations, advice))
 				a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
 				return "", budgetErr
 			}
@@ -531,7 +537,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				send(e)
 			}
 		}
-		a.beginProviderIteration()
+		if err := a.beginProviderIteration(); err != nil {
+			a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
+			return "", reportError(send, err)
+		}
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" && !holdText {
 				e := event.New(event.KindTextDelta)
@@ -1471,7 +1480,7 @@ func planTool(name string) bool {
 		// on the machine, and a plan written without checking a library's
 		// current API is the plan that has to be thrown away during execution.
 		"web_search", "web_fetch",
-		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification":
+		"git_status", "git_diff", "git_log", "git_blame", "update_plan", "ask_user", "detect_verification", "inspect_environment":
 		return true
 	}
 	return false
@@ -2241,11 +2250,18 @@ func (a *Agent) runDelegateTask(ctx context.Context, id string, task DelegateTas
 		}
 	}
 	var evidenceMu sync.Mutex
+	childNoProgress, childTotal := min(maxIter, 16), 0
+	if task.GraphNode && task.MaxIterationsOverride > 0 {
+		// A graph claim is a durable resource lease. The manual-delegate cap
+		// must neither shorten an explicitly extended lease nor let the generic
+		// 2x turn default exceed the iterations reserved for this worker.
+		childNoProgress, childTotal = maxIter, maxIter
+	}
 	child := New(Options{
 		Client: client, ProviderName: providerName, Model: model, Workspace: childWorkspace,
 		ProviderConfig: providerConfig, Registry: childRegistry, Permissions: childManager,
 		Catalog: childCatalog, ProjectInstructions: instructions,
-		MaxIterations: min(maxIter, 16), MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
+		MaxIterations: childNoProgress, MaxTurnIterations: childTotal, MaxToolOutput: maxOut, TokenBudget: tokenBudget, CostBudgetUSD: costBudget,
 		DisabledTools: disabled, PlanMode: childPlan, Subagent: true, GraphWorker: task.GraphNode,
 		TaskMode:         activeTaskMode,
 		PersistenceError: persistenceError,
@@ -2570,10 +2586,16 @@ func (a *Agent) ProviderIterations() int {
 	return a.providerIterations
 }
 
-func (a *Agent) beginProviderIteration() {
+func (a *Agent) beginProviderIteration() error {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Compaction consumes the same recorded graph-worker lease as generation.
+	// Check at admission so a compaction cannot push a worker over its grant.
+	if a.graphWorker && a.maxTurnIterations > 0 && a.providerIterations >= a.maxTurnIterations {
+		return fmt.Errorf("%w: graph worker used its %d-provider-request allowance; /orchestrate extend grants more execution budget", ErrIterationBudgetExceeded, a.maxTurnIterations)
+	}
 	a.providerIterations++
-	a.mu.Unlock()
+	return nil
 }
 
 // CacheGaps reports how this session's request cadence sits against the
@@ -2980,7 +3002,9 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 		reasoningEffort = a.providerConfig.Reasoning.Effort
 	}
 	req := provider.Request{Model: model, System: prompts.Text(prompts.CompactSystem), Messages: []provider.Message{{Role: "user", Content: instructions + "\n\n---\n" + serialized.String()}}, MaxTokens: requestMaxTokens, ReasoningEffort: reasoningEffort}
-	a.beginProviderIteration()
+	if err := a.beginProviderIteration(); err != nil {
+		return 0, err
+	}
 	response, err := client.Chat(ctx, req, nil)
 	response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
 	if graphErr := a.recordGoalProviderUsage(context.WithoutCancel(ctx), response.Usage, 1); graphErr != nil {

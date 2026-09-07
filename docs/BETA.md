@@ -1,8 +1,11 @@
 # Collomia beta status and known limitations
 
 The current development checkout adds [scoped task-specific completion
-checks](COMPLETION.md). Automated results and the pending user acceptance gate
-are tracked in [the improvement plan](IMPROVEMENT_PLAN.md). Existing accepted
+checks](COMPLETION.md), inherited-PATH command execution, safe executable
+discovery, and Orchestrated Goal scheduling/budget-continuation repairs. The
+Kanban21 follow-up passed user manual testing on 2026-09-06. Automated results
+and separate outstanding Standard/Work acceptance checks are tracked in
+[the improvement plan](IMPROVEMENT_PLAN.md). Existing accepted
 W7 behavior remains distinct from this new slice; no live-model improvement
 is claimed from scripted tests alone.
 

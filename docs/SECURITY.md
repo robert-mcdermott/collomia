@@ -1569,3 +1569,17 @@ GitHub/Sigstore provenance authenticates workflow origin but does not satisfy
 operating-system platform-signing policy. See [Installing
 Collomia](INSTALLING.md), [beta limitations](BETA.md), and [the maintainer
 release process](RELEASING.md).
+
+### Executable discovery and shell startup
+
+`inspect_environment` performs bounded executable-name lookups using the
+launching process PATH; it does not read executable contents, run a binary,
+source shell startup files or expose other environment values. Discovery is
+metadata, not permission or evidence of successful sandbox execution. The usual
+tool allowlists, read permission and hooks still apply.
+
+POSIX command tools use `/bin/sh -c` rather than a login shell. This preserves
+PATH precedence and prevents login profiles from reintroducing credentials
+removed by `command_env: minimal`. All execution surfaces share the configured
+runner. Lookup does not weaken sandbox read restrictions; executables installed
+outside allowed sandbox roots can still require an appropriate readable root.

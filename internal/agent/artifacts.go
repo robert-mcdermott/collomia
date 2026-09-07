@@ -29,7 +29,7 @@ func executionEffects(name string, action tools.Action) toolEffects {
 		// Command Paths include inputs and working directories, not a reliable
 		// write set. Never interpret them as final deliverables.
 		return toolEffects{Unknown: true}
-	case "read_file", "list_files", "search_files", "validate_artifact", "view_image", "update_plan", "detect_verification", "read_tool_result",
+	case "read_file", "list_files", "search_files", "validate_artifact", "view_image", "update_plan", "detect_verification", "inspect_environment", "read_tool_result",
 		"read_task_context", "update_task_context", "read_session", "search_session", "git_status", "git_diff", "git_log", "git_blame", "load_skill", "ask_user", "inspect_delegate_changes", "compare_delegate_changes", "web_fetch", "web_search", "search_symbols", "find_definition", "find_references", "diagnostics", "list_processes", "process_output":
 		return toolEffects{}
 	default:

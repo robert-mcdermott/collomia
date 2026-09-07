@@ -13,6 +13,29 @@ For current priorities, remaining deliverables, and sequencing, see
 plus a feature and architecture benchmark against current terminal coding
 agents, provider platforms, and the Model Context Protocol specification.
 
+### 2026-09-06 — Kanban21 execution and graph continuation maintenance
+
+- User acceptance: "manually tested it and it works." This maintenance is
+  complete; separate Standard/Work checks remain independently tracked.
+- The observed Node problem was a capability mismatch: a read-only worker had
+  no command tool, and workspace file-probe refusals did not establish missing
+  software. `inspect_environment` now discovers executables without execution;
+  proposal guidance reserves version/compatibility commands for primary work.
+- The shared POSIX runner now uses a non-login shell, retaining inherited PATH
+  and avoiding startup-file effects after minimal-environment filtering.
+- Eager independent reads could be invalidated by a ready primary writer before
+  use. Ready primary work now runs first. Freshness and read concurrency remain.
+- The 64K read lane stopped at 63,925 tokens while the million-token aggregate
+  had ample room. Extension could neither replenish worker resources nor pass
+  the node's two-attempt ceiling. Explicit grants now cover both, retain all
+  usage, and preserve immutable attempts. Failed/unsafe grants are atomic.
+- Read wall measures execution, including retired reads, rather than idle time.
+  Safe exhausted attempts stop as extendable budget outcomes. TUI limits use a
+  pause label with work retained; public outcome contracts stay stable.
+- Focused regressions and a read-only probe of the actual saved graph pass.
+  Full verification and the candidate/live gates are recorded in
+  [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md).
+
 ### 2026-09-06 — Larger-project Standard continuation reliability
 
 - The Kanban test delivered useful work but exhausted the coupled 48-cycle

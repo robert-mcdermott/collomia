@@ -2556,6 +2556,30 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
+- Accepted maintenance (2026-09-06): Kanban21 exposed a command-dependent probe
+  assigned to a worker without command access, eager research invalidated by
+  unrelated primary writes, and a budget extension that left worker and
+  attempt ceilings exhausted. The authorized correction adds bounded executable
+  discovery without execution, prefers ready primary work before unrelated read
+  fan-out, and makes explicit budget grants replenish worker and attempt
+  allowances as well as the aggregate envelope. Read-wall accounting counts
+  worker execution rather than idle/review time. Old attempts and spent usage
+  remain immutable; grants cannot replay ambiguous actions or abandon retained
+  writer worktrees. Command execution preserves the launching PATH without login
+  startup files. No command authority is added to planning/read-only workers.
+  Graph workers honor their recorded provider-request lease, including
+  compaction, rather than inheriting the manual-delegate cap. Schema 1 adds
+  optional worker grant fields; legacy restore does not silently grant budget.
+  Implementation passed the full offline suite, targeted race checks, vet and
+  native/Linux/Windows builds. Regressions cover repeated grants, durable app
+  restart/extension, immutable accepted work, failed persistence, ambiguous
+  effects, retained writers and the actual worker loop. A read-only probe also
+  recovered the supplied saved snapshot without changing user data. See the
+  [maintenance checklist](IMPROVEMENT_PLAN.md#kanban21-reliability-candidate--september-6)
+  for acceptance evidence. On 2026-09-06 the user confirmed successful manual
+  testing and accepted this follow-up. Separate Standard/Work live checks remain
+  tracked independently. This is maintenance, not a new graduation claim.
+
 - Standard maintenance (2026-09-06): the authorized completion simplification
   accepts explicitly scoped command evidence for current files and automatically
   recovers demonstrably repaired native file failures. This is a Standard-only
