@@ -10,6 +10,15 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
+- **Release completed:** v0.5.1 was published successfully by release run
+  `34171629391`, including all platform qualification and artifact attestations.
+  Its source commit `db8f2f5` is unsigned, unlike v0.4.1's GitHub-signed PR merge
+  `f523696`; that explains the missing commit-signature badge. The earlier
+  pending qualification notes below are historical. The release guide now
+  requires an explicit GitHub signature check and recommends merging every
+  final fix through GitHub before tagging. A new release-only gate rejects
+  unverified source commits before qualification begins. It does not alter the
+  published release or require signed ancestors or a personally signed tag.
 - **Ubuntu CI follow-up (2026-09-07):** main run `34168303221` at
   `6a79dca` (VERSION v0.5.1, including the Windows ACL and shared-workflow fixes)
   failed the Ubuntu race run in `TestRunCommandPTY`: successful command exit
@@ -55,9 +64,9 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 - **Earlier quality intermittent:** the writer-sibling evaluation failure from
   `34160727968` did not recur in final PR, main, or release quality. Its diagnostic
   assertion remains; the original intermittent cause is still not established.
-- **Current work:** qualify the release follow-up, then prepare a fresh patch
-  release. The existing v0.5.0 tag is unsigned; its merge commit is verified.
-  The tag was pushed successfully and must not be moved to include these fixes.
+- **Current work:** prevent future releases from pointing at unverified source
+  commits. Workflow lint and read-only gate checks against v0.4.1 (accept) and
+  v0.5.1 (reject) passed. The published v0.5.1 release remains unchanged.
 - **Status:** reliability implementation committed in `c90beea`; `VERSION` bumped
   to `v0.5.0` in `fe0164d`. Candidate automated gates passed. Standard Developer
   acceptance passed through Kanban30 on September 6. The user reported successful
@@ -67,12 +76,11 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** commit/review the PTY follow-up, pass native Ubuntu/Windows
-  and full PR/main CI, and qualify VERSION v0.5.1 from reviewed
-  main. Use a signed tag for a GitHub-verifiable tag signature, then verify the
-  generated artifact attestations before publishing the draft. No version,
-  tag, remote branch, or release was changed in this follow-up. Do not start
-  another feature wave by default.
+- **Next action:** review and merge the release-signature gate and guide update
+  through a GitHub PR. On the next release, verify the final source commit
+  before tagging and verify downloaded artifact attestations before publication.
+  No version, tag, remote branch, or release was changed in this follow-up.
+  Do not start another feature wave by default.
 - **Historical evidence:** candidate versions, commands, and unchecked manual
   gates below record the state at that time. Older candidates were not all
   separately accepted; the current integrated Developer/Work acceptance above

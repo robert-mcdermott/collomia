@@ -13,8 +13,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-source:
+    name: Verify release commit signature
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require GitHub-verified source commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verification="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" \
+            --jq '.commit.verification | {verified, reason}')"
+          if ! jq -e '.verified == true' <<< "$verification" >/dev/null; then
+            echo "::error::Release commit $GITHUB_SHA is not verified by GitHub. Merge all release fixes through a GitHub PR or use a locally signed commit that GitHub verifies, then qualify a new release tag. Passing CI and artifact attestations do not sign the source commit."
+            printf '%s\n' "$verification"
+            exit 1
+          fi
+
   qualify:
     name: Qualify ${{ matrix.os }}
+    needs: [verify-source]
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +63,7 @@ jobs:
 
   quality:
     name: Security and deterministic quality gates
+    needs: [verify-source]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

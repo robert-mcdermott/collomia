@@ -36,7 +36,8 @@ platform-signed.
 
 `.github/workflows/release.yml` does not immediately publish a release. It:
 
-1. Checks out the exact tag on Linux, macOS, and Windows.
+1. Requires GitHub's API to report the exact release commit's signature as
+   verified, then checks out the exact tag on Linux, macOS, and Windows.
 2. Builds, tests without cached results, runs the race detector, runs `go vet`,
    and tests the native installer for each platform.
 3. Verifies modules, runs `govulncheck`, the deterministic evaluation suite,
@@ -78,11 +79,41 @@ tag explicitly.
    Presenting a browser is what keeps `web_fetch` working against CDN rules
    that refuse non-browser clients, and a version old enough to look
    implausible starts attracting the same rules it exists to satisfy.
-2. Run the local preflight below, then merge that reviewed release commit into
-   `main` and wait for required CI checks on the exact commit.
+2. Run the local preflight below, then merge the release PR using GitHub's
+   **Create a merge commit** option. GitHub signs the resulting merge commit.
+   Wait for required CI checks on that exact commit. Include version bumps and
+   any CI fixes in the PR; if another fix is needed after merging, merge it
+   through another PR before tagging. A local commit pushed afterward becomes
+   the release source if you tag the new tip, and does not inherit the earlier
+   merge commit's signature.
 3. Use a clean checkout of that `main` commit for the tag. Do not tag or build
    a release from a normal working tree containing unrelated or untracked
    files.
+4. Check GitHub's signature verdict for that exact checkout before tagging:
+
+   ```sh
+   release_commit="$(git rev-parse HEAD)"
+   gh api "repos/robert-mcdermott/collomia/commits/$release_commit" \
+     --jq '.commit.verification | {verified, reason}'
+   ```
+
+   Require `"verified": true` and `"reason": "valid"`. If the result is unsigned,
+   stop and merge the final source through GitHub, or sign a new local commit
+   with a key registered to your GitHub account and check it again after pushing.
+   A local signature alone is insufficient: GitHub must recognize it. Do not
+   amend an already published release commit to add a signature.
+
+The recommended PR merge route needs no personal signing key for the **commit**:
+[GitHub signs commits created through its web interface](https://docs.github.com/en/authentication/managing-commit-signature-verification).
+Local commit signing and tag signing are separate options. The release workflow
+accepts either GitHub-signed or locally signed commits when GitHub reports them
+verified; it does not require every ancestor commit to be signed.
+
+This check was missing from the earlier guide. v0.4.1 pointed to GitHub's verified
+PR #33 merge (`f523696`), while v0.5.1 pointed to the unsigned local “Ubuntu CI fix”
+commit (`db8f2f5`). Both tags were unsigned. v0.5.1's artifact attestations passed,
+but they could not supply the commit-signature badge. Keep that published release
+intact; the new signature gate applies to future tags containing this workflow.
 
 Local preflight:
 
@@ -121,7 +152,9 @@ the tag workflow adds the standardized SBOM and attestations.
 
 ## Tag and create the draft
 
-Read the version directly from the reviewed file:
+After the commit-signature check above passes, read the version directly from
+the reviewed file. If you have configured a personal signing key, sign the tag
+as well:
 
 ```sh
 version="$(tr -d '[:space:]' < VERSION)"
@@ -136,6 +169,11 @@ step if you want the tag's **Verified** badge. Signing an annotated tag with
 GitHub must be able to verify the signature; a green Actions run does not sign
 an unsigned tag. See GitHub's [tag signing instructions](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-tags).
 
+If you use the recommended GitHub-signed merge commit and do not have a personal
+tag-signing key, use `git tag -a "$version" -m "Collomia $version"` followed by
+`git push origin "$version"` instead. The source commit still has GitHub's
+Verified badge, as with v0.4.1; the annotated tag itself remains unsigned.
+
 There are three independent checks:
 
 - **Commit/tag signature:** identifies the source signer. A verified merge
@@ -149,7 +187,8 @@ There are three independent checks:
 Do not move or recreate a tag after it has been pushed. Watch the Release
 workflow. If qualification succeeds, open the generated draft and review:
 
-- the tag, commit, title, and generated notes;
+- the tag, commit, title, and generated notes, including the source commit's
+  **Verified** badge (open its commit link to inspect the signature);
 - all eight expected assets;
 - the three native artifact smoke-test results;
 - checksum and attestation steps;
@@ -182,7 +221,8 @@ a prerelease and must not replace the stable `latest` installer target.
 ## Manual emergency publication
 
 Prefer the tag workflow. If GitHub attestations are unavailable, do not claim
-that manually uploaded files are attested. Build from a clean tagged checkout,
+that manually uploaded files are attested. The source-commit signature check
+still applies to manual publication. Build from a clean tagged checkout,
 run the complete preflight on all available platforms, upload the exact
 `dist/` artifacts as a draft, download them again, and verify them before
 publication. Record the missing provenance in the release notes.
