@@ -10,7 +10,7 @@
 
   --text: #dce3f5;
   --text-dim: #97a2c4;
-  --text-faint: #6a7599;
+  --text-faint: #8995b8;
 
   --cyan: #5fd7ff;
   --cyan-deep: #2aa9d6;
@@ -707,4 +707,49 @@ section.tight { padding: 56px 0; }
 @media print {
   body { background: #fff; color: #000; }
   body::before { display: none; }
+}
+
+/* Product profiles and accessible navigation. */
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 5px; }
+.skip-link { position: fixed; top: -80px; left: 16px; z-index: 100; padding: 12px 18px; background: var(--panel); border: 1px solid var(--cyan); border-radius: 6px; }
+.skip-link:focus { top: 10px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.shot-link { display: block; }
+.shot-link:focus-visible { outline-offset: -3px; }
+.shot figcaption a { white-space: nowrap; margin-left: 8px; }
+.profile-command { margin-top: 24px; }
+.work-profile { border-color: rgba(255, 77, 143, .4); background: linear-gradient(135deg, rgba(255, 77, 143, .055), transparent 65%), var(--panel); }
+.mode-note { margin-top: 24px; color: var(--text-dim); font-size: .95rem; }
+.mode-note code { color: var(--text); white-space: nowrap; }
+.prompt-examples { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 38px; }
+.prompt-examples > div { border-top: 1px solid var(--line); padding-top: 18px; }
+.prompt-examples span, .feature-number { display: block; color: var(--cyan); font: 12px var(--mono); letter-spacing: .08em; margin-bottom: 12px; }
+.prompt-examples p { color: var(--text-dim); font-size: .95rem; }
+.small-note { margin-top: 20px; color: var(--text-faint); font-size: .85rem; }
+.trust-wrap { padding-top: 26px; padding-bottom: 26px; }
+.trust-details { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.trust-details > summary { padding: 22px 26px; cursor: pointer; color: var(--cyan); }
+.trust-details[open] > summary { border-bottom: 1px solid var(--line); }
+.trust-details section { padding: 40px 0; }
+.trust-details .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 980px) { .site-nav { gap: 14px; font-size: 13px; } }
+@media (max-width: 760px) {
+  .eyebrow { font-size: 10px; letter-spacing: .03em; }
+  .site-nav a[href="#work"], .site-nav a[href="#install"] { display: inline; }
+  .site-nav a[href="#work"] { font-size: 0; }
+  .site-nav a[href="#work"]::after { content: "Modes"; font-size: 13px; }
+  .site-header .wrap { gap: 12px; }
+  .nav-gh { padding: 6px 9px; }
+  .prompt-examples, .trust-details .g3 { grid-template-columns: minmax(0, 1fr); }
+  .mode { padding: 24px; }
+}
+@media (max-width: 380px) {
+  .site-nav { gap: 10px; }
+  .site-nav .nav-gh { font-size: 0; gap: 0; }
+  .site-nav .nav-gh svg { width: 17px; height: 17px; }
+  .site-header .wrap { padding-left: 16px; padding-right: 16px; }
+}
+@media (max-width: 380px) {
+  .profile-command { flex-wrap: wrap; }
+  .profile-command code { flex-basis: calc(100% - 32px); white-space: nowrap; overflow-wrap: normal; }
 }

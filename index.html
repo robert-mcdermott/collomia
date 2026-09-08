@@ -3,29 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Collomia — a local-first coding agent for the terminal</title>
-<meta name="description" content="Collomia is a local-first, provider-neutral coding agent for the terminal, built around an explicit trust boundary: OS sandboxing on macOS, Linux, and Windows, layered monotonic permission policy, and evidence-gated completion. Free and Apache-2.0.">
+<title>Collomia — one terminal agent for code and everyday work</title>
+<meta name="description" content="Build software, research, analyze data, and automate everyday work with Collomia. Your choice of local or hosted model, durable sessions, and explicit permissions. One free, open-source binary for macOS, Linux, and Windows.">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/styles.css">
 
 <meta property="og:type" content="website">
-<meta property="og:title" content="Collomia — a local-first coding agent for the terminal">
-<meta property="og:description" content="A provider-neutral terminal coding agent with OS sandboxing on macOS, Linux, and Windows, layered monotonic permission policy, and evidence-gated completion. Apache-2.0.">
+<meta property="og:title" content="Collomia — one terminal agent for code and everyday work">
+<meta property="og:description" content="One agent for development, research, analysis, and automation. Work in a repository or an ordinary folder, with your models and your permissions. Free and Apache-2.0.">
 <meta property="og:image" content="https://robert-mcdermott.github.io/collomia/assets/collo-screenshot.png">
 <meta property="og:url" content="https://robert-mcdermott.github.io/collomia/">
 <meta name="twitter:card" content="summary_large_image">
+<meta property="og:image:alt" content="Collomia working on a Kanban application, with its plan, changed files, and task-mode commands visible.">
+<link rel="canonical" href="https://robert-mcdermott.github.io/collomia/">
 </head>
 <body>
+<a class="skip-link" href="#top">Skip to content</a>
 
 <header class="site-header">
   <div class="wrap">
     <a class="brand" href="#top"><span class="glyph">✳</span>collomia<span class="tail">_</span></a>
-    <nav class="site-nav">
-      <a href="#work">How it works</a>
-      <a href="#sandbox">Sandboxing</a>
-      <a href="#policy">Policy</a>
-      <a href="#safety">Safety</a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a href="#work">Developer + Work</a>
+      <a href="#execution">How it works</a>
+      <a href="#sandbox">Your boundaries</a>
       <a href="#capabilities">Capabilities</a>
       <a href="#install">Install</a>
       <a class="nav-gh" href="https://github.com/robert-mcdermott/collomia">
@@ -41,42 +43,74 @@
 <!-- ============================================================== hero -->
 <section class="hero">
   <div class="wrap">
-    <span class="eyebrow"><span class="dot"></span>Apache-2.0 · free · local-first</span>
+    <span class="eyebrow"><span class="dot"></span>Open source · local-first · macOS, Linux &amp; Windows</span>
 
-    <h1>The model proposes.<br><span class="accent">The runtime decides.</span></h1>
+    <h1>Build software.<br><span class="accent">Get work done.</span></h1>
 
     <p class="lede">
-      Collomia is a provider-neutral coding agent for the terminal. It ships as one
-      <code>collo</code> binary for macOS, Linux, and Windows, and it is built around an unusually
-      explicit trust boundary — <strong>every model-proposed action passes through layered
-      permissions, command analysis, OS sandboxing, network controls, an audit ledger, and
-      evidence-based completion checks</strong> before it touches your machine.
+      One terminal agent for <strong>code, research, analysis, and everyday tasks.</strong>
+      Choose a local or hosted model, open your folder, and describe the outcome.
+      Collomia brings the tools, durable sessions, and explicit permissions to help you get there.
     </p>
 
     <div class="hero-actions">
       <a class="btn btn-primary" href="#install">Install Collomia</a>
-      <a class="btn btn-ghost" href="https://github.com/robert-mcdermott/collomia">Read the source</a>
+      <a class="btn btn-ghost" href="#work">Find your workflow</a>
     </div>
 
     <div class="hero-meta">
-      <span><em class="tick">✓</em> One static binary</span>
-      <span><em class="tick">✓</em> Your models, your machine</span>
-      <span><em class="tick">✓</em> No account, no telemetry</span>
+      <span><em class="tick">✓</em> One binary</span>
+      <span><em class="tick">✓</em> Your choice of model</span>
+      <span><em class="tick">✓</em> Free · Apache-2.0</span>
     </div>
 
     <figure class="shot">
       <div class="shot-bar">
         <i></i><i></i><i></i>
-        <span class="title">collo — demo-project</span>
+        <span class="title">collo — Developer mode · Kanban application</span>
       </div>
-      <img src="assets/collo-screenshot.png" width="3494" height="2220"
-           alt="The Collomia terminal interface: a transcript of tool calls on the left, a live workspace panel showing branch, plan progress, changed files, and background processes on the right, and the slash-command palette open at the bottom.">
+      <a href="assets/collo-screenshot.png" class="shot-link" aria-label="Open the full-size Collomia screenshot">
+        <img src="assets/collo-screenshot.png" width="3786" height="2152" fetchpriority="high"
+             alt="Collomia developing a Kanban application. The workspace sidebar shows a six-step plan and changed files; the command palette includes switching between Developer and Work modes.">
+      </a>
       <figcaption>
-        The full-screen interface: streamed tool calls on the left, live workspace, plan, and
-        change tracking on the right, command palette at the bottom. 19 themes, or
-        <code>plain</code> when you want no color at all.
+        Your conversation, tool activity, plan, and changes in one view. Shown in Developer mode.
+        <a href="assets/collo-screenshot.png">View full size ↗</a>
       </figcaption>
     </figure>
+  </div>
+</section>
+
+<section id="work">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Developer + Work</div>
+      <h2>A codebase. A folder of files.<br>A question you want answered.</h2>
+      <p>Choose the task profile that fits. Both share your models, sessions, tools, skills, and permission controls.</p>
+    </div>
+    <div class="grid g2">
+      <article class="mode">
+        <span class="mode-tag default">Default profile</span>
+        <h3>Developer</h3>
+        <p>Build applications, understand unfamiliar code, fix bugs, and carry changes through relevant builds and tests.</p>
+        <div class="cmd profile-command"><span class="prompt">$</span><code>collo</code><button class="copy" type="button" data-copy="collo" aria-label="Copy Developer launch command">copy</button></div>
+        <ul class="ticks"><li><strong>Work with the repository:</strong> Git inspection, atomic edits, code navigation, and LSP diagnostics.</li><li><strong>Close the loop:</strong> run project checks and review what changed.</li></ul>
+      </article>
+      <article class="mode work-profile">
+        <span class="mode-tag opt">General-purpose profile</span>
+        <h3>Work</h3>
+        <p>Research a question, analyze data, write a report, automate a routine, or investigate a system problem. Start with your real files and your own request.</p>
+        <div class="cmd profile-command"><span class="prompt">$</span><code>collo --mode work</code><button class="copy" type="button" data-copy="collo --mode work" aria-label="Copy Work launch command">copy</button></div>
+        <ul class="ticks pink"><li><strong>Any ordinary folder:</strong> no Git repository, starter project, or reporting template required.</li><li><strong>Ask naturally:</strong> the agent chooses tools and methods; direct Q&amp;A needs no artificial deliverable.</li></ul>
+      </article>
+    </div>
+    <p class="mode-note">Switch within a session with <code>/mode work</code> or <code>/mode developer</code>. Your permission settings stay the same. <a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/WORK_MODE.md">Explore Work mode ↗</a></p>
+    <div class="prompt-examples" aria-label="Example Work requests">
+      <div><span>ANALYZE</span><p>“Compare these monthly CSV exports. Explain the changes and write a report with the calculations.”</p></div>
+      <div><span>RESEARCH</span><p>“Research these options using current sources. Compare the tradeoffs and cite what you find.”</p></div>
+      <div><span>MAINTAIN</span><p>“Find what is taking up disk space. Explain what can be cleaned up before making changes.”</p></div>
+    </div>
+    <p class="small-note">Examples are starting prompts. Available models, installed tools, skills, and permissions determine what can run. Specialized document or browser tasks may need additional tools.</p>
   </div>
 </section>
 
@@ -84,86 +118,28 @@
 <section id="why" class="band">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-kicker">Why it's different</div>
-      <h2>Most of the hard part isn't writing code. It's deciding what the agent is allowed to do.</h2>
-      <p>
-        An agent that can edit files and run commands has your account's authority. Collomia treats
-        that as the central design problem rather than a settings page, and it tells you exactly
-        which boundary is holding at any moment.
-      </p>
+      <div class="sec-kicker">Built for the whole task</div>
+      <h2>From the first question to a result you can inspect.</h2>
+      <p>Read, reason, act, and check the outcome in the same session. Bring the models and tools that fit your work.</p>
     </div>
-
     <div class="grid g3">
-      <div class="card">
-        <span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/></svg></span>
-        <h3>Native containment on every desktop OS</h3>
-        <p>
-          Commands run under macOS Seatbelt, Linux Landlock, or Windows AppContainer plus Job
-          Objects — inbox kernel features, not a container runtime you have to install.
-        </p>
-      </div>
-
-      <div class="card pink">
-        <span class="ico"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/><path d="M9 4v16"/></svg></span>
-        <h3>Policy that composes in one direction</h3>
-        <p>
-          Defaults, your configuration, trusted project configuration, and environment overrides
-          layer predictably. A repository can tighten containment. It can never weaken your posture.
-        </p>
-      </div>
-
-      <div class="card amber">
-        <span class="ico"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
-        <h3>Completion has to be earned</h3>
-        <p>
-          A confident-sounding "all done" doesn't finish a goal while plan work is open,
-          verification is stale after a write, or a tool failure is unresolved. The runtime checks
-          the evidence it can actually observe.
-        </p>
-      </div>
-
-      <div class="card violet">
-        <span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span>
-        <h3>Provider-neutral by default</h3>
-        <p>
-          OpenAI-compatible endpoints, Anthropic-compatible APIs, Azure OpenAI and AI Foundry, AWS
-          Bedrock — or a local Ollama, vLLM, or LM Studio server that never leaves your laptop.
-        </p>
-      </div>
-
-      <div class="card">
-        <span class="ico"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></span>
-        <h3>Interruptible and reversible</h3>
-        <p>
-          Sessions survive a crash, finished turns are flushed to durable storage, ambiguous
-          mutations are never replayed, and file changes are reviewable, undoable, and recorded.
-        </p>
-      </div>
-
-      <div class="card">
-        <span class="ico"><svg viewBox="0 0 24 24"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 10l3 2-3 2M13 14h4"/></svg></span>
-        <h3>A whole coding loop in one binary</h3>
-        <p>
-          Atomic edits and patches, Git inspection and scoped commits, build/test detection, LSP
-          diagnostics and navigation, background processes, images, web search and fetch, MCP,
-          skills, hooks, and governed sub-agents.
-        </p>
-      </div>
+      <div class="card"><span class="feature-number">01 / MODELS</span><h3>Your choice of model</h3><p>Connect Ollama, vLLM, or LM Studio locally, or use OpenAI-compatible, Anthropic-compatible, Azure, and AWS Bedrock APIs. Choose where model requests go.</p></div>
+      <div class="card"><span class="feature-number">02 / DEVELOPMENT</span><h3>A complete coding loop</h3><p>Read a codebase, edit files, run tests, inspect language-server diagnostics, and review the diff. Background processes keep development servers within reach.</p></div>
+      <div class="card"><span class="feature-number">03 / EXTENSIONS</span><h3>Bring your tools and skills</h3><p>Connect tools through MCP and install skills for specialized methods. Work mode uses the tools available to it, so you can shape it around your own tasks.</p></div>
+      <div class="card"><span class="feature-number">04 / CONTINUITY</span><h3>Pick up where you left off</h3><p>Durable sessions preserve your conversation and work history. Resume after an interruption, steer an active turn, and review recorded file changes.</p></div>
+      <div class="card"><span class="feature-number">05 / VISIBILITY</span><h3>See the work happening</h3><p>Follow streamed text, tool activity, plan progress, and model reasoning when the provider exposes it. Keep the conversation in the terminal or open the local browser interface.</p></div>
+      <div class="card"><span class="feature-number">06 / COMPLETION</span><h3>Checks that fit the task</h3><p>Use tests for code, calculations for analysis, and sources for research. Collo records observed results and makes remaining verification gaps visible.</p></div>
     </div>
   </div>
 </section>
 
 <!-- ====================================================== execution modes -->
-<section id="work">
+<section id="execution">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-kicker">Two ways to work</div>
-      <h2>Start conversational. Escalate to a durable graph when the work deserves one.</h2>
-      <p>
-        Most sessions never need more than a prompt and a review. When a task is large enough that
-        you want its structure written down and its completion gated by something other than the
-        model's own confidence, one command turns it into runtime-owned state.
-      </p>
+      <div class="sec-kicker">Execution, at your pace</div>
+      <h2>Start with a conversation. Add structure when you need it.</h2>
+      <p>Standard execution is the default for both task profiles: describe the result and let the agent choose its approach. Developer sessions can also opt into Orchestrated Goal. Work mode currently uses Standard execution.</p>
     </div>
 
     <div class="grid g2">
@@ -173,7 +149,7 @@
         <p>
           Describe the task; Collomia works through its ordinary governed tool loop — reading,
           editing, running commands, checking diagnostics, asking when a decision is yours to make.
-          Fast and model-directed, with the runtime still holding the gates.
+          The agent chooses task-specific checks; the runtime records their results against the current work.
         </p>
         <div class="snippet"><span class="d">$</span> collo
 <span class="m">&gt;</span> Add rate limiting to the upload endpoint
@@ -183,7 +159,7 @@
 <span class="g">✓</span> <span class="c">run_command</span>  go test ./...  <span class="d">(sandboxed)</span></div>
         <ul class="ticks">
           <li>You can <strong>steer a running turn</strong> — type and press enter, and the guidance lands at the next iteration boundary, never mid-tool and never as a permission grant.</li>
-          <li>A <strong>bounded completion controller</strong> refuses an ordinary final answer while an active plan is unfinished or a write is newer than the last passing verification.</li>
+          <li><strong>Clear completion status:</strong> appropriate checks count as evidence. If the work is done but verification remains incomplete, Collo says so instead of treating that alone as a blocked task.</li>
           <li><strong>Review and undo built in:</strong> full-screen unified or side-by-side diffs, hunk-level acceptance, and a restore that reverses recorded changes as one operation.</li>
         </ul>
       </div>
@@ -253,7 +229,7 @@
           <p>Kernel-enforced filesystem access rules applied to the command's own process tree, with no daemon or root setup.</p>
           <ul>
             <li><span>Deny command network</span><span>yes</span></li>
-            <li><span>Host-scoped egress</span><span>port-level only</span></li>
+            <li><span>Host-scoped egress</span><span>not supported</span></li>
             <li><span>Process-tree cleanup</span><span>process group</span></li>
           </ul>
         </div>
@@ -303,6 +279,9 @@
   </div>
 </section>
 
+<div class="wrap trust-wrap">
+  <details class="trust-details">
+    <summary>Explore permissions, audit, and the trust boundary</summary>
 <!-- ============================================================== policy -->
 <section id="policy">
   <div class="wrap">
@@ -494,15 +473,17 @@
   </div>
 </section>
 
+  </details>
+</div>
+
 <!-- ======================================================== capabilities -->
 <section id="capabilities">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-kicker">The rest of it</div>
+      <div class="sec-kicker">Tools for daily use</div>
       <h2>Everything you'd expect from a daily driver, in one binary.</h2>
       <p>
-        Every one of these uses the same permission, sandbox, and lifecycle machinery — there is no
-        second path that skips the checks.
+        Built-in tools, integrations, and session controls share Collo's permission and lifecycle policies. Command sandboxing applies to shell execution; provider and MCP connections have separate controls.
       </p>
     </div>
 
@@ -559,6 +540,8 @@
         <h4>Interface</h4>
         <ul>
           <li>19 themes, syntax highlighting, tabs, command palette</li>
+          <li>Live reasoning when the model and provider expose it</li>
+          <li>Developer and Work task profiles</li>
           <li><code>NO_COLOR</code> support and a color-independent theme</li>
           <li>Side-by-side or unified diffs with hunk review</li>
           <li>Workspace-aware <code>@</code> file selection and image input</li>
@@ -622,18 +605,14 @@
 
     <ol class="steps">
       <li>
-        <b>Point it at a model.</b> The wizard finds local model servers that are actually
-        listening and recognized hosted-provider credentials, reads each endpoint's own catalog, and
-        proves your choice with two real requests — one ordinary completion and one carrying a tool
-        definition. It never writes an API key into a configuration file.
+        <b>Choose a model.</b> Setup discovers supported local endpoints and helps configure hosted providers. It checks that your choice can answer and accept tool definitions before saving the configuration.
         <div class="cmd"><span class="prompt">$</span><code>collo setup</code>
           <button class="copy" type="button" data-copy="collo setup">copy</button></div>
       </li>
       <li>
-        <b>Start in a repository.</b> Running <code>collo</code> with no configured provider opens
-        the same flow and continues straight into your first session.
-        <div class="cmd"><span class="prompt">$</span><code>cd /path/to/project &amp;&amp; collo</code>
-          <button class="copy" type="button" data-copy="cd /path/to/project && collo">copy</button></div>
+        <b>Open your folder and start.</b> Use <code>collo</code> for development or <code>collo --mode work</code> for general tasks. If no provider is configured, interactive startup opens setup automatically.
+        <div class="cmd"><span class="prompt">$</span><code>collo --cwd /path/to/your-folder --mode work</code>
+          <button class="copy" type="button" data-copy="collo --cwd /path/to/your-folder --mode work">copy</button></div>
       </li>
       <li>
         <b>Check what's actually enforced.</b> <code>doctor</code> inspects build, platform, merged
@@ -690,8 +669,9 @@
     <div class="cta">
       <h2>Free, Apache-2.0, and yours to inspect</h2>
       <p>
-        No account, no hosted control plane, no paid tier holding the safety features. Sessions,
-        configuration, trust records, and audit data stay on your machine.
+        No Collomia account or subscription. Sessions and configuration stay on your machine.
+        Hosted model providers may charge for usage and receive the content sent to them;
+        choose a local model when you want local inference.
       </p>
       <div class="hero-actions">
         <a class="btn btn-primary" href="#install">Get started</a>
@@ -708,7 +688,7 @@
     <div class="foot-grid">
       <div class="foot-about">
         <a class="brand" href="#top"><span class="glyph">✳</span>collomia<span class="tail">_</span></a>
-        <p>A local-first, provider-neutral coding agent for the terminal. One binary for macOS, Linux, and Windows.</p>
+        <p>A local-first terminal agent for software development and everyday work. One binary. Your choice of model.</p>
       </div>
 
       <div>
@@ -716,6 +696,7 @@
         <ul>
           <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/INSTALLING.md">Installing</a></li>
           <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/USER_GUIDE.md">User guide</a></li>
+          <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/WORK_MODE.md">Work mode</a></li>
           <li><a href="https://github.com/robert-mcdermott/collomia/blob/main/docs/FEATURES.md">Feature overview</a></li>
           <li><a href="https://github.com/robert-mcdermott/collomia/releases">Releases</a></li>
         </ul>
@@ -749,32 +730,35 @@
   </div>
 </footer>
 
+<div class="sr-only" id="copy-status" role="status" aria-live="polite"></div>
 <script>
 document.querySelectorAll(".copy").forEach(function (btn) {
-  btn.addEventListener("click", function () {
-    var text = btn.getAttribute("data-copy");
-    var done = function () {
-      btn.textContent = "copied";
-      btn.classList.add("done");
-      setTimeout(function () {
-        btn.textContent = "copy";
-        btn.classList.remove("done");
-      }, 1600);
-    };
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(done, done);
-    } else {
+  if (!btn.hasAttribute("aria-label")) btn.setAttribute("aria-label", "Copy command: " + btn.dataset.copy);
+  btn.addEventListener("click", async function () {
+    var text = btn.dataset.copy;
+    var copied = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch (error) { /* Try the local selection fallback below. */ }
+    if (!copied) {
       var ta = document.createElement("textarea");
       ta.value = text;
       ta.setAttribute("readonly", "");
-      ta.style.position = "absolute";
+      ta.style.position = "fixed";
       ta.style.left = "-9999px";
       document.body.appendChild(ta);
       ta.select();
-      try { document.execCommand("copy"); } catch (e) {}
-      document.body.removeChild(ta);
-      done();
+      try { copied = document.execCommand("copy"); } catch (error) { copied = false; }
+      ta.remove();
+      btn.focus({ preventScroll: true });
     }
+    btn.textContent = copied ? "copied" : "select text";
+    btn.classList.toggle("done", copied);
+    document.getElementById("copy-status").textContent = copied ? "Command copied." : "Copy unavailable. Select and copy the command text.";
+    setTimeout(function () { btn.textContent = "copy"; btn.classList.remove("done"); }, 2000);
   });
 });
 </script>

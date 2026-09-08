@@ -47,6 +47,18 @@ reserves the right space while it loads, and always write a real `alt`.
 ## Keeping it accurate
 
 Claims on this page are taken from `main`'s `README.md`, `docs/FEATURES.md`,
-`docs/SECURITY.md`, and `docs/BETA.md`. When a capability's status changes in
+`docs/WORK_MODE.md`, `docs/COMPLETION.md`, `docs/SECURITY.md`, and `docs/BETA.md`. When a capability's status changes in
 those documents — particularly anything marked experimental — update the page
 to match rather than letting it drift ahead of what ships.
+
+
+The current page leads with Developer and Work task profiles. Keep these separate
+from Standard/Orchestrated execution and permission autonomy. Work uses Standard
+execution and ordinary folders; do not add a required sample project or imply
+that specialized tools are bundled. Example prompts describe possible requests,
+not guaranteed outcomes on every model. Screenshot source: main's tracked
+`docs/collo-screenshot.png` (3786 × 2152); the screenshot shows Developer mode.
+
+Before publishing, check desktop and mobile layout, in-page links, the expandable
+policy section, and copy buttons (including clipboard failure). Keep assets and
+scripts local. A failed clipboard operation must not show a success message.
