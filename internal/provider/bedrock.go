@@ -42,6 +42,9 @@ type BedrockClient struct {
 	APIKeyEnv string
 	HTTP      *http.Client
 	Declared  Capabilities
+	// continuity remembers a refusal of replayed reasoning or of the
+	// requested thinking display, for the life of this client.
+	continuity continuityControl
 }
 
 func (c *BedrockClient) Name() string { return c.Label }
@@ -65,10 +68,20 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 	if region == "" {
 		region = "us-east-1"
 	}
-	body, err := bedrockRequest(in)
+	// Signatures are issued per region's Bedrock endpoint, so blocks are
+	// replayed only to the region that produced them.
+	route := "bedrock " + region
+	replayRoute := ""
+	if c.continuity.replay() {
+		replayRoute = route
+	}
+	display := bedrockClaudeModel(in.Model) && claudeAdaptiveByDefault(in.Model) && c.continuity.display()
+	body, err := bedrockRequestFor(in, replayRoute, display)
 	if err != nil {
 		return Response{}, err
 	}
+	replayed := anthropicReplays(in.Messages, replayRoute)
+	thinkingRetried := false
 	endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse-stream", region, url.PathEscape(in.Model))
 	for adjustment := 0; ; adjustment++ {
 		data, err := json.Marshal(body)
@@ -98,6 +111,32 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 			if readErr != nil {
 				return Response{}, protocolError(c.Label, "read converse-stream error response", readErr)
 			}
+			// The same safety net as the Anthropic route: a refused replay or
+			// display request is retried without it, and remembered.
+			if !thinkingRetried && (replayed || display) && rejectedThinking(resp.StatusCode, errorBody) {
+				thinkingRetried = true
+				warning := "Bedrock refused the thinking display request; retrying without it and not asking again for this provider in this session"
+				if replayed {
+					c.continuity.refuseReplay()
+					replayed = false
+					warning = "Bedrock refused replayed thinking; retrying without it and not replaying thinking again for this provider in this session"
+				} else {
+					c.continuity.refuseDisplay()
+					display = false
+				}
+				if !c.continuity.replay() {
+					replayRoute = ""
+				}
+				rebuilt, err := bedrockRequestFor(in, replayRoute, display)
+				if err != nil {
+					return Response{}, err
+				}
+				body = rebuilt
+				if onDelta != nil {
+					onDelta(Delta{Warning: warning})
+				}
+				continue
+			}
 			if adjustment == 0 && in.ReasoningEffort != "" && bedrockRejectedReasoning(resp.StatusCode, errorBody) {
 				delete(body, "additionalModelRequestFields")
 				if onDelta != nil {
@@ -108,14 +147,17 @@ func (c *BedrockClient) Chat(ctx context.Context, in Request, onDelta func(Delta
 			return Response{}, responseError(resp, c.Label, "converse-stream", errorBody)
 		}
 		defer resp.Body.Close()
+		var recorder blockRecorder
 		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "application/vnd.amazon.eventstream") {
-			response, err := parseBedrockStream(resp.Body, c.Label, requestID(resp.Header), onDelta)
+			response, err := parseBedrockStreamRecording(resp.Body, c.Label, requestID(resp.Header), onDelta, &recorder)
+			response.ReasoningState = recorder.state(route, in.Model)
 			return response, protocolError(c.Label, "read converse stream", err)
 		}
 		// Some compatible test/proxy endpoints return the ordinary Converse JSON
 		// envelope even on the streaming route. Accept it without weakening the
 		// advertised AWS path, which always uses event-stream framing.
-		response, err := parseBedrockResponse(resp.Body, onDelta)
+		response, err := parseBedrockResponseRecording(resp.Body, onDelta, &recorder)
+		response.ReasoningState = recorder.state(route, in.Model)
 		return response, protocolError(c.Label, "decode converse response", err)
 	}
 }
@@ -199,12 +241,58 @@ func (c *BedrockClient) bearerToken() (token, source string, err error) {
 	return token, BedrockBearerTokenEnv, nil
 }
 
-func bedrockRequest(in Request) (map[string]any, error) {
+func bedrockRequest(in Request) (map[string]any, error) { return bedrockRequestFor(in, "", false) }
+
+// bedrockReplayContent rebuilds an assistant message from its recorded
+// blocks in Converse's shape, reasoning verbatim.
+func bedrockReplayContent(msg Message, blocks []ReasoningBlock) ([]any, error) {
+	calls := make(map[string]ToolCall, len(msg.ToolCalls))
+	for _, call := range msg.ToolCalls {
+		calls[call.ID] = call
+	}
+	content := make([]any, 0, len(blocks))
+	for _, block := range blocks {
+		switch block.Kind {
+		case "reasoning":
+			if block.Redacted != "" {
+				content = append(content, map[string]any{"reasoningContent": map[string]any{"redactedContent": block.Redacted}})
+				continue
+			}
+			content = append(content, map[string]any{"reasoningContent": map[string]any{
+				"reasoningText": map[string]any{"text": block.Text, "signature": block.Signature}}})
+		case "text":
+			content = append(content, map[string]any{"text": block.Text})
+		case "tool_use":
+			call := calls[block.ToolUseID]
+			var input any
+			if err := json.Unmarshal(rawObject(call.Arguments), &input); err != nil {
+				return nil, err
+			}
+			content = append(content, map[string]any{"toolUse": map[string]any{"toolUseId": call.ID, "name": call.Name, "input": input}})
+		}
+	}
+	return content, nil
+}
+
+// bedrockRequestFor builds a Converse request, replaying recorded reasoning to
+// replayRoute and asking a default-adaptive Claude for readable thinking when
+// display is set.
+func bedrockRequestFor(in Request, replayRoute string, display bool) (map[string]any, error) {
 	messages := make([]any, 0, len(in.Messages))
 	for i := 0; i < len(in.Messages); i++ {
 		msg := in.Messages[i]
 		role := msg.Role
 		content := []any{}
+		if msg.Role == "assistant" {
+			if blocks, ok := replayBlocks(msg, replayRoute); ok {
+				replay, err := bedrockReplayContent(msg, blocks)
+				if err != nil {
+					return nil, err
+				}
+				messages = append(messages, map[string]any{"role": "assistant", "content": replay})
+				continue
+			}
+		}
 		switch {
 		case msg.Role == "tool":
 			role = "user"
@@ -241,10 +329,15 @@ func bedrockRequest(in Request) (map[string]any, error) {
 		messages = append(messages, map[string]any{"role": role, "content": content})
 	}
 	body := map[string]any{"messages": messages, "inferenceConfig": map[string]any{"maxTokens": in.MaxTokens}}
+	additional := map[string]any{}
 	if in.ReasoningEffort != "" && bedrockClaudeModel(in.Model) {
-		body["additionalModelRequestFields"] = map[string]any{
-			"output_config": map[string]any{"effort": in.ReasoningEffort},
-		}
+		additional["output_config"] = map[string]any{"effort": in.ReasoningEffort}
+	}
+	if display {
+		additional["thinking"] = map[string]any{"type": "adaptive", "display": "summarized"}
+	}
+	if len(additional) > 0 {
+		body["additionalModelRequestFields"] = additional
 	}
 	if in.System != "" {
 		body["system"] = []any{map[string]any{"text": in.System}}
@@ -310,11 +403,22 @@ func bedrockContentParts(message Message) ([]any, error) {
 }
 
 func parseBedrockResponse(r io.Reader, onDelta func(Delta)) (Response, error) {
+	return parseBedrockResponseRecording(r, onDelta, nil)
+}
+
+func parseBedrockResponseRecording(r io.Reader, onDelta func(Delta), recorder *blockRecorder) (Response, error) {
 	var payload struct {
 		Output struct {
 			Message struct {
 				Content []struct {
-					Text    string `json:"text"`
+					Text             string `json:"text"`
+					ReasoningContent *struct {
+						ReasoningText *struct {
+							Text      string `json:"text"`
+							Signature string `json:"signature"`
+						} `json:"reasoningText"`
+						RedactedContent string `json:"redactedContent"`
+					} `json:"reasoningContent"`
 					ToolUse *struct {
 						ToolUseID string          `json:"toolUseId"`
 						Name      string          `json:"name"`
@@ -333,7 +437,23 @@ func parseBedrockResponse(r io.Reader, onDelta func(Delta)) (Response, error) {
 		return Response{}, err
 	}
 	out := Response{Stop: payload.StopReason, Usage: Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens}}
-	for _, part := range payload.Output.Message.Content {
+	for i, part := range payload.Output.Message.Content {
+		if recorder != nil {
+			switch {
+			case part.ReasoningContent != nil && part.ReasoningContent.ReasoningText != nil:
+				recorder.reasoning(i, part.ReasoningContent.ReasoningText.Text)
+				recorder.signature(i, part.ReasoningContent.ReasoningText.Signature)
+			case part.ReasoningContent != nil && part.ReasoningContent.RedactedContent != "":
+				recorder.redacted(i, part.ReasoningContent.RedactedContent)
+			case part.ToolUse != nil:
+				recorder.toolUse(i, part.ToolUse.ToolUseID)
+			case part.Text != "":
+				recorder.text(i, part.Text)
+			}
+		}
+		if part.ReasoningContent != nil && part.ReasoningContent.ReasoningText != nil && part.ReasoningContent.ReasoningText.Text != "" && onDelta != nil {
+			onDelta(Delta{Reasoning: part.ReasoningContent.ReasoningText.Text})
+		}
 		if part.Text != "" {
 			out.Content += part.Text
 			if onDelta != nil {
@@ -348,6 +468,17 @@ func parseBedrockResponse(r io.Reader, onDelta func(Delta)) (Response, error) {
 }
 
 func parseBedrockStream(r io.Reader, label, requestID string, onDelta func(Delta)) (Response, error) {
+	return parseBedrockStreamRecording(r, label, requestID, onDelta, nil)
+}
+
+// parseBedrockStreamRecording parses a ConverseStream, recording every
+// content block in order when recorder is set. Reasoning arrives as
+// reasoningContent deltas — readable text (empty when the model omits it),
+// then a signature — or as redactedContent, with no contentBlockStart.
+func parseBedrockStreamRecording(r io.Reader, label, requestID string, onDelta func(Delta), recorder *blockRecorder) (Response, error) {
+	if recorder == nil {
+		recorder = &blockRecorder{}
+	}
 	decoder := eventstream.NewDecoder()
 	tools := map[int]*toolAccumulator{}
 	var out Response
@@ -395,6 +526,7 @@ func parseBedrockStream(r io.Reader, label, requestID string, onDelta func(Delta
 				return Response{}, fmt.Errorf("decode Bedrock contentBlockStart: %w", err)
 			}
 			if payload.Start.ToolUse != nil {
+				recorder.toolUse(payload.ContentBlockIndex, payload.Start.ToolUse.ToolUseID)
 				acc := &toolAccumulator{id: payload.Start.ToolUse.ToolUseID, name: payload.Start.ToolUse.Name}
 				tools[payload.ContentBlockIndex] = acc
 				if onDelta != nil {
@@ -410,14 +542,27 @@ func parseBedrockStream(r io.Reader, label, requestID string, onDelta func(Delta
 						Input string `json:"input"`
 					} `json:"toolUse"`
 					ReasoningContent *struct {
-						Text string `json:"text"`
+						Text            string `json:"text"`
+						Signature       string `json:"signature"`
+						RedactedContent string `json:"redactedContent"`
 					} `json:"reasoningContent"`
 				} `json:"delta"`
 			}
 			if err := json.Unmarshal(message.Payload, &payload); err != nil {
 				return Response{}, fmt.Errorf("decode Bedrock contentBlockDelta: %w", err)
 			}
+			if reasoning := payload.Delta.ReasoningContent; reasoning != nil {
+				switch {
+				case reasoning.RedactedContent != "":
+					recorder.redacted(payload.ContentBlockIndex, reasoning.RedactedContent)
+				case reasoning.Signature != "":
+					recorder.signature(payload.ContentBlockIndex, reasoning.Signature)
+				default:
+					recorder.reasoning(payload.ContentBlockIndex, reasoning.Text)
+				}
+			}
 			if payload.Delta.Text != "" {
+				recorder.text(payload.ContentBlockIndex, payload.Delta.Text)
 				out.Content += payload.Delta.Text
 				if onDelta != nil {
 					onDelta(Delta{Text: payload.Delta.Text})

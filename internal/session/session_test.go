@@ -887,3 +887,73 @@ func TestUsageAccountingSurvivesReloadBeyondRecentProjection(t *testing.T) {
 		t.Fatalf("usage=%+v", usage)
 	}
 }
+
+func TestAssistantThinkingPersistsWithoutChunkRecords(t *testing.T) {
+	// Thinking used to be stored as one event record per streamed chunk,
+	// unordered relative to the conversation and never shown again. It is now
+	// kept whole on the assistant message.
+	store := testStore(t)
+	sess, err := store.New("provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	for _, chunk := range []string{"a", "b", "c"} {
+		e := event.New(event.KindReasoningDelta)
+		e.Text = chunk
+		sess.AppendEvent(e)
+	}
+	sess.AppendMessage(provider.Message{Role: "assistant", Content: "answer", Reasoning: "abc"})
+	sess.Close()
+
+	loaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	messages := loaded.TranscriptMessages()
+	if len(messages) != 1 || messages[0].Reasoning != "abc" {
+		t.Fatalf("messages = %+v", messages)
+	}
+	for _, e := range loaded.RecentEvents() {
+		if e.Kind == event.KindReasoningDelta {
+			t.Fatal("reasoning chunks must not be persisted as events")
+		}
+	}
+}
+
+func TestReopeningAfterCompactionDropsBoundReasoning(t *testing.T) {
+	// Signed reasoning is bound to the conversation before it. After a
+	// compaction replaced that conversation, a resumed session must not
+	// replay it — exactly as the live agent stopped doing.
+	store := testStore(t)
+	sess, err := store.New("provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	state := &provider.ReasoningState{Route: "r", Blocks: []provider.ReasoningBlock{{Kind: "reasoning", Signature: "S"}}}
+	sess.AppendMessage(provider.Message{Role: "user", Content: "old"})
+	sess.AppendMessage(provider.Message{Role: "assistant", Content: "kept", ReasoningState: state})
+	sess.AppendCompaction(provider.Message{Role: "user", Content: "[Context summary] earlier"}, 1)
+	for _, m := range sess.Active() {
+		if m.ReasoningState != nil {
+			t.Fatal("the live session must drop bound reasoning at compaction")
+		}
+	}
+	sess.AppendMessage(provider.Message{Role: "assistant", Content: "after", ReasoningState: state})
+	sess.Close()
+
+	loaded, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	active := loaded.Active()
+	if len(active) != 3 || active[1].ReasoningState != nil || active[2].ReasoningState == nil {
+		t.Fatalf("active = %+v; only reasoning produced after the compaction is still valid", active)
+	}
+	if transcript := loaded.TranscriptMessages(); transcript[1].ReasoningState == nil {
+		t.Error("the full transcript is a record and keeps what was received")
+	}
+}

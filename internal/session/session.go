@@ -317,7 +317,7 @@ func (s *Store) Checkpoints(id string) ([]Checkpoint, error) {
 	var checkpoints []Checkpoint
 	prompt := ""
 	for _, record := range records {
-		if record.Type == "message" && record.Message != nil && record.Message.Role == "user" {
+		if record.Type == "message" && record.Message != nil && record.Message.Role == "user" && !record.Message.Pinned {
 			prompt = record.Message.Content
 		}
 		if record.Type == "event" && record.Event != nil && record.Event.Kind == event.KindTurnEnd {
@@ -731,7 +731,7 @@ func (sess *Session) replay(record Record) {
 		}
 	case "compaction":
 		if record.Message != nil && record.Replaced > 0 && record.Replaced <= len(sess.active) {
-			sess.active = append([]provider.Message{*record.Message}, sess.active[record.Replaced:]...)
+			sess.active = compactedActive(*record.Message, sess.active[record.Replaced:])
 		}
 	case "plan":
 		sess.PlanRaw = record.Plan
@@ -958,16 +958,33 @@ func (sess *Session) AppendMessage(message provider.Message) {
 func (sess *Session) AppendCompaction(summary provider.Message, replaced int) {
 	sess.mu.Lock()
 	if replaced > 0 && replaced <= len(sess.active) {
-		sess.active = append([]provider.Message{summary}, sess.active[replaced:]...)
+		sess.active = compactedActive(summary, sess.active[replaced:])
 	}
 	sess.mu.Unlock()
 	_ = sess.append(Record{Type: "compaction", Message: &summary, Replaced: replaced})
 }
 
+// compactedActive is the model-visible conversation after a compaction: the
+// summary, then the kept tail without provider-bound reasoning state. That
+// state is bound to the conversation before it, which the summary replaced,
+// so a resumed session must drop it exactly as the live agent did.
+func compactedActive(summary provider.Message, tail []provider.Message) []provider.Message {
+	active := make([]provider.Message, 0, len(tail)+1)
+	active = append(active, summary)
+	for _, message := range tail {
+		message.ReasoningState = nil
+		active = append(active, message)
+	}
+	return active
+}
+
 // AppendEvent persists a runtime event for replay/audit.
 func (sess *Session) AppendEvent(e event.Event) {
-	if e.Kind == event.KindTextDelta || e.Kind == event.KindToolCallDelta || e.Kind == event.KindToolOutput {
-		return // deltas and streamed chunks are reconstructable from results
+	if e.Kind == event.KindTextDelta || e.Kind == event.KindToolCallDelta || e.Kind == event.KindToolOutput || e.Kind == event.KindReasoningDelta {
+		// Deltas and streamed chunks are reconstructable from results.
+		// Reasoning is kept whole on the assistant message it belongs to,
+		// rather than as thousands of unordered chunk records.
+		return
 	}
 	sess.mu.Lock()
 	sess.retainEvent(e)

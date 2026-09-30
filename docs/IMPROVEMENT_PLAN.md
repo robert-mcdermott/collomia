@@ -97,11 +97,9 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** none active. W10 is complete. The user chooses the next
-  work; candidates are listed in the roadmap's
-  [Recommended next sequence](../ROADMAP.md#recommended-next-sequence) and
-  below: W2b, W8, W9, and the MCP protocol upgrade. W10a–c are committed as
-  `5dd9a8a` and W10d1 as `9c445db`; W10d2 is accepted and uncommitted. On the next release, verify the final
+- **Active (2026-09-30): W2b, split into W2b1–3.** W2b1 and W2b2 are
+  accepted and uncommitted. W2b3 (an OpenAI Responses route with encrypted
+  reasoning) is planned and awaits the user's go-ahead. On the next release, verify the final
   source commit's GitHub signature before tagging and verify downloaded artifact
   attestations before publication.
 - **Historical evidence:** candidate versions, commands, and unchecked manual
@@ -961,7 +959,7 @@ After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 | Wave | Deliverable | Status | User gate |
 | --- | --- | --- | --- |
 | W1 | Separate, bounded live thinking summaries in the TUI | Accepted | User confirmed successful reasoning display with GLM-5.3-flash from Ollama |
-| W2 | Reasoning configuration, provider-state continuity, and summary replay | Planned; effort configuration (W2a) moved to W10c | Reasoning/tool conversations work on the user's actual providers, including reopen |
+| W2 | Reasoning configuration, provider-state continuity, and summary replay | W2a in W10c; W2b split into W2b1 and W2b2 (accepted), W2b3 (planned) | Reasoning/tool conversations work on the user's actual providers, including reopen |
 | W3 | Correct completion outcomes, exact failure recovery, large-file pagination | Accepted | User confirmed pagination and the follow-up manual tests passed |
 | W4 | Final deliverable identity and observed-effect checks | Accepted | User confirmed all manual tests passed and explicitly marked the wave done |
 | W5 | Real-model evaluation baseline | Accepted | Representative tasks and quality/cost metrics reflect the user's work |
@@ -1033,6 +1031,227 @@ capability, and model-appropriate Anthropic thinking/effort configuration (W2a)
 are delivered by [W10c](#w10c--reasoning-and-effort-w2a) together with setup's
 picker. The provider-state continuity, Responses route, and reopen replay items
 above remain W2b.
+
+#### W2b — split on 2026-09-30
+
+The user said "start W2b" after W10. Investigation and a contract check showed
+W2b is too large for one testable slice, so it was split. Each part has its own
+gate.
+
+**Contracts verified on 2026-09-30:**
+
+- **Anthropic:**
+  - Signed `thinking` and `redacted_thinking` blocks must be passed back
+    unmodified after `tool_use`. Modifying them is a 400; omitting them is an
+    error per Bedrock's guide but unconfirmed on the Anthropic API.
+  - Claude 5.x models think adaptively by default, even when no `thinking`
+    field is sent, and default `display` to `"omitted"`: an empty `thinking`
+    plus a `signature`, which must still be sent back.
+  - Opus 4.5+ keeps prior turns' blocks.
+  - **Prefix binding:** a replayed block on Fable 5.1, Opus 5.5, or Sonnet 5.5
+    is valid only while `system`, `tools`, and every earlier message are
+    unchanged. This is enforced for accounts created from 2026-08-31, and a
+    beta header `thinking-binding-controls-2026-08-01` can set
+    `prefix_mismatch_behavior: "drop_block"`.
+  - Cross-model blocks are silently dropped.
+- **OpenAI Responses:**
+  - Stateless mode returns `encrypted_content` on reasoning items. Replay all
+    reasoning, function call, and output items since the last user message,
+    untouched.
+  - `reasoning.context` is `auto`, `current_turn`, or `all_turns`.
+  - Summaries are an opt-in. Chat Completions has no continuity mechanism.
+- **Compatible servers:** vLLM returns `reasoning` (formerly
+  `reasoning_content`). Ollama `/v1` does not document a return field.
+  DeepSeek could not be fetched and is unverified.
+- **Bedrock Converse:** a `ReasoningContentBlock` of `reasoningText` with
+  `signature`, or `redactedContent`, is passed back unmodified during tool
+  use.
+
+**Key design finding for W2b2.** Collomia appends a volatile pinned-state
+message to every request and drops it on the next. Under prefix binding,
+every replayed thinking block would then be bound to a prefix that no longer
+exists, and be rejected. It is harmless today only because no blocks are
+sent. W2b2 must choose one of three options:
+1. Persist the pinned-state message into history for binding providers.
+2. Move it into the system prompt, which also binds.
+3. Use `drop_block` and accept losing replayed reasoning.
+
+This is a user decision at W2b2's start.
+
+##### W2b1 — kept thinking, reopen restore, fallback extraction, capability split
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed"). Tested
+with `deepseek-v4.1-flash:cloud` per the user's preference for cloud-offloaded
+models.**
+
+- [x] `provider.Message.Reasoning` holds display-only readable thinking per
+  assistant message.
+  - The agent accumulates it from deltas, bounded at 64 KiB, UTF-8 safe, with
+    the truncation stated.
+  - No adapter serializes messages wholesale, so it is never sent to a
+    provider.
+  - It is additive to session record schema 1 (optional field, no version
+    bump), and old sessions stay readable.
+- [x] Sessions stop persisting `reasoning.delta` chunk events; the message
+  carries the whole summary.
+- [x] The TUI's `restoredBlocks` emits a collapsed THINKING SUMMARY block above
+  the assistant answer on resume and reopen.
+- [x] Synchronous fallbacks report thinking through the same delta path, ahead
+  of the answer:
+  - OpenAI-compatible `reasoning_content`/`reasoning`.
+  - Anthropic `thinking` blocks.
+  - Responses reasoning items, using the summary with a content fallback.
+  - Bedrock `reasoningContent.reasoningText`.
+- [x] `provider.Capabilities` has three reasoning fields:
+  - `Reasoning`: effort control.
+  - `ReasoningSummaries`: Partial, or Unsupported on the official OpenAI and
+    Azure Chat Completions routes, which return no reasoning text.
+  - `ReasoningContinuity`: Unsupported everywhere.
+
+  `/models` `DetailSummary` lists all three, and the adapter constraints and
+  capability rows are updated.
+- [x] Tests:
+  - Each fallback parser's extraction and ordering.
+  - The capability split.
+  - The agent keeping thinking on its message, and bounded truncation.
+  - The session round-trip without chunk records.
+  - The reopened-transcript block.
+- [x] **User accepts W2b1** (2026-09-30).
+
+**Automated evidence (2026-09-30):**
+
+- Full suite, race detector on the changed packages, vet, and cross-builds
+  passed.
+- Live with `qwen3.5:9b` on local Ollama 0.35.0, in a scratch HOME:
+  - A prompt showed a THINKING SUMMARY above "391".
+  - Quitting and reopening with `collo --continue` showed it again in the same
+    place.
+  - The session file held 121 characters of reasoning on the assistant
+    message and no `reasoning.delta` records.
+
+**Manual checks for the user:**
+
+1. With a model that emits thinking (`qwen3.5`, `glm-5.3-flash:cloud`), ask
+   something that needs a little reasoning. After it answers, quit, then run
+   `collo --continue` or `/sessions`. The THINKING SUMMARY should reappear
+   above that answer, and `ctrl+o` should expand it.
+2. Do the same across a turn that uses tools. Each response's summary should
+   sit above its own answer or tool calls.
+3. Run `/models`. Your provider should list reasoning effort, reasoning
+   summaries, and reasoning continuity separately, with continuity
+   unavailable.
+
+##### W2b2 — Anthropic, Bedrock, and Foundry signed-thinking round-trip
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed") on
+Bedrock `us.anthropic.claude-opus-5-5`.**
+
+**Decision.** The user chose option 1, recording plan updates, after asking
+whether it could break any provider. The answer was that it would not, given
+the safety net below, and that other providers are untouched. The user then
+supplied a real endpoint for live verification: `bedrock` /
+`us.anthropic.claude-opus-5-5`.
+
+- [x] `provider.ReasoningState` on assistant messages, persisted additively:
+  - Every content block in its original order: reasoning (text, possibly
+    empty, with a signature or a redacted payload), text, and tool_use by ID.
+  - A route recording the Anthropic base URL or the Bedrock region, plus the
+    model.
+  - Replayed only to the same route, and only while the message's tool calls
+    still match its blocks.
+  - Never rendered. Readable text stays in `Message.Reasoning`.
+- [x] Anthropic parses `thinking`, `redacted_thinking`, `thinking_delta`, and
+  `signature_delta` in both stream and non-stream responses.
+  - `anthropicMessagesFor` replays the blocks verbatim, including empty
+    thinking.
+  - The cache breakpoint never lands on a thinking block.
+  - Bedrock parses `reasoningContent` text, signature, and `redactedContent`
+    deltas and responses, and replays `reasoningText`/`redactedContent` in
+    Converse's shape.
+- [x] Display: `thinking: {type: adaptive, display: summarized}` is sent only
+  to Claude models that think by default (the 5.x family and Mythos Preview),
+  where it changes only what is shown. On Bedrock it goes through
+  `additionalModelRequestFields`, merged with the effort.
+- [x] Prefix binding, option 1:
+  - `withPinnedState` records the pinned state into the conversation once per
+    change for routes whose `ReasoningContinuity` is Supported or Partial:
+    anthropic (Supported), anthropic-compatible and azure-foundry-anthropic
+    (Partial), and Bedrock Claude models (Partial).
+  - Other routes keep the per-request volatile copy and filter out any
+    recorded copies.
+  - Recorded snapshots are `Message.Pinned`, hidden from the restored
+    transcript, prompt history, and rewind checkpoint labels.
+  - Compaction, in the live agent and in session replay (`compactedActive`),
+    drops every block. A termination that discards tool calls discards the
+    blocks.
+- [x] Safety net (`continuityControl`): a 400 about thinking or signatures
+  while replaying or requesting display is retried once without it, warns
+  once, and is not attempted again for that client. Replay is removed first,
+  since removing all blocks is always permitted.
+- [x] Capabilities and docs: `ReasoningContinuity` states, adapter
+  constraints, a new capability row, the user guide, beta notes, and the
+  changelog.
+- [x] Tests:
+  - The live-observed Bedrock stream shape is recorded in order.
+  - Bedrock and Anthropic verbatim replay, with no replay to another
+    route/region.
+  - Mismatched tool calls skip replay.
+  - No cache breakpoint on thinking.
+  - Display only for default-adaptive models.
+  - Refused replay falls back and stays off.
+  - Binding routes record the plan once per change with a stable prefix.
+  - Non-binding routes keep the volatile state and filter recorded copies.
+  - Compaction replay drops state while the transcript keeps it.
+  - Pinned snapshots are hidden in the TUI.
+- [x] **User accepts W2b2** (2026-09-30).
+
+**Automated and live evidence (2026-09-30):**
+
+- The provider, agent, session, and TUI suites passed; the full gate is
+  recorded below.
+- Live against the user's Bedrock `us.anthropic.claude-opus-5-5`, headless,
+  `--ephemeral`, using a temporary request/event probe that was removed
+  afterwards:
+  1. **Baseline, before the change:** a two-tool task succeeded with no
+     readable thinking. The stream showed reasoning as `reasoningContent {text:
+     ""}` then `{signature}`, which confirmed the empty-plus-signature shape.
+  2. **After, no plan:** summarized display was accepted, with 199 characters
+     of readable thinking and no warnings. The third request replayed
+     `assistant[reasoningContent toolUse]`, Bedrock accepted it, and the
+     answer was correct.
+  3. **After, active plan:** plan snapshots were recorded as `user[text]`
+     after tool results, three times, once per change. Replayed reasoning
+     around them was accepted in requests 3 and 4, with no warnings or errors
+     and a correct answer.
+- Not verifiable here: the Anthropic API's account-dated prefix binding (no
+  Anthropic API key was used), and whether moving cache markers counts as a
+  prefix change. The safety net covers both.
+
+**Manual checks for the user:**
+
+1. In a session on `bedrock` / Opus 5.5, give a multi-step task that uses tools.
+   A THINKING SUMMARY should appear, which is new for Claude 5.x. There should
+   be no warning about refused thinking.
+2. Give a task that makes a plan (`/tasks` shows it), then works through
+   several tool steps. It should complete normally. After quitting, `collo
+   --continue` should not show plan snapshots as messages you typed, and the
+   up-arrow history should not contain them.
+3. Switch with `/model` to a non-Claude provider mid-session and continue. It
+   should work as before.
+4. Optional, for a long session: after a compaction, the next requests should
+   keep working. Replayed thinking restarts from there.
+
+##### W2b3 — OpenAI Responses route with encrypted reasoning
+
+**Status: planned.**
+
+- [ ] An explicit Responses route for `openai` and Azure, with a
+  model-appropriate choice between it and Chat Completions.
+- [ ] Stateless `encrypted_content` replay of reasoning items since the last
+  user message, and a `reasoning.summary` opt-in.
+- [ ] Verify the streaming event names before implementing, since they were
+  not confirmed on 2026-09-30.
+
 
 ### W3 — truthful completion and usable inputs
 
@@ -2147,6 +2366,10 @@ completes W10.**
 | 2026-09-30 | W10d1 acceptance | The user reported a `/effort` redraw defect (the panel appeared only on the next key), which was fixed with a regression test. The user asked how to change a provider's default model, then: "manual testing passed." | W10d1 accepted; W10d2 next, default-setting first. |
 | 2026-09-30 | W10d2 implementation | The user committed W10d1 (`9c445db`) and said "start W10d2". Provider menu, direct edits, and learned-ceiling save implemented. A new test found a latent unmasked-secret render and a live run found unforwarded direct-edit results; both fixed with regression tests. Full suite, race, vet, and cross-builds passed. | W10d2 ready for user testing. |
 | 2026-09-30 | W10d2 acceptance | User: "manual testing passed." | W10d2 accepted; W10 complete. No wave active. |
+| 2026-09-30 | W2b split / W2b1 implementation | The user said "start W2b". A code map and contract check found no reasoning state carried anywhere, and a prefix-binding conflict with the volatile pinned-state message. W2b was split into W2b1–3. W2b1 is implemented; full suite, race, vet, and cross-builds passed, and a live reopen check passed. | W2b1 ready for user testing; W2b2 needs a prefix-binding decision. |
+| 2026-09-30 | W2b1 acceptance | User: "manual testing passed." The user asked that future live tests use `deepseek-v4.1-flash:cloud` rather than local GPU models. | W2b1 accepted; W2b2 awaits the prefix-binding decision. |
+| 2026-09-30 | W2b2 decision / implementation | The user chose option 1 (record plan updates) after confirming it breaks no provider, and supplied Bedrock Opus 5.5 for live testing. Replay, display, pinned recording, and the safety net are implemented. Tests passed; three live Bedrock runs (baseline, no plan, active plan) succeeded with no refusals. | W2b2 ready for user testing. |
+| 2026-09-30 | W2b2 acceptance | User: "manual testing passed" (Bedrock Opus 5.5, including the plan, reopen, provider-switch, and compaction checks). | W2b2 accepted; W2b3 awaits go-ahead. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.

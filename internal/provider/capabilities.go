@@ -23,19 +23,29 @@ const (
 // provider/model selection. It describes what Collomia's adapter can actually
 // send and consume, not every feature the upstream vendor may offer.
 type Capabilities struct {
-	ProviderType      string          `json:"provider_type"`
-	Model             string          `json:"model"`
-	Tools             CapabilityState `json:"tools"`
-	Streaming         CapabilityState `json:"streaming"`
-	Reasoning         CapabilityState `json:"reasoning"`
-	Images            CapabilityState `json:"images"`
-	StructuredOutput  CapabilityState `json:"structured_output"`
-	TokenCounting     CapabilityState `json:"token_counting"`
-	PromptCaching     CapabilityState `json:"prompt_caching"`
-	ParallelToolCalls CapabilityState `json:"parallel_tool_calls"`
-	ModelDiscovery    CapabilityState `json:"model_discovery"`
-	ContextWindow     int             `json:"context_window,omitempty"`
-	Constraints       []string        `json:"constraints,omitempty"`
+	ProviderType string          `json:"provider_type"`
+	Model        string          `json:"model"`
+	Tools        CapabilityState `json:"tools"`
+	Streaming    CapabilityState `json:"streaming"`
+	// Reasoning is effort control: whether a configured reasoning effort is
+	// translated into the provider's request.
+	Reasoning CapabilityState `json:"reasoning"`
+	// ReasoningSummaries is whether readable thinking the provider emits is
+	// surfaced and kept with the answer it preceded.
+	ReasoningSummaries CapabilityState `json:"reasoning_summaries"`
+	// ReasoningContinuity is whether provider-bound reasoning state (signed
+	// thinking blocks, encrypted reasoning items) is carried from one request
+	// to the next. Without it a model re-derives its reasoning after every
+	// tool call.
+	ReasoningContinuity CapabilityState `json:"reasoning_continuity"`
+	Images              CapabilityState `json:"images"`
+	StructuredOutput    CapabilityState `json:"structured_output"`
+	TokenCounting       CapabilityState `json:"token_counting"`
+	PromptCaching       CapabilityState `json:"prompt_caching"`
+	ParallelToolCalls   CapabilityState `json:"parallel_tool_calls"`
+	ModelDiscovery      CapabilityState `json:"model_discovery"`
+	ContextWindow       int             `json:"context_window,omitempty"`
+	Constraints         []string        `json:"constraints,omitempty"`
 }
 
 // CapabilityReporter is implemented by built-in clients. Keeping it optional
@@ -49,23 +59,27 @@ type CapabilityReporter interface {
 // feature metadata, so callers can report unknown facts without guessing.
 func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilities, error) {
 	c := Capabilities{
-		ProviderType:      providerType,
-		Model:             model,
-		Tools:             CapabilitySupported,
-		Streaming:         CapabilitySupported,
-		Reasoning:         CapabilityUnsupported,
-		Images:            CapabilityUnsupported,
-		StructuredOutput:  CapabilityUnsupported,
-		TokenCounting:     CapabilitySupported,
-		PromptCaching:     CapabilityPartial,
-		ParallelToolCalls: CapabilitySupported,
-		ModelDiscovery:    CapabilitySupported,
-		ContextWindow:     contextWindow,
+		ProviderType:        providerType,
+		Model:               model,
+		Tools:               CapabilitySupported,
+		Streaming:           CapabilitySupported,
+		Reasoning:           CapabilityUnsupported,
+		ReasoningSummaries:  CapabilityPartial,
+		ReasoningContinuity: CapabilityUnsupported,
+		Images:              CapabilityUnsupported,
+		StructuredOutput:    CapabilityUnsupported,
+		TokenCounting:       CapabilitySupported,
+		PromptCaching:       CapabilityPartial,
+		ParallelToolCalls:   CapabilitySupported,
+		ModelDiscovery:      CapabilitySupported,
+		ContextWindow:       contextWindow,
 	}
 
 	switch providerType {
 	case "openai":
 		c.Reasoning = CapabilityPartial
+		// The official Chat Completions route returns no readable reasoning.
+		c.ReasoningSummaries = CapabilityUnsupported
 		c.Images = CapabilityPartial
 		c.Constraints = []string{"Chat Completions adapter; model-specific features may be unknown; explicit max_tokens/temperature rejections are negotiated and remembered for the active model"}
 	case "openai-compatible":
@@ -74,25 +88,41 @@ func CapabilitiesFor(providerType, model string, contextWindow int) (Capabilitie
 		c.Constraints = []string{"compatible endpoints may implement a smaller model-specific subset; accepted request parameters remain unchanged, while explicit max_tokens/temperature rejections are negotiated for the active model"}
 	case "anthropic", "anthropic-compatible":
 		c.Reasoning = CapabilityPartial
+		// Signed thinking is replayed to the endpoint that issued it. A
+		// compatible endpoint may not implement thinking at all.
+		c.ReasoningContinuity = CapabilitySupported
+		if providerType == "anthropic-compatible" {
+			c.ReasoningContinuity = CapabilityPartial
+		}
 		c.Images = CapabilityPartial
 		c.PromptCaching = CapabilitySupported
-		c.Constraints = []string{"Messages adapter; provider reasoning deltas are surfaced, but signed thinking blocks are not yet round-tripped; prompt cache breakpoints are sent and dropped for the session if the endpoint rejects them"}
+		c.Constraints = []string{"Messages adapter; readable thinking is surfaced and kept with its answer, and signed thinking blocks are replayed verbatim to the issuing endpoint after tool calls (dropped at compaction, and abandoned for the session if the endpoint refuses them); Claude models that think by default are asked for summarized display; prompt cache breakpoints are sent and dropped for the session if the endpoint rejects them"}
 	case "azure-openai":
 		c.Reasoning = CapabilityPartial
+		// The official Chat Completions route returns no readable reasoning.
+		c.ReasoningSummaries = CapabilityUnsupported
 		c.Images = CapabilityPartial
 		c.ModelDiscovery = CapabilityUnsupported
 		c.Constraints = []string{"deployment-scoped Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication; reasoning-model max_completion_tokens/default-temperature requirements are negotiated from explicit provider rejections"}
 	case "azure-foundry":
 		c.Reasoning = CapabilityPartial
+		// The official Chat Completions route returns no readable reasoning.
+		c.ReasoningSummaries = CapabilityUnsupported
 		c.Images = CapabilityPartial
 		c.Constraints = []string{"OpenAI v1 Chat Completions route; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication; reasoning-model max_completion_tokens/default-temperature requirements are negotiated from explicit provider rejections"}
 	case "azure-foundry-anthropic":
 		c.Reasoning = CapabilityPartial
+		c.ReasoningContinuity = CapabilityPartial
 		c.Images = CapabilityPartial
 		c.PromptCaching = CapabilitySupported
-		c.Constraints = []string{"Anthropic Messages route; provider reasoning deltas are surfaced; prompt cache breakpoints are sent and dropped for the session if the deployment rejects them; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
+		c.Constraints = []string{"Anthropic Messages route; readable thinking is surfaced and kept with its answer, and signed thinking blocks are replayed to the issuing deployment, abandoned for the session if refused; prompt cache breakpoints are sent and dropped for the session if the deployment rejects them; API key, caller-supplied bearer token, or refreshable DefaultAzureCredential authentication"}
 	case "bedrock":
 		c.Reasoning = CapabilityPartial
+		// Converse carries Claude's signed reasoning; other Bedrock models
+		// have none to carry.
+		if bedrockClaudeModel(model) {
+			c.ReasoningContinuity = CapabilityPartial
+		}
 		c.Images = CapabilityPartial
 		c.PromptCaching = CapabilityUnsupported
 		c.ModelDiscovery = CapabilityUnsupported
@@ -167,7 +197,8 @@ func (c Capabilities) DetailSummary() string {
 		label string
 		state CapabilityState
 	}{
-		{"tools", c.Tools}, {"streaming", c.Streaming}, {"reasoning", c.Reasoning},
+		{"tools", c.Tools}, {"streaming", c.Streaming}, {"reasoning effort", c.Reasoning},
+		{"reasoning summaries", c.ReasoningSummaries}, {"reasoning continuity", c.ReasoningContinuity},
 		{"images", c.Images}, {"structured output", c.StructuredOutput},
 		{"token usage", c.TokenCounting}, {"prompt caching", c.PromptCaching},
 		{"parallel tools", c.ParallelToolCalls}, {"model discovery", c.ModelDiscovery},

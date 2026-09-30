@@ -22,6 +22,9 @@ type AnthropicClient struct {
 	HTTP         *http.Client
 	Declared     Capabilities
 	caching      anthropicCacheProfile
+	// continuity remembers a refusal of replayed thinking or of the
+	// requested thinking display, for the life of this client.
+	continuity continuityControl
 }
 
 // anthropicCacheProfile remembers an endpoint's refusal of cache_control for
@@ -146,11 +149,24 @@ func anthropicEffortSupport(effort map[string]json.RawMessage) ReasoningSupport 
 	return support
 }
 
+// continuityRoute names the endpoint that signs this client's thinking
+// blocks. Blocks are replayed only to the same route: Anthropic's API and an
+// Azure Foundry deployment issue signatures independently.
+func (c *AnthropicClient) continuityRoute() string {
+	return "anthropic " + strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+}
+
 func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {
-	messages, err := anthropicMessages(in.Messages)
+	route := c.continuityRoute()
+	replayRoute := ""
+	if c.continuity.replay() {
+		replayRoute = route
+	}
+	messages, err := anthropicMessagesFor(in.Messages, replayRoute)
 	if err != nil {
 		return Response{}, err
 	}
+	replayed := anthropicReplays(in.Messages, replayRoute)
 	body := map[string]any{
 		"model": in.Model, "messages": messages,
 		"max_tokens": in.MaxTokens, "stream": true,
@@ -163,6 +179,14 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	}
 	if in.ReasoningEffort != "" {
 		body["output_config"] = map[string]any{"effort": in.ReasoningEffort}
+	}
+	// Models that think adaptively by default hide the text unless asked.
+	// Asking changes only what is shown; how much the model thinks, and what
+	// it is billed for, are the same either way.
+	displaySent := false
+	if claudeAdaptiveByDefault(in.Model) && c.continuity.display() {
+		body["thinking"] = map[string]any{"type": "adaptive", "display": "summarized"}
+		displaySent = true
 	}
 	if len(in.Tools) > 0 {
 		defs := make([]any, 0, len(in.Tools))
@@ -183,7 +207,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
-	reasoningRetried, cachingRetried, ceilingRetried := false, false, false
+	reasoningRetried, cachingRetried, ceilingRetried, thinkingRetried := false, false, false, false
 	currentMaxTokens := in.MaxTokens
 	for {
 		req, err := newJSONRequest(ctx, http.MethodPost, base+"/messages", body)
@@ -214,6 +238,37 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 			if readErr != nil {
 				return Response{}, protocolError(c.Label, "read chat error response", readErr)
 			}
+			// The safety net for reasoning continuity: a refusal of replayed
+			// thinking or of the display request must never cost the turn.
+			// Replay goes first, because removing every thinking block is
+			// always permitted; the display request goes next. Either refusal
+			// is remembered, so this client stops sending it.
+			if !thinkingRetried && (replayed || displaySent) && rejectedThinking(resp.StatusCode, errorBody) {
+				thinkingRetried = true
+				warning := "the provider refused the thinking settings; retrying without them"
+				if replayed {
+					c.continuity.refuseReplay()
+					plain, plainErr := anthropicMessagesFor(in.Messages, "")
+					if plainErr != nil {
+						return Response{}, plainErr
+					}
+					body["messages"] = plain
+					if caching {
+						anthropicApplyCaching(body, in.Messages, plain)
+					}
+					replayed = false
+					warning = "the provider refused replayed thinking; retrying without it and not replaying thinking again for this provider in this session"
+				} else {
+					c.continuity.refuseDisplay()
+					delete(body, "thinking")
+					displaySent = false
+					warning = "the model refused a request for readable thinking; retrying without it and not asking again for this provider in this session"
+				}
+				if onDelta != nil {
+					onDelta(Delta{Warning: warning})
+				}
+				continue
+			}
 			if !reasoningRetried && in.ReasoningEffort != "" && anthropicRejectedReasoning(resp.StatusCode, errorBody) {
 				reasoningRetried = true
 				delete(body, "output_config")
@@ -230,7 +285,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 				cachingRetried = true
 				caching = false
 				c.caching.refuse()
-				plain, plainErr := anthropicMessages(in.Messages)
+				plain, plainErr := anthropicMessagesFor(in.Messages, replayRoute)
 				if plainErr != nil {
 					return Response{}, plainErr
 				}
@@ -268,11 +323,14 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 			return Response{}, withAzureRBACHint(responseError(resp, c.Label, "chat", errorBody), c.AuthHint)
 		}
 		defer resp.Body.Close()
+		var recorder blockRecorder
 		if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-			response, err := parseAnthropicNonStream(resp.Body, onDelta)
+			response, err := parseAnthropicNonStreamRecording(resp.Body, onDelta, &recorder)
+			response.ReasoningState = recorder.state(route, in.Model)
 			return response, protocolError(c.Label, "decode chat response", err)
 		}
-		response, err := parseAnthropicStream(resp.Body, onDelta)
+		response, err := parseAnthropicStreamRecording(resp.Body, onDelta, &recorder)
+		response.ReasoningState = recorder.state(route, in.Model)
 		return response, protocolError(c.Label, "read chat stream", err)
 	}
 }
@@ -367,6 +425,11 @@ func anthropicMarkCacheBreakpoint(entry any) {
 			return
 		}
 		if last, ok := content[len(content)-1].(map[string]any); ok {
+			// Thinking blocks cannot carry a breakpoint; a replayed message
+			// ending in one is simply not cached at that point.
+			if kind, _ := last["type"].(string); kind == "thinking" || kind == "redacted_thinking" {
+				return
+			}
 			last["cache_control"] = anthropicEphemeral()
 		}
 	}
@@ -397,13 +460,20 @@ func anthropicRejectedReasoning(status int, body []byte) bool {
 }
 
 func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta func(Delta)) (Response, error) {
+	return parseAnthropicNonStreamRecording(r, onDelta, nil)
+}
+
+func parseAnthropicNonStreamRecording(r interface{ Read([]byte) (int, error) }, onDelta func(Delta), recorder *blockRecorder) (Response, error) {
 	var payload struct {
 		Content []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+			Type      string          `json:"type"`
+			Text      string          `json:"text"`
+			Thinking  string          `json:"thinking"`
+			Signature string          `json:"signature"`
+			Data      string          `json:"data"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
@@ -417,6 +487,30 @@ func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta f
 		return Response{}, err
 	}
 	out := Response{Stop: payload.StopReason, Usage: anthropicUsage(payload.Usage.InputTokens, payload.Usage.OutputTokens, payload.Usage.CacheReadInputTokens, payload.Usage.CacheCreationInputTokens)}
+	// Readable thinking is reported the way a stream reports it, ahead of the
+	// answer, so the synchronous fallback shows and keeps the same summary.
+	var thinking strings.Builder
+	for i, part := range payload.Content {
+		if part.Type == "thinking" {
+			thinking.WriteString(part.Thinking)
+		}
+		if recorder != nil {
+			switch part.Type {
+			case "thinking":
+				recorder.reasoning(i, part.Thinking)
+				recorder.signature(i, part.Signature)
+			case "redacted_thinking":
+				recorder.redacted(i, part.Data)
+			case "text":
+				recorder.text(i, part.Text)
+			case "tool_use":
+				recorder.toolUse(i, part.ID)
+			}
+		}
+	}
+	if thinking.Len() > 0 && onDelta != nil {
+		onDelta(Delta{Reasoning: thinking.String()})
+	}
 	for _, part := range payload.Content {
 		switch part.Type {
 		case "text":
@@ -432,8 +526,61 @@ func parseAnthropicNonStream(r interface{ Read([]byte) (int, error) }, onDelta f
 }
 
 func anthropicMessages(messages []Message) ([]any, error) {
+	return anthropicMessagesFor(messages, "")
+}
+
+// anthropicReplays reports whether any assistant message will carry replayed
+// thinking to route.
+func anthropicReplays(messages []Message, route string) bool {
+	for _, msg := range messages {
+		if _, ok := replayBlocks(msg, route); ok && msg.Role == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+// anthropicReplayContent rebuilds an assistant message from its recorded
+// blocks, in the order the provider produced them, with thinking verbatim.
+func anthropicReplayContent(msg Message, blocks []ReasoningBlock) []any {
+	calls := make(map[string]ToolCall, len(msg.ToolCalls))
+	for _, call := range msg.ToolCalls {
+		calls[call.ID] = call
+	}
+	content := make([]any, 0, len(blocks))
+	for _, block := range blocks {
+		switch block.Kind {
+		case "reasoning":
+			if block.Redacted != "" {
+				content = append(content, map[string]any{"type": "redacted_thinking", "data": block.Redacted})
+				continue
+			}
+			// An empty thinking field is still a complete block: the
+			// signature holds the reasoning.
+			content = append(content, map[string]any{"type": "thinking", "thinking": block.Text, "signature": block.Signature})
+		case "text":
+			content = append(content, map[string]any{"type": "text", "text": block.Text})
+		case "tool_use":
+			call := calls[block.ToolUseID]
+			var input any
+			_ = json.Unmarshal(rawObject(call.Arguments), &input)
+			content = append(content, map[string]any{"type": "tool_use", "id": call.ID, "name": call.Name, "input": input})
+		}
+	}
+	return content
+}
+
+// anthropicMessagesFor encodes the conversation, replaying recorded thinking
+// for assistant messages issued by route. An empty route replays nothing.
+func anthropicMessagesFor(messages []Message, route string) ([]any, error) {
 	out := make([]any, 0, len(messages))
 	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			if blocks, ok := replayBlocks(msg, route); ok {
+				out = append(out, map[string]any{"role": "assistant", "content": anthropicReplayContent(msg, blocks)})
+				continue
+			}
+		}
 		if msg.Role == "tool" {
 			resultContent := any(msg.Content)
 			if len(msg.Parts) > 0 {
@@ -492,6 +639,18 @@ func anthropicContentParts(message Message) ([]any, error) {
 }
 
 func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func(Delta)) (Response, error) {
+	return parseAnthropicStreamRecording(r, onDelta, nil)
+}
+
+// parseAnthropicStreamRecording parses a Messages stream, recording every
+// content block in order when recorder is set so signed thinking can be
+// replayed. A thinking block opens with empty text and signature, receives
+// thinking_delta text (none when the model omits it), and ends with a single
+// signature_delta; a redacted_thinking block carries its payload whole.
+func parseAnthropicStreamRecording(r interface{ Read([]byte) (int, error) }, onDelta func(Delta), recorder *blockRecorder) (Response, error) {
+	if recorder == nil {
+		recorder = &blockRecorder{}
+	}
 	var out Response
 	terminal := false
 	tools := map[int]*toolAccumulator{}
@@ -513,11 +672,13 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 				Name  string          `json:"name"`
 				Input json.RawMessage `json:"input"`
 				Text  string          `json:"text"`
+				Data  string          `json:"data"`
 			} `json:"content_block"`
 			Delta *struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
 				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -549,7 +710,12 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 		}
 		if envelope.ContentBlock != nil {
 			switch envelope.ContentBlock.Type {
+			case "thinking":
+				recorder.reasoning(envelope.Index, "")
+			case "redacted_thinking":
+				recorder.redacted(envelope.Index, envelope.ContentBlock.Data)
 			case "text":
+				recorder.text(envelope.Index, envelope.ContentBlock.Text)
 				if envelope.ContentBlock.Text != "" {
 					out.Content += envelope.ContentBlock.Text
 					if onDelta != nil {
@@ -557,6 +723,7 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 					}
 				}
 			case "tool_use":
+				recorder.toolUse(envelope.Index, envelope.ContentBlock.ID)
 				acc := &toolAccumulator{id: envelope.ContentBlock.ID, name: envelope.ContentBlock.Name}
 				if len(envelope.ContentBlock.Input) > 0 && string(envelope.ContentBlock.Input) != "{}" {
 					acc.args.Write(envelope.ContentBlock.Input)
@@ -569,10 +736,17 @@ func parseAnthropicStream(r interface{ Read([]byte) (int, error) }, onDelta func
 		}
 		if envelope.Delta != nil {
 			if envelope.Delta.Text != "" {
+				recorder.text(envelope.Index, envelope.Delta.Text)
 				out.Content += envelope.Delta.Text
 				if onDelta != nil {
 					onDelta(Delta{Text: envelope.Delta.Text})
 				}
+			}
+			if envelope.Delta.Thinking != "" {
+				recorder.reasoning(envelope.Index, envelope.Delta.Thinking)
+			}
+			if envelope.Delta.Signature != "" {
+				recorder.signature(envelope.Index, envelope.Delta.Signature)
 			}
 			if envelope.Delta.PartialJSON != "" {
 				if tools[envelope.Index] == nil {

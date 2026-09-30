@@ -709,9 +709,14 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 	var payload struct {
 		Choices []struct {
 			Message struct {
-				Content   string `json:"content"`
-				Refusal   string `json:"refusal"`
-				ToolCalls []struct {
+				Content string `json:"content"`
+				Refusal string `json:"refusal"`
+				// Compatible servers name readable reasoning differently:
+				// DeepSeek and older vLLM reasoning_content, current vLLM
+				// and Ollama reasoning.
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string          `json:"name"`
@@ -734,6 +739,9 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 		return out, nil
 	}
 	choice := payload.Choices[0]
+	if reasoning := firstNonEmpty(choice.Message.ReasoningContent, choice.Message.Reasoning); reasoning != "" && onDelta != nil {
+		onDelta(Delta{Reasoning: reasoning})
+	}
 	out.Content, out.Stop = choice.Message.Content, choice.FinishReason
 	if choice.Message.Refusal != "" {
 		out.Refused = true
@@ -754,4 +762,13 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: id, Name: tc.Function.Name, Arguments: json.RawMessage(args)})
 	}
 	return out, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

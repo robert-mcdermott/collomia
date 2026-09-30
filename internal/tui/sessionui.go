@@ -51,6 +51,12 @@ func restoredBlocks(messages []provider.Message) []block {
 	for _, message := range messages {
 		switch message.Role {
 		case "user":
+			if message.Pinned {
+				// A recorded snapshot of the live plan, written by the
+				// runtime for providers that bind reasoning; not something
+				// the user said, and already shown by /tasks.
+				continue
+			}
 			if summary := event.CompletionNoticeSummary(message.Content); summary != "" {
 				blocks = append(blocks, block{role: "status-detail", summary: summary, content: message.Content})
 				continue
@@ -61,6 +67,10 @@ func restoredBlocks(messages []provider.Message) []block {
 			}
 			blocks = append(blocks, block{role: "user", content: displayMessageWithAttachments(message.Content, message.Parts)})
 		case "assistant":
+			if message.Reasoning != "" {
+				// Restored collapsed, exactly as a finished live summary is.
+				blocks = append(blocks, block{role: "reasoning", content: message.Reasoning})
+			}
 			if message.Content != "" {
 				blocks = append(blocks, block{role: "assistant", content: message.Content})
 			}
@@ -122,7 +132,7 @@ func restoredToolSummary(call provider.ToolCall) string {
 func (m *Model) resetPromptHistory(messages []provider.Message) {
 	m.promptHistory = m.promptHistory[:0]
 	for _, message := range messages {
-		if message.Role == "user" && !strings.HasPrefix(message.Content, "[Context summary") && strings.TrimSpace(message.Content) != "" {
+		if message.Role == "user" && !message.Pinned && !strings.HasPrefix(message.Content, "[Context summary") && strings.TrimSpace(message.Content) != "" {
 			m.promptHistory = append(m.promptHistory, message.Content)
 		}
 	}

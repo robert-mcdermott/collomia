@@ -3014,13 +3014,39 @@ The current `/transcript` view includes summaries for search and copy, separatel
 labelled from answers. Each contiguous summary retains up to 64 KiB of display
 text; excess text is explicitly marked as truncated, including when copied.
 
-This displays only text the provider actually sends. It does not enable thinking
-at the API or promise access to the model's full internal reasoning. Some models
-reason without emitting readable text, and current adapters have additional
-configuration/state limitations. Reopened chat transcripts do not yet restore
-these summaries, although reasoning events continue to use the existing event
-log path. Provider configuration, continuation state, and summary restoration
-are tracked in Wave 2 of the [improvement plan](IMPROVEMENT_PLAN.md).
+Each response's thinking is kept with the answer it preceded, in the session
+file, so resuming or reopening a session shows it again, collapsed above that
+answer. The same applies when a provider falls back from streaming to a single
+response. Retention is capped at 64 KiB per response, with the truncation
+stated. Kept thinking is display text only. It is never sent back to a
+provider.
+
+This displays only text the provider actually sends, and never promises the
+model's full internal reasoning.
+
+**Claude.** Claude models that think by default (the 5.x family and Mythos
+Preview) omit readable thinking unless asked, so Collomia asks for summarized
+display on the Anthropic, Azure Foundry, and Bedrock routes. This changes what
+is shown, not how much the model thinks or what it costs. Earlier Claude models
+think only when asked, and Collomia does not ask them.
+
+**Reasoning continuity.** On those same Claude routes, the model's signed
+thinking is sent back verbatim after each tool call, so it continues its
+reasoning instead of starting over. Four rules keep this safe:
+- Thinking is replayed only to the endpoint or Bedrock region that issued it.
+- While such a provider is selected, the live plan is recorded into the
+  conversation once each time it changes, rather than re-sent on every
+  request. This is because Anthropic rejects replayed thinking if anything
+  before it changed.
+- Compaction drops all replayed thinking, which the contract permits.
+- If a provider ever refuses replayed thinking or the display request, Collomia
+  retries that request without it, warns once, and stops trying for the
+  session. The worst case is the earlier behavior, never a failed turn.
+
+Other providers are unchanged: no Chat Completions or OpenAI-compatible route
+carries reasoning state. `/models` reports effort, readable summaries, and
+continuity as separate capabilities. An OpenAI Responses route with encrypted
+reasoning is tracked as W2b3 in the [improvement plan](IMPROVEMENT_PLAN.md).
 
 ### Keyboard reference
 

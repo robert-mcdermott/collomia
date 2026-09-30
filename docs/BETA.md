@@ -81,11 +81,14 @@ when evaluating new providers, MCP servers, hooks, skills, or agent profiles.
   alternative receipt. `read_file` can page through large inputs, but a single
   returned line must fit within its 1 MiB page and scanning to a late line takes
   time proportional to the preceding input.
-- Live thinking summaries display only readable `reasoning.delta` text emitted
-  by the selected adapter/model. They do not enable provider thinking, preserve
-  signed/opaque reasoning state, or restore summaries in reopened chat
-  transcripts. Current-chat retention is capped at 64 KiB per contiguous
-  summary, with explicit truncation. Follow the gated
+- Thinking summaries display only readable text emitted by the selected
+  adapter/model, and are kept with each answer so reopened sessions show them
+  (64 KiB per response, truncation stated).
+  - Claude models that think by default are asked for summarized display.
+    Other providers' thinking is shown only when their API returns it.
+  - Signed thinking is carried between requests only on the Anthropic,
+    Foundry-Claude, and Bedrock-Claude routes. A refusal falls back to not
+    carrying it. Follow the gated
   [improvement plan](IMPROVEMENT_PLAN.md) for provider/state follow-up work.
 - Sandboxing defaults to capability-aware `auto`, while command network access
   and broad command reads remain available for compatibility. External caches

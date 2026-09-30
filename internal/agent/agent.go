@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/robert-mcdermott/collomia/internal/audit"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
@@ -56,6 +57,9 @@ var delegateIDCounter atomic.Uint64
 type Emit = event.Emit
 
 type Agent struct {
+	// lastPinned is the pinned state most recently recorded into the
+	// conversation for a provider that binds reasoning (see withPinnedState).
+	lastPinned string
 	// ceiling is the latest output ceiling a provider stated when rejecting
 	// max_tokens, which the session offers to save.
 	ceilingMu           sync.Mutex
@@ -315,6 +319,13 @@ func (a *Agent) SetMessages(messages []provider.Message) {
 	a.messages = append([]provider.Message(nil), messages...)
 	a.usageWatermark = len(a.messages)
 	a.lastInputTokens = 0
+	a.lastPinned = ""
+	for i := len(a.messages) - 1; i >= 0; i-- {
+		if a.messages[i].Pinned {
+			a.lastPinned = a.messages[i].Content
+			break
+		}
+	}
 	a.mu.Unlock()
 }
 
@@ -496,9 +507,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 		// After attachment resolution, because the trailing state is
 		// generated here rather than retained in the session and so has no
 		// attachment to resolve.
-		if state, ok := a.turnState(); ok {
-			messages = append(messages, state)
-		}
+		messages = a.withPinnedState(messages)
 		if client == nil {
 			err := reportError(send, errors.New("no provider client configured"))
 			return "", err
@@ -548,6 +557,10 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			a.endTurn(ctx, send, iteration-1, GoalBudgetExhausted)
 			return "", reportError(send, err)
 		}
+		// reasoning keeps this response's readable thinking with the
+		// assistant message it belongs to, so a reopened session can show it.
+		// Display only: adapters never send it back to a provider.
+		var reasoning boundedText
 		response, err := client.Chat(ctx, req, func(delta provider.Delta) {
 			if delta.Text != "" && !holdText {
 				e := event.New(event.KindTextDelta)
@@ -555,6 +568,7 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				send(e)
 			}
 			if delta.Reasoning != "" {
+				reasoning.add(delta.Reasoning)
 				e := event.New(event.KindReasoningDelta)
 				e.Text = delta.Reasoning
 				send(e)
@@ -649,11 +663,15 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 			publishText(response.Content)
 		}
 		terminationErr := response.CompletionError(a.providerName)
-		assistant := provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls}
+		assistant := provider.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls,
+			Reasoning: reasoning.String(), ReasoningState: response.ReasoningState}
 		if terminationErr != nil {
 			// Keep partial prose, but never persist unaccepted calls as pending
 			// execution that session recovery would need to reconcile later.
+			// The signed blocks described a response that is no longer the
+			// one kept, so they go too.
 			assistant.ToolCalls = nil
+			assistant.ReasoningState = nil
 		}
 		if terminationErr == nil || strings.TrimSpace(assistant.Content) != "" {
 			a.appendMessage(assistant)
@@ -1608,6 +1626,55 @@ func (a *Agent) turnState() (provider.Message, bool) {
 		return provider.Message{}, false
 	}
 	return provider.Message{Role: "user", Content: prompts.Render(prompts.PinnedState, value), Volatile: true}, true
+}
+
+// bindsReasoning reports whether the current provider replays signed
+// reasoning that is bound to the exact conversation before it.
+func (a *Agent) bindsReasoning() bool {
+	state := a.Capabilities().ReasoningContinuity
+	return state == provider.CapabilitySupported || state == provider.CapabilityPartial
+}
+
+// withPinnedState adds the pinned session state to a request.
+//
+// Ordinarily it is regenerated for every request and never retained (see
+// turnState). That cannot work for a provider that binds signed reasoning to
+// the conversation before it: the reasoning a response produced after one
+// copy of the state would be replayed after a different one, and rejected as
+// bound to another conversation. For those providers the state is recorded
+// into the conversation instead, once per change, so every request repeats
+// exactly what came before. Other providers keep the original behavior, and
+// any copies recorded while a binding provider was selected are left out.
+func (a *Agent) withPinnedState(messages []provider.Message) []provider.Message {
+	binds := a.bindsReasoning()
+	if !binds {
+		kept := messages[:0:0]
+		for _, message := range messages {
+			if !message.Pinned {
+				kept = append(kept, message)
+			}
+		}
+		messages = kept
+	}
+	state, ok := a.turnState()
+	if !ok {
+		return messages
+	}
+	if !binds {
+		return append(messages, state)
+	}
+	a.mu.Lock()
+	changed := state.Content != a.lastPinned
+	if changed {
+		a.lastPinned = state.Content
+	}
+	a.mu.Unlock()
+	if !changed {
+		return messages
+	}
+	pinned := provider.Message{Role: "user", Content: state.Content, Pinned: true}
+	a.appendMessage(pinned)
+	return append(messages, pinned)
 }
 
 func profileInstructions(value string) string {
@@ -2991,6 +3058,7 @@ func (a *Agent) compactAcceptedGoalNode(ctx context.Context, notice string, send
 		return nil
 	}
 	a.messages = append([]provider.Message{summary}, a.goalSteering...)
+	a.lastPinned = ""
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
 	a.goalBoundaryCompact = false
@@ -3131,6 +3199,13 @@ func (a *Agent) compact(ctx context.Context, focus string, send Emit) (int, erro
 	// The conversation only grows during a run, so the prefix we summarized
 	// is stable; re-derive the tail in case messages were appended.
 	tail := append([]provider.Message(nil), a.messages[cut:]...)
+	// Signed reasoning is bound to the conversation before it, and that
+	// conversation was just replaced by a summary. Dropping every block is
+	// always permitted; keeping any would be rejected.
+	for i := range tail {
+		tail[i].ReasoningState = nil
+	}
+	a.lastPinned = ""
 	a.messages = append([]provider.Message{summary}, tail...)
 	a.lastInputTokens = 0
 	a.usageWatermark = 0
@@ -3224,4 +3299,36 @@ func clipUTF8(value string, limit int) string {
 		end--
 	}
 	return value[:end]
+}
+
+// maxRetainedReasoning bounds the thinking kept with one assistant message,
+// matching the live view's cap.
+const maxRetainedReasoning = 64 * 1024
+
+// boundedText accumulates text up to maxRetainedReasoning bytes without
+// splitting a UTF-8 sequence, and records that it stopped.
+type boundedText struct {
+	text      strings.Builder
+	truncated bool
+}
+
+func (b *boundedText) add(chunk string) {
+	if b.truncated {
+		return
+	}
+	if remaining := maxRetainedReasoning - b.text.Len(); len(chunk) > remaining {
+		end := remaining
+		for end > 0 && !utf8.RuneStart(chunk[end]) {
+			end--
+		}
+		chunk, b.truncated = chunk[:end], true
+	}
+	b.text.WriteString(chunk)
+}
+
+func (b *boundedText) String() string {
+	if b.truncated {
+		return b.text.String() + "\n[Thinking summary truncated at 64 KiB.]"
+	}
+	return b.text.String()
 }

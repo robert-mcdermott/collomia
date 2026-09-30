@@ -42,6 +42,35 @@ an accurate one; their history is in the Git log and in
     `collo config validate` checks every entry.
   - Existing files load unchanged.
 
+- **Claude keeps its reasoning across tool calls, and shows it.** This applies
+  on the Anthropic, Azure Foundry-Claude, and Bedrock-Claude routes.
+  - Each response's signed thinking blocks are replayed verbatim to the
+    endpoint or region that issued them, in their original order around the
+    text and tool calls, so the model continues its reasoning after each tool
+    call instead of starting again.
+  - Claude models that think by default are asked for summarized display, so
+    their thinking is visible. Before this, Claude 5.x showed none.
+  - While such a provider is selected, the live plan is recorded into the
+    conversation once per change, because Anthropic rejects replayed thinking
+    if anything before it changed. Compaction drops replayed thinking, and
+    recorded plan snapshots are hidden from the transcript, prompt history,
+    and rewind labels.
+  - Safety net: a refused replay or display request is retried without it,
+    warns once, and is not attempted again for the session, so the worst case
+    is the previous behavior.
+  - Verified live on Bedrock with `us.anthropic.claude-opus-5-5`, with and
+    without an active plan. Other providers are unchanged.
+- **Thinking survives reopening a session.** Each response's readable thinking
+  is kept with the answer it preceded (64 KiB per response), so a resumed or
+  reopened session shows it collapsed above that answer. Kept thinking is
+  display text only and is never sent back to a provider.
+  - The synchronous fallbacks extract thinking too: OpenAI-compatible
+    `reasoning_content`/`reasoning`, Anthropic `thinking` blocks, Responses
+    reasoning summaries, and Bedrock `reasoningContent`.
+  - Sessions no longer store thinking as one record per streamed chunk.
+  - `/models` now reports reasoning effort, readable summaries, and continuity
+    between requests as separate capabilities. Continuity is unsupported on
+    every adapter today.
 - **A menu for each configured provider in `/providers`.** It offers these
   actions:
   - Re-verify.
