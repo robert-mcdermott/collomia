@@ -15,6 +15,7 @@ import (
 
 	"github.com/robert-mcdermott/collomia/internal/app"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 	"github.com/robert-mcdermott/collomia/internal/quality"
 )
 
@@ -142,6 +143,7 @@ func evalCommand(args []string, out, errOut io.Writer) error {
 		if err != nil {
 			return err
 		}
+		p = app.ProviderForModel(p, model, provider.Limits{})
 		redactor := app.NewRedactor(cfg)
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer cancel()

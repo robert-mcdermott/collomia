@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	runtimeevent "github.com/robert-mcdermott/collomia/internal/event"
+	"github.com/robert-mcdermott/collomia/internal/provider"
 )
 
 func reasoningEvent(text string) runtimeevent.Event {
@@ -162,5 +163,28 @@ func TestReasoningGoldenScreens(t *testing.T) {
 			m = updated.(Model)
 			assertGoldenScreen(t, name, m)
 		})
+	}
+}
+
+func TestReopenedSessionsShowEachAnswersThinking(t *testing.T) {
+	blocks := restoredBlocks([]provider.Message{
+		{Role: "user", Content: "question"},
+		{Role: "assistant", Content: "answer", Reasoning: "how I got there"},
+	})
+	if len(blocks) != 3 || blocks[1].role != "reasoning" || blocks[1].content != "how I got there" || blocks[2].role != "assistant" {
+		t.Fatalf("blocks = %+v; thinking belongs above the answer it preceded", blocks)
+	}
+}
+
+func TestRecordedPlanSnapshotsAreNotShownAsUserMessages(t *testing.T) {
+	blocks := restoredBlocks([]provider.Message{
+		{Role: "user", Content: "question"},
+		{Role: "user", Content: "<pinned plan>", Pinned: true},
+		{Role: "assistant", Content: "answer"},
+	})
+	for _, b := range blocks {
+		if strings.Contains(b.content, "pinned plan") {
+			t.Fatalf("a runtime-recorded plan snapshot is not something the user said: %+v", blocks)
+		}
 	}
 }

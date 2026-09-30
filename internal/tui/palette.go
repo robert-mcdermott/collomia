@@ -22,6 +22,8 @@ var slashCommands = []commandInfo{
 	{name: "/model", args: "[provider[/model]]", desc: "show or switch the active provider/model"},
 	{name: "/agent", args: "[name]", desc: "show or switch the named primary agent profile"},
 	{name: "/mode", args: "[developer|work]", desc: "show or switch the task profile"},
+	{name: "/effort", args: "[level|default|reset]", desc: "show or change reasoning effort for this session"},
+	{name: "/providers", args: "[name|save-ceiling]", desc: "add, change, rename, or remove providers and models; alias /setup"},
 	{name: "/models", args: "", desc: "list configured providers and default models"},
 	{name: "/context", args: "[task|clear]", desc: "token usage; inspect or clear retained task notes"},
 	{name: "/recovery", args: "[acknowledge|keep] [reason]", desc: "inspect durable obligations; reconcile uncertain work and keep current files"},

@@ -443,3 +443,34 @@ func TestOpenAIReasoningEffortIsOptInAndCanBeLearnedAway(t *testing.T) {
 		t.Fatalf("learned profile retained reasoning: %+v", body)
 	}
 }
+
+func TestListModelsReadsVLLMServedLength(t *testing.T) {
+	// vLLM states the window it was started with as max_model_len. Its LoRA
+	// adapter cards leave that null and name the base model as parent, and an
+	// adapter runs inside its base model's window.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"object":"list","data":[
+			{"id":"Qwen/Qwen3-Coder-30B","object":"model","owned_by":"vllm","max_model_len":65536},
+			{"id":"sql-lora","object":"model","owned_by":"vllm","root":"/adapters/sql","parent":"Qwen/Qwen3-Coder-30B","max_model_len":null},
+			{"id":"orphan-lora","object":"model","parent":"not-served","max_model_len":null}
+		]}`)
+	}))
+	defer server.Close()
+	models, err := (&OpenAIClient{Label: "vllm", BaseURL: server.URL}).ListModels(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]ModelInfo{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if got := byID["Qwen/Qwen3-Coder-30B"].Limits; got.ContextWindow != 65536 || got.ContextSource != LimitsEndpoint {
+		t.Errorf("base model limits = %+v, want the served max_model_len", got)
+	}
+	if got := byID["sql-lora"].Limits.ContextWindow; got != 65536 {
+		t.Errorf("an adapter must inherit its parent's served window, got %d", got)
+	}
+	if byID["orphan-lora"].Limits.Known() {
+		t.Error("an adapter whose parent is not in the catalog must gain nothing")
+	}
+}

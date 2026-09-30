@@ -61,6 +61,15 @@ type Verification struct {
 	Err      error
 	// Diagnosis is populated on failure and is the reason this step exists.
 	Diagnosis Diagnosis
+	// Skipped marks a change deliberately made without requests: switching a
+	// provider that already works to another model its catalog lists. OK is
+	// set so the flow continues, and the confirmation says nothing was sent.
+	Skipped bool
+}
+
+// Unverified is the Verification for a model switched without requests.
+func Unverified(model string) Verification {
+	return Verification{Model: model, OK: true, ToolsOK: true, Skipped: true}
 }
 
 // toolProbe is the trivial tool definition sent by the second verification
@@ -249,6 +258,9 @@ func truncatedByBudget(stop string) bool {
 // as having replied "", which reads like the endpoint failed and the wizard
 // wrote the configuration anyway.
 func (v Verification) Describe() string {
+	if v.Skipped {
+		return "not re-verified — the provider already works and this only changes its model"
+	}
 	elapsed := v.Elapsed.Round(time.Millisecond)
 	if v.Reply == "" && v.Reasoned {
 		return fmt.Sprintf("reasoned but produced no visible answer within %d tokens, in %s, and accepted tools", verifyMaxTokens, elapsed)

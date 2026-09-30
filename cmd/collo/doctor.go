@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -102,11 +103,21 @@ func runDoctorCommand(opts options) error {
 			// Token limits are reported on the provider's own row rather than
 			// as a second one. They are a property of this provider, and a
 			// report that lists every provider twice is one people stop reading.
-			if limitStatus, limitDetail := providerLimitsDiagnostic(p); limitDetail != "" {
+			// The limits reported are the ones the provider's own model runs
+			// with, which a `models` entry for that model overrides.
+			if limitStatus, limitDetail := providerLimitsDiagnostic(p.ForModel(p.Model)); limitDetail != "" {
 				detail += "; " + limitDetail
 				if limitStatus == "warn" && status == "ok" {
 					status = "warn"
 				}
+			}
+			if len(p.Models) > 0 {
+				ids := make([]string, 0, len(p.Models))
+				for id := range p.Models {
+					ids = append(ids, id)
+				}
+				sort.Strings(ids)
+				detail += "; per-model settings for " + strings.Join(ids, ", ")
 			}
 			add("provider "+name, status, detail)
 		}

@@ -95,7 +95,13 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 			// OpenAI-compatible route.
 			MaxContextLength    int `json:"max_context_length"`
 			LoadedContextLength int `json:"loaded_context_length"`
-			TopProvider         *struct {
+			// vLLM states the window it was started with as max_model_len,
+			// which is the served length rather than the weights' maximum.
+			// Its LoRA adapter cards leave it null and name the base model in
+			// parent instead.
+			MaxModelLen int    `json:"max_model_len"`
+			Parent      string `json:"parent"`
+			TopProvider *struct {
 				ContextLength       int `json:"context_length"`
 				MaxCompletionTokens int `json:"max_completion_tokens"`
 			} `json:"top_provider"`
@@ -104,18 +110,31 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, protocolError(c.Label, "list models", err)
 	}
+	servedByID := make(map[string]int, len(payload.Data))
+	for _, m := range payload.Data {
+		if m.ID != "" && m.MaxModelLen > 0 {
+			servedByID[m.ID] = m.MaxModelLen
+		}
+	}
 	models := make([]ModelInfo, 0, len(payload.Data))
 	for _, m := range payload.Data {
 		if m.ID == "" {
 			continue
 		}
 		info := ModelInfo{ID: m.ID}
+		served := m.MaxModelLen
+		if served <= 0 && m.Parent != "" {
+			// An adapter runs inside its base model's window.
+			served = servedByID[m.Parent]
+		}
 		// A runtime that has loaded a model with a smaller window than the
 		// weights allow is serving the smaller one, and that is the number a
 		// session actually has to live inside.
 		switch {
 		case m.LoadedContextLength > 0:
 			info.Limits.ContextWindow = m.LoadedContextLength
+		case served > 0:
+			info.Limits.ContextWindow = served
 		case m.ContextLength > 0:
 			info.Limits.ContextWindow = m.ContextLength
 		case m.MaxContextLength > 0:
@@ -175,7 +194,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 				if retry, warning := c.parameters.learnOutputCeiling(ceiling, body); retry {
 					adjustments++
 					if warning != "" && onDelta != nil {
-						onDelta(Delta{Warning: warning})
+						onDelta(Delta{Warning: warning, OutputCeiling: ceiling})
 					}
 					continue
 				}
@@ -690,9 +709,14 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 	var payload struct {
 		Choices []struct {
 			Message struct {
-				Content   string `json:"content"`
-				Refusal   string `json:"refusal"`
-				ToolCalls []struct {
+				Content string `json:"content"`
+				Refusal string `json:"refusal"`
+				// Compatible servers name readable reasoning differently:
+				// DeepSeek and older vLLM reasoning_content, current vLLM
+				// and Ollama reasoning.
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string          `json:"name"`
@@ -715,6 +739,9 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 		return out, nil
 	}
 	choice := payload.Choices[0]
+	if reasoning := firstNonEmpty(choice.Message.ReasoningContent, choice.Message.Reasoning); reasoning != "" && onDelta != nil {
+		onDelta(Delta{Reasoning: reasoning})
+	}
 	out.Content, out.Stop = choice.Message.Content, choice.FinishReason
 	if choice.Message.Refusal != "" {
 		out.Refused = true
@@ -735,4 +762,13 @@ func parseOpenAINonStream(r io.Reader, onDelta func(Delta)) (Response, error) {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: id, Name: tc.Function.Name, Arguments: json.RawMessage(args)})
 	}
 	return out, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

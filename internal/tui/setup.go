@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,27 @@ type SetupOptions struct {
 	// path. The same setup flow is used by `collo setup`, but that command closes
 	// after writing while startup proceeds directly into the session TUI.
 	ContinueToSession bool
+	// Embedded runs the flow inside a running session (`/providers`) rather
+	// than as its own program: leaving returns to the session instead of
+	// ending the process, and a write is applied to the session live.
+	Embedded bool
+	// ActiveProvider is the provider the hosting session is using, which may
+	// not be removed from under it.
+	ActiveProvider string
+}
+
+// setupExitMsg reports that an embedded setup run has finished, whether by
+// writing, backing out, or being cancelled. The session reads the outcome off
+// the model it was hosting.
+type setupExitMsg struct{}
+
+// exit leaves the flow: the whole program when setup runs on its own, only the
+// view when it is embedded in a session.
+func (m setupModel) exit() tea.Cmd {
+	if m.opts.Embedded {
+		return func() tea.Msg { return setupExitMsg{} }
+	}
+	return tea.Quit
 }
 
 // SetupOutcome reports what a completed setup run did, so the caller can print a
@@ -54,6 +76,11 @@ type SetupOutcome struct {
 	Wrote      bool
 	Result     setup.Result
 	ConfigPath string
+	// Summary describes a direct edit (default, settings, rename, remove) in
+	// one sentence; empty for a verified write, which Result describes.
+	Summary     string
+	RenamedFrom string
+	Removed     bool
 }
 
 type setupStage int
@@ -68,8 +95,34 @@ const (
 	stageStorage
 	stageVerifying
 	stageFailed
+	stageLimits
+	stageEffort
+	stageEffortVerifying
 	stageConfirm
 	stageDone
+	stageProviderActions
+	stageConnectionForm
+	stageSettingsForm
+	stageRename
+	stageRemoveConfirm
+	stageApplying
+)
+
+// setupIntent is what the run is for once a configured provider has been
+// chosen, which decides how the ordinary discover-verify-confirm path ends.
+type setupIntent int
+
+const (
+	// intentReverify is the original path: choose a model, verify, write it
+	// as the provider's own model.
+	intentReverify setupIntent = iota
+	// intentSwitchModel changes the provider's own model without requests.
+	intentSwitchModel
+	// intentAddModel verifies another model and writes only its entry.
+	intentAddModel
+	// intentConnection edits endpoint and identity fields, then re-verifies,
+	// keeping the entry's other settings.
+	intentConnection
 )
 
 // setupChoice is one selectable line on the provider screen.
@@ -115,9 +168,33 @@ type setupModel struct {
 
 	verification setup.Verification
 	result       setup.Result
-	outcome      SetupOutcome
-	err          error
-	quitting     bool
+
+	// limitsForm edits the two token limits between verification and the
+	// confirmation, against the proposals it opened with — the proposals are
+	// what a typed number is compared to when deciding whether it is the
+	// user's own. limitsFromConfirm makes esc return to the confirmation when
+	// the screen was reopened from there, rather than abandoning the run.
+	limitsForm        setupForm
+	limitProposals    [2]setup.LimitProposal
+	limitsFromConfirm bool
+
+	// effortSupport is what the chosen model accepts; effortChoices are the
+	// rows on the effort screen. effortProblem holds an endpoint's refusal
+	// of the level just tried, shown on the screen it was chosen from.
+	effortSupport     provider.ReasoningSupport
+	effortChoices     []setup.EffortChoice
+	effortFromConfirm bool
+	effortProblem     string
+	effortTrying      string
+
+	// intent says how a run on a configured provider ends; actions are the
+	// rows of that provider's menu.
+	intent  setupIntent
+	actions []providerAction
+
+	outcome  SetupOutcome
+	err      error
+	quitting bool
 }
 
 type probesDoneMsg struct{ probes []setup.Probe }
@@ -129,14 +206,35 @@ type verifiedMsg struct {
 	verification setup.Verification
 	// limits are resolved alongside verification rather than after it, because
 	// resolving them may cost a request to the endpoint and the wizard is
-	// already waiting on one there.
-	limits provider.Limits
+	// already waiting on one there. Reasoning support is resolved the same way.
+	limits    provider.Limits
+	reasoning provider.ReasoningSupport
+}
+type effortVerifiedMsg struct {
+	level    string
+	accepted bool
+	detail   string
 }
 type wroteMsg struct{ err error }
 type awsIdentityMsg struct{ identity setup.AWSIdentity }
 
 // RunSetup runs interactive provider setup and reports what it wrote.
 func RunSetup(ctx context.Context, opts SetupOptions) (SetupOutcome, error) {
+	m := newSetupModel(opts)
+	program := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
+	final, err := program.Run()
+	if err != nil {
+		return SetupOutcome{}, err
+	}
+	done, ok := final.(setupModel)
+	if !ok {
+		return SetupOutcome{}, nil
+	}
+	return done.outcome, done.err
+}
+
+// newSetupModel builds the flow for either host: its own program or a session.
+func newSetupModel(opts SetupOptions) setupModel {
 	theme := resolveTheme(opts.ThemeName)
 	m := setupModel{
 		opts:   opts,
@@ -155,17 +253,13 @@ func RunSetup(ctx context.Context, opts SetupOptions) (SetupOutcome, error) {
 		m.name, m.provider = name, p
 		m.credPlan, m.envVar = setup.CredentialKeep, p.APIKeyEnv
 		m.stage = stageScanning
+		if opts.Embedded {
+			// In a session a named provider opens on what can be done with
+			// it; `collo setup --provider` keeps its direct re-verification.
+			m = m.enterActions()
+		}
 	}
-	program := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
-	final, err := program.Run()
-	if err != nil {
-		return SetupOutcome{}, err
-	}
-	done, ok := final.(setupModel)
-	if !ok {
-		return SetupOutcome{}, nil
-	}
-	return done.outcome, done.err
+	return m
 }
 
 func newSetupSpinner(t Theme) spinner.Model {
@@ -199,6 +293,9 @@ func (m setupModel) Init() tea.Cmd {
 	// A model seeded by RunSetup already knows its provider, so the scan has
 	// nothing to offer it: go straight to that provider's catalog, exactly as
 	// selecting it from the list would.
+	if m.stage == stageProviderActions {
+		return nil
+	}
 	if m.name != "" {
 		return tea.Batch(m.spin.Tick, m.discoverCmd(m.name, m.provider))
 	}
@@ -246,14 +343,30 @@ func (m setupModel) discoverCmd(name string, p appconfig.Provider) tea.Cmd {
 
 func (m setupModel) verifyCmd() tea.Cmd {
 	name, p, model, catalog := m.name, m.provider, m.model, m.catalog
+	skip := m.intent == intentSwitchModel
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
+		if skip {
+			// Switching a working provider's model sends nothing; the limits
+			// and effort still come from what the endpoint publishes.
+			return verifiedMsg{verification: setup.Unverified(model), limits: setup.ModelLimits(ctx, p, model, catalog),
+				reasoning: setup.ModelReasoning(ctx, p, model, catalog)}
+		}
 		verification := setup.Verify(ctx, name, p, model, catalog)
 		if !verification.OK {
 			return verifiedMsg{verification: verification}
 		}
-		return verifiedMsg{verification: verification, limits: setup.ModelLimits(ctx, p, model, catalog)}
+		return verifiedMsg{verification: verification, limits: setup.ModelLimits(ctx, p, model, catalog),
+			reasoning: setup.ModelReasoning(ctx, p, model, catalog)}
+	}
+}
+
+func (m setupModel) effortVerifyCmd(level string) tea.Cmd {
+	name, p, model := m.name, m.provider, m.model
+	return func() tea.Msg {
+		accepted, detail := setup.VerifyEffort(context.Background(), name, p, model, level)
+		return effortVerifiedMsg{level: level, accepted: accepted, detail: detail}
 	}
 }
 
@@ -293,11 +406,27 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case verifiedMsg:
 		return m.onVerified(msg)
+	case directEditMsg:
+		return m.onDirectEdit(msg)
+	case effortVerifiedMsg:
+		if m.stage != stageEffortVerifying || msg.level != m.effortTrying {
+			return m, nil
+		}
+		if !msg.accepted {
+			m.effortProblem = "The endpoint did not accept " + msg.level + ": " + msg.detail +
+				". Choose another level, or the default."
+			m.stage = stageEffort
+			return m, nil
+		}
+		m.effortProblem = ""
+		m.result = m.result.WithEffort(msg.level)
+		m.stage = stageConfirm
+		return m, nil
 	case wroteMsg:
 		if msg.err != nil {
 			m.err = msg.err
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 		m.outcome = SetupOutcome{Wrote: true, Result: m.result, ConfigPath: m.opts.ConfigPath}
 		m.stage = stageDone
@@ -344,10 +473,156 @@ func (m setupModel) onVerified(msg verifiedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.result = setup.Build(m.name, m.provider, m.model, m.credPlan, m.envVar, m.secret, msg.limits)
+	m.result.EntryOnly = m.intent == intentAddModel
+	m.result.KeepSettings = m.intent == intentConnection
 	m.makeDefault = m.defaultProposal()
+	if m.result.EntryOnly {
+		// Adding a model leaves the provider's own model, and so the
+		// default selection, exactly as they were.
+		m.makeDefault = false
+	}
 	m.result.MakeDefault = m.makeDefault
-	m.stage = stageConfirm
+	m.effortSupport = msg.reasoning
+	return m.enterLimits()
+}
+
+// providerEffort is the provider-level reasoning effort in the file being
+// written, which applies to this model unless its own entry overrides it.
+func (m setupModel) providerEffort() string {
+	if existing := m.opts.Existing.Definitions[m.name].Reasoning; existing != nil {
+		return existing.Effort
+	}
+	return ""
+}
+
+// enterEffort opens the reasoning-effort screen, or goes straight to the
+// confirmation for a model known to have no effort control.
+func (m setupModel) enterEffort(fromConfirm bool) (tea.Model, tea.Cmd) {
+	if !setup.Offered(m.effortSupport) {
+		m.stage = stageConfirm
+		return m, nil
+	}
+	m.effortChoices = setup.EffortChoices(m.effortSupport, m.providerEffort())
+	current := setup.ConfiguredEffort(m.opts.Existing.Definitions[m.name], m.model)
+	if m.result.EffortChosen {
+		current = m.result.Effort
+	}
+	m.cursor = 0
+	for i, choice := range m.effortChoices {
+		if choice.Level != "" && choice.Level == current {
+			m.cursor = i
+		}
+	}
+	m.effortFromConfirm, m.effortProblem = fromConfirm, ""
+	m.stage = stageEffort
 	return m, nil
+}
+
+// enterLimits opens the token-limits screen on what this run established.
+//
+// Every run passes through it, not only the ones that could not establish a
+// limit: a published number can still be wrong for a particular deployment,
+// and the point of the screen is that neither number is ever written without
+// the user having seen it and had the chance to change it. A limit nothing
+// established opens empty and focused, so the screen asks rather than states.
+func (m setupModel) enterLimits() (tea.Model, tea.Cmd) {
+	contextWindow, maxOutput := setup.ProposeLimits(m.result, m.opts.Existing.Definitions[m.name])
+	m.limitProposals = [2]setup.LimitProposal{contextWindow, maxOutput}
+	m.limitsForm = newLimitsForm(contextWindow, maxOutput)
+	m.limitsFromConfirm = false
+	m.stage = stageLimits
+	m.input = m.limitsForm.syncInto(m.input)
+	m.input.Focus()
+	return m, textinput.Blink
+}
+
+// reopenLimits returns to the limits screen from the confirmation, showing the
+// numbers the confirmation is about to write rather than whatever was last
+// typed. An accepted assumption is shown blank again rather than as its
+// number: filled in, pressing enter would relabel a value the user never typed
+// as their own.
+func (m setupModel) reopenLimits() (tea.Model, tea.Cmd) { return m.reopenLimitsFrom(true) }
+
+// reopenLimitsFrom returns to the limits screen, either from the confirmation
+// or backwards from the effort screen that follows it.
+func (m setupModel) reopenLimitsFrom(fromConfirm bool) (tea.Model, tea.Cmd) {
+	shown := func(value int, source provider.LimitSource) string {
+		if source == provider.LimitsAssumed {
+			return ""
+		}
+		return strconv.Itoa(value)
+	}
+	m.limitsForm.values["context_window"] = shown(m.result.Provider.Context, m.result.Limits.ContextSource)
+	m.limitsForm.values["max_tokens"] = shown(m.result.Provider.MaxTokens, m.result.Limits.OutputSource)
+	m.limitsForm.err = ""
+	m.limitsFromConfirm = fromConfirm
+	m.stage = stageLimits
+	m.input = m.limitsForm.syncInto(m.input)
+	m.input.Focus()
+	return m, textinput.Blink
+}
+
+// newLimitsForm lays out the two limit fields. A known value is filled in; an
+// assumed one is left empty with the assumption as its placeholder, and the
+// cursor starts on the first such field.
+func newLimitsForm(contextWindow, maxOutput setup.LimitProposal) setupForm {
+	field := func(key, label string, proposal setup.LimitProposal) setup.Field {
+		f := setup.Field{Key: key, Label: label, Optional: true}
+		if proposal.Assumed() {
+			f.Placeholder = "blank — assumes " + strconv.Itoa(proposal.Value)
+			return f
+		}
+		f.Default = strconv.Itoa(proposal.Value)
+		return f
+	}
+	form := newSetupForm(setup.Manual{Name: "Token limits", Fields: []setup.Field{
+		field("context_window", "Context window", contextWindow),
+		field("max_tokens", "Max output", maxOutput),
+	}})
+	if !contextWindow.Assumed() && maxOutput.Assumed() {
+		form.focus = 1
+	}
+	return form
+}
+
+func (m setupModel) onLimitsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.input.Blur()
+		if m.limitsFromConfirm {
+			m.stage = stageConfirm
+			return m, nil
+		}
+		return m.back()
+	case "up", "shift+tab":
+		m.limitsForm = m.limitsForm.capture(m.input).move(-1)
+		m.input = m.limitsForm.syncInto(m.input)
+		return m, nil
+	case "down", "tab":
+		m.limitsForm = m.limitsForm.capture(m.input).move(1)
+		m.input = m.limitsForm.syncInto(m.input)
+		return m, nil
+	case "enter":
+		m.limitsForm = m.limitsForm.capture(m.input)
+		limits, problem := setup.ParseLimits(m.limitsForm.values["context_window"], m.limitsForm.values["max_tokens"],
+			m.limitProposals[0], m.limitProposals[1])
+		if problem != "" {
+			m.limitsForm.err = problem
+			return m, nil
+		}
+		m.limitsForm.err = ""
+		m.result = m.result.WithLimits(limits)
+		m.input.Blur()
+		if m.limitsFromConfirm {
+			m.stage = stageConfirm
+			return m, nil
+		}
+		return m.enterEffort(false)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.limitsForm = m.limitsForm.capture(m.input)
+	return m, cmd
 }
 
 // defaultProposal decides what the confirmation screen proposes for
@@ -369,7 +644,7 @@ func (m setupModel) defaultProposal() bool {
 func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		m.quitting = true
-		return m, tea.Quit
+		return m, m.exit()
 	}
 
 	switch m.stage {
@@ -377,6 +652,35 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.onListKey(msg)
 	case stageForm:
 		return m.onFormKey(msg)
+	case stageLimits:
+		return m.onLimitsKey(msg)
+	case stageProviderActions:
+		if msg.String() == "esc" {
+			return m.back()
+		}
+		return m.onListKey(msg)
+	case stageConnectionForm, stageSettingsForm:
+		return m.onEditFormKey(msg)
+	case stageRename:
+		return m.onRenameKey(msg)
+	case stageRemoveConfirm:
+		return m.onRemoveKey(msg)
+	case stageEffort:
+		if msg.String() == "esc" {
+			if m.effortFromConfirm {
+				m.stage = stageConfirm
+				return m, nil
+			}
+			return m.reopenLimitsFrom(false)
+		}
+		return m.onListKey(msg)
+	case stageEffortVerifying:
+		if msg.String() == "esc" {
+			m.effortTrying = ""
+			m.stage = stageEffort
+			return m, nil
+		}
+		return m, nil
 	case stageManualModel, stageCredential:
 		return m.onInputKey(msg)
 	case stageFailed:
@@ -388,7 +692,7 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.back()
 		case "q":
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 	case stageConfirm:
 		switch msg.String() {
@@ -396,20 +700,29 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.result.MakeDefault = m.makeDefault
 			return m, m.writeCmd()
 		case "d":
-			m.makeDefault = !m.makeDefault
+			if !m.result.EntryOnly {
+				m.makeDefault = !m.makeDefault
+			}
+			return m, nil
+		case "l":
+			return m.reopenLimits()
+		case "e":
+			if setup.Offered(m.effortSupport) {
+				return m.enterEffort(true)
+			}
 			return m, nil
 		case "esc", "b":
 			return m.back()
 		case "q":
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 	case stageDone:
-		return m, tea.Quit
+		return m, m.exit()
 	case stageScanning, stageVerifying:
 		if msg.String() == "esc" {
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 	}
 	return m, nil
@@ -426,7 +739,7 @@ func (m setupModel) onListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.stage == stageChooseProvider {
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 		return m.back()
 	case "enter":
@@ -445,7 +758,7 @@ func (m setupModel) onListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m setupModel) back() (tea.Model, tea.Cmd) {
 	if len(m.choices) == 0 {
 		m.quitting = true
-		return m, tea.Quit
+		return m, m.exit()
 	}
 	m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
 	return m, nil
@@ -485,8 +798,7 @@ func (m setupModel) onSelect() (tea.Model, tea.Cmd) {
 			m.credPlan, m.envVar = setup.CredentialKeep, p.APIKeyEnv
 			m.catalog = nil
 			m.form = setupForm{}
-			m.stage = stageScanning
-			return m, tea.Batch(m.spin.Tick, m.discoverCmd(m.name, m.provider))
+			return m.enterActions(), nil
 		case choice.local != nil:
 			m.name = choice.local.Candidate.Key
 			m.provider = appconfig.Provider{Type: choice.local.Candidate.Type, BaseURL: choice.local.Candidate.BaseURL}
@@ -539,6 +851,19 @@ func (m setupModel) onSelect() (tea.Model, tea.Cmd) {
 		m.model = m.catalog[m.cursor].ID
 		m.stage = stageVerifying
 		return m, tea.Batch(m.spin.Tick, m.verifyCmd())
+	case stageProviderActions:
+		return m.onAction()
+	case stageEffort:
+		choice := m.effortChoices[m.cursor]
+		if choice.Level == "" {
+			m.effortProblem = ""
+			m.result = m.result.WithEffort("")
+			m.stage = stageConfirm
+			return m, nil
+		}
+		m.effortTrying = choice.Level
+		m.stage = stageEffortVerifying
+		return m, tea.Batch(m.spin.Tick, m.effortVerifyCmd(choice.Level))
 	case stageStorage:
 		if m.cursor == 0 && credstore.Available() {
 			m.credPlan = setup.CredentialStore
@@ -580,6 +905,10 @@ func (m setupModel) listLength() int {
 		return len(m.choices)
 	case stageChooseModel:
 		return len(m.catalog)
+	case stageEffort:
+		return len(m.effortChoices)
+	case stageProviderActions:
+		return len(m.actions)
 	case stageStorage:
 		// One option where there is no credential store, so the cursor cannot
 		// sit on a choice that does not exist.
@@ -628,6 +957,9 @@ func (m setupModel) firstSelectable() int {
 // disabledAt reports whether a row is present for information only. Only the
 // provider list has such rows; the model and storage lists are all selectable.
 func (m setupModel) disabledAt(index int) bool {
+	if m.stage == stageProviderActions && index >= 0 && index < len(m.actions) {
+		return m.actions[index].disabled
+	}
 	if m.stage != stageChooseProvider || index < 0 || index >= len(m.choices) {
 		return false
 	}

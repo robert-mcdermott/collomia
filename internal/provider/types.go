@@ -44,6 +44,19 @@ type Message struct {
 	Parts      []ContentPart `json:"parts,omitempty"`
 	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
+	// Reasoning is the readable thinking the provider streamed for this
+	// assistant message, kept so a reopened session can show it. It is
+	// display text only: no adapter sends it back, and it carries no
+	// provider-bound signature or opaque state.
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningState is the provider-bound reasoning an adapter replays to
+	// the endpoint that issued it (see ReasoningState). Never rendered.
+	ReasoningState *ReasoningState `json:"reasoning_state,omitempty"`
+	// Pinned marks a runtime-authored snapshot of the session's pinned state
+	// (the live plan), recorded into the conversation for providers whose
+	// reasoning is bound to the exact conversation prefix. It is model
+	// context, not something the user said, and is not displayed as such.
+	Pinned bool `json:"pinned,omitempty"`
 	// Volatile marks a message the caller regenerates for every request
 	// rather than retaining in the conversation. Adapters with explicit
 	// prompt caching must not place a cache breakpoint at or after one: the
@@ -111,8 +124,11 @@ type Usage struct {
 type Response struct {
 	Content   string
 	ToolCalls []ToolCall
-	Usage     Usage
-	Stop      string
+	// ReasoningState is set by adapters that return signed reasoning, for
+	// the caller to keep on the assistant message it belongs to.
+	ReasoningState *ReasoningState
+	Usage          Usage
+	Stop           string
 	// StopDetail retains an explicit incomplete reason, independently of text.
 	StopDetail string
 	Refused    bool
@@ -137,8 +153,12 @@ type Delta struct {
 	Text      string
 	Reasoning string
 	Warning   string
-	ToolCall  *ToolCallDelta
-	Usage     *Usage
+	// OutputCeiling accompanies a warning that the provider rejected max_tokens
+	// and stated the largest it accepts, so a caller can offer to save it rather
+	// than parse the warning's words.
+	OutputCeiling int
+	ToolCall      *ToolCallDelta
+	Usage         *Usage
 }
 
 type Client interface {
@@ -158,6 +178,9 @@ type ModelInfo struct {
 	// catalog published them. Most do not, and the zero value says so rather
 	// than carrying a number the endpoint never stated.
 	Limits Limits `json:"limits,omitzero"`
+	// Reasoning is this model's own effort support where the catalog
+	// published it. The zero value means unknown, not unsupported.
+	Reasoning ReasoningSupport `json:"reasoning,omitzero"`
 }
 
 // ModelLister is an optional Client capability: providers whose APIs expose

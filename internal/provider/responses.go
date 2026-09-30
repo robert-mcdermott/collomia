@@ -171,6 +171,8 @@ type responsesItem struct {
 	Name      string             `json:"name"`
 	Arguments json.RawMessage    `json:"arguments"`
 	Content   []responsesContent `json:"content"`
+	// Summary holds a reasoning item's readable summary parts.
+	Summary []responsesContent `json:"summary"`
 }
 
 type responsesPayload struct {
@@ -211,10 +213,26 @@ func responseFromPayload(payload responsesPayload, label, operation string, onDe
 	if payload.IncompleteDetails != nil {
 		out.StopDetail = payload.IncompleteDetails.Reason
 	}
+	var reasoning strings.Builder
 	for _, item := range payload.Output {
+		if item.Type == "reasoning" {
+			// A summary is what the provider offers for display; full
+			// reasoning text is used only where no summary was produced.
+			parts := item.Summary
+			if len(parts) == 0 {
+				parts = item.Content
+			}
+			for _, part := range parts {
+				reasoning.WriteString(part.Text)
+			}
+			continue
+		}
 		for _, part := range item.Content {
 			out.Refused = out.Refused || part.Type == "refusal" || part.Refusal != ""
 		}
+	}
+	if reasoning.Len() > 0 && onDelta != nil {
+		onDelta(Delta{Reasoning: reasoning.String()})
 	}
 	for _, item := range payload.Output {
 		switch item.Type {

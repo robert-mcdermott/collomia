@@ -1,6 +1,6 @@
 # Agent improvement plan
 
-Updated: 2026-09-07. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
+Updated: 2026-09-29. Source: [project review](PROJECT_REVIEW_2026-09-04.md).
 
 This is the durable implementation and user-testing plan for the September
 review. It supplements the [roadmap](../ROADMAP.md). The existing
@@ -10,6 +10,24 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
+- **Completed wave (2026-09-30): [W10 — provider setup and configuration](#w10--provider-setup-and-configuration-without-hand-editing).**
+  Every slice, W10a–d2, passed user acceptance. The detail below is the record.
+- **W10 history (2026-09-29): [W10 — provider setup and configuration](#w10--provider-setup-and-configuration-without-hand-editing).
+  W10a–c are accepted (W10a and W10b on 2026-09-29, W10c on 2026-09-30) and
+  committed. W10d was split: W10d1 (setup inside the session, applied live)
+  was accepted and committed on 2026-09-30, and W10d2 (the provider menu,
+  direct edits, and learned-ceiling save) is ready for user testing.** The user
+  selected W10 ahead of W2/W8/W9 and the roadmap's P1 order, moved
+  Homebrew/Scoop to lowest priority (P3), and approved starting W10a. W10a fixes
+  the data-loss defect: reconfiguring a provider used to replace its whole JSON
+  block, dropping `headers`, `temperature`, `reasoning`, `pricing` and timeouts.
+  It adds the Token limits screen and more limit discovery. Uncommitted.
+- **Maintenance (2026-09-29):** Go baseline 1.26.6 → 1.26.8 and a dependency
+  refresh; `govulncheck` reports no reachable findings, and only one unreachable
+  advisory with no upstream fix remains. The MCP Go SDK was held at v1.6.1 at
+  the time; it was upgraded on 2026-09-30 (see the maintenance entry above). CHANGELOG gained v0.5.1 and
+  Unreleased entries. Stale release/next-action handoff text was refreshed.
+  Uncommitted at the time of writing.
 - **Release completed:** v0.5.1 was published successfully by release run
   `34171629391`, including all platform qualification and artifact attestations.
   Its source commit `db8f2f5` is unsigned, unlike v0.4.1's GitHub-signed PR merge
@@ -64,9 +82,11 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 - **Earlier quality intermittent:** the writer-sibling evaluation failure from
   `34160727968` did not recur in final PR, main, or release quality. Its diagnostic
   assertion remains; the original intermittent cause is still not established.
-- **Current work:** prevent future releases from pointing at unverified source
-  commits. Workflow lint and read-only gate checks against v0.4.1 (accept) and
-  v0.5.1 (reject) passed. The published v0.5.1 release remains unchanged.
+- **Release-signature gate (complete):** future releases cannot point at
+  unverified source commits. Workflow lint and read-only gate checks against
+  v0.4.1 (accept) and v0.5.1 (reject) passed. It landed on `main` as `85063c9`
+  (pushed directly, not through a PR); main CI `34173783450` passed. The
+  published v0.5.1 release remains unchanged.
 - **Status:** reliability implementation committed in `c90beea`; `VERSION` bumped
   to `v0.5.0` in `fe0164d`. Candidate automated gates passed. Standard Developer
   acceptance passed through Kanban30 on September 6. The user reported successful
@@ -76,11 +96,31 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** review and merge the release-signature gate and guide update
-  through a GitHub PR. On the next release, verify the final source commit
-  before tagging and verify downloaded artifact attestations before publication.
-  No version, tag, remote branch, or release was changed in this follow-up.
-  Do not start another feature wave by default.
+- **Maintenance (2026-09-30): MCP protocol 2026-07-28, accepted by the user
+  ("manual testing passed").** The user selected it after W2b2.
+  - The SDK moved from v1.6.1 to v1.8.0.
+  - Tests cover the new input round trip and an older server pinned to
+    2025-11-25.
+  - Concurrent elicitations are serialized, and `/mcp ping` tolerates the
+    removed method.
+  - Verified with `collo mcp test` against the configured `time` (negotiated
+    2025-03-26) and `proteoscope` (2025-11-25) servers.
+  - Details are in [MCP protocol](MCP_PROTOCOL.md). Accepted and awaiting the
+    user's commit.
+- **Release (2026-09-30): v0.6.0 preparation.**
+  - `VERSION` is v0.6.0. The changelog, beta notes, and features summary are
+    updated, and the web User-Agent is refreshed to Chrome 155.
+  - Next, per [Releasing](RELEASING.md): a release PR from `wave40`, merged
+    with GitHub's merge commit so the source is signed; a clean checkout of
+    that commit with a verified signature; the tag; then the draft review,
+    download verification, and publication.
+  - After the release, the candidates are W2b3 (the OpenAI Responses route),
+    W8 (lazy tool discovery and parallel reads), and the roadmap's P1 list.
+- **W2b (2026-09-30):** W2b1 and W2b2 are accepted and committed (`e4ffe32`).
+  W2b3 (an OpenAI Responses route with encrypted reasoning) is planned and
+  awaits the user's go-ahead. On the next release, verify the final
+  source commit's GitHub signature before tagging and verify downloaded artifact
+  attestations before publication.
 - **Historical evidence:** candidate versions, commands, and unchecked manual
   gates below record the state at that time. Older candidates were not all
   separately accepted; the current integrated Developer/Work acceptance above
@@ -929,13 +969,16 @@ Wave numbers are stable identifiers, not mandatory execution order. On
 2026-09-04 the user chose W3 ahead of W2. W1, W3, and W4 are accepted;
 W5 and full W7 are accepted. W6 was withdrawn/re-scoped; W2, W8, and W9 remain planned.
 Revisit the next priority at each gate.
+On 2026-09-29 the user selected W10 (provider setup and configuration) as the
+next work. W10c absorbs W2's effort-configuration half (W2a); W2's continuity
+half remains W2 (W2b).
 After accepting W3, the user explicitly selected W4 on 2026-09-04.
 After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 
 | Wave | Deliverable | Status | User gate |
 | --- | --- | --- | --- |
 | W1 | Separate, bounded live thinking summaries in the TUI | Accepted | User confirmed successful reasoning display with GLM-5.3-flash from Ollama |
-| W2 | Reasoning configuration, provider-state continuity, and summary replay | Planned | Reasoning/tool conversations work on the user's actual providers, including reopen |
+| W2 | Reasoning configuration, provider-state continuity, and summary replay | W2a in W10c; W2b split into W2b1 and W2b2 (accepted), W2b3 (planned) | Reasoning/tool conversations work on the user's actual providers, including reopen |
 | W3 | Correct completion outcomes, exact failure recovery, large-file pagination | Accepted | User confirmed pagination and the follow-up manual tests passed |
 | W4 | Final deliverable identity and observed-effect checks | Accepted | User confirmed all manual tests passed and explicitly marked the wave done |
 | W5 | Real-model evaluation baseline | Accepted | Representative tasks and quality/cost metrics reflect the user's work |
@@ -943,6 +986,7 @@ After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 | W7 | Durable task context, retrievable evidence, and restart checkpoints | Accepted (W7a and W7b) | User confirmed successful manual testing of both slices |
 | W8 | Lazy tool discovery and measured independent-read concurrency | Planned | Connected tools are discoverable and parallel reads improve latency |
 | W9 | Scoped autonomy mandates and durable delayed continuation | Planned; design gate required | Authorized work resumes predictably with clear wait/cancel controls |
+| W10 | Provider setup and configuration without hand-editing JSON (W10a–d) | Accepted (W10a–d2, 2026-09-29/30) | Each slice has its own gate; see [W10](#w10--provider-setup-and-configuration-without-hand-editing) |
 
 ### W1 — thinking visibility
 
@@ -1000,6 +1044,233 @@ Manual checks (using a provider that emits readable reasoning):
   report effective fallback settings rather than requested effort alone.
 - [ ] **User accepts W2.** If provider coverage is too large for one testable
   increment, split into W2a/W2b with separate user gates before implementation.
+
+The split happened on 2026-09-29. Effort enablement, per-model effort
+capability, and model-appropriate Anthropic thinking/effort configuration (W2a)
+are delivered by [W10c](#w10c--reasoning-and-effort-w2a) together with setup's
+picker. The provider-state continuity, Responses route, and reopen replay items
+above remain W2b.
+
+#### W2b — split on 2026-09-30
+
+The user said "start W2b" after W10. Investigation and a contract check showed
+W2b is too large for one testable slice, so it was split. Each part has its own
+gate.
+
+**Contracts verified on 2026-09-30:**
+
+- **Anthropic:**
+  - Signed `thinking` and `redacted_thinking` blocks must be passed back
+    unmodified after `tool_use`. Modifying them is a 400; omitting them is an
+    error per Bedrock's guide but unconfirmed on the Anthropic API.
+  - Claude 5.x models think adaptively by default, even when no `thinking`
+    field is sent, and default `display` to `"omitted"`: an empty `thinking`
+    plus a `signature`, which must still be sent back.
+  - Opus 4.5+ keeps prior turns' blocks.
+  - **Prefix binding:** a replayed block on Fable 5.1, Opus 5.5, or Sonnet 5.5
+    is valid only while `system`, `tools`, and every earlier message are
+    unchanged. This is enforced for accounts created from 2026-08-31, and a
+    beta header `thinking-binding-controls-2026-08-01` can set
+    `prefix_mismatch_behavior: "drop_block"`.
+  - Cross-model blocks are silently dropped.
+- **OpenAI Responses:**
+  - Stateless mode returns `encrypted_content` on reasoning items. Replay all
+    reasoning, function call, and output items since the last user message,
+    untouched.
+  - `reasoning.context` is `auto`, `current_turn`, or `all_turns`.
+  - Summaries are an opt-in. Chat Completions has no continuity mechanism.
+- **Compatible servers:** vLLM returns `reasoning` (formerly
+  `reasoning_content`). Ollama `/v1` does not document a return field.
+  DeepSeek could not be fetched and is unverified.
+- **Bedrock Converse:** a `ReasoningContentBlock` of `reasoningText` with
+  `signature`, or `redactedContent`, is passed back unmodified during tool
+  use.
+
+**Key design finding for W2b2.** Collomia appends a volatile pinned-state
+message to every request and drops it on the next. Under prefix binding,
+every replayed thinking block would then be bound to a prefix that no longer
+exists, and be rejected. It is harmless today only because no blocks are
+sent. W2b2 must choose one of three options:
+1. Persist the pinned-state message into history for binding providers.
+2. Move it into the system prompt, which also binds.
+3. Use `drop_block` and accept losing replayed reasoning.
+
+This is a user decision at W2b2's start.
+
+##### W2b1 — kept thinking, reopen restore, fallback extraction, capability split
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed"). Tested
+with `deepseek-v4.1-flash:cloud` per the user's preference for cloud-offloaded
+models.**
+
+- [x] `provider.Message.Reasoning` holds display-only readable thinking per
+  assistant message.
+  - The agent accumulates it from deltas, bounded at 64 KiB, UTF-8 safe, with
+    the truncation stated.
+  - No adapter serializes messages wholesale, so it is never sent to a
+    provider.
+  - It is additive to session record schema 1 (optional field, no version
+    bump), and old sessions stay readable.
+- [x] Sessions stop persisting `reasoning.delta` chunk events; the message
+  carries the whole summary.
+- [x] The TUI's `restoredBlocks` emits a collapsed THINKING SUMMARY block above
+  the assistant answer on resume and reopen.
+- [x] Synchronous fallbacks report thinking through the same delta path, ahead
+  of the answer:
+  - OpenAI-compatible `reasoning_content`/`reasoning`.
+  - Anthropic `thinking` blocks.
+  - Responses reasoning items, using the summary with a content fallback.
+  - Bedrock `reasoningContent.reasoningText`.
+- [x] `provider.Capabilities` has three reasoning fields:
+  - `Reasoning`: effort control.
+  - `ReasoningSummaries`: Partial, or Unsupported on the official OpenAI and
+    Azure Chat Completions routes, which return no reasoning text.
+  - `ReasoningContinuity`: Unsupported everywhere.
+
+  `/models` `DetailSummary` lists all three, and the adapter constraints and
+  capability rows are updated.
+- [x] Tests:
+  - Each fallback parser's extraction and ordering.
+  - The capability split.
+  - The agent keeping thinking on its message, and bounded truncation.
+  - The session round-trip without chunk records.
+  - The reopened-transcript block.
+- [x] **User accepts W2b1** (2026-09-30).
+
+**Automated evidence (2026-09-30):**
+
+- Full suite, race detector on the changed packages, vet, and cross-builds
+  passed.
+- Live with `qwen3.5:9b` on local Ollama 0.35.0, in a scratch HOME:
+  - A prompt showed a THINKING SUMMARY above "391".
+  - Quitting and reopening with `collo --continue` showed it again in the same
+    place.
+  - The session file held 121 characters of reasoning on the assistant
+    message and no `reasoning.delta` records.
+
+**Manual checks for the user:**
+
+1. With a model that emits thinking (`qwen3.5`, `glm-5.3-flash:cloud`), ask
+   something that needs a little reasoning. After it answers, quit, then run
+   `collo --continue` or `/sessions`. The THINKING SUMMARY should reappear
+   above that answer, and `ctrl+o` should expand it.
+2. Do the same across a turn that uses tools. Each response's summary should
+   sit above its own answer or tool calls.
+3. Run `/models`. Your provider should list reasoning effort, reasoning
+   summaries, and reasoning continuity separately, with continuity
+   unavailable.
+
+##### W2b2 — Anthropic, Bedrock, and Foundry signed-thinking round-trip
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed") on
+Bedrock `us.anthropic.claude-opus-5-5`.**
+
+**Decision.** The user chose option 1, recording plan updates, after asking
+whether it could break any provider. The answer was that it would not, given
+the safety net below, and that other providers are untouched. The user then
+supplied a real endpoint for live verification: `bedrock` /
+`us.anthropic.claude-opus-5-5`.
+
+- [x] `provider.ReasoningState` on assistant messages, persisted additively:
+  - Every content block in its original order: reasoning (text, possibly
+    empty, with a signature or a redacted payload), text, and tool_use by ID.
+  - A route recording the Anthropic base URL or the Bedrock region, plus the
+    model.
+  - Replayed only to the same route, and only while the message's tool calls
+    still match its blocks.
+  - Never rendered. Readable text stays in `Message.Reasoning`.
+- [x] Anthropic parses `thinking`, `redacted_thinking`, `thinking_delta`, and
+  `signature_delta` in both stream and non-stream responses.
+  - `anthropicMessagesFor` replays the blocks verbatim, including empty
+    thinking.
+  - The cache breakpoint never lands on a thinking block.
+  - Bedrock parses `reasoningContent` text, signature, and `redactedContent`
+    deltas and responses, and replays `reasoningText`/`redactedContent` in
+    Converse's shape.
+- [x] Display: `thinking: {type: adaptive, display: summarized}` is sent only
+  to Claude models that think by default (the 5.x family and Mythos Preview),
+  where it changes only what is shown. On Bedrock it goes through
+  `additionalModelRequestFields`, merged with the effort.
+- [x] Prefix binding, option 1:
+  - `withPinnedState` records the pinned state into the conversation once per
+    change for routes whose `ReasoningContinuity` is Supported or Partial:
+    anthropic (Supported), anthropic-compatible and azure-foundry-anthropic
+    (Partial), and Bedrock Claude models (Partial).
+  - Other routes keep the per-request volatile copy and filter out any
+    recorded copies.
+  - Recorded snapshots are `Message.Pinned`, hidden from the restored
+    transcript, prompt history, and rewind checkpoint labels.
+  - Compaction, in the live agent and in session replay (`compactedActive`),
+    drops every block. A termination that discards tool calls discards the
+    blocks.
+- [x] Safety net (`continuityControl`): a 400 about thinking or signatures
+  while replaying or requesting display is retried once without it, warns
+  once, and is not attempted again for that client. Replay is removed first,
+  since removing all blocks is always permitted.
+- [x] Capabilities and docs: `ReasoningContinuity` states, adapter
+  constraints, a new capability row, the user guide, beta notes, and the
+  changelog.
+- [x] Tests:
+  - The live-observed Bedrock stream shape is recorded in order.
+  - Bedrock and Anthropic verbatim replay, with no replay to another
+    route/region.
+  - Mismatched tool calls skip replay.
+  - No cache breakpoint on thinking.
+  - Display only for default-adaptive models.
+  - Refused replay falls back and stays off.
+  - Binding routes record the plan once per change with a stable prefix.
+  - Non-binding routes keep the volatile state and filter recorded copies.
+  - Compaction replay drops state while the transcript keeps it.
+  - Pinned snapshots are hidden in the TUI.
+- [x] **User accepts W2b2** (2026-09-30).
+
+**Automated and live evidence (2026-09-30):**
+
+- The provider, agent, session, and TUI suites passed; the full gate is
+  recorded below.
+- Live against the user's Bedrock `us.anthropic.claude-opus-5-5`, headless,
+  `--ephemeral`, using a temporary request/event probe that was removed
+  afterwards:
+  1. **Baseline, before the change:** a two-tool task succeeded with no
+     readable thinking. The stream showed reasoning as `reasoningContent {text:
+     ""}` then `{signature}`, which confirmed the empty-plus-signature shape.
+  2. **After, no plan:** summarized display was accepted, with 199 characters
+     of readable thinking and no warnings. The third request replayed
+     `assistant[reasoningContent toolUse]`, Bedrock accepted it, and the
+     answer was correct.
+  3. **After, active plan:** plan snapshots were recorded as `user[text]`
+     after tool results, three times, once per change. Replayed reasoning
+     around them was accepted in requests 3 and 4, with no warnings or errors
+     and a correct answer.
+- Not verifiable here: the Anthropic API's account-dated prefix binding (no
+  Anthropic API key was used), and whether moving cache markers counts as a
+  prefix change. The safety net covers both.
+
+**Manual checks for the user:**
+
+1. In a session on `bedrock` / Opus 5.5, give a multi-step task that uses tools.
+   A THINKING SUMMARY should appear, which is new for Claude 5.x. There should
+   be no warning about refused thinking.
+2. Give a task that makes a plan (`/tasks` shows it), then works through
+   several tool steps. It should complete normally. After quitting, `collo
+   --continue` should not show plan snapshots as messages you typed, and the
+   up-arrow history should not contain them.
+3. Switch with `/model` to a non-Claude provider mid-session and continue. It
+   should work as before.
+4. Optional, for a long session: after a compaction, the next requests should
+   keep working. Replayed thinking restarts from there.
+
+##### W2b3 — OpenAI Responses route with encrypted reasoning
+
+**Status: planned.**
+
+- [ ] An explicit Responses route for `openai` and Azure, with a
+  model-appropriate choice between it and Chat Completions.
+- [ ] Stateless `encrypted_content` replay of reasoning items since the last
+  user message, and a `reasoning.summary` opt-in.
+- [ ] Verify the streaming event names before implementing, since they were
+  not confirmed on 2026-09-30.
+
 
 ### W3 — truthful completion and usable inputs
 
@@ -1571,6 +1842,505 @@ the four context tools. No background continuation or workspace restore changes.
 - [ ] **User accepts W9.** Broader unattended/graph capabilities require their
   own strategy milestone and evidence; this plan grants no new runtime authority.
 
+### W10 — provider setup and configuration without hand-editing
+
+Selected by the user on 2026-09-29. **Goal:** adding or changing a provider or
+model records its advertised token limits and a chosen reasoning effort, lets
+the user override or supply any value, and, by W10d, can be done from inside a
+session. The goal is that a user almost never has to hand-edit the configuration
+file. W10 grants no permission authority and does not touch orchestration.
+Credentials keep their existing none/env/keychain plans and never enter the
+file.
+
+**Current state (verified 2026-09-29):**
+
+- `collo setup` and first run use a separate pre-session Bubble Tea program
+  (`internal/tui/setup.go`). No in-session command reaches it, and `/config` is
+  view-only.
+- Limits resolve in this order: what the endpoint publishes, then the built-in
+  table, then an assumed 32768/8192 (`internal/provider/limits.go`,
+  `internal/setup/write.go`). A config loaded without `max_tokens` falls back to
+  8192 (`internal/config/config.go`). The confirm screen shows each value's
+  source but accepts only enter/d/esc/q, so the user cannot override a value,
+  and nothing prompts for one when it is unknown. The form's "typed context"
+  branch in `Build` is unreachable.
+- Discovery gaps:
+  - vLLM's `max_model_len` is not read.
+  - Anthropic `/v1/models` decodes only the id and name.
+  - Bedrock and Azure OpenAI have no discovery.
+  - Ollama reports the trained context rather than the served context.
+  - Only OpenRouter publishes output limits.
+  - A ceiling learned from a provider's rejection is never persisted.
+- Limits and `reasoning.effort` are per provider, not per model. `/model`
+  switching keeps the previous model's limits, and `Runtime.ListModels`
+  annotates every model with the provider's window.
+- Effort (`low|medium|high|xhigh|max`) is config-only. Reasoning capability is a
+  blanket type-level `Partial`, verification never exercises effort, and no UI
+  sets it. Anthropic thinking budgets and Ollama `think` are not mapped.
+- **Defect:** reconfiguring a provider replaces its whole JSON block, and
+  `Build` copies only identity fields. `headers`, `temperature`, `reasoning`,
+  `pricing` and timeouts are silently deleted.
+
+**Sequence.** Each slice moves through implement → ready for user testing →
+user accepts → next.
+
+| Slice | Deliverable | User gate |
+| --- | --- | --- |
+| W10a | Safe provider edits; limits you can see, change, and supply | Add and reconfigure a local and a hosted provider; override a limit; enter limits for an unrecognized model; hand-set fields survive |
+| W10b | Per-model settings | Two models on one provider keep separate limits; `/model` applies the right ones; existing files load unchanged |
+| W10c | Reasoning and effort selection (W2a), plus in-session `/effort` | Pick effort for a supporting model; verification confirms the provider accepts it; unsupported models are not offered it; default stays "provider default"; `/effort` changes it mid-session |
+| W10d | In-session provider and configuration dialog | Add, edit, and remove providers and models and set defaults from inside a session; changes apply without restart |
+
+W10a comes first because nothing else can safely write the file until the
+defect is fixed, and it removes the reported pain for the common
+one-model-per-provider case. W10b precedes W10c so effort is stored per model
+from the start rather than migrated later. W10d reuses the dialog and writer
+that W10a–c produce.
+
+#### W10a — safe edits; limits you can see, change, and supply
+
+**Status: accepted by the user on 2026-09-29 ("manual testing passed"). Provider/model not specified.**
+
+- [x] Setup merges its fields into the existing provider object key by key.
+  - It keeps every field it does not own: headers, temperature, reasoning,
+    pricing, timeouts, and unknown keys.
+  - A `${VAR}` reference that expands to the verified value is kept as a
+    reference. A literal `api_key` survives only under the keep-credential plan.
+  - A changed `type` or `base_url` replaces the entry whole, because headers can
+    carry gateway credentials. The confirmation names what is kept or dropped
+    (`setup.Existing.Update`, `mergeProvider`).
+- [x] A Token limits screen sits between verification and the confirmation.
+  This is a separate stage rather than inline confirm-screen fields, so each
+  field can show a source note.
+  - Each field is prefilled with the resolved value and labelled by source.
+  - A typed value is labelled `configured`, and thousands separators are
+    accepted.
+  - Validation goes through the new shared `config.TokenLimitErrors`, so it uses
+    the loader's wording. It also refuses a value over 100,000,000 as a typo.
+  - `l` on the confirmation reopens the screen.
+- [x] A value that would be `assumed` opens empty and focused, and says it
+  couldn't be determined. A blank answer accepts the stated assumption, which
+  stays labelled assumed. A blank assumed output cap follows a typed window, as
+  `Build` clamps it.
+- [x] *Decision taken:* reconfiguring the same model opens on the file's values,
+  labelled configured, with this run's detection shown beside them. A different
+  model uses its own detected limits.
+  - Setup cannot tell whether a file value was hand-set or written by an earlier
+    setup run, so "the same model" is the rule.
+  - `reconfigureTarget` still clears the limits before resolution. The file's
+    values come from `Existing.Definitions`.
+- [x] Discovery gains, with the contracts verified on 2026-09-29:
+  - vLLM `max_model_len` (the `ModelCard` source). LoRA adapters inherit their
+    `parent` card's value.
+  - Anthropic `max_input_tokens` and `max_tokens`. Both are nullable in the
+    official Models API reference.
+  - Ollama's served `context_length` from `/api/ps`, read after verification has
+    loaded the model. `/api/show`'s trained maximum is the fallback and is also
+    reported as `ModelMaximum` when larger. Cloud models are not in `/api/ps`
+    and are served at their maximum.
+  - The table adds gpt-oss, Llama 4, and Gemini, with Gemini 1.0 kept separate.
+- [x] Tests:
+  - Writer preservation, replacement, the credential literal, and owned-key
+    coverage.
+  - Proposals and parsing.
+  - Ollama served-context and untagged-name matching.
+  - vLLM, Anthropic, and table fixtures.
+  - Nine TUI interaction tests.
+
+  Mutation check: restoring whole-block replacement fails the preservation and
+  credential tests. The user guide, changelog, and capability matrix are
+  updated.
+- [x] **User accepts W10a** (2026-09-29).
+
+**Automated evidence (2026-09-29):**
+
+- Full `go test -count=1 ./...` passed. `go vet` and the five-target cross-build
+  passed.
+- Live check against the user's local Ollama 0.35.0:
+  - A scratch `HOME` held a seeded provider with headers, temperature,
+    reasoning, a timeout, and configured 16384/4096 limits for `qwen3.5:9b`.
+  - The real `collo setup --provider ollama` ran in a pseudo-terminal. It
+    verified the model and opened the limits screen on the configured values,
+    with the detected 262144 (served, per `/api/ps`) beside them.
+  - The confirmation said "updates" and listed the kept settings.
+  - The written file kept all four settings, and `collo config validate`
+    accepted it.
+- Not exercised live: the vLLM, Anthropic, LM Studio, and Bedrock/Azure paths,
+  and a genuinely unknown model. Fixtures and TUI tests cover them.
+
+**Manual checks for the user:**
+
+1. Run `collo setup` and pick a local Ollama model. On Token limits, check that
+   both values and their sources look right. Change one (for example
+   `65,536`), press enter, and check that the confirmation says "as
+   configured". Press `l`, then esc, and check that it returns unchanged.
+2. Add a provider whose model setup cannot identify, such as a custom
+   OpenAI-compatible endpoint. Both fields should open empty with "couldn't be
+   determined". Enter numbers, or leave them blank and check that the
+   confirmation says "assumed".
+3. Try an output at or above the window. It must be refused on the screen.
+4. Hand-add `"temperature": 0.3` and a `headers` entry to a configured
+   provider, then run `collo setup --provider <name>` and switch or keep its
+   model. The confirmation should say "updates … kept: headers, temperature",
+   and the file should still contain them.
+5. Optional: with a hosted Anthropic key, check that a current Claude shows
+   limits "reported by the endpoint".
+
+#### W10b — per-model settings
+
+**Status: accepted by the user on 2026-09-29 ("manual testing passed").** The
+user approved starting W10b and added `/effort` to W10c.
+
+- [x] An additive `providers.<name>.models.<model-id>` object holds
+  `max_tokens`, `context_window`, `reasoning`, and `pricing`. Pricing was
+  included because rates are per model and use the same mechanism.
+  Provider-level fields stay valid, and no migration rewrites a file.
+- [x] Precedence is defined once:
+  - `config.Provider.ForModel` applies the entry over provider-level fields.
+    It is pure and has no table access, because `provider` imports `config`.
+  - `app.ProviderForModel` then resolves limits marked inherited from the
+    listed catalog and then the table. The inherited value is the last resort,
+    and a mismatched pair is halved.
+  - Wired into startup, `Runtime.Select` (`/model`), `SelectAgent`, and
+    `collo eval`. `config.Selected` stays raw because two callers change the
+    model after it returns.
+  - *Decision taken:* provider-level limits describe the provider's own
+    `model`. Provider-level reasoning and pricing keep their provider-wide
+    meaning. A provider with no `model` keeps the old apply-to-all meaning.
+- [x] `/model` switching applies the selected model's settings. `ListModels`
+  caches each catalog's reported limits for later switches and annotates each
+  model with its own window.
+- [x] *Decision taken:* setup still makes the chosen model the provider's
+  `model`, keeping the familiar "change model" meaning.
+  - The previous model's provider-level limits move into its own entry, unless
+    that entry already sets them.
+  - The chosen model's entry loses the limit keys the provider level now
+    states, but keeps reasoning and pricing.
+  - The confirmation says when limits move.
+  - The limits screen's "configured" proposal reads the chosen model's own
+    entry.
+- [x] The schema descriptions and bounds, the config reference (a `models`
+  example), validation, doctor, the user guide's Per-model settings section,
+  the capability matrix, and the changelog are updated.
+  - Validation checks each entry's pair, effort, and pricing, plus the
+    effective pair for the provider's own model.
+  - Doctor reports the own model's effective limits and lists models with
+    their own settings.
+  - `/config all` already lists the entries, and a test covers it.
+- [x] Tests:
+  - Precedence and immutability.
+  - Inherited marking and the legacy no-model case.
+  - Entry validation and normalization.
+  - Catalog, table, and last-resort resolution.
+  - Runtime `/model` switching both ways, and switching to a listed model.
+  - Setup limit moves, same-model no-op, and entry-aware proposals.
+  - The confirmation note.
+- [x] **User accepts W10b** (2026-09-29).
+
+**Automated evidence (2026-09-29):**
+
+- Full `go test -count=1 ./...` passed (46 packages).
+- The race detector passed on setup, tui, provider, config, app, and agent.
+- Vet and the five-target cross-build passed.
+- Live pseudo-terminal check of `collo setup --provider ollama` against the
+  local Ollama 0.35.0, in a scratch HOME, changing `qwen3.5:9b` to
+  `gemma4:12b`:
+  - The confirmation said qwen3.5:9b's limits move.
+  - The file gained `models.qwen3.5:9b` with 16384/4096, and gemma4's 262144
+    (endpoint) window plus the assumed 8192 output went to the provider level.
+  - Hand-set settings survived. `collo config validate` passed, and
+    `collo doctor` listed the per-model settings.
+- Live `/model` switching inside a session was not driven. The app tests cover
+  it through `Runtime.Select`.
+
+**Manual checks for the user:**
+
+1. With a provider on model A, run `collo setup --provider <name>` and choose
+   model B. The confirmation should say A's limits move to its own entry. The
+   file should show `"models": {"A": {...}}` and B's limits at the provider
+   level.
+2. In a session, `/model` to A, then B. `/context` (or the status rail) should
+   show each model's own window.
+3. `/model` to a model with no entry and different published limits, for
+   example a `gpt-oss` or `llama4` tag. It should get its own window rather
+   than the provider's.
+4. Hand-add `"models": {"<id>": {"reasoning": {"effort": "low"}}}` and switch to
+   that model. Requests should carry the lower effort, visible in thinking
+   output or provider logs. Remove it and confirm the provider-level effort
+   applies again.
+5. `collo doctor` should list the models that have their own settings.
+
+#### W10c — reasoning and effort (W2a)
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed").** W10b
+was accepted by the user before this slice started.
+
+- [x] Official contracts verified on 2026-09-29:
+  - **OpenAI:** the Chat `reasoning_effort` and Responses `reasoning.effort`
+    enum is none, minimal, low, medium, high, xhigh, max. Values are
+    model-dependent: gpt-5 accepts minimal–high, gpt-5.1 none–high, gpt-5.2
+    and 5.5 none–xhigh.
+  - **Anthropic:** `output_config.effort` is GA with no beta header. It accepts
+    low–max, with per-model `xhigh`/`max` availability. The Models API
+    `capabilities.effort` publishes per-level support.
+  - **Ollama:** model-defined names are applied exactly on the
+    OpenAI-compatible route. An unadvertised name silently falls back to the
+    model default, and boolean-only models map `none` to off.
+  - **Bedrock:** Claude uses `additionalModelRequestFields.output_config`.
+    AWS's per-model table conflicts with Anthropic's, and Anthropic's is
+    treated as authoritative.
+  - The vocabulary gained `none` and `minimal`. Extended/adaptive `thinking`
+    configuration was not added: the effort GA made it unnecessary for this
+    slice, and it stays in W2b.
+- [x] `provider.ReasoningSupport` distinguishes known-with-levels,
+  known-unsupported, and unknown.
+  - Sources: Anthropic catalog parsing, Ollama `/api/show` `thinking`
+    (`setup.ModelReasoning`), and a published table. The table deliberately
+    omits families newer than this build.
+  - It supplements rather than replaces the type-level `Capabilities.Reasoning`
+    flag, which still describes adapter support.
+- [x] A setup effort screen follows the limits screen.
+  - Its first row writes nothing, or reads "Provider setting" when a
+    provider-level effort exists.
+  - It lists the model's levels, or every level marked untested when unknown.
+    It is skipped for models without effort control.
+  - It opens on the model's configured level.
+- [x] One request checks a chosen level (`setup.VerifyEffort`), detecting the
+  adapters' rejection-recovery warning. A refusal returns to the screen with
+  the reason, and a late answer after cancel is ignored.
+- [x] The chosen model's `models.<id>.reasoning` is written or removed. Other
+  entries and the provider-level `reasoning` are never touched. The agent-
+  profile precedence is unchanged, apart from `/effort` outranking it.
+- [x] `/effort [level|default|reset]`:
+  - With no argument it shows the effective level, the deciding setting, and
+    the accepted levels, fetching Ollama's metadata asynchronously.
+  - It refuses known-unsupported levels with the supported list.
+  - It is session-only and persists across `/model` and agent switches. A
+    refused change leaves the previous value.
+  - *Decision:* `/effort` outranks agent profiles and says so. Both `default`
+    (send none) and `reset` (use configuration) exist because they mean
+    different things.
+- [x] Tests:
+  - The table, including the gpt-5 whole-name boundary.
+  - Anthropic capability parsing and vocabulary filtering.
+  - Ollama named, boolean, none, and absent metadata.
+  - Choices and opt-in behavior.
+  - Writer scope: new, update, default removal, and other entries untouched.
+  - `VerifyEffort` accept and refuse.
+  - The TUI screen, check, refusal, stale answer, skip, `e` reopen, and
+    configured preselect.
+  - Runtime `/effort` covering level, refusal, profile precedence, default,
+    reset, and unknown.
+  - Panel and message rendering.
+- [x] **User accepts W10c** (2026-09-30).
+
+**Automated evidence (2026-09-29):**
+
+- Full `go test -count=1 ./...` and vet passed.
+- Live pseudo-terminal check of `collo setup --provider ollama` with
+  `gemma4:12b` on Ollama 0.35.0:
+  - The screen showed the provider-level `high` as "Provider setting" and
+    offered `none`, which is what gemma4's `[false,true]` metadata advertises.
+  - The real endpoint accepted `none`.
+  - The file gained `models.gemma4:12b.reasoning = none`, with other entries
+    and the provider-level effort untouched, and it validated.
+- Not exercised live: hosted Anthropic/OpenAI catalogs and refusals (fixtures
+  cover them), and `/effort` inside a running session (runtime and rendering
+  tests cover it).
+
+**Manual checks for the user:**
+
+1. Run `collo setup --provider <ollama>` and pick `glm-5.3-flash:cloud`. The
+   effort screen should list low/high/max, with max marked as the model's
+   default. Pick `high`, and the confirmation should say "high — accepted by
+   the endpoint". Check the file for `models.<id>.reasoning`.
+2. Pick a local model that can only switch thinking on or off (qwen3.5,
+   gemma4). Only `none` should be offered besides the default.
+3. In a session, run `/effort`. It should show the effort, what decided it, and
+   the accepted levels. Then try `/effort low`, a refused level if the model
+   publishes its levels, `/effort default`, and `/effort reset`. Watch the
+   thinking output change between turns.
+4. Optional: if you use an agent profile with `reasoning`, `/effort` should say
+   it outranks the profile until reset.
+
+#### W10d — in-session provider and configuration dialog
+
+W10c was accepted by the user on 2026-09-30. When the user said "start W10d",
+the slice was split, as this plan's rule for an oversized slice requires. Each
+half has its own gate.
+
+##### W10d1 — setup inside the session, applied live
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed").**
+
+- [x] `/providers [name]` (alias `/setup`, in the palette) hosts the setup
+  model as a full-screen view.
+  - Approvals and questions from a turn keep priority.
+  - Its async messages, spinner, and resize are routed to the flow. Mouse
+    events are ignored while it is open.
+  - Its exits (`exit()`) close the view instead of quitting when embedded, and
+    ctrl+c closes the flow, not Collomia.
+  - It is refused while a turn runs, through the generic busy guard plus its
+    own check. An unknown name lists the file's providers.
+- [x] A write is applied live by `Runtime.ReloadProviders`:
+  - It re-reads the merged configuration but takes only `providers`,
+    `default_provider`, and `default_model`. Permissions, options, hooks, and
+    MCP are unchanged.
+  - It carries a first-run in-memory credential across when the arrangement is
+    unchanged, and clears the catalog caches.
+  - It re-selects the active provider if that is what changed, and reports a
+    project layer that shadows the change.
+  - The session message says what was saved and what applied.
+- [x] The embedded done screen, footer wording ("close", "return to session"),
+  and `/config`'s pointer to `/providers` are updated.
+- [x] Tests:
+  - A full in-session run: catalog, verify, typed limit, write, return, live
+    window, and the file.
+  - Close without writing, the busy and unknown-name refusals, the `/setup`
+    alias, and ctrl+c.
+  - Reload with credential carry-over and per-model effort applied.
+- [x] Fix from user testing (2026-09-30): `/effort` with no argument showed
+  nothing until the next keypress. Its asynchronously fetched status added the
+  panel without redrawing the transcript. The redraw was added, and a
+  regression test failed before the fix and passes after it.
+- [x] **User accepts W10d1** (2026-09-30).
+
+**Automated evidence (2026-09-30):**
+
+- Full suite and vet passed.
+- Live: the real `collo` session in a pseudo-terminal, with a scratch HOME,
+  local Ollama 0.35.0, and `gemma4:12b`:
+  - `/providers ollama` → catalog → verification → limits → effort (`none`,
+    which the endpoint accepted) → write → enter.
+  - The session showed "Saved ollama/gemma4:12b … Applied from the next turn:
+    context 262144, …".
+- The driver had to answer the terminal's OSC 11 background query, as a real
+  terminal does. Without that, keystrokes sent before the first render were
+  consumed.
+
+**Manual checks for the user:**
+
+1. In a session, run `/providers`, change your current provider's max output
+   or effort, and finish. The session should say "Applied from the next turn".
+   `/context` or `/effort` should show the new values without a restart.
+2. Run `/providers <other-provider>` while using a different one. The message
+   should say the session keeps its model and name the `/model` command.
+3. Open `/providers` and press esc. It should say "nothing was written". Try
+   ctrl+c inside the flow; it should close the flow, not Collomia.
+4. Try `/providers` while a turn is running. It should be refused.
+
+##### W10d2 — editing what setup does not ask about
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed"). This
+completes W10.**
+
+- [x] Choosing a configured provider, from the list or with `/providers
+  <name>`, opens its menu. `collo setup --provider` keeps its direct
+  re-verification. The menu has eight actions:
+  1. Re-verify, preselected, which is the original flow.
+  2. Make default (`setup.SetDefault`).
+  3. Switch model without re-verifying:
+     - `Verification.Skipped`; the limits and effort still come from
+       `ModelLimits` and `ModelReasoning` without chat requests.
+     - The previous model's limits move into its own entry.
+     - `default_model` follows when this is the default provider.
+  4. Add a model: verified, then written by `Result.EntryOnly` into
+     `models.<id>` only. The default toggle is disabled.
+  5. Edit connection:
+     - The fields depend on the provider type.
+     - Re-verification runs, and `Result.KeepSettings` keeps user settings
+       across an endpoint change.
+     - The confirmation says the kept settings will be sent to the new
+       endpoint.
+  6. Temperature and headers: `setup.EditSettings`, bounded 0–2. A blank value
+     removes that header. A new header needs a name and a value.
+  7. Rename:
+     - Validated name.
+     - `default_provider` follows the new name.
+     - The OS-store key is copied before the write and deleted after it; a
+       failed copy stops the rename.
+     - The session follows its active provider to the new name.
+  8. Remove:
+     - Refused for the default provider, and in a session for the active
+       provider.
+     - It asks for y/n, and a stored key is kept with a pointer to
+       `collo auth rm`.
+- [x] Learned ceiling:
+  - `provider.Delta.OutputCeiling` is set on the OpenAI-compatible and
+    Anthropic ceiling retries.
+  - `Agent.LearnedOutputCeiling` remembers it.
+  - After a turn the session offers it once, and `/providers save-ceiling`
+    writes it with `setup.SaveMaxTokens`. The value lands at the provider level
+    for its own model, or in the model's entry otherwise, and a cap at or above
+    the window is refused.
+- [x] All direct edits share `editConfigFile`, extracted from the verified
+  write path. The credential store is injectable, so tests never touch the
+  user's keychain.
+- [x] Defects found while testing this slice:
+  1. **Found by a new test:** the shared form rendered an unfocused secret
+     field in plain text. It was latent, since no earlier form had a secret
+     field, but it would have exposed credential headers. It is now masked as
+     "hidden · N characters".
+  2. **Found by the live run:** direct-edit results were not forwarded to the
+     hosted flow, so the screen stayed on "Saving" after writing. Fixed with a
+     session-level regression test that failed before the fix.
+- [x] Tests:
+  - Setup edits: default, settings, rename with a fake store and store
+    failure, remove guard, ceiling placement and bound, name validation,
+    entry-only add, connection keep-settings, and the skipped-verification
+    text.
+  - TUI: menu guards, make-default write, switch without requests, add-model
+    default lock, credential masking, settings parsing, remove confirmation,
+    and rename refusal.
+  - Session direct edit.
+  - Agent ceiling capture, and the runtime following a renamed provider.
+- [x] **User accepts W10d2** (2026-09-30).
+
+**Automated evidence (2026-09-30):**
+
+- Full suite, race detector on the changed packages, vet, and cross-builds
+  passed.
+- Live, in the real session (scratch HOME, local Ollama 0.35.0):
+  - Switch model: the menu showed make-default and remove disabled for the
+    default provider.
+  - Switching to `qwen3.5:9b` sent no requests. It opened on its configured
+    16384/4096, and the confirmation said "not re-verified".
+  - The file moved gemma4's limits into its entry, and the session reported
+    it kept its current model.
+  - The temperature edit saved 0.8 and applied to the session.
+- Rename was deliberately not run live: the macOS keychain is per user, not
+  per HOME, so a live rename could move a real stored key. The fake-store
+  tests cover it.
+
+**Manual checks for the user:**
+
+1. `/providers <name>`, then **Switch model without re-verifying**. Pick
+   another model. It should reach the confirmation without a verification
+   wait and say "not re-verified". After Done, `/model <name>/<new>` uses its
+   limits.
+2. **Add a model** on a provider. The confirmation should say the provider's
+   own model stays and the default row reads "unchanged". Afterwards, `/model`
+   to that model should use the saved limits.
+3. **Make default** on a non-default provider, then restart `collo`. It should
+   start on that provider.
+4. **Edit temperature and headers**: change the temperature and add a header.
+   A header named like `Authorization` should never be shown in clear.
+5. **Rename** a provider you are not relying on (or a throwaway one added
+   first). The default, if it was the default, and a stored key should follow.
+   **Remove** it: the default and the active provider should be refused.
+6. Optional: **Edit connection** on a provider, changing only something
+   harmless, such as re-entering the same URL. It should re-verify and keep
+   the headers.
+
+**Out of scope:**
+
+- Bedrock and Azure catalog enumeration. This is the roadmap's Phase 4
+  discovery item; the table plus manual entry covers their limits.
+- Pricing lookup. Pricing is user-supplied by design.
+- Writes to the project layer. W10 writes only the user file.
+- Editing safety postures. That is the roadmap's separate P2 posture-editor
+  decision.
+
 ## Maintenance carried through the waves
 
 - Split large modules along the boundaries being changed; retain one governed
@@ -1605,6 +2375,22 @@ the four context tools. No background continuation or workspace restore changes.
 | 2026-09-05 | W7b / full W7 acceptance | User confirmed manual testing was complete and successful and requested that W7b be marked complete. Provider/model was not specified. | W7b and full W7 accepted; ready to commit. W6 remains proposed, not started. |
 | 2026-09-05 | W6 implementation | User selected the Work artifact workflow after W7b commit `304d7af`. Exported locked toolkit, native image/XLSX evidence support, real creation/revision/rendering checks, and separate test build delivered. Offline, race, vet, cross-build, and fresh virtual-environment gates passed. | W6 ready for user testing; live workflow acceptance and matched W5 comparison pending. Later waves remain planned. |
 | 2026-09-05 | W6 UX revision | User reported the initial workflow worked but requested ordinary Work-mode tasks without a pre-populated example project. Added a built-in skill, hidden runtime preparation through setup, and read-only diagnostics; removed the unreleased work-init command. Full offline, race, vet, cross-build, and required-sandbox operational checks passed. | Revised build ready for natural-request testing in an existing folder; W6 acceptance and matched W5 comparison pending. |
+| 2026-09-29 | Maintenance / W10 planning | Project review after a three-week gap: v0.5.1 published, `main` CI green, build/vet clean, no reachable `govulncheck` findings. Go 1.26.8 and dependency refresh; MCP SDK held at v1.6.1 after v1.7.0/v1.8.0 failed three MCP tests under protocol `2026-07-28`. User deferred Homebrew/Scoop to P3 and selected setup/configuration usability: advertised limits, overrides, manual entry, reasoning effort, and in-TUI configuration. Code investigation verified the reconfigure data-loss defect. | W10 planned as W10a–d with per-slice gates; awaiting go-ahead for W10a. |
+| 2026-09-29 | W10a implementation | The user approved W10a. Field-preserving setup merge, the Token limits screen with overrides and explicit assumptions, shared limit validation, and Anthropic/vLLM/Ollama-served discovery were implemented. Full offline suite, vet, and cross-builds passed; the mutation check confirmed the preservation tests catch the old defect. A live pseudo-terminal run of `collo setup --provider ollama` against the local Ollama 0.35.0, in a scratch HOME, kept all hand-set settings and produced a valid file. | W10a ready for user testing; W10b not started. |
+| 2026-09-29 | W10a acceptance | User: "manual testing passed." Asked how to set reasoning effort; answered that it is config-only today (W10c adds setup, W10d in-session). | W10a accepted; W10b awaits go-ahead. |
+| 2026-09-29 | W10b implementation | The user added `/effort` to W10c and approved W10b. Per-model `models` entries, `ForModel`/`ProviderForModel` precedence, the `/model` catalog cache, setup limit moves, validation, and doctor are implemented. Offline suite, race checks, and vet passed. | W10b ready for user testing; W10c not started. |
+| 2026-09-29 | W10b acceptance / W10c implementation | User: "manual testing passed, start W10c." Contracts verified; per-model effort support, the setup effort screen with a one-request check, per-model writing, and `/effort` implemented. Full suite and vet passed; a live gemma4 `none` run in a scratch HOME passed. | W10b accepted; W10c ready for user testing. |
+| 2026-09-30 | W10c acceptance | User: "manual testing passed." | W10c accepted; W10d awaits go-ahead. |
+| 2026-09-30 | W10d1 implementation | The user committed W10a–c (`5dd9a8a`) and said "start W10d". W10d was split into W10d1/W10d2. `/providers` embedded setup with live reload is implemented. Full suite and vet passed; a live in-session pseudo-terminal run against local Ollama passed. | W10d1 ready for user testing; W10d2 planned. |
+| 2026-09-30 | W10d1 acceptance | The user reported a `/effort` redraw defect (the panel appeared only on the next key), which was fixed with a regression test. The user asked how to change a provider's default model, then: "manual testing passed." | W10d1 accepted; W10d2 next, default-setting first. |
+| 2026-09-30 | W10d2 implementation | The user committed W10d1 (`9c445db`) and said "start W10d2". Provider menu, direct edits, and learned-ceiling save implemented. A new test found a latent unmasked-secret render and a live run found unforwarded direct-edit results; both fixed with regression tests. Full suite, race, vet, and cross-builds passed. | W10d2 ready for user testing. |
+| 2026-09-30 | W10d2 acceptance | User: "manual testing passed." | W10d2 accepted; W10 complete. No wave active. |
+| 2026-09-30 | W2b split / W2b1 implementation | The user said "start W2b". A code map and contract check found no reasoning state carried anywhere, and a prefix-binding conflict with the volatile pinned-state message. W2b was split into W2b1–3. W2b1 is implemented; full suite, race, vet, and cross-builds passed, and a live reopen check passed. | W2b1 ready for user testing; W2b2 needs a prefix-binding decision. |
+| 2026-09-30 | W2b1 acceptance | User: "manual testing passed." The user asked that future live tests use `deepseek-v4.1-flash:cloud` rather than local GPU models. | W2b1 accepted; W2b2 awaits the prefix-binding decision. |
+| 2026-09-30 | W2b2 decision / implementation | The user chose option 1 (record plan updates) after confirming it breaks no provider, and supplied Bedrock Opus 5.5 for live testing. Replay, display, pinned recording, and the safety net are implemented. Tests passed; three live Bedrock runs (baseline, no plan, active plan) succeeded with no refusals. | W2b2 ready for user testing. |
+| 2026-09-30 | W2b2 acceptance | User: "manual testing passed" (Bedrock Opus 5.5, including the plan, reopen, provider-switch, and compaction checks). | W2b2 accepted; W2b3 awaits go-ahead. |
+| 2026-09-30 | MCP protocol upgrade | The user said "start the MCP protocol upgrade". SDK v1.8.0 / protocol 2026-07-28. The failures were traced to the test server's forbidden mid-call elicitation. Tests were added for the input round trip, a legacy pinned server, serialized concurrent elicitations, and the removed ping; mutation checks passed. Live `collo mcp test` of both configured servers passed. | Ready for user testing. |
+| 2026-09-30 | MCP upgrade acceptance | User: "manual testing passed" (`/mcp status`, ping, and a `time` tool call on both configured servers). | Accepted; no wave active. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.

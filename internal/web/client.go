@@ -70,7 +70,7 @@ const (
 //
 // The version number goes stale as Chrome advances; docs/RELEASING.md carries
 // refreshing it as a release step.
-const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
 
 // Client retrieves public web content under fixed bounds.
 type Client struct {

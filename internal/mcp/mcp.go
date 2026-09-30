@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/provider"
@@ -105,6 +107,13 @@ type Manager struct {
 	// produced by lifecycle operations, drained with TakeNotes.
 	notes []string
 
+	// elicitGate admits one elicitation at a time. Under MCP 2026-07-28 a
+	// server returns input requests as a set, and the SDK fulfills a set
+	// concurrently; each elicitation asks the user several questions in turn
+	// through one question dialog, so two running at once would interleave
+	// questions from different requests.
+	elicitGate chan struct{}
+
 	progressMu  sync.Mutex
 	progressSeq int64
 	progress    map[string]func(string)
@@ -114,7 +123,8 @@ type Manager struct {
 // disabled, and failed servers are retained with their status so the runtime
 // can report and repair them instead of forgetting they exist.
 func ConnectAll(ctx context.Context, configured map[string]appconfig.MCPServer, registry *tools.Registry, opts Options) (*Manager, []error) {
-	manager := &Manager{registry: registry, servers: map[string]*serverState{}, opts: opts, progress: map[string]func(string){}}
+	manager := &Manager{registry: registry, servers: map[string]*serverState{}, opts: opts, progress: map[string]func(string){},
+		elicitGate: make(chan struct{}, 1)}
 	if !opts.DisablePinning {
 		if pins, err := loadPins(); err == nil {
 			manager.pins = pins
@@ -334,6 +344,14 @@ func (m *Manager) Ping(ctx context.Context, name string) error {
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	err := session.Ping(pingCtx, nil)
+	// MCP 2026-07-28 removed ping. A server on that revision answers it with
+	// "method not found", and an answer of any kind is exactly what a health
+	// check asks for: the transport works and the server is responding.
+	// Timeouts and broken transports still fail.
+	var rpcErr *jsonrpc.Error
+	if errors.As(err, &rpcErr) && rpcErr.Code == jsonrpc.CodeMethodNotFound {
+		err = nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err != nil {
