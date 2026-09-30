@@ -5,8 +5,8 @@ Standard completion accepts task-specific checks through
 file freshness and automatically recognizes verified native file repairs.
 See [Completion](COMPLETION.md); Orchestrated Goal retains its own gates.
 
-_Updated for v0.5.0 release preparation, 2026-09-07; source reviewed at `fe0164d`
-with this documentation update. Features are implemented unless identified
+_Updated for v0.6.0 release preparation, 2026-09-30; source reviewed at `e4ffe32`
+plus the MCP protocol upgrade in this release branch. Features are implemented unless identified
 as experimental or unsupported; the generated
 [capability matrix](CAPABILITIES.md) is the canonical current status._
 
@@ -55,6 +55,10 @@ as experimental or unsupported; the generated
 
   - A fresh installation has no invented provider or model. Interactive `collo` startup opens provider setup when none is configured and continues directly into the session only after verification; headless startup fails clearly and points to `collo setup`.
   - `collo setup` is a reusable provider-configuration flow: it lists configured providers for model changes and re-verification, probes local runtimes that are actually listening, reads each endpoint's own model catalog, and offers Azure and Bedrock as forms because neither is discoverable from a name and a key. The choice is proved with two real requests before anything is written — one completion, and one carrying a tool definition, since a model that answers prose but refuses tools cannot run the agent — and a failure names the endpoint, credential, or model at fault rather than reporting a status code. It asks before repointing `default_provider` and never writes an API key into a configuration file.
+  - Setup shows each model's context window and max output with where the numbers came from: the endpoint (Anthropic's catalog, vLLM, LM Studio, OpenRouter-style catalogs, or the context Ollama is actually serving), a published table, or an assumption. It accepts overrides, asks rather than silently assuming when nothing established a value, and refuses a pair the loader would refuse. It offers the reasoning efforts the chosen model accepts and checks a chosen level with one request.
+  - Re-running setup updates a provider in place and keeps settings it never asked about, such as headers, temperature, reasoning, pricing, timeouts, and unknown keys.
+  - `/providers` (alias `/setup`) runs the same flow inside a session and applies changes live. A configured provider's menu covers re-verification, making it the default, switching or adding a model, editing its connection, temperature, or masked headers, renaming it (a stored key moves with it), and removing it (refused for the default and active provider).
+  - Providers can hold per-model settings (`models`: limits, reasoning, pricing). `/model` applies the selected model's own settings, and a model without its own limits uses the catalog-reported or published ones rather than another model's. `/effort` changes the reasoning effort for the rest of a session.
   - Global and project configuration is schema-versioned, layered, origin-aware, and inspectable through `collo config show`.
   - Starter and commented reference configurations can be generated independently; reference JSONC files are documentation and are never loaded as active configuration.
   - `collo config validate --strict` detects unknown, misspelled, contradictory, and obsolete settings before a session starts.
@@ -72,6 +76,7 @@ as experimental or unsupported; the generated
   - Contradictory or unsupported model configurations fail before a provider request is sent.
   - Provider failures are classified, with bounded retries, backoff, jitter, `Retry-After` handling, configurable timeouts, and circuit-health reporting.
   - Streaming output normalizes text, reasoning, tool-call arguments, usage, warnings, and errors across providers.
+  - Readable thinking is kept with the answer it preceded, so reopened sessions show it; synchronous fallbacks extract it too. On the Anthropic, Azure Foundry-Claude, and Bedrock-Claude routes, signed thinking is replayed verbatim to the endpoint that issued it so the model keeps its reasoning across tool calls, and Claude models that think by default are asked for summarized display. A refused replay falls back to not replaying rather than failing the turn.
   - Prompt caching is requested automatically on Anthropic-compatible routes, where the stable prefix of tool schemas and system prompt is otherwise resent in full on every call of a turn. OpenAI-family endpoints cache implicitly; Bedrock is declared without support rather than sending a cache point that varies by model and region.
   - Reported token counts always describe the whole prompt, with cache reads and writes broken out and priced separately.
 
@@ -251,7 +256,7 @@ as experimental or unsupported; the generated
 
 - **MCP integration**
 
-  - Supports trusted MCP servers over standard input/output and streamable HTTP.
+  - Supports trusted MCP servers over standard input/output and streamable HTTP, offering MCP 2026-07-28 and negotiating down to 2025-11-25 and earlier. Server questions work both as the 2026-07-28 input round trip and as older servers' mid-call requests, asked one request at a time.
   - Supports MCP tools, resources, prompts, progress notifications, and structured or rich content.
   - MCP-produced content is wrapped with external-data provenance so it is not treated as trusted system instruction.
   - Text, structured data, embedded resources, and images can be passed to capable models; safe textual markers are used for unsupported media.

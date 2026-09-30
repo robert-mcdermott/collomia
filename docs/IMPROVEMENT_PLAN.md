@@ -24,9 +24,8 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   It adds the Token limits screen and more limit discovery. Uncommitted.
 - **Maintenance (2026-09-29):** Go baseline 1.26.6 → 1.26.8 and a dependency
   refresh; `govulncheck` reports no reachable findings, and only one unreachable
-  advisory with no upstream fix remains. The MCP Go SDK is held at v1.6.1
-  because v1.7.0+ negotiates protocol `2026-07-28` and fails the elicitation and
-  conformance tests (see the roadmap's Phase 5). CHANGELOG gained v0.5.1 and
+  advisory with no upstream fix remains. The MCP Go SDK was held at v1.6.1 at
+  the time; it was upgraded on 2026-09-30 (see the maintenance entry above). CHANGELOG gained v0.5.1 and
   Unreleased entries. Stale release/next-action handoff text was refreshed.
   Uncommitted at the time of writing.
 - **Release completed:** v0.5.1 was published successfully by release run
@@ -97,9 +96,29 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Active (2026-09-30): W2b, split into W2b1–3.** W2b1 and W2b2 are
-  accepted and uncommitted. W2b3 (an OpenAI Responses route with encrypted
-  reasoning) is planned and awaits the user's go-ahead. On the next release, verify the final
+- **Maintenance (2026-09-30): MCP protocol 2026-07-28, accepted by the user
+  ("manual testing passed").** The user selected it after W2b2.
+  - The SDK moved from v1.6.1 to v1.8.0.
+  - Tests cover the new input round trip and an older server pinned to
+    2025-11-25.
+  - Concurrent elicitations are serialized, and `/mcp ping` tolerates the
+    removed method.
+  - Verified with `collo mcp test` against the configured `time` (negotiated
+    2025-03-26) and `proteoscope` (2025-11-25) servers.
+  - Details are in [MCP protocol](MCP_PROTOCOL.md). Accepted and awaiting the
+    user's commit.
+- **Release (2026-09-30): v0.6.0 preparation.**
+  - `VERSION` is v0.6.0. The changelog, beta notes, and features summary are
+    updated, and the web User-Agent is refreshed to Chrome 155.
+  - Next, per [Releasing](RELEASING.md): a release PR from `wave40`, merged
+    with GitHub's merge commit so the source is signed; a clean checkout of
+    that commit with a verified signature; the tag; then the draft review,
+    download verification, and publication.
+  - After the release, the candidates are W2b3 (the OpenAI Responses route),
+    W8 (lazy tool discovery and parallel reads), and the roadmap's P1 list.
+- **W2b (2026-09-30):** W2b1 and W2b2 are accepted and committed (`e4ffe32`).
+  W2b3 (an OpenAI Responses route with encrypted reasoning) is planned and
+  awaits the user's go-ahead. On the next release, verify the final
   source commit's GitHub signature before tagging and verify downloaded artifact
   attestations before publication.
 - **Historical evidence:** candidate versions, commands, and unchecked manual
@@ -2370,6 +2389,8 @@ completes W10.**
 | 2026-09-30 | W2b1 acceptance | User: "manual testing passed." The user asked that future live tests use `deepseek-v4.1-flash:cloud` rather than local GPU models. | W2b1 accepted; W2b2 awaits the prefix-binding decision. |
 | 2026-09-30 | W2b2 decision / implementation | The user chose option 1 (record plan updates) after confirming it breaks no provider, and supplied Bedrock Opus 5.5 for live testing. Replay, display, pinned recording, and the safety net are implemented. Tests passed; three live Bedrock runs (baseline, no plan, active plan) succeeded with no refusals. | W2b2 ready for user testing. |
 | 2026-09-30 | W2b2 acceptance | User: "manual testing passed" (Bedrock Opus 5.5, including the plan, reopen, provider-switch, and compaction checks). | W2b2 accepted; W2b3 awaits go-ahead. |
+| 2026-09-30 | MCP protocol upgrade | The user said "start the MCP protocol upgrade". SDK v1.8.0 / protocol 2026-07-28. The failures were traced to the test server's forbidden mid-call elicitation. Tests were added for the input round trip, a legacy pinned server, serialized concurrent elicitations, and the removed ping; mutation checks passed. Live `collo mcp test` of both configured servers passed. | Ready for user testing. |
+| 2026-09-30 | MCP upgrade acceptance | User: "manual testing passed" (`/mcp status`, ping, and a `time` tool call on both configured servers). | Accepted; no wave active. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.

@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-09-29
+**Status updated:** 2026-09-30
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -1831,11 +1831,16 @@ claiming enforcement the policy layer does not provide.
   stable protocol/SDK contracts; retain safe catalog refresh behavior.
 - [ ] **P1 — Complete rich content:** audio and annotation passthrough without
   flattening typed content.
-- [ ] **P1 — Adopt MCP protocol `2026-07-28`:** the MCP Go SDK is held at
-  v1.6.1 (protocol `2025-11-25`). On 2026-09-29, v1.7.0 and v1.8.0 negotiated
-  `2026-07-28` and failed `TestProtocolConformanceAndCatalogListChanges` and
-  both elicitation tests. Review the revision's elicitation and capability
-  changes before upgrading; do not bump the SDK as routine dependency hygiene.
+- [x] **P1 — Adopt MCP protocol `2026-07-28`:** done on 2026-09-30. The SDK
+  moved from v1.6.1 to v1.8.0 after the revision was reviewed.
+  - The two elicitation failures were the test server's old mid-call style,
+    which the new revision forbids. The client handles the new
+    input-round-trip form through its existing handler, and older servers
+    still negotiate 2025-11-25.
+  - Real fixes: concurrent elicitations are serialized, and a removed-`ping`
+    answer no longer marks a server failed.
+  - Resource subscriptions now ride `subscriptions/listen` in 2026-07-28; the
+    subscriptions item above remains open.
 - [ ] **P1 — Argument-level MCP permissions:** bounded normalized resource
   matching that server-authored annotations cannot use to lower risk.
 - [ ] **P2 — Extension packaging:** a versioned custom-tool/plugin package and

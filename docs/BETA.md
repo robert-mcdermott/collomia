@@ -1,15 +1,19 @@
 # Collomia beta status and known limitations
 
-The v0.5.0 release candidate combines task-scoped completion checks, durable
-recovery, bounded response-limit continuation, inherited-PATH execution and
-terminal reliability improvements. Standard Developer passed user acceptance
-through Kanban30 on September 6; Work mode passed user-reported testing on
-September 7. No transcript or model was supplied for the Work check. The
-Orchestrated Goal continuation follow-up passed manual testing through Kanban21.
-See [the improvement plan](IMPROVEMENT_PLAN.md#current-handoff--read-this-first)
-for evidence and [completion behavior](COMPLETION.md) for the supported contract.
-These checks do not establish a cross-model success rate or replace exact-tag
-cross-platform release CI.
+v0.6.0 adds in-session provider and model configuration (`/providers`), shown
+and editable token limits, per-model settings, reasoning-effort selection and
+`/effort`, and Claude reasoning continuity. It also keeps thinking across
+reopened sessions and moves to MCP protocol 2026-07-28.
+
+Each slice passed the user's manual acceptance on 2026-09-29 and 2026-09-30:
+- W10a–d2, W2b1–2, and the MCP upgrade.
+- Live checks used a local Ollama and Bedrock `us.anthropic.claude-opus-5-5`.
+
+The v0.5.x completion, recovery, and terminal work described in the
+[improvement plan](IMPROVEMENT_PLAN.md#current-handoff--read-this-first) is
+unchanged; see [completion behavior](COMPLETION.md) for the supported
+contract. These checks do not establish a cross-model success rate or replace
+exact-tag cross-platform release CI.
 
 Collomia is suitable for a public **technical beta** aimed at developers and
 technical users who want an interactive, inspectable local terminal agent.

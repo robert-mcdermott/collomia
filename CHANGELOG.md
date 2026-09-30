@@ -5,7 +5,20 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
-## Unreleased
+## v0.6.0
+
+This release makes provider and model configuration something you do inside
+Collomia rather than in a JSON file.
+- Setup shows and asks for token limits and reasoning effort.
+- `/providers` manages providers and models inside a session, with changes
+  applied live.
+- Limits and effort are per model, and `/effort` changes effort for a session.
+- Claude keeps and shows its reasoning across tool calls.
+- Thinking survives reopening a session.
+- MCP protocol 2026-07-28 is supported.
+
+It also fixes re-running setup silently deleting hand-set provider settings,
+and `/model` running a model with another model's limits.
 
 ### Added
 
@@ -136,15 +149,26 @@ an accurate one; their history is in the Git log and in
 
 ### Changed
 
+- **MCP protocol 2026-07-28.** The MCP Go SDK moves from v1.6.1 to v1.8.0 and
+  now offers protocol 2026-07-28, negotiating down to 2025-11-25 and earlier
+  for servers that do not support it.
+  - Elicitation works both ways: as the new input round trip, where a tool
+    returns its questions and is called again with the answers, and as the
+    mid-call request older servers still send.
+  - When a server asks for several inputs at once, the questions of one
+    request are asked together rather than interleaved.
+  - `/mcp ping` no longer marks a current server failed because the revision
+    removed `ping`: an answer of "method not found" proves the server is
+    responding.
+  - Verified against the configured `time` (2025-03-26) and `proteoscope`
+    (2025-11-25) servers. See [MCP protocol](docs/MCP_PROTOCOL.md).
 - **The Go baseline moves from 1.26.6 to 1.26.8, with a dependency refresh.**
   `govulncheck` reported no reachable findings before or after; the refresh
   clears 17 unreachable advisories in `golang.org/x/crypto` and
   `golang.org/x/net` (one remaining `x/crypto` advisory has no upstream fix).
   Updated direct dependencies include the AWS and Azure SDKs, chroma, and the
   terminal width libraries. CI and release builds consume the version from
-  `go.mod`. The MCP Go SDK stays at v1.6.1: v1.7.0 and later negotiate MCP
-  protocol `2026-07-28` and fail the elicitation and conformance tests, so
-  adopting that revision is tracked as its own roadmap item.
+  `go.mod`.
 
 ### Release process
 
