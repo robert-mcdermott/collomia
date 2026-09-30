@@ -106,7 +106,7 @@ func TestReloadProvidersAppliesAChangedFileAndKeepsAnInMemoryKey(t *testing.T) {
 	writeGlobalConfig(t, home, `{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{
 		"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder",
 		"context_window":65536,"max_tokens":8192,"models":{"qwen3-coder":{"reasoning":{"effort":"low"}}}}}}`)
-	reload, err := runtime.ReloadProviders("ollama", "qwen3-coder")
+	reload, err := runtime.ReloadProviders(ProviderChange{Name: "ollama", Model: "qwen3-coder"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,5 +119,22 @@ func TestReloadProvidersAppliesAChangedFileAndKeepsAnInMemoryKey(t *testing.T) {
 	}
 	if got.APIKey != "key-from-first-run" {
 		t.Error("a credential that exists only in this process must survive a reload")
+	}
+}
+
+func TestReloadFollowsARenamedActiveProvider(t *testing.T) {
+	home := isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	writeGlobalConfig(t, home, `{"default_provider":"local","default_model":"qwen3-coder","providers":{"local":{"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder","context_window":32768,"max_tokens":8192}}}`)
+	reload, err := runtime.ReloadProviders(ProviderChange{Name: "local", Model: "qwen3-coder", RenamedFrom: "ollama"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, _ := runtime.Agent.Selection(); name != "local" || !reload.Reselected {
+		t.Errorf("the session must follow its provider to the new name, got %q (%+v)", name, reload)
 	}
 }

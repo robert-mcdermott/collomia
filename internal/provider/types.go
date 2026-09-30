@@ -137,8 +137,12 @@ type Delta struct {
 	Text      string
 	Reasoning string
 	Warning   string
-	ToolCall  *ToolCallDelta
-	Usage     *Usage
+	// OutputCeiling accompanies a warning that the provider rejected max_tokens
+	// and stated the largest it accepts, so a caller can offer to save it rather
+	// than parse the warning's words.
+	OutputCeiling int
+	ToolCall      *ToolCallDelta
+	Usage         *Usage
 }
 
 type Client interface {

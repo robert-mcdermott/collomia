@@ -77,6 +77,15 @@ type Result struct {
 	// shown, which is what lets setup write or remove the model's entry.
 	Effort       string
 	EffortChosen bool
+	// EntryOnly writes the verified model as an entry in the provider's
+	// `models` map — its limits and effort — without changing the provider's
+	// own model or anything else in the block ("Add a model").
+	EntryOnly bool
+	// KeepSettings keeps the entry's other settings even when its endpoint
+	// changes. It is set only when the user is editing this provider's
+	// connection, where the settings are theirs to keep; a new provider that
+	// happens to reuse a name still gets nothing carried over.
+	KeepSettings bool
 }
 
 // assumedContextWindow and assumedMaxOutput are written when neither the
@@ -199,15 +208,38 @@ func Apply(path string, result Result) error {
 	return mergeIntoFile(path, result)
 }
 
-// mergeIntoFile adds the provider to an existing configuration without
-// disturbing anything else in it.
+// mergeIntoFile adds or updates the verified provider without disturbing
+// anything else in the file (see editConfigFile and mergeProvider).
+func mergeIntoFile(path string, result Result) error {
+	return editConfigFile(path, func(document, providers map[string]json.RawMessage) error {
+		encoded, _, err := mergeProvider(providers[result.Name], result)
+		if err != nil {
+			return err
+		}
+		providers[result.Name] = encoded
+		if result.MakeDefault {
+			if document["default_provider"], err = json.Marshal(result.Name); err != nil {
+				return err
+			}
+			if document["default_model"], err = json.Marshal(result.Model); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// editConfigFile is the one path every setup edit takes: read the file as a
+// document, let mutate change it, and write it back with the leading keys in
+// place and the sibling schema refreshed.
 //
 // It edits the decoded document rather than re-serializing a typed Config,
-// because a typed round trip would rewrite every field the user had left
-// unset to its zero value and silently convert their sparse file into an
-// exhaustive one. Settings this build does not know about survive untouched
-// for the same reason.
-func mergeIntoFile(path string, result Result) error {
+// because a typed round trip would rewrite every field the user had left unset
+// to its zero value and silently convert a sparse file into an exhaustive one.
+// Settings this build does not know about survive untouched for the same
+// reason. A file that is not valid JSON is refused rather than treated as
+// empty, which would let an edit destroy settings the user still has.
+func editConfigFile(path string, mutate func(document, providers map[string]json.RawMessage) error) error {
 	document := map[string]json.RawMessage{}
 	existing, err := os.ReadFile(path)
 	switch {
@@ -248,22 +280,11 @@ func mergeIntoFile(path string, result Result) error {
 			return fmt.Errorf("providers in %s is not an object: %w", path, err)
 		}
 	}
-	encoded, _, err := mergeProvider(providers[result.Name], result)
-	if err != nil {
+	if err := mutate(document, providers); err != nil {
 		return err
 	}
-	providers[result.Name] = encoded
 	if document["providers"], err = json.Marshal(providers); err != nil {
 		return err
-	}
-
-	if result.MakeDefault {
-		if document["default_provider"], err = json.Marshal(result.Name); err != nil {
-			return err
-		}
-		if document["default_model"], err = json.Marshal(result.Model); err != nil {
-			return err
-		}
 	}
 
 	data, err := marshalStable(document)
@@ -308,6 +329,10 @@ type ProviderUpdate struct {
 	Kept []string
 	// Dropped names the settings a replacement removes.
 	Dropped []string
+	// EndpointChanged reports that a connection edit points the entry at a
+	// different endpoint while keeping its settings, so the confirmation can
+	// say the kept headers will now be sent there.
+	EndpointChanged bool
 	// MovedLimitsFor names the model the entry used to run with when its
 	// provider-level limits move into that model's own `models` entry, so a
 	// later /model switch back to it still has them.
@@ -388,9 +413,20 @@ func mergeProvider(existing json.RawMessage, result Result) (json.RawMessage, Pr
 	}
 	sortStrings(userKeys)
 
-	if !sameEndpoint(old, result.Provider) {
+	if result.EntryOnly {
+		if err := writeModelEntry(old, result); err != nil {
+			return nil, ProviderUpdate{}, err
+		}
+		encoded, err := json.Marshal(old)
+		update.Kept = userKeys
+		return encoded, update, err
+	}
+	if !result.KeepSettings && !sameEndpoint(old, result.Provider) {
 		update.Replaced, update.Dropped = true, userKeys
 		return whole(update)
+	}
+	if result.KeepSettings && !sameEndpoint(old, result.Provider) {
+		update.EndpointChanged = true
 	}
 
 	merged := make(map[string]json.RawMessage, len(old)+len(fresh))
@@ -502,6 +538,38 @@ func keepReference(old, fresh json.RawMessage) json.RawMessage {
 		return old
 	}
 	return fresh
+}
+
+// writeModelEntry records a verified model's limits and effort in the
+// provider's `models` map, leaving the provider's own fields untouched.
+func writeModelEntry(block map[string]json.RawMessage, result Result) error {
+	models := map[string]map[string]json.RawMessage{}
+	if raw, ok := block["models"]; ok {
+		if err := json.Unmarshal(raw, &models); err != nil {
+			return fmt.Errorf("models is not an object of objects: %w", err)
+		}
+	}
+	entry := models[result.Model]
+	if entry == nil {
+		entry = map[string]json.RawMessage{}
+	}
+	for key, value := range map[string]int{"context_window": result.Provider.Context, "max_tokens": result.Provider.MaxTokens} {
+		if value <= 0 {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		entry[key] = encoded
+	}
+	models[result.Model] = entry
+	encoded, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	block["models"] = encoded
+	return applyEffort(block, result)
 }
 
 // WithLimits replaces the token limits a Result will write with the ones the

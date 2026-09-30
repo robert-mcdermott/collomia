@@ -56,6 +56,10 @@ var delegateIDCounter atomic.Uint64
 type Emit = event.Emit
 
 type Agent struct {
+	// ceiling is the latest output ceiling a provider stated when rejecting
+	// max_tokens, which the session offers to save.
+	ceilingMu           sync.Mutex
+	ceiling             learnedCeiling
 	mu                  sync.RWMutex
 	worktreeMu          sync.Mutex
 	client              provider.Client
@@ -572,6 +576,11 @@ func (a *Agent) RunWithParts(ctx context.Context, prompt string, parts []provide
 				e := event.New(event.KindWarning)
 				e.Text = delta.Warning
 				send(e)
+			}
+			if delta.OutputCeiling > 0 {
+				a.ceilingMu.Lock()
+				a.ceiling = learnedCeiling{provider: providerName, model: model, value: delta.OutputCeiling}
+				a.ceilingMu.Unlock()
 			}
 		})
 		response.Usage = estimateCost(response.Usage, a.providerConfig.Pricing)
@@ -2587,6 +2596,20 @@ func (a *Agent) SetProvider(name, model string, p appconfig.Provider, client pro
 	a.client = client
 	a.mu.Unlock()
 }
+
+type learnedCeiling struct {
+	provider, model string
+	value           int
+}
+
+// LearnedOutputCeiling reports the most recent output ceiling a provider stated
+// when it rejected max_tokens, for the model it was stated about.
+func (a *Agent) LearnedOutputCeiling() (providerName, model string, ceiling int) {
+	a.ceilingMu.Lock()
+	defer a.ceilingMu.Unlock()
+	return a.ceiling.provider, a.ceiling.model, a.ceiling.value
+}
+
 func (a *Agent) Selection() (string, string) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

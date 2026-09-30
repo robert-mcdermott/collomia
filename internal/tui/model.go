@@ -90,7 +90,10 @@ type Model struct {
 	// providerSetup hosts the setup flow inside the session (/providers).
 	// While it is open it owns the screen and the keyboard, except for an
 	// approval or question from a running turn, which always comes first.
-	providerSetup    *setupModel
+	providerSetup *setupModel
+	// offeredCeiling remembers the learned output ceiling already offered for
+	// saving, so each is offered once rather than after every turn.
+	offeredCeiling   string
 	agentIntegration *agentIntegrationState
 	started          time.Time
 	turnStarted      time.Time
@@ -324,6 +327,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// that text at the start of an unrelated later turn would apply
 			// it to work the user never aimed it at.
 			m.discardUndeliveredSteering()
+			m.offerLearnedCeiling()
 			elapsed := time.Since(m.turnStarted).Round(time.Second / 10)
 			// Ding on failure, and after long turns — the user has likely
 			// tabbed away.

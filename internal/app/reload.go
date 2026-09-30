@@ -28,7 +28,17 @@ type ProviderReload struct {
 // started: `/providers` edits provider blocks, and reloading safety posture
 // mid-session as a side effect of changing a model would be a change nobody
 // asked for.
-func (r *Runtime) ReloadProviders(changed, writtenModel string) (ProviderReload, error) {
+// ProviderChange names what `/providers` changed, so the reload can follow it.
+type ProviderChange struct {
+	Name, Model string
+	// RenamedFrom is the provider's previous name after a rename.
+	RenamedFrom string
+	// Removed reports that Name no longer exists.
+	Removed bool
+}
+
+func (r *Runtime) ReloadProviders(change ProviderChange) (ProviderReload, error) {
+	changed, writtenModel := change.Name, change.Model
 	loaded, err := appconfig.Load(r.Workspace)
 	if err != nil {
 		return ProviderReload{}, err
@@ -50,10 +60,14 @@ func (r *Runtime) ReloadProviders(changed, writtenModel string) (ProviderReload,
 	r.catalogMu.Unlock()
 
 	result := ProviderReload{}
-	if fresh, ok := loaded.Providers[changed]; ok && writtenModel != "" && fresh.Model != writtenModel {
+	if fresh, ok := loaded.Providers[changed]; ok && !change.Removed && writtenModel != "" && fresh.Model != writtenModel {
 		result.Shadowed = changed
 	}
 	active, model := r.Agent.Selection()
+	if change.RenamedFrom != "" && active == change.RenamedFrom {
+		// The session follows its provider to the new name.
+		active = changed
+	}
 	if _, ok := r.Config.Providers[active]; !ok {
 		return result, fmt.Errorf("the active provider %q is no longer configured; choose another with /model", active)
 	}

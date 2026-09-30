@@ -131,9 +131,14 @@ func TestSetupListsConfiguredProvidersAsReusableActions(t *testing.T) {
 		t.Fatalf("configured provider should be the first reusable action: %+v", m.choices)
 	}
 	m.cursor = 0
-	next, cmd := m.onSelect()
+	next, _ := m.onSelect()
+	menu := next.(setupModel)
+	if menu.stage != stageProviderActions || menu.actions[0].key != "reverify" {
+		t.Fatalf("a configured provider opens its menu with re-verification first, got stage %d", menu.stage)
+	}
+	next, cmd := menu.onSelect()
 	updated := next.(setupModel)
-	if cmd == nil || updated.name != "bedrock" || updated.opts.Reconfigure != "bedrock" || updated.credPlan != setup.CredentialKeep {
+	if cmd == nil || updated.name != "bedrock" || updated.opts.Reconfigure != "bedrock" || updated.credPlan != setup.CredentialKeep || updated.stage != stageScanning {
 		t.Fatalf("configured selection did not enter re-verification: name=%q reconfigure=%q credential=%q", updated.name, updated.opts.Reconfigure, updated.credPlan)
 	}
 	if updated.provider.Context != 0 || updated.provider.MaxTokens != 0 {

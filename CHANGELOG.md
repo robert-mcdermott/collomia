@@ -42,6 +42,21 @@ an accurate one; their history is in the Git log and in
     `collo config validate` checks every entry.
   - Existing files load unchanged.
 
+- **A menu for each configured provider in `/providers`.** It offers these
+  actions:
+  - Re-verify.
+  - Make default.
+  - Switch model without re-verifying.
+  - Add a verified model as its own entry, without changing the provider's
+    model.
+  - Edit the connection (with re-verification, keeping settings).
+  - Edit temperature and headers (credential-looking values are never shown).
+  - Rename (a stored key moves with it).
+  - Remove (refused for the default and the active provider).
+
+  After a provider rejects `max_tokens` and states its ceiling, the session
+  offers to save it with `/providers save-ceiling`. `collo setup --provider`
+  keeps its direct re-verification.
 - **`/providers` runs setup inside a session.** Add a provider, or change one's
   model, limits, or effort, without leaving the conversation (alias `/setup`,
   or `/providers <name>`).

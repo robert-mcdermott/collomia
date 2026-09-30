@@ -19,12 +19,16 @@ func feed(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 
 func TestProvidersRunsSetupInsideTheSessionAndAppliesIt(t *testing.T) {
 	m := newTestModel(t)
-	_, cmd := (&m).slash("/providers ollama")
-	if m.providerSetup == nil || cmd == nil {
-		t.Fatal("/providers ollama must open the setup flow in the session")
+	(&m).slash("/providers ollama")
+	if m.providerSetup == nil || m.providerSetup.stage != stageProviderActions {
+		t.Fatal("/providers ollama must open that provider's menu in the session")
 	}
-	if !strings.Contains(stripANSI(m.View()), "Re-verifying ollama") {
+	if !strings.Contains(stripANSI(m.View()), "Change model or re-verify") {
 		t.Errorf("the flow must own the screen:\n%s", stripANSI(m.View()))
+	}
+	m, _ = feed(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(stripANSI(m.View()), "Re-verifying ollama") {
+		t.Errorf("the first action re-verifies:\n%s", stripANSI(m.View()))
 	}
 
 	// The endpoint's catalog, then verification, arrive as messages.
@@ -82,7 +86,6 @@ func TestProvidersRunsSetupInsideTheSessionAndAppliesIt(t *testing.T) {
 func TestProvidersClosesWithoutWriting(t *testing.T) {
 	m := newTestModel(t)
 	(&m).slash("/providers ollama")
-	m, _ = feed(t, m, catalogMsg{models: []provider.ModelInfo{{ID: "qwen3-coder"}}})
 	m, exit := feed(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if exit == nil {
 		t.Fatal("esc on the first screen of a named run must leave the flow")
@@ -123,5 +126,37 @@ func TestProvidersCtrlCLeavesTheFlowNotTheSession(t *testing.T) {
 	}
 	if _, ok := exit().(setupExitMsg); !ok {
 		t.Fatal("ctrl+c inside /providers must close the flow, not quit Collomia")
+	}
+}
+
+func TestProvidersDirectEditsFinishInsideTheSession(t *testing.T) {
+	// Found by a live run: an edit written without verification reported its
+	// result as a message the session did not forward to the hosted flow,
+	// so the screen stayed on "Saving" after the file had been written.
+	m := newTestModel(t)
+	(&m).slash("/providers ollama")
+	for i, action := range m.providerSetup.actions {
+		if action.key == "settings" {
+			m.providerSetup.cursor = i
+		}
+	}
+	m, _ = feed(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = feed(t, m, tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = typeKeys(t, m, "0.7")
+	m, save := feed(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if save == nil {
+		t.Fatalf("saving settings must write; stage %d err %q", m.providerSetup.stage, m.providerSetup.form.err)
+	}
+	m, _ = feed(t, m, save())
+	if m.providerSetup == nil || m.providerSetup.stage != stageDone {
+		t.Fatal("the direct edit's result must reach the hosted flow")
+	}
+	m, exit := feed(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = feed(t, m, exit())
+	if got := m.runtime.Agent.ProviderSettings().Temperature; got == nil || *got != 0.7 {
+		t.Errorf("the session must use the saved temperature, got %v", got)
+	}
+	if last := m.blocks[len(m.blocks)-1].content; !strings.Contains(last, "Updated ollama") || !strings.Contains(last, "Applied to this session") {
+		t.Errorf("message = %q", last)
 	}
 }

@@ -258,7 +258,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Del
 				if ceiling := rejectedOutputCeiling(resp.StatusCode, errorBody); ceiling > 0 && ceiling < currentMaxTokens {
 					ceilingRetried = true
 					if onDelta != nil {
-						onDelta(Delta{Warning: fmt.Sprintf("provider rejected max_tokens=%d for %s; retrying at its stated ceiling of %d — set max_tokens in your provider configuration to make it permanent", currentMaxTokens, in.Model, ceiling)})
+						onDelta(Delta{OutputCeiling: ceiling, Warning: fmt.Sprintf("provider rejected max_tokens=%d for %s; retrying at its stated ceiling of %d — set max_tokens in your provider configuration to make it permanent", currentMaxTokens, in.Model, ceiling)})
 					}
 					currentMaxTokens = ceiling
 					body["max_tokens"] = ceiling

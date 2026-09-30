@@ -2331,8 +2331,9 @@ status.
   posture editor, which is worth taking only if reading the stance turns out
   not to be enough.
 
-  **Update 2026-09-29:** the user selected the in-session tier for providers and
-  models as W10. The limits, effort, and provider/model editing parts are
+  **Update 2026-09-30:** the provider and model part of the in-session tier
+  shipped as W10: `/providers`, per-model settings, the limits and effort
+  screens, and `/effort`. It was selected on 2026-09-29. The limits, effort, and provider/model editing parts are
   scheduled in the
   [improvement plan](docs/IMPROVEMENT_PLAN.md#w10--provider-setup-and-configuration-without-hand-editing).
   The safety-posture editor stays a separate, undecided item.
@@ -2461,19 +2462,23 @@ experimental after its bounded audit. Further orchestration work requires a
 new product decision and exit gate; the historical sequence below is not an
 active backlog.
 
-**Next: provider setup and configuration (user-selected 2026-09-29).** Adding or
+**Completed: provider setup and configuration (user-selected 2026-09-29, finished 2026-09-30).** Adding or
 changing a provider or model should record its advertised limits, let the user
 override or supply them, set reasoning effort where the model supports it, and
 eventually happen inside a session without hand-editing JSON. This takes the
 remaining "in-session configuration" tier of the Phase 7 configuration-surface
 item and part of Phase 4. It is sequenced as W10a–d with user-testing gates in
 [the improvement plan](docs/IMPROVEMENT_PLAN.md#w10--provider-setup-and-configuration-without-hand-editing).
-W10a and W10b (per-model settings) were accepted by the user on 2026-09-29, and W10c (reasoning effort in setup, plus `/effort`) on 2026-09-30. W10d was split: W10d1 (`/providers`, setup inside the session applied live) was accepted on 2026-09-30, and W10d2 (the field editor) is next. It fixes a verified defect:
+All slices passed user acceptance:
+- W10a and W10b (per-model settings) on 2026-09-29.
+- W10c (reasoning effort in setup, plus `/effort`) on 2026-09-30.
+- W10d1 (`/providers`, setup inside the session applied live) on 2026-09-30.
+- W10d2 (the provider menu, direct edits, and learned-ceiling save) on 2026-09-30. It fixes a verified defect:
 reconfiguring a provider through setup dropped its hand-set `headers`,
 `temperature`, `reasoning`, `pricing` and timeouts. It also adds a Token limits
 screen with overrides and explicit assumptions, and more limit discovery.
 
-After W10, the next product work should come from the remaining P1 gaps, in
+With W10 done, the next product work should come from the remaining P1 gaps, in
 this order unless user evidence changes it:
 
 1. Complete the coding loop's safe LSP code-action path and deeper selective

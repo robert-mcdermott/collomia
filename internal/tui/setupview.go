@@ -58,6 +58,16 @@ func (m setupModel) View() string {
 		sections = append(sections, m.limitsView())
 	case stageEffort:
 		sections = append(sections, m.effortView())
+	case stageProviderActions:
+		sections = append(sections, m.actionsView())
+	case stageConnectionForm, stageSettingsForm:
+		sections = append(sections, m.formView())
+	case stageRename:
+		sections = append(sections, m.renameView())
+	case stageRemoveConfirm:
+		sections = append(sections, m.removeView())
+	case stageApplying:
+		sections = append(sections, m.title("Saving")+"\n\n  "+m.spin.View()+" writing "+m.opts.ConfigPath)
 	case stageEffortVerifying:
 		sections = append(sections, strings.Join([]string{
 			m.title("Checking reasoning effort"),
@@ -393,6 +403,11 @@ func (m setupModel) fieldLine(field setup.Field, stored string, focused bool, la
 				placeholder = emptyText
 			}
 			shown = m.styles.muted.Render(placeholder)
+		} else if field.Kind == setup.FieldSecret {
+			// Masked when the cursor is elsewhere too, not only while being
+			// typed: a form lists every field at once, and a credential on a
+			// shared screen is exposed whichever field has focus.
+			shown = m.styles.muted.Render(fmt.Sprintf("hidden · %d characters", len([]rune(shown))))
 		} else {
 			shown = m.styles.panelBody.Render(shown)
 		}
@@ -575,10 +590,16 @@ func (m setupModel) confirmView() string {
 				strings.Join(update.Dropped, ", ") + "."
 		}
 		body = append(body, "", m.styles.warning.Render(wrapText(text, m.contentWidth()-4)))
+	case update.Exists && m.result.EntryOnly:
+		text := "This adds " + m.model + " to " + m.name + "'s models with the limits and effort above. " +
+			m.opts.Existing.Describes(m.name) + " stays its own model, and nothing else changes. /model " + m.name + "/" + m.model + " uses it."
+		body = append(body, "", m.styles.muted.Render(wrapText(text, m.contentWidth()-4)))
 	case update.Exists:
 		text := "This updates the provider named " + m.name + " in this file, currently " +
 			m.opts.Existing.Describes(m.name) + "."
-		if len(update.Kept) > 0 {
+		if len(update.Kept) > 0 && update.EndpointChanged {
+			text += " Its other settings are kept and will now be sent to the new endpoint: " + strings.Join(update.Kept, ", ") + "."
+		} else if len(update.Kept) > 0 {
 			text += " Settings setup does not ask about are kept: " + strings.Join(update.Kept, ", ") + "."
 		}
 		if update.MovedLimitsFor != "" {
@@ -613,11 +634,15 @@ func (m setupModel) doneView() string {
 			m.styles.muted.Render("Inspect the whole configuration with ") + m.styles.accent.Render("collo doctor"),
 		}
 	}
+	title, written := "✓ "+m.name+" / "+m.model, "Written to "+m.opts.ConfigPath
+	if m.outcome.Summary != "" {
+		title, written = "✓ "+m.name, m.outcome.Summary+" Written to "+m.opts.ConfigPath+"."
+	}
 	return strings.Join([]string{
 		m.title("Done"),
 		"",
-		m.box("✓ "+m.name+" / "+m.model, strings.Join([]string{
-			m.styles.panelBody.Render("Written to " + m.opts.ConfigPath),
+		m.box(title, strings.Join([]string{
+			m.styles.panelBody.Render(wrapText(written, m.contentWidth()-4)),
 			"",
 			strings.Join(next, "\n"),
 		}, "\n"), m.theme.Success),
@@ -629,6 +654,9 @@ func (m setupModel) doneView() string {
 // it is the behavior this row exists to make impossible.
 func (m setupModel) defaultRow() string {
 	current := m.opts.Existing.DefaultProvider
+	if m.result.EntryOnly {
+		return "unchanged — adding a model does not change the default"
+	}
 	switch {
 	case m.makeDefault && current != "" && current != m.name:
 		return "yes — changed from " + current + " / " + m.opts.Existing.DefaultModel + "   (d to keep " + current + ")"
@@ -728,6 +756,22 @@ func (m setupModel) footer() string {
 		keys = [][2]string{{"esc", "cancel"}}
 	case stageEffort:
 		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "back"}}
+	case stageProviderActions:
+		back := "back"
+		if len(m.choices) == 0 {
+			back = m.leaveWord()
+		}
+		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", back}}
+	case stageConnectionForm:
+		keys = [][2]string{{"↑↓", "field"}, {"←→", "option"}, {"enter", "verify"}, {"esc", "back"}}
+	case stageSettingsForm:
+		keys = [][2]string{{"↑↓", "field"}, {"enter", "save"}, {"esc", "back"}}
+	case stageRename:
+		keys = [][2]string{{"enter", "rename"}, {"esc", "back"}}
+	case stageRemoveConfirm:
+		keys = [][2]string{{"y", "remove"}, {"n", "keep it"}}
+	case stageApplying:
+		keys = nil
 	case stageChooseProvider:
 		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", m.leaveWord()}}
 	case stageChooseModel, stageStorage:

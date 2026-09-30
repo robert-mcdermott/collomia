@@ -257,8 +257,22 @@ nothing to store — Entra, which issues short-lived tokens through
 ### Adding or changing a provider later
 
 Inside a session, run `/providers`, or `/providers <name>` to go straight to
-one provider. It is the same flow as `collo setup`, drawn over the session. When
-it finishes you return to the conversation and the change is already in effect:
+one provider. It is the same flow as `collo setup`, drawn over the session.
+Choosing a configured provider opens its menu:
+
+| Action | What it does |
+| --- | --- |
+| Change model or re-verify | Choose a model and prove it with two requests; the model becomes the provider's own. |
+| Make default | Start sessions with this provider and its model. No request is sent. |
+| Switch model without re-verifying | Make another model it serves the provider's own. Its limits and effort still come from its own entry or from the endpoint; nothing is sent. |
+| Add a model | Verify another model and save its limits and effort as its own entry, for `/model`. The provider's own model and the default do not change. |
+| Edit connection | Change the endpoint, deployment, region, profile, or authentication, then re-verify. Other settings are kept; the confirmation warns that kept headers will now go to the new endpoint. |
+| Edit temperature and headers | Saved without a request. A header whose name suggests a credential (Authorization, key, token, secret) is never shown. Clear a value to remove that header. |
+| Rename | The default selection follows the new name, and a key in the OS credential store moves with it. |
+| Remove | Refused for the default provider and for the one the session is using. A stored key stays; `collo auth rm <name>` removes it. |
+
+When you finish, you return to the conversation and the change is already in
+effect:
 - If you changed the provider you are using, its new limits and effort apply
   from the next turn.
 - If the session is on a different provider or model, it keeps that and tells
@@ -268,6 +282,11 @@ it finishes you return to the conversation and the change is already in effect:
 
 Only providers and the default selection are reloaded; permissions and every
 other setting stay as the session started.
+
+If a provider rejects `max_tokens` and states the largest value it accepts,
+Collomia retries under that ceiling for the rest of the session. After the
+turn, it offers once to save the ceiling; `/providers save-ceiling` writes it
+as that model's `max_tokens`.
 
 Outside a session, run `collo setup` again. Configured providers appear at the top of the provider
 list, so selecting one changes its model and re-verifies its endpoint and
@@ -3061,7 +3080,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
 | `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/mode [developer\|work]` | Show or switch the task profile. The choice is persisted with the session and changes neither provider nor permissions. |
-| `/providers [name]` (alias `/setup`) | Run provider setup inside the session: add a provider, or change one's model, token limits, or reasoning effort, with the same verification as `collo setup`. The change is saved to your user configuration and applied to this session from the next turn, without a restart. Unavailable while a turn is running. |
+| `/providers [name\|save-ceiling]` (alias `/setup`) | Run provider setup inside the session. Add a provider, or open a configured one's menu to re-verify, make it the default, switch or add a model, edit its connection, temperature, or headers, rename it, or remove it. Changes are saved to your user configuration and applied to this session from the next turn, without a restart. `save-ceiling` saves an output ceiling a provider stated when it rejected `max_tokens`. Unavailable while a turn is running. |
 | `/effort [level\|default\|reset]` | Show the reasoning effort the next request carries, which setting decided it, and the levels the model accepts; or change it for the rest of this session. `default` sends no effort, `reset` returns to configuration. A level the model is known not to accept is refused. Never written to configuration. See [Reasoning effort](#reasoning-effort). |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/recovery` | Inspect durable obligations and checkpoint availability. Between turns, `acknowledge REASON` reconciles an uncertain action; `keep REASON` keeps files and discards prior checkpoints. Neither validates work nor grants permission. |

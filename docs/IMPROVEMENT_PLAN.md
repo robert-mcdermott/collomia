@@ -10,10 +10,13 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 
 ## Current handoff — read this first
 
-- **Active wave (2026-09-29): [W10 — provider setup and configuration](#w10--provider-setup-and-configuration-without-hand-editing).
+- **Completed wave (2026-09-30): [W10 — provider setup and configuration](#w10--provider-setup-and-configuration-without-hand-editing).**
+  Every slice, W10a–d2, passed user acceptance. The detail below is the record.
+- **W10 history (2026-09-29): [W10 — provider setup and configuration](#w10--provider-setup-and-configuration-without-hand-editing).
   W10a–c are accepted (W10a and W10b on 2026-09-29, W10c on 2026-09-30) and
   committed. W10d was split: W10d1 (setup inside the session, applied live)
-  was accepted on 2026-09-30, and W10d2 (the field editor) is next.** The user
+  was accepted and committed on 2026-09-30, and W10d2 (the provider menu,
+  direct edits, and learned-ceiling save) is ready for user testing.** The user
   selected W10 ahead of W2/W8/W9 and the roadmap's P1 order, moved
   Homebrew/Scoop to lowest priority (P3), and approved starting W10a. W10a fixes
   the data-loss defect: reconfiguring a provider used to replace its whole JSON
@@ -94,9 +97,11 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** W10d2 (the field editor, starting with setting the default
-  provider/model directly) awaits the user's go-ahead. W10a–c are committed as
-  `5dd9a8a`; W10d1 is accepted and uncommitted. On the next release, verify the final
+- **Next action:** none active. W10 is complete. The user chooses the next
+  work; candidates are listed in the roadmap's
+  [Recommended next sequence](../ROADMAP.md#recommended-next-sequence) and
+  below: W2b, W8, W9, and the MCP protocol upgrade. W10a–c are committed as
+  `5dd9a8a` and W10d1 as `9c445db`; W10d2 is accepted and uncommitted. On the next release, verify the final
   source commit's GitHub signature before tagging and verify downloaded artifact
   attestations before publication.
 - **Historical evidence:** candidate versions, commands, and unchecked manual
@@ -964,7 +969,7 @@ After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 | W7 | Durable task context, retrievable evidence, and restart checkpoints | Accepted (W7a and W7b) | User confirmed successful manual testing of both slices |
 | W8 | Lazy tool discovery and measured independent-read concurrency | Planned | Connected tools are discoverable and parallel reads improve latency |
 | W9 | Scoped autonomy mandates and durable delayed continuation | Planned; design gate required | Authorized work resumes predictably with clear wait/cancel controls |
-| W10 | Provider setup and configuration without hand-editing JSON (W10a–d) | Active; W10a–c and W10d1 accepted, W10d2 next | Each slice has its own gate; see [W10](#w10--provider-setup-and-configuration-without-hand-editing) |
+| W10 | Provider setup and configuration without hand-editing JSON (W10a–d) | Accepted (W10a–d2, 2026-09-29/30) | Each slice has its own gate; see [W10](#w10--provider-setup-and-configuration-without-hand-editing) |
 
 ### W1 — thinking visibility
 
@@ -1988,21 +1993,106 @@ half has its own gate.
 
 ##### W10d2 — editing what setup does not ask about
 
-**Status: planned; W10d1 is accepted, so this is next. The user asked how to
-change a provider's default model, so the direct default-setting item comes
-first.**
+**Status: accepted by the user on 2026-09-30 ("manual testing passed"). This
+completes W10.**
 
-- [ ] A provider detail view in `/providers`:
-  - Edit endpoint/auth/deployment/region/profile with re-verification.
-  - Edit temperature and headers. Header values may be `${VAR}` references
-    and are never echoed if they look like credentials.
-  - Add a model entry without changing the provider's own model.
-- [ ] Rename or remove a provider, with a safeguard for the default and for the
-  active provider.
-- [ ] Set the default provider and model directly.
-- [ ] Offer to save a ceiling learned from a provider rejection as that model's
-  `max_tokens`. Today this is only a warning telling the user to edit the file.
-- [ ] Tests: editing, removal safeguards, default changes, ceiling save.
+- [x] Choosing a configured provider, from the list or with `/providers
+  <name>`, opens its menu. `collo setup --provider` keeps its direct
+  re-verification. The menu has eight actions:
+  1. Re-verify, preselected, which is the original flow.
+  2. Make default (`setup.SetDefault`).
+  3. Switch model without re-verifying:
+     - `Verification.Skipped`; the limits and effort still come from
+       `ModelLimits` and `ModelReasoning` without chat requests.
+     - The previous model's limits move into its own entry.
+     - `default_model` follows when this is the default provider.
+  4. Add a model: verified, then written by `Result.EntryOnly` into
+     `models.<id>` only. The default toggle is disabled.
+  5. Edit connection:
+     - The fields depend on the provider type.
+     - Re-verification runs, and `Result.KeepSettings` keeps user settings
+       across an endpoint change.
+     - The confirmation says the kept settings will be sent to the new
+       endpoint.
+  6. Temperature and headers: `setup.EditSettings`, bounded 0–2. A blank value
+     removes that header. A new header needs a name and a value.
+  7. Rename:
+     - Validated name.
+     - `default_provider` follows the new name.
+     - The OS-store key is copied before the write and deleted after it; a
+       failed copy stops the rename.
+     - The session follows its active provider to the new name.
+  8. Remove:
+     - Refused for the default provider, and in a session for the active
+       provider.
+     - It asks for y/n, and a stored key is kept with a pointer to
+       `collo auth rm`.
+- [x] Learned ceiling:
+  - `provider.Delta.OutputCeiling` is set on the OpenAI-compatible and
+    Anthropic ceiling retries.
+  - `Agent.LearnedOutputCeiling` remembers it.
+  - After a turn the session offers it once, and `/providers save-ceiling`
+    writes it with `setup.SaveMaxTokens`. The value lands at the provider level
+    for its own model, or in the model's entry otherwise, and a cap at or above
+    the window is refused.
+- [x] All direct edits share `editConfigFile`, extracted from the verified
+  write path. The credential store is injectable, so tests never touch the
+  user's keychain.
+- [x] Defects found while testing this slice:
+  1. **Found by a new test:** the shared form rendered an unfocused secret
+     field in plain text. It was latent, since no earlier form had a secret
+     field, but it would have exposed credential headers. It is now masked as
+     "hidden · N characters".
+  2. **Found by the live run:** direct-edit results were not forwarded to the
+     hosted flow, so the screen stayed on "Saving" after writing. Fixed with a
+     session-level regression test that failed before the fix.
+- [x] Tests:
+  - Setup edits: default, settings, rename with a fake store and store
+    failure, remove guard, ceiling placement and bound, name validation,
+    entry-only add, connection keep-settings, and the skipped-verification
+    text.
+  - TUI: menu guards, make-default write, switch without requests, add-model
+    default lock, credential masking, settings parsing, remove confirmation,
+    and rename refusal.
+  - Session direct edit.
+  - Agent ceiling capture, and the runtime following a renamed provider.
+- [x] **User accepts W10d2** (2026-09-30).
+
+**Automated evidence (2026-09-30):**
+
+- Full suite, race detector on the changed packages, vet, and cross-builds
+  passed.
+- Live, in the real session (scratch HOME, local Ollama 0.35.0):
+  - Switch model: the menu showed make-default and remove disabled for the
+    default provider.
+  - Switching to `qwen3.5:9b` sent no requests. It opened on its configured
+    16384/4096, and the confirmation said "not re-verified".
+  - The file moved gemma4's limits into its entry, and the session reported
+    it kept its current model.
+  - The temperature edit saved 0.8 and applied to the session.
+- Rename was deliberately not run live: the macOS keychain is per user, not
+  per HOME, so a live rename could move a real stored key. The fake-store
+  tests cover it.
+
+**Manual checks for the user:**
+
+1. `/providers <name>`, then **Switch model without re-verifying**. Pick
+   another model. It should reach the confirmation without a verification
+   wait and say "not re-verified". After Done, `/model <name>/<new>` uses its
+   limits.
+2. **Add a model** on a provider. The confirmation should say the provider's
+   own model stays and the default row reads "unchanged". Afterwards, `/model`
+   to that model should use the saved limits.
+3. **Make default** on a non-default provider, then restart `collo`. It should
+   start on that provider.
+4. **Edit temperature and headers**: change the temperature and add a header.
+   A header named like `Authorization` should never be shown in clear.
+5. **Rename** a provider you are not relying on (or a throwaway one added
+   first). The default, if it was the default, and a stored key should follow.
+   **Remove** it: the default and the active provider should be refused.
+6. Optional: **Edit connection** on a provider, changing only something
+   harmless, such as re-entering the same URL. It should re-verify and keep
+   the headers.
 
 **Out of scope:**
 
@@ -2055,6 +2145,8 @@ first.**
 | 2026-09-30 | W10c acceptance | User: "manual testing passed." | W10c accepted; W10d awaits go-ahead. |
 | 2026-09-30 | W10d1 implementation | The user committed W10a–c (`5dd9a8a`) and said "start W10d". W10d was split into W10d1/W10d2. `/providers` embedded setup with live reload is implemented. Full suite and vet passed; a live in-session pseudo-terminal run against local Ollama passed. | W10d1 ready for user testing; W10d2 planned. |
 | 2026-09-30 | W10d1 acceptance | The user reported a `/effort` redraw defect (the panel appeared only on the next key), which was fixed with a regression test. The user asked how to change a provider's default model, then: "manual testing passed." | W10d1 accepted; W10d2 next, default-setting first. |
+| 2026-09-30 | W10d2 implementation | The user committed W10d1 (`9c445db`) and said "start W10d2". Provider menu, direct edits, and learned-ceiling save implemented. A new test found a latent unmasked-secret render and a live run found unforwarded direct-edit results; both fixed with regression tests. Full suite, race, vet, and cross-builds passed. | W10d2 ready for user testing. |
+| 2026-09-30 | W10d2 acceptance | User: "manual testing passed." | W10d2 accepted; W10 complete. No wave active. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.

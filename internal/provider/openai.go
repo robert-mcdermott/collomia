@@ -194,7 +194,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in Request, onDelta func(Delta)
 				if retry, warning := c.parameters.learnOutputCeiling(ceiling, body); retry {
 					adjustments++
 					if warning != "" && onDelta != nil {
-						onDelta(Delta{Warning: warning})
+						onDelta(Delta{Warning: warning, OutputCeiling: ceiling})
 					}
 					continue
 				}
