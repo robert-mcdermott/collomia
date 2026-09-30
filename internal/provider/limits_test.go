@@ -156,3 +156,27 @@ func TestResolveLimitsSourcesEachHalfIndependently(t *testing.T) {
 		t.Errorf("output source = %q, want the table that actually supplied it", resolved.OutputSource)
 	}
 }
+
+func TestKnownLimitsCoversNewerFamilies(t *testing.T) {
+	cases := []struct {
+		model   string
+		context int
+	}{
+		{"gpt-oss:20b", 131072},
+		{"openai/gpt-oss-120b", 131072},
+		{"llama4:scout", 128000},
+		{"meta.llama4-maverick-17b-instruct-v1:0", 128000},
+		{"gemini-2.5-pro", 128000},
+		{"google/gemini-2.0-flash", 128000},
+		{"gemini-1.0-pro", 32768},
+	}
+	for _, c := range cases {
+		limits, ok := KnownLimits(c.model)
+		if !ok || limits.ContextWindow != c.context {
+			t.Errorf("%s: limits = %+v (ok=%v), want context %d", c.model, limits, ok, c.context)
+		}
+		if limits.MaxOutput >= limits.ContextWindow {
+			t.Errorf("%s: an output cap at or above the window is unsatisfiable", c.model)
+		}
+	}
+}

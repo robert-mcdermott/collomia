@@ -179,7 +179,18 @@ const configReferenceJSONC = `
       // prompt: it must be below context_window, and validation refuses a
       // configuration where it is not.
       "max_tokens": 8192,
-      "context_window": 32768
+      "context_window": 32768,
+      // Provider-level limits describe this provider's own "model". Other
+      // models it serves can have their own entry, used when /model switches
+      // to them; a model without one uses its published or discovered limits.
+      // An entry may also set "reasoning" and "pricing" for that model only.
+      "models": {
+        "gpt-oss:20b": {
+          "max_tokens": 16384,
+          "context_window": 131072,
+          "reasoning": {"effort": "low"}
+        }
+      }
     },
     "openrouter": {
       "type": "openai",

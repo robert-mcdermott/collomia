@@ -53,6 +53,12 @@ type Limits struct {
 	// to remove.
 	ContextSource LimitSource
 	OutputSource  LimitSource
+	// ModelMaximum is the window the model itself supports, recorded only when
+	// the endpoint reported serving a smaller one. It is for display: a local
+	// runtime serving 32K of a 256K model is the most useful thing a setup
+	// screen can tell someone wondering why their window is small, but the
+	// served number is the one a session has to fit inside.
+	ModelMaximum int
 }
 
 // Known reports whether anything at all was established.
@@ -180,6 +186,14 @@ var limitEntries = []limitEntry{
 	{"o3-mini", 200000, 32768},
 	{"o3", 200000, 32768},
 	{"o4-mini", 200000, 32768},
+	// OpenAI's open-weight models, usually reached through a local runtime.
+	{"gpt-oss", 131072, 16384},
+
+	// Google, reached through its OpenAI-compatible endpoint, which publishes
+	// ids but no limits. The first generation had a far smaller window than
+	// every later one, so it gets its own entry below the family floor.
+	{"gemini-1.0", 32768, 2048},
+	{"gemini-", 128000, 8192},
 
 	// Open-weight families, reached through Ollama, LM Studio, vLLM, Bedrock,
 	// and OpenRouter alike. These are the ones whose published context is a
@@ -194,6 +208,10 @@ var limitEntries = []limitEntry{
 	{"llama3.3", 128000, 8192},
 	{"llama-3", 8192, 4096},
 	{"llama3", 8192, 4096},
+	// Llama 4 publishes windows of a million tokens and more; hosts commonly
+	// serve less, so the floor is far below the published figure.
+	{"llama-4", 128000, 8192},
+	{"llama4", 128000, 8192},
 	{"qwen2.5-coder", 32768, 8192},
 	{"qwen2.5", 32768, 8192},
 	{"qwen3-coder", 131072, 16384},

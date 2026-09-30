@@ -279,6 +279,19 @@ when `collo doctor` warns about a provider's token limits. An unknown name lists
 what your file actually contains rather than dropping you into adding a new
 provider.
 
+Re-running setup on a provider **updates** its entry rather than rewriting it.
+Setup replaces only what it verifies — the endpoint and identity fields, the
+model, the two token limits, and where the credential lives — and keeps
+everything else you wrote: `headers`, `temperature`, `reasoning`, `pricing`,
+timeouts, and any setting newer than the build. `${VAR}` references in
+`base_url` stay references. The confirmation names the settings it keeps.
+
+The exception is a name that now points at a different endpoint (a different
+`type` or `base_url`). That is a replacement: the old entry is replaced whole,
+and the confirmation names the settings that are not carried over. Headers
+often hold a gateway's credentials, and moving them to a different host under a
+reused name would send them somewhere you never pointed them.
+
 ### The two token limits, and what happens when you omit them
 
 `context_window` and `max_tokens` both look optional and neither behaves that
@@ -289,19 +302,40 @@ way. They fail silently, in opposite directions:
 | `context_window` | stays unset | Automatic compaction never runs. A long session ends at a provider context-length error rather than compacting to survive. |
 | `max_tokens` | becomes 8192 | Every answer stops at 8192 tokens, with no message. On a current frontier model that is a small fraction of what it can produce. |
 
-`collo setup` writes both, and says where each number came from:
+`collo setup` writes both. After verification it shows them on a **Token
+limits** screen, each with where it came from, and you can accept or change
+either before anything is written:
 
-- **reported by the endpoint** — the catalog or the runtime stated it. Ollama is
-  asked about the chosen model directly, LM Studio's native catalog is read for
-  the whole list (including the window a model is *loaded* with, which is what
-  it is actually serving), and OpenRouter-style catalogs publish both numbers
-  beside the model id.
-- **published limits** — no hosted catalog publishes per-model limits, so a
-  small built-in table of documented values fills the gap. It is deliberately
-  conservative: it is never allowed to override a number you configured or one
-  an endpoint reported, and where it is wrong it is wrong in the direction that
-  compacts early rather than the direction that breaks.
-- **assumed** — nothing established these. Edit them.
+- **reported by the endpoint** — the catalog or the runtime stated it:
+  - Anthropic's model catalog publishes both numbers for each model.
+  - OpenRouter-style catalogs publish both numbers beside the model id.
+  - vLLM publishes the window it was started with (`max_model_len`). A LoRA
+    adapter inherits its base model's window.
+  - LM Studio's native catalog is read for the whole list, including the window
+    a model is *loaded* with, which is the one it is actually serving.
+  - Ollama is asked about the chosen model directly. Setup prefers the context
+    the loaded model is actually serving (`/api/ps`) over the model's trained
+    maximum, because Ollama silently drops whatever does not fit. When the model
+    supports more than Ollama is serving, the screen says so, and raising
+    `OLLAMA_CONTEXT_LENGTH` is the fix.
+- **published limits** — a small built-in table of documented values fills the
+  gap where no catalog publishes limits. It is deliberately conservative, and
+  where it is wrong it is wrong in the direction that compacts early rather than
+  the direction that breaks.
+- **couldn't be determined** — nothing established the value. The field opens
+  empty with the cursor on it. Type the number from the model's documentation,
+  or leave it blank to accept the stated assumption (32768 for the window, 8192
+  for output). An accepted assumption stays labelled "assumed".
+- **currently configured** — when you re-run setup on the model a provider
+  already uses, the screen opens on the numbers in your file and shows what
+  this run detected beside them. A limit you lowered on purpose is not raised
+  because setup ran again. A *different* model starts from its own detected
+  limits.
+
+Any number you type is recorded as configured, and thousands separators
+(`131,072`) are accepted. The screen refuses a pair that `collo config
+validate` would refuse, such as an output cap at or above the window, in the
+same words. Press `l` on the confirmation to return to the limits.
 
 If `max_tokens` is larger than the model actually accepts, the provider's
 rejection names its real ceiling, and Collomia retries that request under the
@@ -861,8 +895,9 @@ applies to every provider type.
 | `max_tokens` | integer | Provider-neutral output budget; defaults to `8192`. |
 | `context_window` | integer | Configured model context size, used for status, preflight, and compaction. |
 | `temperature` | number | Optional sampling temperature. Omit for the provider/model default. |
-| `reasoning` | object | Optional provider-neutral reasoning control: `{"effort":"low|medium|high|xhigh|max"}`. Omit it to send no reasoning-specific field. |
+| `reasoning` | object | Optional provider-neutral reasoning control: `{"effort":"none|minimal|low|medium|high|xhigh|max"}`. Omit it to send no reasoning-specific field. See [Reasoning effort](#reasoning-effort). |
 | `pricing` | object | Optional user-maintained USD rates per million tokens: required `input_per_million` and `output_per_million`, optional non-negative `cached_input_per_million` and `cache_write_per_million`. |
+| `models` | object/map | Optional per-model settings keyed by exact model id: `max_tokens`, `context_window`, `reasoning`, and `pricing`, each overriding the provider-level field for that model. See [Per-model settings](#per-model-settings). |
 | `connect_timeout_seconds` | integer | Connection setup timeout; defaults to `10`. |
 | `request_timeout_seconds` | integer | Whole request timeout; defaults to `1800`. |
 | `stream_idle_timeout_seconds` | integer | Maximum silence between stream chunks; defaults to `300`. |
@@ -892,6 +927,90 @@ cached input is conservatively estimated at the ordinary input rate; the same
 applies to `cache_write_per_million`, which prices tokens written to the
 prompt cache and is normally charged above the ordinary input rate. Reasoning
 tokens are informational and are not added again to output tokens.
+
+#### Reasoning effort
+
+Effort is how much a reasoning model thinks before it answers. Higher levels
+are slower and use more tokens. It is opt-in: with nothing configured,
+Collomia sends no effort and the model uses its own default. The levels are
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, but each model
+accepts only some of them.
+
+There are three ways to set it:
+
+- **`collo setup`** asks after the token limits. It offers the levels the model
+  accepts and sends one short request to check a chosen level. It saves the
+  choice for that model only, in its `models` entry. Where the levels come
+  from:
+  - Anthropic's model catalog.
+  - Ollama's own description of the model. Ollama quietly ignores a level a
+    model does not advertise, so setup offers only advertised ones. A model that
+    can only switch thinking on or off is offered `none`, which turns it off.
+  - A published table for OpenAI, Anthropic, and gpt-oss models.
+
+  Any other model is offered every level, marked untested. A model known to
+  have no effort control is not asked about. The first row, "Model default",
+  writes nothing. When the provider already has a provider-level effort, that
+  row reads "Provider setting".
+- **`/effort` in a session** changes it until the session ends, from the next
+  turn. `/effort` alone shows the effective level, which setting decided it,
+  and what the model accepts. `/effort default` sends none, and `/effort reset`
+  returns to configuration. It outranks configuration and agent profiles, keeps
+  applying across `/model` switches, and is never saved.
+- **By hand**, in `reasoning` at the provider level (every model) or in a
+  model's `models` entry.
+
+Precedence, highest first:
+
+1. `/effort`.
+2. The active agent profile's `reasoning`.
+3. The model's `models` entry.
+4. The provider-level `reasoning`.
+
+#### Per-model settings
+
+One provider often serves several models with different limits: an Ollama
+install with a 262K-window coder and an 8K-window small model, say. Settings
+that belong to a model can go in the provider's `models` map:
+
+```json
+"ollama": {
+  "type": "openai-compatible",
+  "base_url": "http://127.0.0.1:11434/v1",
+  "model": "qwen3-coder",
+  "context_window": 262144,
+  "max_tokens": 16384,
+  "models": {
+    "gpt-oss:20b": {"context_window": 131072, "max_tokens": 16384, "reasoning": {"effort": "low"}}
+  }
+}
+```
+
+When a model is selected, whether at startup, with `--model`, with `/model`,
+or by an agent profile, its settings are resolved field by field:
+
+1. **The model's own entry** in `models`.
+2. **The provider-level field.** For `reasoning` and `pricing` this applies to
+   every model, as it always has. For `context_window` and `max_tokens` it
+   describes the provider's own `model`: a window written for one model is
+   usually wrong for another.
+3. **For a different model with no limit of its own**, what the endpoint
+   reported about that model the last time `/model` listed the catalog, then
+   the published-limits table. The provider-level value is used only when
+   nothing is known about the model. If a limit found this way is paired with
+   one from somewhere else and the pair is unsatisfiable, the output cap is
+   halved to fit.
+
+An agent profile's `reasoning` still overrides all of these. A provider with no
+`model` of its own keeps the older meaning, where its limits apply to every
+model.
+
+`collo setup` maintains this for you. Choosing a different model for a
+configured provider moves the old model's limits into its own `models` entry,
+so switching back with `/model` still runs it with them. The chosen model's
+entry loses any limit the provider level now states, but keeps its other
+settings. `collo doctor` lists the models that have their own settings, and
+`collo config validate` checks every entry.
 
 ### Prompt caching
 
@@ -2929,6 +3048,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
 | `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/mode [developer\|work]` | Show or switch the task profile. The choice is persisted with the session and changes neither provider nor permissions. |
+| `/effort [level\|default\|reset]` | Show the reasoning effort the next request carries, which setting decided it, and the levels the model accepts; or change it for the rest of this session. `default` sends no effort, `reset` returns to configuration. A level the model is known not to accept is refused. Never written to configuration. See [Reasoning effort](#reasoning-effort). |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/recovery` | Inspect durable obligations and checkpoint availability. Between turns, `acknowledge REASON` reconciles an uncertain action; `keep REASON` keeps files and discards prior checkpoints. Neither validates work nor grants permission. |
 | `/context [task\|clear]` | `task` inspects retained notes and request previews; `clear` clears only notes between turns. Without arguments, show token usage, user-configured cost estimate, estimated active context, message counts, pinned plan state, summaries, retained-result storage, and context composition. |

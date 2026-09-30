@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -53,6 +54,17 @@ func (m setupModel) View() string {
 		sections = append(sections, m.verifyingView())
 	case stageFailed:
 		sections = append(sections, m.failedView())
+	case stageLimits:
+		sections = append(sections, m.limitsView())
+	case stageEffort:
+		sections = append(sections, m.effortView())
+	case stageEffortVerifying:
+		sections = append(sections, strings.Join([]string{
+			m.title("Checking reasoning effort"),
+			m.hint("One short request with effort " + m.effortTrying + ", so a level the endpoint refuses is caught here rather than discarded on every request later."),
+			"",
+			"  " + m.spin.View() + " " + m.styles.accent.Render(m.model) + m.styles.muted.Render(" at effort "+m.effortTrying),
+		}, "\n"))
 	case stageConfirm:
 		sections = append(sections, m.confirmView())
 	case stageDone:
@@ -199,12 +211,130 @@ func limitSourceNote(source provider.LimitSource) string {
 	case provider.LimitsEndpoint:
 		return "reported by the endpoint"
 	case provider.LimitsTable:
-		return "published limits for this model; edit if yours differ"
+		return "published limits for this model"
 	case provider.LimitsConfigured:
-		return "as you entered it"
+		return "as configured"
 	default:
-		return "assumed — nothing established these; edit context_window and max_tokens if your model differs"
+		return "assumed — nothing established it (l to change)"
 	}
+}
+
+// limitProposalNote explains one field on the limits screen: where its value
+// came from, what else was detected, and — for a limit nothing established —
+// what the user is being asked to do.
+func limitProposalNote(proposal setup.LimitProposal, modelMaximum int) string {
+	var note string
+	switch proposal.Source {
+	case provider.LimitsEndpoint:
+		note = "reported by the endpoint"
+	case provider.LimitsTable:
+		note = "published limits for this model, not measured; change it if your deployment differs"
+	case provider.LimitsConfigured:
+		note = "currently configured"
+		if proposal.Detected > 0 {
+			note += "; this run detected " + strconv.Itoa(proposal.Detected) + " (" + detectedWords(proposal.DetectedSource) + ")"
+		}
+	default:
+		note = "couldn't be determined for this model. Enter it from the model's documentation, or leave it blank to assume " + strconv.Itoa(proposal.Value)
+	}
+	if modelMaximum > proposal.Value && proposal.Source == provider.LimitsEndpoint {
+		// The local-runtime case: the weights support far more than the
+		// runtime was started with, and the fix is the runtime's setting, not
+		// this number.
+		note += ". The model supports up to " + strconv.Itoa(modelMaximum) +
+			"; the runtime is serving less (for Ollama, raise OLLAMA_CONTEXT_LENGTH and run setup again)"
+	}
+	return note
+}
+
+func detectedWords(source provider.LimitSource) string {
+	switch source {
+	case provider.LimitsEndpoint:
+		return "reported by the endpoint"
+	case provider.LimitsTable:
+		return "published limits"
+	default:
+		return "assumed"
+	}
+}
+
+// effortView is the reasoning-effort screen that follows the token limits.
+func (m setupModel) effortView() string {
+	var source string
+	switch m.effortSupport.Source {
+	case provider.LimitsEndpoint:
+		source = "These are the levels the endpoint says " + m.model + " accepts."
+	case provider.LimitsTable:
+		source = "These are the levels published for " + m.model + "."
+	default:
+		source = "Nothing established which levels " + m.model + " accepts, so every level is offered untested; the next step checks the one you pick."
+	}
+	lines := []string{
+		m.title("Reasoning effort"),
+		m.hint("How much " + m.model + " reasons before answering. Higher levels are slower and use more tokens. " + source),
+		"",
+	}
+	for i, choice := range m.effortChoices {
+		lines = append(lines, m.choiceLine(i, choice.Label, choice.Detail, false))
+	}
+	if m.effortProblem != "" {
+		lines = append(lines, "", m.styles.errText.Render(wrapText(m.effortProblem, m.contentWidth())))
+	}
+	lines = append(lines, "", m.styles.muted.Render(wrapText("Saved for this model only. /effort changes it for one session.", m.contentWidth())))
+	return strings.Join(lines, "\n")
+}
+
+// effortRow states the reasoning effort the confirmation will write.
+func (m setupModel) effortRow() (string, bool) {
+	switch {
+	case m.effortSupport.Unsupported():
+		return "not supported by this model", true
+	case !m.result.EffortChosen:
+		return "", false
+	case m.result.Effort != "":
+		return m.result.Effort + " — accepted by the endpoint   (e to change)", true
+	case m.providerEffort() != "":
+		return "provider setting, " + m.providerEffort() + "   (e to change)", true
+	default:
+		return "model default — nothing sent   (e to change)", true
+	}
+}
+
+// limitsView is the screen between verification and the confirmation where the
+// two token limits are seen, changed, or supplied.
+func (m setupModel) limitsView() string {
+	lines := []string{
+		m.title("Token limits"),
+		m.hint("How much " + m.model + " can hold, and how much it may write in one answer. " +
+			"Collomia compacts the conversation before the context window fills, and no answer can run past max output."),
+		"",
+	}
+	labelWidth := 0
+	for _, field := range m.limitsForm.spec.Fields {
+		labelWidth = max(labelWidth, len(field.Label))
+	}
+	for i, field := range m.limitsForm.spec.Fields {
+		focused := i == m.limitsForm.focus
+		empty := ""
+		if m.limitProposals[i].Assumed() {
+			empty = "blank — assumes " + strconv.Itoa(m.limitProposals[i].Value)
+		}
+		lines = append(lines, m.fieldLine(field, m.limitsForm.values[field.Key], focused, labelWidth, empty))
+		modelMaximum := 0
+		if field.Key == "context_window" {
+			modelMaximum = m.result.Limits.ModelMaximum
+		}
+		note := limitProposalNote(m.limitProposals[i], modelMaximum)
+		style := m.styles.muted
+		if m.limitProposals[i].Assumed() {
+			style = m.styles.warning
+		}
+		lines = append(lines, style.Render(indentLines(wrapText(note, m.contentWidth()-labelWidth-6), labelWidth+4)), "")
+	}
+	if m.limitsForm.err != "" {
+		lines = append(lines, m.styles.errText.Render(wrapText(m.limitsForm.err, m.contentWidth())))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // formView renders the multi-field screen for a provider that has to be
@@ -217,44 +347,7 @@ func (m setupModel) formView() string {
 	}
 	for i, field := range m.form.spec.Fields {
 		focused := i == m.form.focus
-		label := m.styles.muted.Render(pad(field.Label, labelWidth))
-		if focused {
-			label = m.styles.accent.Render(pad(field.Label, labelWidth))
-		}
-
-		var value string
-		switch {
-		case field.Kind == setup.FieldChoice:
-			value = m.choiceValue(field, m.form.values[field.Key], focused)
-		case focused:
-			value = m.input.View()
-		default:
-			// An unfilled field shows its placeholder prefixed with "e.g.".
-			// Colour alone cannot carry this: the plain theme has none, and
-			// even in a colour theme a suggested value that looks like an
-			// entered one leaves the user unable to tell what they have
-			// actually filled in.
-			shown := m.form.values[field.Key]
-			if strings.TrimSpace(shown) == "" {
-				placeholder := "required"
-				if field.Optional {
-					placeholder = "optional"
-				}
-				if field.Placeholder != "" {
-					placeholder = "e.g. " + field.Placeholder
-				}
-				shown = m.styles.muted.Render(placeholder)
-			} else {
-				shown = m.styles.panelBody.Render(shown)
-			}
-			value = "  " + shown
-		}
-
-		marker := "  "
-		if focused {
-			marker = m.styles.accent.Render("▸ ")
-		}
-		lines = append(lines, marker+label+" "+value)
+		lines = append(lines, m.fieldLine(field, m.form.values[field.Key], focused, labelWidth, ""))
 		if focused && field.Hint != "" {
 			lines = append(lines, m.styles.muted.Render(indentLines(wrapText(field.Hint, m.contentWidth()-labelWidth-6), labelWidth+4)))
 		}
@@ -263,6 +356,54 @@ func (m setupModel) formView() string {
 		lines = append(lines, "", m.styles.errText.Render(m.form.err))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// fieldLine renders one form field: marker, label, and either the live input,
+// the stored value, or a placeholder that cannot be mistaken for a value.
+// emptyText, when set, replaces the "e.g." placeholder for an unfilled field
+// whose blank has a meaning of its own rather than wanting an example.
+func (m setupModel) fieldLine(field setup.Field, stored string, focused bool, labelWidth int, emptyText string) string {
+	label := m.styles.muted.Render(pad(field.Label, labelWidth))
+	if focused {
+		label = m.styles.accent.Render(pad(field.Label, labelWidth))
+	}
+
+	var value string
+	switch {
+	case field.Kind == setup.FieldChoice:
+		value = m.choiceValue(field, stored, focused)
+	case focused:
+		value = m.input.View()
+	default:
+		// An unfilled field shows its placeholder prefixed with "e.g.".
+		// Colour alone cannot carry this: the plain theme has none, and
+		// even in a colour theme a suggested value that looks like an
+		// entered one leaves the user unable to tell what they have
+		// actually filled in.
+		shown := stored
+		if strings.TrimSpace(shown) == "" {
+			placeholder := "required"
+			if field.Optional {
+				placeholder = "optional"
+			}
+			if field.Placeholder != "" {
+				placeholder = "e.g. " + field.Placeholder
+			}
+			if emptyText != "" {
+				placeholder = emptyText
+			}
+			shown = m.styles.muted.Render(placeholder)
+		} else {
+			shown = m.styles.panelBody.Render(shown)
+		}
+		value = "  " + shown
+	}
+
+	marker := "  "
+	if focused {
+		marker = m.styles.accent.Render("▸ ")
+	}
+	return marker + label + " " + value
 }
 
 // choiceValue renders a cycling option field, showing every option so the
@@ -408,6 +549,9 @@ func (m setupModel) confirmView() string {
 		rows = append(rows, [2]string{"", fmt.Sprintf("max output %d — %s",
 			m.result.Provider.MaxTokens, limitSourceNote(m.result.Limits.OutputSource))})
 	}
+	if effort, ok := m.effortRow(); ok {
+		rows = append(rows, [2]string{"reasoning", effort})
+	}
 	if m.awsIdentity != nil {
 		// The commonest Bedrock confusion is not a missing credential but not
 		// knowing which of several sources won.
@@ -422,10 +566,26 @@ func (m setupModel) confirmView() string {
 	for _, row := range rows {
 		body = append(body, m.styles.muted.Render(fmt.Sprintf("%-13s", row[0]))+" "+m.styles.panelBody.Render(row[1]))
 	}
-	if m.overwrites() {
-		body = append(body, "", m.styles.warning.Render(wrapText(
-			"This replaces the provider named "+m.name+" in this file, currently "+
-				m.opts.Existing.Describes(m.name)+".", m.contentWidth()-4)))
+	switch update := m.opts.Existing.Update(m.result); {
+	case update.Replaced:
+		text := "This replaces the provider named " + m.name + " in this file, currently " +
+			m.opts.Existing.Describes(m.name) + "."
+		if len(update.Dropped) > 0 {
+			text += " It points somewhere else now, so its other settings are not carried over: " +
+				strings.Join(update.Dropped, ", ") + "."
+		}
+		body = append(body, "", m.styles.warning.Render(wrapText(text, m.contentWidth()-4)))
+	case update.Exists:
+		text := "This updates the provider named " + m.name + " in this file, currently " +
+			m.opts.Existing.Describes(m.name) + "."
+		if len(update.Kept) > 0 {
+			text += " Settings setup does not ask about are kept: " + strings.Join(update.Kept, ", ") + "."
+		}
+		if update.MovedLimitsFor != "" {
+			text += " The limits recorded for " + update.MovedLimitsFor +
+				" move to its own models entry, so /model can switch back to it with them."
+		}
+		body = append(body, "", m.styles.muted.Render(wrapText(text, m.contentWidth()-4)))
 	}
 	return strings.Join([]string{
 		m.title("Ready to write"),
@@ -458,11 +618,6 @@ func (m setupModel) doneView() string {
 		}, "\n"), m.theme.Success),
 	}, "\n")
 }
-
-// overwrites reports whether confirming replaces a provider that already
-// exists *in the file being written*, so the confirmation can say so rather
-// than the user finding out by losing a configuration.
-func (m setupModel) overwrites() bool { return m.opts.Existing.Has(m.name) }
 
 // defaultRow states what will happen to default_provider, including what it is
 // being changed from. Adding a provider and silently repointing the default at
@@ -564,8 +719,10 @@ func (m setupModel) box(title, content, accent string) string {
 func (m setupModel) footer() string {
 	var keys [][2]string
 	switch m.stage {
-	case stageScanning, stageVerifying:
+	case stageScanning, stageVerifying, stageEffortVerifying:
 		keys = [][2]string{{"esc", "cancel"}}
+	case stageEffort:
+		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "back"}}
 	case stageChooseProvider:
 		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "quit"}}
 	case stageChooseModel, stageStorage:
@@ -576,8 +733,14 @@ func (m setupModel) footer() string {
 		keys = [][2]string{{"↑↓", "field"}, {"←→", "option"}, {"enter", "continue"}, {"esc", "back"}}
 	case stageFailed:
 		keys = [][2]string{{"r", "retry"}, {"b", "back"}, {"q", "quit"}}
+	case stageLimits:
+		keys = [][2]string{{"↑↓", "field"}, {"enter", "continue"}, {"esc", "back"}}
 	case stageConfirm:
-		keys = [][2]string{{"enter", "write"}, {"d", "default"}, {"b", "back"}, {"q", "quit"}}
+		keys = [][2]string{{"enter", "write"}, {"l", "limits"}}
+		if setup.Offered(m.effortSupport) {
+			keys = append(keys, [2]string{"e", "effort"})
+		}
+		keys = append(keys, [2]string{"d", "default"}, [2]string{"b", "back"}, [2]string{"q", "quit"})
 	case stageDone:
 		action := "close"
 		if m.opts.ContinueToSession {

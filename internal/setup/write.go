@@ -72,6 +72,11 @@ type Result struct {
 	// ContextAssumed marks a context window nobody could establish, so the
 	// confirmation can say so rather than presenting a guess as a measurement.
 	ContextAssumed bool
+	// Effort is the reasoning effort chosen for this model on the effort
+	// screen; "" means none of its own. EffortChosen says the screen was
+	// shown, which is what lets setup write or remove the model's entry.
+	Effort       string
+	EffortChosen bool
 }
 
 // assumedContextWindow and assumedMaxOutput are written when neither the
@@ -243,7 +248,7 @@ func mergeIntoFile(path string, result Result) error {
 			return fmt.Errorf("providers in %s is not an object: %w", path, err)
 		}
 	}
-	encoded, err := json.Marshal(result.Provider)
+	encoded, _, err := mergeProvider(providers[result.Name], result)
 	if err != nil {
 		return err
 	}
@@ -277,6 +282,239 @@ func mergeIntoFile(path string, result Result) error {
 	// schema written by an older build from going stale.
 	_, err = appconfig.WriteSchema(path)
 	return err
+}
+
+// ownedKeys are the provider fields setup writes: what it verified, the limits
+// it resolved or was given, and where the credential lives. Build sets nothing
+// else, and TestOwnedKeysCoverEverythingBuildWrites holds the two together.
+var ownedKeys = map[string]bool{
+	"type": true, "base_url": true, "model": true,
+	"region": true, "profile": true, "deployment": true, "api_version": true,
+	"auth": true, "entra_scope": true, "entra_tenant_id": true, "entra_authority_host": true,
+	"max_tokens": true, "context_window": true, "api_key_env": true,
+}
+
+// ProviderUpdate describes what writing a Result does to an entry the file
+// already has under the same name, so the confirmation can state it before it
+// happens.
+type ProviderUpdate struct {
+	// Exists reports that the file has an entry under this name at all.
+	Exists bool
+	// Replaced means the entry pointed at a different endpoint, so it is
+	// replaced whole and Dropped names the settings that go with it.
+	Replaced bool
+	// Kept names the entry's own settings that survive an update — every key
+	// setup does not write.
+	Kept []string
+	// Dropped names the settings a replacement removes.
+	Dropped []string
+	// MovedLimitsFor names the model the entry used to run with when its
+	// provider-level limits move into that model's own `models` entry, so a
+	// later /model switch back to it still has them.
+	MovedLimitsFor string
+}
+
+// Update reports what writing result would do to this file's entry of the
+// same name, making the same decision mergeIntoFile makes when it writes.
+func (e Existing) Update(result Result) ProviderUpdate {
+	if !e.Has(result.Name) {
+		return ProviderUpdate{}
+	}
+	raw, ok := e.Raw[result.Name]
+	if !ok {
+		// Without the entry's text nothing proves it is the same endpoint, so
+		// the conservative description is the true one for the worst case.
+		return ProviderUpdate{Exists: true, Replaced: true}
+	}
+	_, update, err := mergeProvider(raw, result)
+	if err != nil {
+		return ProviderUpdate{Exists: true, Replaced: true}
+	}
+	return update
+}
+
+// mergeProvider combines the entry already in the file with what setup
+// verified.
+//
+// Every earlier version replaced the entry whole, so re-verifying a provider —
+// to change its model, say — silently deleted its headers, temperature,
+// reasoning, pricing, and timeouts: settings setup never asks about and had no
+// business removing. Now setup replaces only the fields it owns and everything
+// else the user wrote survives, including keys this build does not know.
+//
+// The exception is a name that now points somewhere else. Headers commonly
+// carry a gateway's credentials, and moving them to a different host would be
+// a leak rather than a convenience, so a changed type or base URL replaces the
+// entry whole — and the confirmation names what that drops.
+func mergeProvider(existing json.RawMessage, result Result) (json.RawMessage, ProviderUpdate, error) {
+	written, err := json.Marshal(result.Provider)
+	if err != nil {
+		return nil, ProviderUpdate{}, err
+	}
+	var fresh map[string]json.RawMessage
+	if err := json.Unmarshal(written, &fresh); err != nil {
+		return nil, ProviderUpdate{}, err
+	}
+	whole := func(update ProviderUpdate) (json.RawMessage, ProviderUpdate, error) {
+		if err := applyEffort(fresh, result); err != nil {
+			return nil, ProviderUpdate{}, err
+		}
+		encoded, err := json.Marshal(fresh)
+		return encoded, update, err
+	}
+	if len(strings.TrimSpace(string(existing))) == 0 || strings.TrimSpace(string(existing)) == "null" {
+		return whole(ProviderUpdate{})
+	}
+	update := ProviderUpdate{Exists: true}
+	var old map[string]json.RawMessage
+	if err := json.Unmarshal(existing, &old); err != nil {
+		update.Replaced = true
+		return whole(update)
+	}
+
+	owned := func(key string) bool {
+		// A literal key is the credential arrangement too. Keeping it beside a
+		// newly stored or exported one would leave the old key winning.
+		if key == "api_key" {
+			return result.Credential != CredentialKeep
+		}
+		return ownedKeys[key]
+	}
+	var userKeys []string
+	for key := range old {
+		if !owned(key) {
+			userKeys = append(userKeys, key)
+		}
+	}
+	sortStrings(userKeys)
+
+	if !sameEndpoint(old, result.Provider) {
+		update.Replaced, update.Dropped = true, userKeys
+		return whole(update)
+	}
+
+	merged := make(map[string]json.RawMessage, len(old)+len(fresh))
+	for key, value := range old {
+		if !owned(key) {
+			merged[key] = value
+		}
+	}
+	for key, value := range fresh {
+		merged[key] = keepReference(old[key], value)
+	}
+	moved, err := keepModelLimits(merged, old, result.Provider.Model)
+	if err != nil {
+		return nil, ProviderUpdate{}, err
+	}
+	if err := applyEffort(merged, result); err != nil {
+		return nil, ProviderUpdate{}, err
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, ProviderUpdate{}, err
+	}
+	update.Kept, update.MovedLimitsFor = userKeys, moved
+	return encoded, update, nil
+}
+
+// keepModelLimits keeps per-model limits consistent when setup changes which
+// model a provider runs with.
+//
+// Provider-level limits describe the provider's own model. Before per-model
+// settings, choosing a different model overwrote them, so switching back with
+// /model ran the old model on the new one's numbers. Now the old model's
+// limits move into its own `models` entry (without overriding one it already
+// has), and the newly chosen model's entry loses any limit the provider level
+// now states for it, since an entry would otherwise shadow what was just
+// verified. Its reasoning and pricing stay.
+func keepModelLimits(merged, old map[string]json.RawMessage, newModel string) (string, error) {
+	models := map[string]map[string]json.RawMessage{}
+	if raw, ok := merged["models"]; ok {
+		if err := json.Unmarshal(raw, &models); err != nil {
+			// Not an object of objects: leave it for the loader to report
+			// rather than rewriting something setup does not understand.
+			return "", nil
+		}
+	}
+	var oldModel string
+	_ = json.Unmarshal(old["model"], &oldModel)
+	moved := ""
+	if oldModel != "" && oldModel != newModel {
+		for _, key := range []string{"context_window", "max_tokens"} {
+			value, ok := old[key]
+			if !ok {
+				continue
+			}
+			entry := models[oldModel]
+			if entry == nil {
+				entry = map[string]json.RawMessage{}
+			}
+			if _, has := entry[key]; !has {
+				entry[key] = value
+				moved = oldModel
+			}
+			models[oldModel] = entry
+		}
+	}
+	if entry, ok := models[newModel]; ok {
+		delete(entry, "context_window")
+		delete(entry, "max_tokens")
+		if len(entry) == 0 {
+			delete(models, newModel)
+		}
+	}
+	if len(models) == 0 {
+		delete(merged, "models")
+		return moved, nil
+	}
+	encoded, err := json.Marshal(models)
+	if err != nil {
+		return "", err
+	}
+	merged["models"] = encoded
+	return moved, nil
+}
+
+// sameEndpoint reports whether an existing entry and a verified provider
+// address the same thing. The existing base URL is expanded first, because
+// provider resolution expanded it before verification.
+func sameEndpoint(old map[string]json.RawMessage, p appconfig.Provider) bool {
+	var oldType, oldURL string
+	_ = json.Unmarshal(old["type"], &oldType)
+	_ = json.Unmarshal(old["base_url"], &oldURL)
+	normalize := func(url string) string { return strings.TrimRight(strings.TrimSpace(url), "/") }
+	return strings.TrimSpace(oldType) == p.Type && normalize(appconfig.ExpandEnv(oldURL)) == normalize(p.BaseURL)
+}
+
+// keepReference keeps the file's own spelling of a value when it expands to
+// what setup is writing. Provider resolution expands `${GATEWAY}/v1` before
+// verification, and writing the expansion back would quietly turn a
+// reference the user maintains into a literal they no longer control.
+func keepReference(old, fresh json.RawMessage) json.RawMessage {
+	var before, after string
+	if json.Unmarshal(old, &before) != nil || json.Unmarshal(fresh, &after) != nil {
+		return fresh
+	}
+	if before == after || !strings.Contains(before, "$") {
+		return fresh
+	}
+	if strings.TrimRight(strings.TrimSpace(appconfig.ExpandEnv(before)), "/") == strings.TrimRight(strings.TrimSpace(after), "/") {
+		return old
+	}
+	return fresh
+}
+
+// WithLimits replaces the token limits a Result will write with the ones the
+// user accepted or typed on the limits screen. The model's own maximum, a
+// display-only fact about the endpoint, is kept from discovery.
+func (r Result) WithLimits(l provider.Limits) Result {
+	if l.ModelMaximum == 0 {
+		l.ModelMaximum = r.Limits.ModelMaximum
+	}
+	r.Provider.Context, r.Provider.MaxTokens = l.ContextWindow, l.MaxOutput
+	r.Limits = l
+	r.ContextAssumed = l.ContextSource == provider.LimitsAssumed
+	return r
 }
 
 // marshalStable renders the document with the keys a reader expects to find

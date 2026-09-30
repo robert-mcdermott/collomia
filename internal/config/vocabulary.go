@@ -84,7 +84,7 @@ var (
 	ruleActions           = []string{"allow", "prompt", "deny"}
 	agentRuleActions      = []string{"prompt", "deny"}
 	agentAvailabilities   = []string{"delegate", "primary", "both"}
-	reasoningEfforts      = []string{"low", "medium", "high", "xhigh", "max"}
+	reasoningEfforts      = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 	agentIntegrationModes = []string{"manual", "reviewed"}
 	notificationModes     = []string{"on", "bell", "off"}
 	mcpTransports         = []string{"stdio", "http", "streamable-http"}

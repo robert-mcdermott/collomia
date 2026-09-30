@@ -70,10 +70,19 @@ type Runtime struct {
 	// Audit is the primary agent's ledger. Delegated agents hold their own
 	// handles on the same workspace file, which is why completeness is
 	// latched separately in auditHealth rather than read from this one.
-	Audit                 *audit.Ledger
-	auditHealth           *auditHealth
-	goalStateToken        func(context.Context) (string, error)
-	orchestrationMu       sync.Mutex
+	Audit           *audit.Ledger
+	auditHealth     *auditHealth
+	goalStateToken  func(context.Context) (string, error)
+	orchestrationMu sync.Mutex
+	// catalogLimits remembers what each provider's live catalog reported
+	// about each model's limits the last time it was listed, so switching to a
+	// listed model uses the endpoint's own numbers rather than a table entry.
+	catalogMu        sync.Mutex
+	catalogLimits    map[string]map[string]provider.Limits
+	catalogReasoning map[string]map[string]provider.ReasoningSupport
+	// effortOverride is /effort's session-only choice. nil means none; a
+	// pointer to "" means send no effort at all.
+	effortOverride        *string
 	orchestrationProposal *orchestrationProposal
 }
 
@@ -301,6 +310,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if opts.Model == "" && profile.Model != "" {
 		model = profile.Model
 	}
+	p = ProviderForModel(p, model, provider.Limits{})
 	if profile.Reasoning != nil {
 		reasoning := *profile.Reasoning
 		p.Reasoning = &reasoning
@@ -716,13 +726,71 @@ func (r *Runtime) ListModels(ctx context.Context, providerName string) ([]provid
 	if err != nil {
 		return nil, err
 	}
+	raw := r.Config.Providers[name]
+	reported := make(map[string]provider.Limits, len(models))
+	reasoning := make(map[string]provider.ReasoningSupport, len(models))
 	for i := range models {
-		models[i].Capabilities, err = provider.CapabilitiesFor(p.Type, models[i].ID, p.Context)
+		reported[models[i].ID] = models[i].Limits
+		if models[i].Reasoning.Known() {
+			reasoning[models[i].ID] = models[i].Reasoning
+		}
+		// Each model is described with its own window: its entry, or what the
+		// catalog reported, or its published limits. Every entry used to be
+		// annotated with the provider's single configured window.
+		window := ProviderForModel(raw, models[i].ID, models[i].Limits).Context
+		models[i].Capabilities, err = provider.CapabilitiesFor(p.Type, models[i].ID, window)
 		if err != nil {
 			return nil, err
 		}
 	}
+	r.catalogMu.Lock()
+	if r.catalogLimits == nil {
+		r.catalogLimits = map[string]map[string]provider.Limits{}
+	}
+	r.catalogLimits[name] = reported
+	if r.catalogReasoning == nil {
+		r.catalogReasoning = map[string]map[string]provider.ReasoningSupport{}
+	}
+	r.catalogReasoning[name] = reasoning
+	r.catalogMu.Unlock()
 	return models, nil
+}
+
+// reportedLimits is what the provider's catalog last said about a model, or
+// nothing when it has not been listed this session.
+func (r *Runtime) reportedLimits(providerName, model string) provider.Limits {
+	r.catalogMu.Lock()
+	defer r.catalogMu.Unlock()
+	return r.catalogLimits[providerName][model]
+}
+
+// ProviderForModel returns a provider's configuration as it applies to one
+// model: the model's own entry over the provider-level fields (see
+// appconfig.Provider.ForModel), with any token limit that was written only for
+// a different model replaced by what is known about this one — the endpoint's
+// own report when its catalog has been listed, then the published-limits table.
+// The inherited value is kept only when nothing is known, which is what every
+// model switch did before per-model settings existed.
+func ProviderForModel(p appconfig.Provider, model string, reported provider.Limits) appconfig.Provider {
+	p = p.ForModel(model)
+	if !p.ContextInherited && !p.MaxTokensInherited {
+		return p
+	}
+	known := provider.ResolveLimits(model, reported)
+	adjusted := false
+	if p.ContextInherited && known.ContextWindow > 0 {
+		p.Context, p.ContextInherited, adjusted = known.ContextWindow, false, true
+	}
+	if p.MaxTokensInherited && known.MaxOutput > 0 {
+		p.MaxTokens, p.MaxTokensInherited, p.MaxTokensDefaulted, adjusted = known.MaxOutput, false, false, true
+	}
+	// A window and a cap from different sources can meet on an unusual model,
+	// and a pair no request can satisfy would be refused before the network.
+	// Halving matches what setup writes in the same situation.
+	if adjusted && p.Context > 0 && p.MaxTokens >= p.Context {
+		p.MaxTokens = p.Context / 2
+	}
+	return p
 }
 
 // ProviderAvailability is deliberately four-state. A provider without a
@@ -1979,10 +2047,12 @@ func (r *Runtime) Select(providerName, model string) error {
 	if err != nil {
 		return err
 	}
+	p = ProviderForModel(p, resolved, r.reportedLimits(name, resolved))
 	if profile, ok := r.Config.Agents[r.ActiveAgent]; ok && profile.Reasoning != nil {
 		reasoning := *profile.Reasoning
 		p.Reasoning = &reasoning
 	}
+	p = r.withEffortOverride(p)
 	client, err := provider.New(name, p, resolved)
 	if err != nil {
 		return err
@@ -2044,10 +2114,12 @@ func (r *Runtime) SelectAgent(name string) error {
 	if profile.Model != "" {
 		model = profile.Model
 	}
+	p = ProviderForModel(p, model, r.reportedLimits(providerName, model))
 	if profile.Reasoning != nil {
 		reasoning := *profile.Reasoning
 		p.Reasoning = &reasoning
 	}
+	p = r.withEffortOverride(p)
 	client, err := provider.New(providerName, p, model)
 	if err != nil {
 		return err

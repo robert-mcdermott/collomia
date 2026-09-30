@@ -88,10 +88,20 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err := checkResponse(resp, c.Label, "list models"); err != nil {
 		return nil, withAzureRBACHint(err, c.AuthHint)
 	}
+	// max_input_tokens and max_tokens are the model's own published limits.
+	// Both are nullable, and a null decodes to zero here, which leaves that
+	// half unestablished rather than inventing a number.
 	var payload struct {
 		Data []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
+			ID             string `json:"id"`
+			DisplayName    string `json:"display_name"`
+			MaxInputTokens int    `json:"max_input_tokens"`
+			MaxTokens      int    `json:"max_tokens"`
+			// capabilities.effort names each level with {supported: bool};
+			// xhigh is nullable. A null capabilities object means unknown.
+			Capabilities *struct {
+				Effort map[string]json.RawMessage `json:"effort"`
+			} `json:"capabilities"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -99,11 +109,41 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 	models := make([]ModelInfo, 0, len(payload.Data))
 	for _, m := range payload.Data {
-		if m.ID != "" {
-			models = append(models, ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
+		if m.ID == "" {
+			continue
 		}
+		info := ModelInfo{ID: m.ID, DisplayName: m.DisplayName}
+		if m.MaxInputTokens > 0 {
+			info.Limits.ContextWindow, info.Limits.ContextSource = m.MaxInputTokens, LimitsEndpoint
+		}
+		if m.MaxTokens > 0 {
+			info.Limits.MaxOutput, info.Limits.OutputSource = m.MaxTokens, LimitsEndpoint
+		}
+		if m.Capabilities != nil && m.Capabilities.Effort != nil {
+			info.Reasoning = anthropicEffortSupport(m.Capabilities.Effort)
+		}
+		models = append(models, info)
 	}
 	return models, nil
+}
+
+// anthropicEffortSupport reads the Models API's capabilities.effort object:
+// {"supported": bool, "low": {"supported": bool}, …, "xhigh": {…} | null}.
+func anthropicEffortSupport(effort map[string]json.RawMessage) ReasoningSupport {
+	support := ReasoningSupport{Source: LimitsEndpoint}
+	var supported bool
+	if err := json.Unmarshal(effort["supported"], &supported); err != nil || !supported {
+		return support
+	}
+	for _, level := range EffortLevels {
+		var entry *struct {
+			Supported bool `json:"supported"`
+		}
+		if raw, ok := effort[level]; ok && json.Unmarshal(raw, &entry) == nil && entry != nil && entry.Supported {
+			support.Levels = append(support.Levels, level)
+		}
+	}
+	return support
 }
 
 func (c *AnthropicClient) Chat(ctx context.Context, in Request, onDelta func(Delta)) (Response, error) {

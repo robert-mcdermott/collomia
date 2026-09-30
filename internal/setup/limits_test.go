@@ -151,3 +151,43 @@ func TestNativeRootDropsTheOpenAISuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestModelLimitsPrefersTheContextOllamaIsServing(t *testing.T) {
+	// Ollama serves a local model at its own configured context and drops what
+	// does not fit, so the weights' maximum overstates what a session gets.
+	// Verification has just loaded the model, which is what makes /api/ps able
+	// to say what it is serving.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ps":
+			_, _ = w.Write([]byte(`{"models":[{"name":"other:latest","model":"other:latest","context_length":2048},
+				{"name":"qwen3.5:9b","model":"qwen3.5:9b","context_length":32768}]}`))
+		case "/api/show":
+			_, _ = w.Write([]byte(`{"model_info":{"general.architecture":"qwen35","qwen35.context_length":262144}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	limits := ModelLimits(t.Context(), appconfig.Provider{Type: "openai-compatible", BaseURL: server.URL + "/v1"}, "qwen3.5:9b", nil)
+	if limits.ContextWindow != 32768 || limits.ContextSource != provider.LimitsEndpoint {
+		t.Errorf("limits = %+v, want the served window", limits)
+	}
+	if limits.ModelMaximum != 262144 {
+		t.Errorf("model maximum = %d; the screen needs it to explain why the window is small", limits.ModelMaximum)
+	}
+}
+
+func TestModelLimitsMatchesAnUntaggedOllamaName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			_, _ = w.Write([]byte(`{"models":[{"name":"gemma4:latest","model":"gemma4:latest","context_length":8192}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	if limits := ModelLimits(t.Context(), appconfig.Provider{Type: "openai-compatible", BaseURL: server.URL + "/v1"}, "gemma4", nil); limits.ContextWindow != 8192 {
+		t.Errorf("context window = %d; the catalog and the process list disagree about writing :latest", limits.ContextWindow)
+	}
+}

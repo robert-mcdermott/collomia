@@ -1,6 +1,6 @@
 # Collomia Roadmap
 
-**Status updated:** 2026-09-07
+**Status updated:** 2026-09-29
 
 This document is the current product plan: what remains, why it matters, and
 the dependency order. The detailed dated implementation record has moved to
@@ -31,8 +31,13 @@ Work passed user-reported testing on September 7 (no transcript/model supplied).
 The Kanban21 Orchestrated Goal continuation fixes passed manual testing on
 September 6. Automatic build-scope inference is covered by offline regressions;
 Kanban30 used explicit scope. These results do not establish a cross-model
-success rate. The next action is PR/release preparation and exact-tag release
-qualification, not another feature wave. See the
+success rate. The v0.5.0 tag failed Windows release qualification and was never
+published; v0.5.1 carries its content plus the PTY-drain and Windows ACL fixes
+and was published on 2026-09-08 with full platform qualification and
+attestations. The release-signature gate followed on `main` with passing CI.
+On 2026-09-29 the user selected provider setup and configuration usability as
+the next work; see [Recommended next sequence](#recommended-next-sequence).
+See the
 [improvement plan](docs/IMPROVEMENT_PLAN.md#current-handoff--read-this-first)
 for current acceptance and historical candidate evidence.
 Wave numbers identify work rather than a mandatory execution order.
@@ -1826,6 +1831,11 @@ claiming enforcement the policy layer does not provide.
   stable protocol/SDK contracts; retain safe catalog refresh behavior.
 - [ ] **P1 — Complete rich content:** audio and annotation passthrough without
   flattening typed content.
+- [ ] **P1 — Adopt MCP protocol `2026-07-28`:** the MCP Go SDK is held at
+  v1.6.1 (protocol `2025-11-25`). On 2026-09-29, v1.7.0 and v1.8.0 negotiated
+  `2026-07-28` and failed `TestProtocolConformanceAndCatalogListChanges` and
+  both elicitation tests. Review the revision's elicitation and capability
+  changes before upgrading; do not bump the SDK as routine dependency hygiene.
 - [ ] **P1 — Argument-level MCP permissions:** bounded normalized resource
   matching that server-authored annotations cannot use to lower risk.
 - [ ] **P2 — Extension packaging:** a versioned custom-tool/plugin package and
@@ -2320,6 +2330,12 @@ status.
   as predicted, and it needed no interactive surface. What is left is the
   posture editor, which is worth taking only if reading the stance turns out
   not to be enough.
+
+  **Update 2026-09-29:** the user selected the in-session tier for providers and
+  models as W10. The limits, effort, and provider/model editing parts are
+  scheduled in the
+  [improvement plan](docs/IMPROVEMENT_PLAN.md#w10--provider-setup-and-configuration-without-hand-editing).
+  The safety-posture editor stays a separate, undecided item.
 - [ ] **P2 — Structured local service API:** authenticated stdio/socket or
   WebSocket access to the event/session/permission contracts. The current web
   terminal is a PTY transport, not this API.
@@ -2399,7 +2415,11 @@ status.
   locally inspectable/deletable, and fully disabled by offline mode.
 - [ ] **P1 — Native release signing:** Apple signing/notarization, Windows
   Authenticode, and installer-enforced signature verification.
-- [ ] **P1 — Package managers:** Homebrew and Scoop first, because neither
+- [ ] **P3 — Package managers (lowest priority):** deferred by the user on
+  2026-09-29. The verified `install.sh`/`install.ps1` scripts work, and a tap and
+  bucket would add two repositories plus a release-time write token for little
+  benefit to the current beta audience. Revisit only on user demand. The
+  original analysis is kept below. Homebrew and Scoop first, because neither
   needs a signed binary — a Homebrew *formula* over the release tarball and a
   Scoop manifest over the zip are both checksum-verified text, and the release
   workflow already produces the artifacts, checksums, SBOMs, and attestations
@@ -2428,12 +2448,10 @@ status.
 
 ## Recommended next sequence
 
-The Kanban21 runtime-discovery and graph-continuation maintenance passed manual
-testing, was accepted on 2026-09-06, and is committed as `c037a7c`. The active
-maintenance slice includes Kanban22 response-limit continuation and Kanban23
-terminal/plan reliability; finish verification and their live acceptance in
-[`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) before selecting more work.
-The prior Standard larger-project and Work acceptance gates remain open.
+The September maintenance slices (Kanban21 through Kanban30) shipped in
+v0.5.1. Integrated Standard Developer acceptance (through Kanban30) and Work
+acceptance supersede their individual candidate gates; Kanban22/23 were not
+separately re-confirmed. No maintenance wave is active.
 Wave numbers do not impose a strict execution order.
 
 The Orchestrated Goal program has no open milestone: OG-1 through OG-5 are
@@ -2443,8 +2461,20 @@ experimental after its bounded audit. Further orchestration work requires a
 new product decision and exit gate; the historical sequence below is not an
 active backlog.
 
-The next product work should come from the remaining P1 gaps, in this order
-unless user evidence changes it:
+**Next: provider setup and configuration (user-selected 2026-09-29).** Adding or
+changing a provider or model should record its advertised limits, let the user
+override or supply them, set reasoning effort where the model supports it, and
+eventually happen inside a session without hand-editing JSON. This takes the
+remaining "in-session configuration" tier of the Phase 7 configuration-surface
+item and part of Phase 4. It is sequenced as W10a–d with user-testing gates in
+[the improvement plan](docs/IMPROVEMENT_PLAN.md#w10--provider-setup-and-configuration-without-hand-editing).
+W10a and W10b (per-model settings) were accepted by the user on 2026-09-29, and W10c (reasoning effort in setup, plus `/effort`) on 2026-09-30. W10d, the in-session dialog, is next. It fixes a verified defect:
+reconfiguring a provider through setup dropped its hand-set `headers`,
+`temperature`, `reasoning`, `pricing` and timeouts. It also adds a Token limits
+screen with overrides and explicit assumptions, and more limit discovery.
+
+After W10, the next product work should come from the remaining P1 gaps, in
+this order unless user evidence changes it:
 
 1. Complete the coding loop's safe LSP code-action path and deeper selective
    review without adding an unbounded workspace-edit route.
@@ -2454,9 +2484,9 @@ unless user evidence changes it:
    argument-level permissions before expanding the extension surface.
 4. Close the remaining terminal accessibility/artifact-input work and decide
    whether an in-session security-posture editor earns its complexity.
-5. Establish performance budgets, native release signing, Homebrew/Scoop
-   distribution, and the low-friction feedback path while sustaining the
-   adversarial security and reliability campaigns.
+5. Establish performance budgets, native release signing, and the
+   low-friction feedback path while sustaining the adversarial security and
+   reliability campaigns. Homebrew/Scoop distribution is P3 and last.
 
 ### Completed orchestration sequence (historical)
 

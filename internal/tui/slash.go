@@ -101,6 +101,25 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		providerName, model := m.runtime.Agent.Selection()
 		m.addSystem(fmt.Sprintf("Primary agent switched to %s (%s/%s). Conversation and cumulative usage were preserved.", active, providerName, model))
+	case "/effort":
+		if len(args) == 0 {
+			runtime := m.runtime
+			return false, func() tea.Msg {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return effortStatusMsg{status: runtime.ResolveEffortSupport(ctx)}
+			}
+		}
+		if len(args) != 1 {
+			m.addError(fmt.Errorf("usage: /effort [level|default|reset]"))
+			break
+		}
+		status, err := m.runtime.SetEffort(args[0])
+		if err != nil {
+			m.addError(err)
+			break
+		}
+		m.addSystem(effortChangeMessage(status))
 	case "/mode":
 		if len(args) == 0 {
 			m.addPanel("Task mode", fmt.Sprintf("Current: %s\n\nDeveloper — software and repository work; prefers code-aware tools and build, lint, and test evidence.\n\nWork — general-purpose tasks in any folder; validates documents, analyses, research, and external actions with task-appropriate evidence.", m.runtime.TaskMode))

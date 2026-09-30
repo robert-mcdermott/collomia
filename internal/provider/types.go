@@ -158,6 +158,9 @@ type ModelInfo struct {
 	// catalog published them. Most do not, and the zero value says so rather
 	// than carrying a number the endpoint never stated.
 	Limits Limits `json:"limits,omitzero"`
+	// Reasoning is this model's own effort support where the catalog
+	// published it. The zero value means unknown, not unsupported.
+	Reasoning ReasoningSupport `json:"reasoning,omitzero"`
 }
 
 // ModelLister is an optional Client capability: providers whose APIs expose

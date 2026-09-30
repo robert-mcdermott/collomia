@@ -33,6 +33,10 @@ type Existing struct {
 	// text, not a resolved configuration: no environment expansion and no
 	// credential lookup have happened, so nothing here carries a secret.
 	Definitions map[string]appconfig.Provider
+	// Raw holds each provider block exactly as written, including keys this
+	// build does not know, so the confirmation can say which of an entry's own
+	// settings a write keeps — the same decision mergeIntoFile makes.
+	Raw map[string]json.RawMessage
 	// DefaultProvider and DefaultModel are the file's current selection.
 	DefaultProvider string
 	DefaultModel    string
@@ -67,7 +71,7 @@ func (e Existing) HasDefault() bool { return strings.TrimSpace(e.DefaultProvider
 // broken, but silently treating a broken file as empty would let a merge
 // destroy settings the user still has.
 func ReadExisting(path string) (Existing, error) {
-	result := Existing{Path: path, Models: map[string]string{}, Definitions: map[string]appconfig.Provider{}}
+	result := Existing{Path: path, Models: map[string]string{}, Definitions: map[string]appconfig.Provider{}, Raw: map[string]json.RawMessage{}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return result, nil
@@ -87,7 +91,16 @@ func ReadExisting(path string) (Existing, error) {
 	if err := json.Unmarshal(data, &document); err != nil {
 		return result, err
 	}
+	var raw struct {
+		Providers map[string]json.RawMessage `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return result, err
+	}
 	result.DefaultProvider, result.DefaultModel = document.DefaultProvider, document.DefaultModel
+	for name, block := range raw.Providers {
+		result.Raw[name] = block
+	}
 	for name, entry := range document.Providers {
 		result.Providers = append(result.Providers, name)
 		result.Models[name] = entry.Model

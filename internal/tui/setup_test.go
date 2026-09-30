@@ -437,6 +437,26 @@ func stripANSI(s string) string {
 	return out.String()
 }
 
+// acceptLimits presses enter on the token-limits screen that every verified run
+// passes through, returning the model on the confirmation.
+func acceptLimits(t *testing.T, m setupModel) setupModel {
+	t.Helper()
+	if m.stage != stageLimits {
+		t.Fatalf("a verified run must reach the token-limits screen, got stage %d", m.stage)
+	}
+	next, _ := m.onKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := next.(setupModel)
+	if updated.stage == stageEffort {
+		// The first effort row writes none, which is what accepting means.
+		next, _ = updated.onKey(tea.KeyMsg{Type: tea.KeyEnter})
+		updated = next.(setupModel)
+	}
+	if updated.stage != stageConfirm {
+		t.Fatalf("accepting the proposed limits must reach the confirmation; problem: %q", updated.limitsForm.err)
+	}
+	return updated
+}
+
 func TestSetupDoesNotStealTheDefaultFromAnotherProvider(t *testing.T) {
 	// The defect this replaced: MakeDefault was hardcoded true, so adding a
 	// second provider silently repointed default_provider at it. Adding
@@ -450,7 +470,7 @@ func TestSetupDoesNotStealTheDefaultFromAnotherProvider(t *testing.T) {
 	m.provider = appconfig.Provider{Type: "anthropic", BaseURL: "https://api.anthropic.com"}
 
 	next, _ := m.onVerified(verifiedMsg{verification: setup.Verification{OK: true, ToolsOK: true, Reply: "ok"}})
-	updated := next.(setupModel)
+	updated := acceptLimits(t, next.(setupModel))
 	if updated.makeDefault {
 		t.Fatal("a new provider must not take the default while another provider holds it")
 	}

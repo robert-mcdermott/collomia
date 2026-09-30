@@ -2558,13 +2558,16 @@ Every agent or contributor continuing this program must:
 
 ### Current handoff
 
-Release preparation (2026-09-07): v0.5.0 retains the milestone status and authority
-boundaries above. Kanban21 continuation maintenance is user-accepted; integrated
-Standard Developer and Work acceptance is recorded in the
+Status (2026-09-29): v0.5.1, published on 2026-09-08 after full exact-tag
+qualification, retains the milestone status and authority boundaries above.
+Kanban21 continuation maintenance is user-accepted; integrated Standard
+Developer and Work acceptance is recorded in the
 [improvement plan](IMPROVEMENT_PLAN.md#current-handoff--read-this-first).
-Exact-tag release qualification remains required. Dated maintenance entries
-below describe their original candidate state, including gates not separately
-accepted at the time; they do not reopen completed orchestration milestones.
+No orchestration milestone is open. The active improvement wave, W10 (provider
+setup and configuration), changes no orchestration contract. Dated maintenance
+entries below describe their original candidate state, including gates not
+separately accepted at the time; they do not reopen completed orchestration
+milestones.
 
 - Active maintenance (2026-09-06): Kanban29 repairs Standard project-scope
   accounting after a passing build. Automatic scope is limited to native

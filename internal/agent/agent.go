@@ -2593,6 +2593,14 @@ func (a *Agent) Selection() (string, string) {
 	return a.providerName, a.model
 }
 
+// ProviderSettings returns the provider configuration the agent is running
+// with, as resolved for the selected model: its limits, reasoning, and pricing.
+func (a *Agent) ProviderSettings() appconfig.Provider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.providerConfig
+}
+
 // Capabilities returns the active client's declared feature support. Custom
 // clients that do not implement CapabilityReporter remain usable and report
 // unknown model-dependent features rather than inheriting a false claim.

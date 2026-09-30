@@ -5,6 +5,126 @@ reconstructing them after the fact would produce a plausible account rather than
 an accurate one; their history is in the Git log and in
 [docs/ROADMAP_HISTORY.md](docs/ROADMAP_HISTORY.md).
 
+## Unreleased
+
+### Added
+
+- **Setup shows both token limits and lets you change them.** After
+  verification, a Token limits screen shows the context window and max output
+  with where each came from. You can accept either or type your own; typed
+  values are labelled `configured`, and thousands separators are accepted.
+  - When nothing established a value, the field opens empty and focused rather
+    than 32768/8192 being written silently. A blank answer accepts the stated
+    assumption, which stays labelled "assumed".
+  - Pairs the loader would refuse are refused on the screen, in the same words.
+  - Re-running setup on the same model opens on the file's values, with the
+    detected ones beside them. A different model starts from its own detected
+    limits.
+  - `l` on the confirmation returns to the screen.
+- **More limits are discovered.**
+  - Anthropic's model catalog (`max_input_tokens` and `max_tokens`).
+  - vLLM's `max_model_len`, with LoRA adapters inheriting their base model's
+    window.
+  - For Ollama, the context the loaded model is actually serving (`/api/ps`),
+    which setup prefers over the trained maximum. When the runtime serves less
+    than the model supports, the screen says so and names
+    `OLLAMA_CONTEXT_LENGTH`.
+  - The built-in table now covers gpt-oss, Llama 4, and Gemini.
+
+- **Per-model settings.** A provider's `models` map holds `max_tokens`,
+  `context_window`, `reasoning`, and `pricing` for individual models, each
+  overriding the provider-level field for that model only.
+  - They apply at startup, with `--model`, on `/model`, and when an agent
+    profile selects a model. An agent profile's reasoning still wins.
+  - Setup maintains them. Changing a provider's model moves the old model's
+    limits into its own entry, so `/model` back to it keeps them.
+  - `collo doctor` lists models with their own settings, and
+    `collo config validate` checks every entry.
+  - Existing files load unchanged.
+
+- **Reasoning effort in setup and in the session.**
+  - After the token limits, setup offers the efforts the chosen model accepts.
+    The levels come from Anthropic's catalog, Ollama's advertised thinking
+    levels, or a published OpenAI/Anthropic/gpt-oss table.
+  - A chosen level is checked with one request, and a refusal is shown rather
+    than saved. The choice is written to that model's own entry.
+  - "Model default" writes nothing, and a model without effort control is not
+    asked. `e` on the confirmation returns to the screen.
+  - `/effort [level|default|reset]` shows the effective effort, which setting
+    decided it, and the accepted levels, or changes it for the rest of the
+    session. It outranks configuration and agent profiles until
+    `/effort reset` and is never saved.
+  - The effort vocabulary adds `none` and `minimal`, matching OpenAI's
+    current values.
+
+### Fixed
+
+- **`/model` no longer runs a model with another model's limits.** Switching
+  models within a provider kept the context window and output cap written for
+  the provider's own model, so a small model could inherit a million-token
+  window and never compact.
+  - A model without its own limits now uses what the endpoint's catalog
+    reported for it, then its published limits.
+  - The inherited value is used only when nothing is known about the model.
+  - The `/model` picker now reports each model's own window.
+- **Re-running setup no longer deletes provider settings it never asked
+  about.**
+  - Reconfiguring a provider used to rewrite its whole entry, silently dropping
+    `headers`, `temperature`, `reasoning`, `pricing`, timeouts, and unknown
+    keys. It also replaced a `${VAR}` reference in `base_url` with its expanded
+    value.
+  - Setup now updates only the fields it verifies, keeps everything else, and
+    names the kept settings on the confirmation.
+  - A name that now points at a different endpoint is still replaced whole, so
+    headers that may carry a gateway credential never follow it to a new host.
+    The confirmation names what is dropped.
+
+### Changed
+
+- **The Go baseline moves from 1.26.6 to 1.26.8, with a dependency refresh.**
+  `govulncheck` reported no reachable findings before or after; the refresh
+  clears 17 unreachable advisories in `golang.org/x/crypto` and
+  `golang.org/x/net` (one remaining `x/crypto` advisory has no upstream fix).
+  Updated direct dependencies include the AWS and Azure SDKs, chroma, and the
+  terminal width libraries. CI and release builds consume the version from
+  `go.mod`. The MCP Go SDK stays at v1.6.1: v1.7.0 and later negotiate MCP
+  protocol `2026-07-28` and fail the elicitation and conformance tests, so
+  adopting that revision is tracked as its own roadmap item.
+
+### Release process
+
+- The release workflow rejects a tag whose source commit lacks a verified
+  GitHub signature before qualification begins, and the
+  [release guide](docs/RELEASING.md) requires that check before tagging. The
+  published v0.5.1 release is unchanged.
+
+## v0.5.1
+
+The v0.5.0 tag failed Windows release qualification and was never published.
+v0.5.1 is the first published 0.5 release: it contains everything listed under
+v0.5.0 below plus these fixes.
+
+### Fixed
+
+- **Unix PTY commands no longer lose their final output.** The terminal master
+  was closed after the command exited but before the output reader finished,
+  discarding unread bytes. Output is now drained before close; if a descendant
+  keeps the terminal open, the drain is limited to five seconds, remains
+  cancellable, and reports incomplete output rather than presenting the
+  captured prefix as the full result.
+- **Windows sandbox grants no longer overwrite each other.** Concurrent
+  AppContainer shims read, merged, and wrote ACLs on shared SDK and temp
+  directories without coordination, so one workspace's grant could erase
+  another's. A per-user named mutex now serializes only the ACL update;
+  commands still run concurrently, and a 30-second lock wait fails closed. See
+  [Security](docs/SECURITY.md).
+
+### Release process
+
+- PR, main, and release workflows share one composite qualification action,
+  so release builds inherit CI's test timeouts, serialized Windows race-test
+  packages, and fuzz smoke settings.
+
 ## v0.5.0
 
 ### Added

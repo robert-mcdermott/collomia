@@ -95,7 +95,13 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 			// OpenAI-compatible route.
 			MaxContextLength    int `json:"max_context_length"`
 			LoadedContextLength int `json:"loaded_context_length"`
-			TopProvider         *struct {
+			// vLLM states the window it was started with as max_model_len,
+			// which is the served length rather than the weights' maximum.
+			// Its LoRA adapter cards leave it null and name the base model in
+			// parent instead.
+			MaxModelLen int    `json:"max_model_len"`
+			Parent      string `json:"parent"`
+			TopProvider *struct {
 				ContextLength       int `json:"context_length"`
 				MaxCompletionTokens int `json:"max_completion_tokens"`
 			} `json:"top_provider"`
@@ -104,18 +110,31 @@ func (c *OpenAIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, protocolError(c.Label, "list models", err)
 	}
+	servedByID := make(map[string]int, len(payload.Data))
+	for _, m := range payload.Data {
+		if m.ID != "" && m.MaxModelLen > 0 {
+			servedByID[m.ID] = m.MaxModelLen
+		}
+	}
 	models := make([]ModelInfo, 0, len(payload.Data))
 	for _, m := range payload.Data {
 		if m.ID == "" {
 			continue
 		}
 		info := ModelInfo{ID: m.ID}
+		served := m.MaxModelLen
+		if served <= 0 && m.Parent != "" {
+			// An adapter runs inside its base model's window.
+			served = servedByID[m.Parent]
+		}
 		// A runtime that has loaded a model with a smaller window than the
 		// weights allow is serving the smaller one, and that is the number a
 		// session actually has to live inside.
 		switch {
 		case m.LoadedContextLength > 0:
 			info.Limits.ContextWindow = m.LoadedContextLength
+		case served > 0:
+			info.Limits.ContextWindow = served
 		case m.ContextLength > 0:
 			info.Limits.ContextWindow = m.ContextLength
 		case m.MaxContextLength > 0:

@@ -243,6 +243,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.busy && m.pending == nil && m.question == nil && m.picker == nil && strings.TrimSpace(m.input.Value()) == "" {
 			m.openDiscoveredModels(msg)
 		}
+	case effortStatusMsg:
+		m.addPanel("Reasoning effort", renderEffortStatus(msg.status))
+		return m, nil
 	case providerStatusMsg:
 		m.replaceProviderStatusPanel(msg.statuses)
 	case workspaceStatusMsg:

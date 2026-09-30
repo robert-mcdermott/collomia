@@ -80,12 +80,79 @@ func ModelLimits(ctx context.Context, p appconfig.Provider, model string, catalo
 		}
 	}
 	if reported.ContextWindow <= 0 && nativeProbeApplies(p) {
-		if window := ollamaContextLength(ctx, p.BaseURL, model); window > 0 {
-			reported.ContextWindow = window
-			reported.ContextSource = provider.LimitsEndpoint
+		// Served first, then trained. Ollama serves a local model with its own
+		// configured context — 4K on a small GPU unless OLLAMA_CONTEXT_LENGTH
+		// says otherwise — and silently drops whatever does not fit, so the
+		// weights' maximum from /api/show overstates what a session gets.
+		// Verification has just run a request, so the model is loaded and
+		// /api/ps can say what it is serving. Cloud models are not loaded
+		// locally, are served at their maximum, and fall through to /api/show.
+		served := ollamaServedContext(ctx, p.BaseURL, model)
+		trained := ollamaContextLength(ctx, p.BaseURL, model)
+		switch {
+		case served > 0:
+			reported.ContextWindow, reported.ContextSource = served, provider.LimitsEndpoint
+			if trained > served {
+				reported.ModelMaximum = trained
+			}
+		case trained > 0:
+			reported.ContextWindow, reported.ContextSource = trained, provider.LimitsEndpoint
 		}
 	}
-	return provider.ResolveLimits(model, reported)
+	resolved := provider.ResolveLimits(model, reported)
+	resolved.ModelMaximum = reported.ModelMaximum
+	return resolved
+}
+
+// ollamaServedContext reads the context a loaded Ollama model is serving from
+// /api/ps, or 0 when the model is not loaded or the server predates the field.
+func ollamaServedContext(ctx context.Context, baseURL, model string) int {
+	root := nativeRoot(baseURL)
+	if root == "" || strings.TrimSpace(model) == "" {
+		return 0
+	}
+	callCtx, cancel := context.WithTimeout(ctx, limitsTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, root+"/api/ps", nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := limitsClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var payload struct {
+		Models []struct {
+			Name          string `json:"name"`
+			Model         string `json:"model"`
+			ContextLength int    `json:"context_length"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0
+	}
+	want := ollamaTagged(model)
+	for _, entry := range payload.Models {
+		if ollamaTagged(entry.Name) == want || ollamaTagged(entry.Model) == want {
+			return entry.ContextLength
+		}
+	}
+	return 0
+}
+
+// ollamaTagged spells an Ollama model name with its tag, because the catalog
+// and the process list disagree about whether `:latest` is written out.
+func ollamaTagged(name string) string {
+	name = strings.TrimSpace(name)
+	if name != "" && !strings.Contains(name, ":") {
+		return name + ":latest"
+	}
+	return name
 }
 
 // nativeProbeApplies keeps the native requests to the provider type that can
@@ -222,4 +289,104 @@ func intFrom(raw json.RawMessage) int {
 		return 0
 	}
 	return value
+}
+
+// ModelReasoning resolves which reasoning efforts one chosen model accepts:
+// what the catalog published about it, then Ollama's own per-model thinking
+// metadata, then the published table, then unknown.
+func ModelReasoning(ctx context.Context, p appconfig.Provider, model string, catalog []provider.ModelInfo) provider.ReasoningSupport {
+	for _, entry := range catalog {
+		if entry.ID == model && entry.Reasoning.Known() {
+			return entry.Reasoning
+		}
+	}
+	if nativeProbeApplies(p) {
+		if support, ok := ollamaThinking(ctx, p.BaseURL, model); ok {
+			return support
+		}
+	}
+	if support, ok := provider.KnownReasoning(model); ok {
+		return support
+	}
+	return provider.ReasoningSupport{}
+}
+
+// ollamaThinking reads the thinking levels an Ollama model advertises.
+//
+// Ollama's OpenAI-compatible route applies a supported name exactly and
+// quietly falls back to the model default for anything else, so a rejected
+// level cannot be detected from a request. What the model advertises is the
+// only reliable statement of what will take effect. `values` holds
+// model-defined names, or booleans for a model that can only switch thinking
+// on and off, where "none" is the name that switches it off.
+func ollamaThinking(ctx context.Context, baseURL, model string) (provider.ReasoningSupport, bool) {
+	root := nativeRoot(baseURL)
+	if root == "" || strings.TrimSpace(model) == "" {
+		return provider.ReasoningSupport{}, false
+	}
+	body, err := json.Marshal(map[string]string{"model": model})
+	if err != nil {
+		return provider.ReasoningSupport{}, false
+	}
+	callCtx, cancel := context.WithTimeout(ctx, limitsTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, root+"/api/show", strings.NewReader(string(body)))
+	if err != nil {
+		return provider.ReasoningSupport{}, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := limitsClient.Do(req)
+	if err != nil {
+		return provider.ReasoningSupport{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return provider.ReasoningSupport{}, false
+	}
+	var payload struct {
+		Capabilities []string `json:"capabilities"`
+		Thinking     *struct {
+			Values  []any `json:"values"`
+			Default any   `json:"default"`
+		} `json:"thinking"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return provider.ReasoningSupport{}, false
+	}
+	if payload.Thinking == nil {
+		// No metadata. A model whose capability list omits thinking has
+		// none to control; one that lists it without levels is unknown.
+		if len(payload.Capabilities) > 0 && !containsString(payload.Capabilities, "thinking") {
+			return provider.ReasoningSupport{Source: provider.LimitsEndpoint}, true
+		}
+		return provider.ReasoningSupport{}, false
+	}
+	support := provider.ReasoningSupport{Source: provider.LimitsEndpoint}
+	var names []string
+	booleans := map[bool]bool{}
+	for _, value := range payload.Thinking.Values {
+		switch v := value.(type) {
+		case string:
+			names = append(names, v)
+		case bool:
+			booleans[v] = true
+		}
+	}
+	support.Levels = provider.OrderedEfforts(names)
+	if len(names) == 0 && booleans[false] && booleans[true] {
+		support.Levels = []string{"none"}
+	}
+	if name, ok := payload.Thinking.Default.(string); ok && support.Supports(strings.ToLower(name)) {
+		support.Default = strings.ToLower(name)
+	}
+	return support, true
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

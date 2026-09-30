@@ -131,14 +131,71 @@ type Provider struct {
 	Reasoning *Reasoning `json:"reasoning,omitempty"`
 	// Pricing is user-supplied because model prices change and may differ by
 	// account, region, gateway, or deployment. Collomia never hardcodes it.
-	Pricing                  *Pricing `json:"pricing,omitempty"`
-	ConnectTimeoutSeconds    int      `json:"connect_timeout_seconds,omitempty"`
-	RequestTimeoutSeconds    int      `json:"request_timeout_seconds,omitempty"`
-	StreamIdleTimeoutSeconds int      `json:"stream_idle_timeout_seconds,omitempty"`
+	Pricing *Pricing `json:"pricing,omitempty"`
+	// Models holds settings for individual models this provider serves, keyed
+	// by the exact model id. An entry overrides the provider-level field of the
+	// same name for that model only. See ForModel for the precedence.
+	Models                   map[string]ModelSettings `json:"models,omitempty"`
+	ConnectTimeoutSeconds    int                      `json:"connect_timeout_seconds,omitempty"`
+	RequestTimeoutSeconds    int                      `json:"request_timeout_seconds,omitempty"`
+	StreamIdleTimeoutSeconds int                      `json:"stream_idle_timeout_seconds,omitempty"`
 	// CredentialSource names where APIKey came from, for diagnostics only. It
 	// is never serialized: it is derived on load, and writing it to a file
 	// would turn a description of the environment into configuration.
 	CredentialSource string `json:"-"`
+	// ContextInherited and MaxTokensInherited are set by ForModel when the
+	// value in Context or MaxTokens was written for a different model — the
+	// provider's own `model` — and nothing names one for the selected model.
+	// The runtime then prefers what is known about the selected model and keeps
+	// the inherited value only as a last resort. Never serialized.
+	ContextInherited   bool `json:"-"`
+	MaxTokensInherited bool `json:"-"`
+}
+
+// ModelSettings are the settings that belong to one model rather than to the
+// endpoint serving it. Every field is optional; an omitted one falls back to
+// the provider.
+type ModelSettings struct {
+	MaxTokens int        `json:"max_tokens,omitempty"`
+	Context   int        `json:"context_window,omitempty"`
+	Reasoning *Reasoning `json:"reasoning,omitempty"`
+	Pricing   *Pricing   `json:"pricing,omitempty"`
+}
+
+// ForModel returns the provider as it applies to one model.
+//
+// Precedence, field by field: the model's own entry in `models`, then the
+// provider-level field. Token limits add one distinction. A provider-level
+// context_window or max_tokens describes the provider's own `model` — setup
+// has always written them for exactly that model — so for any other model they
+// are marked inherited: still usable, but the runtime prefers what it knows
+// about the model actually selected. A provider with no `model` of its own
+// keeps the older meaning, where its limits apply to every model.
+//
+// Reasoning and pricing keep their provider-wide meaning unless an entry
+// overrides them, so existing files behave exactly as before.
+func (p Provider) ForModel(model string) Provider {
+	own := strings.TrimSpace(p.Model) == "" || p.Model == model
+	entry, hasEntry := p.Models[model]
+	if hasEntry && entry.Context > 0 {
+		p.Context = entry.Context
+	} else if !own && p.Context > 0 {
+		p.ContextInherited = true
+	}
+	if hasEntry && entry.MaxTokens > 0 {
+		p.MaxTokens, p.MaxTokensDefaulted = entry.MaxTokens, false
+	} else if !own && p.MaxTokens > 0 {
+		p.MaxTokensInherited = true
+	}
+	if hasEntry && entry.Reasoning != nil {
+		reasoning := *entry.Reasoning
+		p.Reasoning = &reasoning
+	}
+	if hasEntry && entry.Pricing != nil {
+		pricing := *entry.Pricing
+		p.Pricing = &pricing
+	}
+	return p
 }
 
 // Reasoning is the provider-neutral subset of model reasoning controls.
@@ -925,6 +982,14 @@ func (c *Config) normalizeWithOptions(skipEnvironmentExpansion bool) {
 		if p.Reasoning != nil {
 			p.Reasoning.Effort = strings.ToLower(strings.TrimSpace(p.Reasoning.Effort))
 		}
+		for id, entry := range p.Models {
+			if entry.Reasoning != nil {
+				reasoning := *entry.Reasoning
+				reasoning.Effort = strings.ToLower(strings.TrimSpace(reasoning.Effort))
+				entry.Reasoning = &reasoning
+				p.Models[id] = entry
+			}
+		}
 		if skipEnvironmentExpansion {
 			p.BaseURL = strings.TrimRight(p.BaseURL, "/")
 			p.EntraScope = strings.TrimSpace(p.EntraScope)
@@ -1153,22 +1218,7 @@ func (c Config) ValidateFields() []FieldError {
 		// an absent field is a warning, reported by `collo doctor`, because
 		// refusing to start over a field that has always been optional would
 		// break every configuration written before it was validated.
-		if provider.Context < 0 {
-			errs = append(errs, FieldError{field + ".context_window", "must not be negative"})
-		}
-		if provider.MaxTokens < 0 {
-			errs = append(errs, FieldError{field + ".max_tokens", "must not be negative"})
-		}
-		if provider.Context > 0 && provider.MaxTokens >= provider.Context {
-			// The output cap is spent out of the same budget as the prompt, so
-			// this configuration cannot be satisfied by any request: the
-			// provider rejects it, and ValidateRequest already refuses it
-			// before the network. Catching it here names the two fields
-			// instead of surfacing as a provider error mid-session.
-			errs = append(errs, FieldError{field + ".max_tokens", fmt.Sprintf(
-				"%d is at or above context_window %d; the output cap is spent from the same budget as the prompt, so no request can satisfy this",
-				provider.MaxTokens, provider.Context)})
-		}
+		errs = append(errs, TokenLimitErrors(field, provider.Context, provider.MaxTokens)...)
 		for _, timeout := range []struct {
 			key   string
 			value int
@@ -1181,24 +1231,28 @@ func (c Config) ValidateFields() []FieldError {
 				errs = append(errs, FieldError{field + "." + timeout.key, "must not be negative"})
 			}
 		}
-		if provider.Reasoning != nil {
-			if err := validateReasoningEffort(provider.Reasoning.Effort); err != nil {
-				errs = append(errs, FieldError{field + ".reasoning.effort", err.Error()})
-			}
+		errs = append(errs, reasoningAndPricingErrors(field, provider.Reasoning, provider.Pricing)...)
+		ids := make([]string, 0, len(provider.Models))
+		for id := range provider.Models {
+			ids = append(ids, id)
 		}
-		if provider.Pricing != nil {
-			if provider.Pricing.InputPerMillion <= 0 {
-				errs = append(errs, FieldError{field + ".pricing.input_per_million", "must be greater than zero"})
+		sort.Strings(ids)
+		for _, id := range ids {
+			entry := provider.Models[id]
+			entryField := field + ".models." + id
+			if strings.TrimSpace(id) == "" {
+				errs = append(errs, FieldError{field + ".models", "a model id must not be empty"})
+				continue
 			}
-			if provider.Pricing.OutputPerMillion <= 0 {
-				errs = append(errs, FieldError{field + ".pricing.output_per_million", "must be greater than zero"})
+			// An entry's own pair is checked as written. For the provider's own
+			// model the pair it will actually run with is checked too, because
+			// an entry that sets only max_tokens meets the provider-level window.
+			errs = append(errs, TokenLimitErrors(entryField, entry.Context, entry.MaxTokens)...)
+			if id == provider.Model && (entry.Context > 0) != (entry.MaxTokens > 0) {
+				effective := provider.ForModel(id)
+				errs = append(errs, TokenLimitErrors(entryField, effective.Context, effective.MaxTokens)...)
 			}
-			if provider.Pricing.CachedInputPerMillion != nil && *provider.Pricing.CachedInputPerMillion < 0 {
-				errs = append(errs, FieldError{field + ".pricing.cached_input_per_million", "must not be negative"})
-			}
-			if provider.Pricing.CacheWritePerMillion != nil && *provider.Pricing.CacheWritePerMillion < 0 {
-				errs = append(errs, FieldError{field + ".pricing.cache_write_per_million", "must not be negative"})
-			}
+			errs = append(errs, reasoningAndPricingErrors(entryField, entry.Reasoning, entry.Pricing)...)
 		}
 	}
 	for i, pattern := range c.Permissions.DeniedCommands {
@@ -1501,6 +1555,71 @@ func expandEnv(value string) string {
 		return ""
 	}
 	return os.Expand(value, func(key string) string { return os.Getenv(key) })
+}
+
+// ExpandEnv expands `$VAR` and `${VAR}` references exactly as provider
+// resolution does. Setup uses it to recognize that a resolved value it is about
+// to write is the file's own reference expanded, so it can keep the reference
+// instead of replacing it with a literal.
+func ExpandEnv(value string) string { return expandEnv(value) }
+
+// reasoningAndPricingErrors validates the reasoning and pricing settings that
+// a provider and each of its model entries may carry.
+func reasoningAndPricingErrors(field string, reasoning *Reasoning, pricing *Pricing) []FieldError {
+	var errs []FieldError
+	if reasoning != nil {
+		if err := validateReasoningEffort(reasoning.Effort); err != nil {
+			errs = append(errs, FieldError{field + ".reasoning.effort", err.Error()})
+		}
+	}
+	if pricing != nil {
+		if pricing.InputPerMillion <= 0 {
+			errs = append(errs, FieldError{field + ".pricing.input_per_million", "must be greater than zero"})
+		}
+		if pricing.OutputPerMillion <= 0 {
+			errs = append(errs, FieldError{field + ".pricing.output_per_million", "must be greater than zero"})
+		}
+		if pricing.CachedInputPerMillion != nil && *pricing.CachedInputPerMillion < 0 {
+			errs = append(errs, FieldError{field + ".pricing.cached_input_per_million", "must not be negative"})
+		}
+		if pricing.CacheWritePerMillion != nil && *pricing.CacheWritePerMillion < 0 {
+			errs = append(errs, FieldError{field + ".pricing.cache_write_per_million", "must not be negative"})
+		}
+	}
+	return errs
+}
+
+// TokenLimitErrors reports what is wrong with one provider's pair of token
+// limits, under field (for example "providers.local"; empty for bare names).
+//
+// It is the single statement of these rules, shared by ValidateFields and by
+// setup's limits screen, so a value the wizard accepts is one the loader
+// accepts and a refusal reads the same in both places.
+func TokenLimitErrors(field string, contextWindow, maxTokens int) []FieldError {
+	name := func(key string) string {
+		if field == "" {
+			return key
+		}
+		return field + "." + key
+	}
+	var errs []FieldError
+	if contextWindow < 0 {
+		errs = append(errs, FieldError{name("context_window"), "must not be negative"})
+	}
+	if maxTokens < 0 {
+		errs = append(errs, FieldError{name("max_tokens"), "must not be negative"})
+	}
+	if contextWindow > 0 && maxTokens >= contextWindow {
+		// The output cap is spent out of the same budget as the prompt, so
+		// this configuration cannot be satisfied by any request: the
+		// provider rejects it, and ValidateRequest already refuses it
+		// before the network. Catching it here names the two fields
+		// instead of surfacing as a provider error mid-session.
+		errs = append(errs, FieldError{name("max_tokens"), fmt.Sprintf(
+			"%d is at or above context_window %d; the output cap is spent from the same budget as the prompt, so no request can satisfy this",
+			maxTokens, contextWindow)})
+	}
+	return errs
 }
 
 func validateEntraScope(value string) error {

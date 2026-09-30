@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -256,5 +257,31 @@ func TestAnthropicUsageCountsCachedTokensAsInput(t *testing.T) {
 	usage := anthropicUsage(120, 40, 8000, 500)
 	if usage.InputTokens != 8620 || usage.CachedTokens != 8000 || usage.CacheWriteTokens != 500 || usage.OutputTokens != 40 {
 		t.Fatalf("usage=%+v", usage)
+	}
+}
+
+func TestAnthropicListModelsKeepsThePublishedLimits(t *testing.T) {
+	// The Models API publishes max_input_tokens and max_tokens per model, both
+	// nullable. Discarding them sent every Claude through the table instead.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[
+			{"type":"model","id":"claude-opus-5","display_name":"Claude Opus 5","max_input_tokens":1000000,"max_tokens":128000},
+			{"type":"model","id":"claude-legacy","display_name":"Legacy","max_input_tokens":null,"max_tokens":null}
+		],"has_more":false}`))
+	}))
+	defer server.Close()
+	models, err := (&AnthropicClient{Label: "anthropic", BaseURL: server.URL}).ListModels(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %+v", models)
+	}
+	got := models[0].Limits
+	if got.ContextWindow != 1000000 || got.MaxOutput != 128000 || got.ContextSource != LimitsEndpoint || got.OutputSource != LimitsEndpoint {
+		t.Errorf("published limits = %+v", got)
+	}
+	if models[1].Limits.Known() {
+		t.Error("null limits must stay unestablished rather than become zero-valued facts")
 	}
 }
