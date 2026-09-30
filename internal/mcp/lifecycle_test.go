@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	appconfig "github.com/robert-mcdermott/collomia/internal/config"
 	"github.com/robert-mcdermott/collomia/internal/tools"
@@ -247,5 +248,53 @@ func TestFailedConnectIsRetainedAsError(t *testing.T) {
 	}
 	if manager.Statuses()[0].Status != StatusConnected {
 		t.Fatalf("statuses=%+v", manager.Statuses())
+	}
+}
+
+// pingRejectingDial serves a server that answers ping with the given JSON-RPC
+// error code, as a server on MCP 2026-07-28 (which removed ping) does with
+// "method not found".
+func pingRejectingDial(t *testing.T, code int64) {
+	t.Helper()
+	prior := dial
+	t.Cleanup(func() { dial = prior })
+	dial = func(ctx context.Context, name string, cfg appconfig.MCPServer, clientOpts *mcp.ClientOptions) (*mcp.ClientSession, error) {
+		server := mcp.NewServer(&mcp.Implementation{Name: "fake-" + name, Version: "1.0"}, nil)
+		server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				if method == "ping" {
+					return nil, &jsonrpc.Error{Code: code, Message: "no ping here"}
+				}
+				return next(ctx, method, req)
+			}
+		})
+		clientTransport, serverTransport := mcp.NewInMemoryTransports()
+		if _, err := server.Connect(ctx, serverTransport, nil); err != nil {
+			return nil, err
+		}
+		return mcp.NewClient(&mcp.Implementation{Name: "collomia", Version: "test"}, clientOpts).Connect(ctx, clientTransport, nil)
+	}
+}
+
+func TestPingTreatsARemovedPingAsAlive(t *testing.T) {
+	// A server that answers "method not found" has answered: the transport
+	// works and the server responds, which is all a health check asks.
+	pingRejectingDial(t, jsonrpc.CodeMethodNotFound)
+	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, tools.NewRegistry(), testOpts(t))
+	defer manager.Close()
+	if err := manager.Ping(t.Context(), "docs"); err != nil {
+		t.Fatalf("a server without ping must not be marked failed: %v", err)
+	}
+	if manager.Statuses()[0].Status != StatusConnected {
+		t.Error("status must stay connected")
+	}
+}
+
+func TestPingStillFailsOnOtherErrors(t *testing.T) {
+	pingRejectingDial(t, jsonrpc.CodeInternalError)
+	manager, _ := ConnectAll(t.Context(), map[string]appconfig.MCPServer{"docs": trustedServer()}, tools.NewRegistry(), testOpts(t))
+	defer manager.Close()
+	if err := manager.Ping(t.Context(), "docs"); err == nil {
+		t.Error("only a removed-method answer counts as alive")
 	}
 }

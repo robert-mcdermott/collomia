@@ -5580,10 +5580,16 @@ standard tool, resource, and prompt catalog notifications:
 - Notifications from a stale connection are ignored after disable, remove, or
   reconnect. Bursts of tool changes are coalesced and serialized.
 
-Collomia reports the actually negotiated protocol revision per server. The
-current official SDK negotiates MCP 2025-11-25 and retains compatibility with
-2025-06-18, 2025-03-26, and 2024-11-05. The complete implemented subset and
-test boundary are in [MCP_PROTOCOL.md](MCP_PROTOCOL.md).
+Collomia reports the actually negotiated protocol revision per server.
+- The official SDK in this release offers MCP 2026-07-28 and negotiates down to
+  2025-11-25, 2025-06-18, 2025-03-26, or 2024-11-05 for servers that do not
+  support it, which is most servers today.
+- On 2026-07-28, a server that needs your input returns the question as part
+  of the tool result rather than interrupting the call. Collomia asks you in
+  the same dialog as before, one request's questions at a time.
+
+The complete implemented subset and test boundary are in
+[MCP_PROTOCOL.md](MCP_PROTOCOL.md).
 
 Experimental MCP tasks, resource subscriptions, and standards-based OAuth are
 currently unsupported. Header tokens remain the supported authenticated HTTP

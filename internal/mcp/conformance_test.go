@@ -74,8 +74,8 @@ func waitFor(t *testing.T, description string, ready func() bool) {
 func TestProtocolConformanceAndCatalogListChanges(t *testing.T) {
 	manager, registry, server := dynamicFixture(t)
 	status := manager.Statuses()[0]
-	if status.Protocol != "2025-11-25" {
-		t.Fatalf("negotiated protocol=%q, want 2025-11-25", status.Protocol)
+	if status.Protocol != "2026-07-28" {
+		t.Fatalf("negotiated protocol=%q, want 2026-07-28", status.Protocol)
 	}
 	for _, capability := range []string{"tools", "resources", "prompts", "logging"} {
 		if !containsString(status.Capabilities, capability) {

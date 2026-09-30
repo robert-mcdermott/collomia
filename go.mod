@@ -20,7 +20,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/google/jsonschema-go v0.4.3
 	github.com/lucasb-eyer/go-colorful v1.4.1
-	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
@@ -74,4 +74,5 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 )

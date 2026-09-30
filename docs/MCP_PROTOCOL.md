@@ -1,18 +1,50 @@
 # MCP protocol support
 
 Collomia uses the official Model Context Protocol Go SDK and currently builds
-against `github.com/modelcontextprotocol/go-sdk` v1.6.1. Each connection
-negotiates its protocol revision during initialization; `/mcp status` reports
+against `github.com/modelcontextprotocol/go-sdk` v1.8.0. Each connection
+negotiates its protocol revision when it connects; `/mcp status` reports
 the revision actually selected rather than assuming every server is current.
 
 ## Revisions
 
-The SDK used by this release offers MCP 2025-11-25 and can negotiate these
-older revisions with compatible servers:
+The SDK used by this release offers MCP 2026-07-28 and negotiates down to
+these older revisions with servers that do not support it:
 
+- 2025-11-25
 - 2025-06-18
 - 2025-03-26
 - 2024-11-05
+
+Most servers in use today negotiate an older revision. A Streamable HTTP server
+offers 2026-07-28 only when it runs stateless, and a stdio server built on an
+older SDK does not offer it at all. Both kinds keep working exactly as before.
+
+### What changed with 2026-07-28
+
+- **No handshake.** The revision is stateless: each request carries the
+  protocol version and client capabilities, and a new `server/discover` call
+  replaces `initialize`. The SDK falls back to `initialize` for older servers.
+- **Input during a call is a round trip** (multi round-trip requests,
+  SEP-2322). A server no longer sends `elicitation/create` while a tool runs.
+  Instead, the tool returns a set of input requests, and the client calls
+  again with the answers.
+  - The SDK does this transparently, invoking Collomia's existing elicitation
+    handler, and gives up after ten rounds.
+  - Collomia asks the questions of one elicitation at a time, even when a
+    server asks for several inputs at once, so questions from different
+    requests never interleave in the dialog.
+- **List changes arrive on one stream.** The per-kind notifications are
+  replaced by a `subscriptions/listen` stream that the SDK opens automatically.
+  Collomia's catalog handling is unchanged.
+- **`ping`, `logging/setLevel`, and resource subscribe/unsubscribe were
+  removed.**
+  - `/mcp ping` treats a "method not found" answer as proof that the server
+    is responding, so a current server is not marked failed.
+  - Collomia never used the other two.
+- **Error codes were renumbered**, and roots, sampling, and logging are
+  deprecated. Collomia implements neither roots nor sampling.
+- **Frame limits.** A single inbound frame is limited to 16 MiB on stdio and
+  per server-sent event over HTTP.
 
 Protocol negotiation does not imply that Collomia exposes every feature in a
 revision. The table below is the product-level contract.
@@ -21,7 +53,7 @@ revision. The table below is the product-level contract.
 
 | Protocol area | Collomia behavior |
 | --- | --- |
-| Initialization | Negotiates a revision and records server identity and capabilities. |
+| Initialization | Negotiates a revision (discovery on 2026-07-28, `initialize` for older servers) and records server identity and capabilities. |
 | Transports | stdio and Streamable HTTP. |
 | Tools | Paginated discovery, JSON Schema definitions, calls, typed results (including bounded image passthrough on capable provider routes), cancellation, and progress. |
 | Tool list changes | Complete catalog is fetched and validated, then atomically replaces that server's registered tools. Failed refreshes keep the previous catalog. |
@@ -29,7 +61,7 @@ revision. The table below is the product-level contract.
 | Resource list changes | Marks the catalog pending until the next successful live list. |
 | Prompts | Paginated live listing and explicit expansion into the user-editable composer. |
 | Prompt list changes | Marks the catalog pending until the next successful live list. |
-| Elicitation | TUI form mode only; URL mode is declined and headless clients do not advertise elicitation. |
+| Elicitation | TUI form mode only, one elicitation at a time; URL mode is declined and headless clients do not advertise elicitation. Works both as a 2026-07-28 input round trip and as a mid-call request from older servers. |
 | Progress | Routed to the active tool's streamed output by progress token. |
 | Logging | Negotiated by the SDK; Collomia does not currently expose a separate server-log viewer. |
 
@@ -69,9 +101,10 @@ independently.
   and Bedrock Converse tool-result turns; OpenAI-compatible Chat Completions
   remains marker-only because its tool-message image shape is not portable.
 
-MCP tasks were introduced as experimental in the 2025-11-25 specification.
-Collomia will not create a private task dialect while that surface and its SDK
-API are evolving.
+MCP tasks were introduced as experimental in the 2025-11-25 specification and
+moved out of the core protocol into an extension in 2026-07-28. Collomia will
+not create a private task dialect while that surface and its SDK API are
+evolving.
 
 ## Conformance and regression coverage
 
@@ -83,8 +116,11 @@ credentials. Together the fixtures cover:
 - dynamic tool/resource/prompt list-change notifications;
 - atomic hot refresh, notification coalescing, stale-session rejection, and
   preservation of the last-known-good tools when replacement validation fails;
-- progress routing, form elicitation, decline behavior, cancellation/timeouts,
-  ping/reconnect/enable/disable/add/remove, and server pinning.
+- progress routing, form elicitation through the 2026-07-28 input round trip
+  and through an older server pinned to 2025-11-25, concurrent elicitations
+  asked one at a time, decline behavior, and cancellation/timeouts;
+- ping, including servers that answer "method not found" because the revision
+  removed it, plus reconnect/enable/disable/add/remove and server pinning.
 - external-data provenance framing, delimiter/control-character attacks, bounded
   schema/catalog metadata, and an agent-level injected-permission refusal.
 
@@ -95,6 +131,8 @@ diagnostics for a configured server.
 
 Specification references:
 
+- [MCP 2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28) and its [changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
+- [Multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)
 - [MCP 2025-11-25 specification](https://modelcontextprotocol.io/specification/2025-11-25)
 - [Tools and list-change notifications](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 - [Experimental tasks](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks)

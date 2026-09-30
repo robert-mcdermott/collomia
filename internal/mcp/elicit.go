@@ -38,6 +38,14 @@ func (m *Manager) elicit(ctx context.Context, server string, req *mcp.ElicitRequ
 	if params.URL != "" || params.Mode == "url" {
 		return &mcp.ElicitResult{Action: "decline"}, nil
 	}
+	if m.elicitGate != nil {
+		select {
+		case m.elicitGate <- struct{}{}:
+			defer func() { <-m.elicitGate }()
+		case <-ctx.Done():
+			return &mcp.ElicitResult{Action: "cancel"}, nil
+		}
+	}
 	preface := fmt.Sprintf("External MCP server %s asks: %s", compactMetadata(server), compactMetadata(params.Message))
 	schema := parseElicitSchema(params.RequestedSchema)
 	if len(schema.Properties) == 0 {
