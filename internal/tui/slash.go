@@ -101,6 +101,8 @@ func (m *Model) slash(line string) (bool, tea.Cmd) {
 		}
 		providerName, model := m.runtime.Agent.Selection()
 		m.addSystem(fmt.Sprintf("Primary agent switched to %s (%s/%s). Conversation and cumulative usage were preserved.", active, providerName, model))
+	case "/providers", "/setup":
+		return false, m.openProviderSetup(args)
 	case "/effort":
 		if len(args) == 0 {
 			runtime := m.runtime

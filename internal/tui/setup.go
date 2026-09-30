@@ -47,6 +47,24 @@ type SetupOptions struct {
 	// path. The same setup flow is used by `collo setup`, but that command closes
 	// after writing while startup proceeds directly into the session TUI.
 	ContinueToSession bool
+	// Embedded runs the flow inside a running session (`/providers`) rather
+	// than as its own program: leaving returns to the session instead of
+	// ending the process, and a write is applied to the session live.
+	Embedded bool
+}
+
+// setupExitMsg reports that an embedded setup run has finished, whether by
+// writing, backing out, or being cancelled. The session reads the outcome off
+// the model it was hosting.
+type setupExitMsg struct{}
+
+// exit leaves the flow: the whole program when setup runs on its own, only the
+// view when it is embedded in a session.
+func (m setupModel) exit() tea.Cmd {
+	if m.opts.Embedded {
+		return func() tea.Msg { return setupExitMsg{} }
+	}
+	return tea.Quit
 }
 
 // SetupOutcome reports what a completed setup run did, so the caller can print a
@@ -166,6 +184,21 @@ type awsIdentityMsg struct{ identity setup.AWSIdentity }
 
 // RunSetup runs interactive provider setup and reports what it wrote.
 func RunSetup(ctx context.Context, opts SetupOptions) (SetupOutcome, error) {
+	m := newSetupModel(opts)
+	program := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
+	final, err := program.Run()
+	if err != nil {
+		return SetupOutcome{}, err
+	}
+	done, ok := final.(setupModel)
+	if !ok {
+		return SetupOutcome{}, nil
+	}
+	return done.outcome, done.err
+}
+
+// newSetupModel builds the flow for either host: its own program or a session.
+func newSetupModel(opts SetupOptions) setupModel {
 	theme := resolveTheme(opts.ThemeName)
 	m := setupModel{
 		opts:   opts,
@@ -185,16 +218,7 @@ func RunSetup(ctx context.Context, opts SetupOptions) (SetupOutcome, error) {
 		m.credPlan, m.envVar = setup.CredentialKeep, p.APIKeyEnv
 		m.stage = stageScanning
 	}
-	program := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
-	final, err := program.Run()
-	if err != nil {
-		return SetupOutcome{}, err
-	}
-	done, ok := final.(setupModel)
-	if !ok {
-		return SetupOutcome{}, nil
-	}
-	return done.outcome, done.err
+	return m
 }
 
 func newSetupSpinner(t Theme) spinner.Model {
@@ -349,7 +373,7 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 		m.outcome = SetupOutcome{Wrote: true, Result: m.result, ConfigPath: m.opts.ConfigPath}
 		m.stage = stageDone
@@ -560,7 +584,7 @@ func (m setupModel) defaultProposal() bool {
 func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		m.quitting = true
-		return m, tea.Quit
+		return m, m.exit()
 	}
 
 	switch m.stage {
@@ -597,7 +621,7 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.back()
 		case "q":
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 	case stageConfirm:
 		switch msg.String() {
@@ -618,14 +642,14 @@ func (m setupModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.back()
 		case "q":
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 	case stageDone:
-		return m, tea.Quit
+		return m, m.exit()
 	case stageScanning, stageVerifying:
 		if msg.String() == "esc" {
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 	}
 	return m, nil
@@ -642,7 +666,7 @@ func (m setupModel) onListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.stage == stageChooseProvider {
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.exit()
 		}
 		return m.back()
 	case "enter":
@@ -661,7 +685,7 @@ func (m setupModel) onListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m setupModel) back() (tea.Model, tea.Cmd) {
 	if len(m.choices) == 0 {
 		m.quitting = true
-		return m, tea.Quit
+		return m, m.exit()
 	}
 	m.stage, m.cursor = stageChooseProvider, m.firstSelectable()
 	return m, nil

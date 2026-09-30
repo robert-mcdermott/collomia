@@ -11,8 +11,9 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
 ## Current handoff — read this first
 
 - **Active wave (2026-09-29): [W10 — provider setup and configuration](#w10--provider-setup-and-configuration-without-hand-editing).
-  W10a–c are accepted (W10a and W10b on 2026-09-29, W10c on 2026-09-30).
-  W10d is next and not started. Uncommitted.** The user
+  W10a–c are accepted (W10a and W10b on 2026-09-29, W10c on 2026-09-30) and
+  committed. W10d was split: W10d1 (setup inside the session, applied live)
+  was accepted on 2026-09-30, and W10d2 (the field editor) is next.** The user
   selected W10 ahead of W2/W8/W9 and the roadmap's P1 order, moved
   Homebrew/Scoop to lowest priority (P3), and approved starting W10a. W10a fixes
   the data-loss defect: reconfiguring a provider used to replace its whole JSON
@@ -93,8 +94,9 @@ boundaries, and non-goals. These waves do not reopen completed milestones.
   full `go test -race -count=1 ./...`, `go vet ./...`, shell installer tests,
   final CLI/documentation tests and `git diff --check` passed. No runtime code
   changed in this documentation pass; tagged release artifacts were not rebuilt.
-- **Next action:** W10d (the in-session provider/configuration dialog) awaits
-  the user's go-ahead. W10a–c are accepted and uncommitted. On the next release, verify the final
+- **Next action:** W10d2 (the field editor, starting with setting the default
+  provider/model directly) awaits the user's go-ahead. W10a–c are committed as
+  `5dd9a8a`; W10d1 is accepted and uncommitted. On the next release, verify the final
   source commit's GitHub signature before tagging and verify downloaded artifact
   attestations before publication.
 - **Historical evidence:** candidate versions, commands, and unchecked manual
@@ -962,7 +964,7 @@ After W4, the user approved W5 next, with W7 then W6 proposed after its gate.
 | W7 | Durable task context, retrievable evidence, and restart checkpoints | Accepted (W7a and W7b) | User confirmed successful manual testing of both slices |
 | W8 | Lazy tool discovery and measured independent-read concurrency | Planned | Connected tools are discoverable and parallel reads improve latency |
 | W9 | Scoped autonomy mandates and durable delayed continuation | Planned; design gate required | Authorized work resumes predictably with clear wait/cancel controls |
-| W10 | Provider setup and configuration without hand-editing JSON (W10a–d) | Active; W10a–c accepted, W10d next | Each slice has its own gate; see [W10](#w10--provider-setup-and-configuration-without-hand-editing) |
+| W10 | Provider setup and configuration without hand-editing JSON (W10a–d) | Active; W10a–c and W10d1 accepted, W10d2 next | Each slice has its own gate; see [W10](#w10--provider-setup-and-configuration-without-hand-editing) |
 
 ### W1 — thinking visibility
 
@@ -1920,22 +1922,87 @@ was accepted by the user before this slice started.
 
 #### W10d — in-session provider and configuration dialog
 
-- [ ] Add a `/providers` dialog (alias `/setup`) that embeds the setup flow in
-  the running TUI:
-  - Add a provider or a model.
-  - Edit endpoint, auth, deployment, region, profile, limits, effort,
-    temperature, and headers.
-  - Rename or remove a provider, with a safeguard for the default.
-  - Set the default provider and model.
+W10c was accepted by the user on 2026-09-30. When the user said "start W10d",
+the slice was split, as this plan's rule for an oversized slice requires. Each
+half has its own gate.
 
-  `/config` links to it.
-- [ ] Persist changes through W10a's field-preserving writer and apply them to
-  the live session without a restart: re-select the provider, and new limits
-  and effort take effect from the next turn.
+##### W10d1 — setup inside the session, applied live
+
+**Status: accepted by the user on 2026-09-30 ("manual testing passed").**
+
+- [x] `/providers [name]` (alias `/setup`, in the palette) hosts the setup
+  model as a full-screen view.
+  - Approvals and questions from a turn keep priority.
+  - Its async messages, spinner, and resize are routed to the flow. Mouse
+    events are ignored while it is open.
+  - Its exits (`exit()`) close the view instead of quitting when embedded, and
+    ctrl+c closes the flow, not Collomia.
+  - It is refused while a turn runs, through the generic busy guard plus its
+    own check. An unknown name lists the file's providers.
+- [x] A write is applied live by `Runtime.ReloadProviders`:
+  - It re-reads the merged configuration but takes only `providers`,
+    `default_provider`, and `default_model`. Permissions, options, hooks, and
+    MCP are unchanged.
+  - It carries a first-run in-memory credential across when the arrangement is
+    unchanged, and clears the catalog caches.
+  - It re-selects the active provider if that is what changed, and reports a
+    project layer that shadows the change.
+  - The session message says what was saved and what applied.
+- [x] The embedded done screen, footer wording ("close", "return to session"),
+  and `/config`'s pointer to `/providers` are updated.
+- [x] Tests:
+  - A full in-session run: catalog, verify, typed limit, write, return, live
+    window, and the file.
+  - Close without writing, the busy and unknown-name refusals, the `/setup`
+    alias, and ctrl+c.
+  - Reload with credential carry-over and per-model effort applied.
+- [x] Fix from user testing (2026-09-30): `/effort` with no argument showed
+  nothing until the next keypress. Its asynchronously fetched status added the
+  panel without redrawing the transcript. The redraw was added, and a
+  regression test failed before the fix and passes after it.
+- [x] **User accepts W10d1** (2026-09-30).
+
+**Automated evidence (2026-09-30):**
+
+- Full suite and vet passed.
+- Live: the real `collo` session in a pseudo-terminal, with a scratch HOME,
+  local Ollama 0.35.0, and `gemma4:12b`:
+  - `/providers ollama` → catalog → verification → limits → effort (`none`,
+    which the endpoint accepted) → write → enter.
+  - The session showed "Saved ollama/gemma4:12b … Applied from the next turn:
+    context 262144, …".
+- The driver had to answer the terminal's OSC 11 background query, as a real
+  terminal does. Without that, keystrokes sent before the first render were
+  consumed.
+
+**Manual checks for the user:**
+
+1. In a session, run `/providers`, change your current provider's max output
+   or effort, and finish. The session should say "Applied from the next turn".
+   `/context` or `/effort` should show the new values without a restart.
+2. Run `/providers <other-provider>` while using a different one. The message
+   should say the session keeps its model and name the `/model` command.
+3. Open `/providers` and press esc. It should say "nothing was written". Try
+   ctrl+c inside the flow; it should close the flow, not Collomia.
+4. Try `/providers` while a turn is running. It should be refused.
+
+##### W10d2 — editing what setup does not ask about
+
+**Status: planned; W10d1 is accepted, so this is next. The user asked how to
+change a provider's default model, so the direct default-setting item comes
+first.**
+
+- [ ] A provider detail view in `/providers`:
+  - Edit endpoint/auth/deployment/region/profile with re-verification.
+  - Edit temperature and headers. Header values may be `${VAR}` references
+    and are never echoed if they look like credentials.
+  - Add a model entry without changing the provider's own model.
+- [ ] Rename or remove a provider, with a safeguard for the default and for the
+  active provider.
+- [ ] Set the default provider and model directly.
 - [ ] Offer to save a ceiling learned from a provider rejection as that model's
   `max_tokens`. Today this is only a warning telling the user to edit the file.
-- [ ] Tests: dialog interaction, persistence, live re-selection, removal
-  safeguards.
+- [ ] Tests: editing, removal safeguards, default changes, ceiling save.
 
 **Out of scope:**
 
@@ -1986,6 +2053,8 @@ was accepted by the user before this slice started.
 | 2026-09-29 | W10b implementation | The user added `/effort` to W10c and approved W10b. Per-model `models` entries, `ForModel`/`ProviderForModel` precedence, the `/model` catalog cache, setup limit moves, validation, and doctor are implemented. Offline suite, race checks, and vet passed. | W10b ready for user testing; W10c not started. |
 | 2026-09-29 | W10b acceptance / W10c implementation | User: "manual testing passed, start W10c." Contracts verified; per-model effort support, the setup effort screen with a one-request check, per-model writing, and `/effort` implemented. Full suite and vet passed; a live gemma4 `none` run in a scratch HOME passed. | W10b accepted; W10c ready for user testing. |
 | 2026-09-30 | W10c acceptance | User: "manual testing passed." | W10c accepted; W10d awaits go-ahead. |
+| 2026-09-30 | W10d1 implementation | The user committed W10a–c (`5dd9a8a`) and said "start W10d". W10d was split into W10d1/W10d2. `/providers` embedded setup with live reload is implemented. Full suite and vet passed; a live in-session pseudo-terminal run against local Ollama passed. | W10d1 ready for user testing; W10d2 planned. |
+| 2026-09-30 | W10d1 acceptance | The user reported a `/effort` redraw defect (the panel appeared only on the next key), which was fixed with a regression test. The user asked how to change a provider's default model, then: "manual testing passed." | W10d1 accepted; W10d2 next, default-setting first. |
 
 Record the exact test command and result, test-build path, material limitations,
 and user acceptance or requested revisions here at each handoff.

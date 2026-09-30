@@ -69,24 +69,28 @@ const (
 var tabNames = [tabCount]string{"Chat", "Session", "Help"}
 
 type Model struct {
-	runContext       context.Context
-	terminalOutput   io.Writer
-	runLifetime      *sync.WaitGroup
-	runtime          *app.Runtime
-	broker           *ApprovalBroker
-	viewport         viewport.Model
-	input            textarea.Model
-	spinner          spinner.Model
-	blocks           []block
-	width, height    int
-	ready, busy      bool
-	runEvents        chan runMsg
-	cancel           context.CancelFunc
-	pending          *approvalEnvelope
-	hunkReview       *hunkReviewState
-	question         *questionEnvelope
-	questionDraft    string
-	picker           *picker
+	runContext     context.Context
+	terminalOutput io.Writer
+	runLifetime    *sync.WaitGroup
+	runtime        *app.Runtime
+	broker         *ApprovalBroker
+	viewport       viewport.Model
+	input          textarea.Model
+	spinner        spinner.Model
+	blocks         []block
+	width, height  int
+	ready, busy    bool
+	runEvents      chan runMsg
+	cancel         context.CancelFunc
+	pending        *approvalEnvelope
+	hunkReview     *hunkReviewState
+	question       *questionEnvelope
+	questionDraft  string
+	picker         *picker
+	// providerSetup hosts the setup flow inside the session (/providers).
+	// While it is open it owns the screen and the keyboard, except for an
+	// approval or question from a running turn, which always comes first.
+	providerSetup    *setupModel
 	agentIntegration *agentIntegrationState
 	started          time.Time
 	turnStarted      time.Time
@@ -220,7 +224,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		return m, nil
 	}
+	if m.providerSetup != nil {
+		if model, cmd, handled := m.routeToProviderSetup(msg); handled {
+			return model, cmd
+		}
+	}
 	switch msg := msg.(type) {
+	case setupExitMsg:
+		return m.closeProviderSetup()
 	case tea.WindowSizeMsg:
 		oldOffset := m.viewport.YOffset
 		wasBottom := !m.vpInit || m.viewport.AtBottom()
@@ -245,6 +256,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case effortStatusMsg:
 		m.addPanel("Reasoning effort", renderEffortStatus(msg.status))
+		m.refresh()
 		return m, nil
 	case providerStatusMsg:
 		m.replaceProviderStatusPanel(msg.statuses)
@@ -387,6 +399,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled, model, cmd := m.handleQuestionKey(msg); handled {
 				return model, cmd
 			}
+		}
+		if m.providerSetup != nil {
+			next, cmd := m.providerSetup.Update(msg)
+			updated := next.(setupModel)
+			m.providerSetup = &updated
+			return m, cmd
 		}
 		if m.picker != nil {
 			cmd, _ := m.handlePickerKey(msg)
@@ -1588,6 +1606,9 @@ func (m *Model) renderMarkdown(value string) string {
 func (m Model) View() string {
 	if !m.ready {
 		return "Starting Collomia…"
+	}
+	if m.providerSetup != nil && !m.modalActive() {
+		return m.providerSetup.View()
 	}
 	if m.transcript != nil && !m.modalActive() {
 		return m.renderTranscriptView()

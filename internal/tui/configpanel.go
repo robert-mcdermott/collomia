@@ -49,7 +49,8 @@ func configPanel(cfg appconfig.Config, showAll bool) string {
 	if !showAll {
 		out.WriteString("\n/config all lists every setting, including the ones no file mentions.\n")
 	}
-	out.WriteString("Edit " + editableTarget(cfg) + ". It is strict JSON and cannot hold comments, so\n")
+	out.WriteString("/providers adds or changes providers, models, token limits, and reasoning effort.\n")
+	out.WriteString("For everything else, edit " + editableTarget(cfg) + ". It is strict JSON and cannot hold comments, so\n")
 	out.WriteString("`collo schema config` writes the schema an editor reads for completion and\n")
 	out.WriteString("inline validation; `collo config reference` prints the annotated version.")
 	return out.String()

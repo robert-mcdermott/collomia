@@ -2468,7 +2468,7 @@ eventually happen inside a session without hand-editing JSON. This takes the
 remaining "in-session configuration" tier of the Phase 7 configuration-surface
 item and part of Phase 4. It is sequenced as W10a–d with user-testing gates in
 [the improvement plan](docs/IMPROVEMENT_PLAN.md#w10--provider-setup-and-configuration-without-hand-editing).
-W10a and W10b (per-model settings) were accepted by the user on 2026-09-29, and W10c (reasoning effort in setup, plus `/effort`) on 2026-09-30. W10d, the in-session dialog, is next. It fixes a verified defect:
+W10a and W10b (per-model settings) were accepted by the user on 2026-09-29, and W10c (reasoning effort in setup, plus `/effort`) on 2026-09-30. W10d was split: W10d1 (`/providers`, setup inside the session applied live) was accepted on 2026-09-30, and W10d2 (the field editor) is next. It fixes a verified defect:
 reconfiguring a provider through setup dropped its hand-set `headers`,
 `temperature`, `reasoning`, `pricing` and timeouts. It also adds a Token limits
 screen with overrides and explicit assumptions, and more limit discovery.

@@ -601,7 +601,12 @@ func (m setupModel) doneView() string {
 		m.styles.muted.Render("Inspect the whole configuration with ") + m.styles.accent.Render("collo doctor"),
 		m.styles.muted.Render("Add or change a provider by running ") + m.styles.accent.Render("collo setup") + m.styles.muted.Render(" again"),
 	}
-	if m.opts.ContinueToSession {
+	if m.opts.Embedded {
+		next = []string{
+			m.styles.panelBody.Render("Press enter to return to your session, where this change is applied."),
+			m.styles.muted.Render("Run ") + m.styles.accent.Render("/providers") + m.styles.muted.Render(" again to change another provider"),
+		}
+	} else if m.opts.ContinueToSession {
 		next = []string{
 			m.styles.panelBody.Render("Provider verified. Press enter to continue into your session."),
 			m.styles.muted.Render("You can add or change providers later with ") + m.styles.accent.Render("collo setup"),
@@ -724,7 +729,7 @@ func (m setupModel) footer() string {
 	case stageEffort:
 		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "back"}}
 	case stageChooseProvider:
-		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "quit"}}
+		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", m.leaveWord()}}
 	case stageChooseModel, stageStorage:
 		keys = [][2]string{{"↑↓", "move"}, {"enter", "select"}, {"esc", "back"}}
 	case stageManualModel, stageCredential:
@@ -732,7 +737,7 @@ func (m setupModel) footer() string {
 	case stageForm:
 		keys = [][2]string{{"↑↓", "field"}, {"←→", "option"}, {"enter", "continue"}, {"esc", "back"}}
 	case stageFailed:
-		keys = [][2]string{{"r", "retry"}, {"b", "back"}, {"q", "quit"}}
+		keys = [][2]string{{"r", "retry"}, {"b", "back"}, {"q", m.leaveWord()}}
 	case stageLimits:
 		keys = [][2]string{{"↑↓", "field"}, {"enter", "continue"}, {"esc", "back"}}
 	case stageConfirm:
@@ -740,11 +745,14 @@ func (m setupModel) footer() string {
 		if setup.Offered(m.effortSupport) {
 			keys = append(keys, [2]string{"e", "effort"})
 		}
-		keys = append(keys, [2]string{"d", "default"}, [2]string{"b", "back"}, [2]string{"q", "quit"})
+		keys = append(keys, [2]string{"d", "default"}, [2]string{"b", "back"}, [2]string{"q", m.leaveWord()})
 	case stageDone:
 		action := "close"
 		if m.opts.ContinueToSession {
 			action = "start session"
+		}
+		if m.opts.Embedded {
+			action = "return to session"
 		}
 		keys = [][2]string{{"enter", action}}
 	}
@@ -753,6 +761,15 @@ func (m setupModel) footer() string {
 		parts = append(parts, m.styles.statusKey.Render(key[0])+" "+m.styles.muted.Render(key[1]))
 	}
 	return m.rule() + "\n" + strings.Join(parts, m.styles.muted.Render("  ·  "))
+}
+
+// leaveWord names what leaving does: ending the program, or closing the flow
+// back to the session that hosts it.
+func (m setupModel) leaveWord() string {
+	if m.opts.Embedded {
+		return "close"
+	}
+	return "quit"
 }
 
 func orDash(value string) string {

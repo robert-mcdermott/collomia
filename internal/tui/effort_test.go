@@ -31,3 +31,18 @@ func TestEffortChangeMessageNamesWhatItOutranks(t *testing.T) {
 		t.Errorf("an unpublished model must be warned about, got %q", untested)
 	}
 }
+
+func TestEffortStatusAppearsWithoutAnotherKeypress(t *testing.T) {
+	// Reported: /effort with no argument showed nothing until the next key.
+	// Its status arrives asynchronously, and the handler added the panel
+	// without redrawing the transcript.
+	m := newTestModel(t)
+	_, cmd := (&m).slash("/effort")
+	if cmd == nil {
+		t.Fatal("/effort must fetch the model's levels in the background")
+	}
+	next, _ := m.Update(cmd())
+	if view := stripANSI(next.(Model).View()); !strings.Contains(view, "Decided by") {
+		t.Errorf("the effort panel must be on screen as soon as its status arrives:\n%s", view)
+	}
+}

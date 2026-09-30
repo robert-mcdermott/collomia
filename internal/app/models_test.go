@@ -95,3 +95,29 @@ func TestSwitchingToAListedModelUsesTheCatalogsReport(t *testing.T) {
 		t.Errorf("context = %d, want the catalog's report for the model switched to", got)
 	}
 }
+
+func TestReloadProvidersAppliesAChangedFileAndKeepsAnInMemoryKey(t *testing.T) {
+	home := isolateGlobalFiles(t)
+	runtime, err := New(t.Context(), Options{Workspace: t.TempDir(), ProviderCredential: "key-from-first-run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	writeGlobalConfig(t, home, `{"default_provider":"ollama","default_model":"qwen3-coder","providers":{"ollama":{
+		"type":"openai-compatible","base_url":"http://127.0.0.1:11434/v1","model":"qwen3-coder",
+		"context_window":65536,"max_tokens":8192,"models":{"qwen3-coder":{"reasoning":{"effort":"low"}}}}}}`)
+	reload, err := runtime.ReloadProviders("ollama", "qwen3-coder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reload.Reselected || reload.Shadowed != "" {
+		t.Errorf("reload = %+v", reload)
+	}
+	got := runtime.Agent.ProviderSettings()
+	if got.Context != 65536 || got.Reasoning == nil || got.Reasoning.Effort != "low" {
+		t.Errorf("session settings = %d / %+v, want the file's", got.Context, got.Reasoning)
+	}
+	if got.APIKey != "key-from-first-run" {
+		t.Error("a credential that exists only in this process must survive a reload")
+	}
+}

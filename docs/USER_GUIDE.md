@@ -256,7 +256,20 @@ nothing to store — Entra, which issues short-lived tokens through
 
 ### Adding or changing a provider later
 
-Run `collo setup` again. Configured providers appear at the top of the provider
+Inside a session, run `/providers`, or `/providers <name>` to go straight to
+one provider. It is the same flow as `collo setup`, drawn over the session. When
+it finishes you return to the conversation and the change is already in effect:
+- If you changed the provider you are using, its new limits and effort apply
+  from the next turn.
+- If the session is on a different provider or model, it keeps that and tells
+  you the `/model` command that switches.
+- If a trusted project configuration defines the same provider, it wins in that
+  workspace, and the session says the change applies only elsewhere.
+
+Only providers and the default selection are reloaded; permissions and every
+other setting stay as the session started.
+
+Outside a session, run `collo setup` again. Configured providers appear at the top of the provider
 list, so selecting one changes its model and re-verifies its endpoint and
 limits; the other choices add another provider. The current default stays
 visible, and setup asks before repointing it.
@@ -3048,6 +3061,7 @@ configuration are merged. See [Terminal behavior and keybindings](#terminal-beha
 | `/model [provider[/model]]` | Pick or switch the provider/model. A bare provider selects its configured model. |
 | `/agent [name]` | Pick or switch a primary profile. `default` restores the ordinary primary; context and cumulative accounting are preserved. |
 | `/mode [developer\|work]` | Show or switch the task profile. The choice is persisted with the session and changes neither provider nor permissions. |
+| `/providers [name]` (alias `/setup`) | Run provider setup inside the session: add a provider, or change one's model, token limits, or reasoning effort, with the same verification as `collo setup`. The change is saved to your user configuration and applied to this session from the next turn, without a restart. Unavailable while a turn is running. |
 | `/effort [level\|default\|reset]` | Show the reasoning effort the next request carries, which setting decided it, and the levels the model accepts; or change it for the rest of this session. `default` sends no effort, `reset` returns to configuration. A level the model is known not to accept is refused. Never written to configuration. See [Reasoning effort](#reasoning-effort). |
 | `/models` | Inspect configured provider defaults, capabilities, constraints, and live catalog availability. |
 | `/recovery` | Inspect durable obligations and checkpoint availability. Between turns, `acknowledge REASON` reconciles an uncertain action; `keep REASON` keeps files and discards prior checkpoints. Neither validates work nor grants permission. |

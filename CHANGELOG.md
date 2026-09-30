@@ -42,6 +42,17 @@ an accurate one; their history is in the Git log and in
     `collo config validate` checks every entry.
   - Existing files load unchanged.
 
+- **`/providers` runs setup inside a session.** Add a provider, or change one's
+  model, limits, or effort, without leaving the conversation (alias `/setup`,
+  or `/providers <name>`).
+  - The change is saved to your user configuration and applied from the next
+    turn, without a restart.
+  - Only providers and defaults are reloaded; permissions and other settings
+    are untouched.
+  - The session says whether it switched, kept another model, or was
+    overridden by a project configuration.
+  - It is unavailable while a turn is running, and ctrl+c closes the flow, not
+    Collomia.
 - **Reasoning effort in setup and in the session.**
   - After the token limits, setup offers the efforts the chosen model accepts.
     The levels come from Anthropic's catalog, Ollama's advertised thinking
