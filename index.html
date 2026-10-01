@@ -26,6 +26,7 @@
     <a class="brand" href="#top"><span class="glyph">✳</span>collomia<span class="tail">_</span></a>
     <nav class="site-nav" aria-label="Main navigation">
       <a href="#work">Developer + Work</a>
+      <a href="#models">Models</a>
       <a href="#execution">How it works</a>
       <a href="#sandbox">Your boundaries</a>
       <a href="#capabilities">Capabilities</a>
@@ -44,6 +45,7 @@
 <section class="hero">
   <div class="wrap">
     <span class="eyebrow"><span class="dot"></span>Open source · local-first · macOS, Linux &amp; Windows</span>
+    <a class="release-pill" href="https://github.com/robert-mcdermott/collomia/releases/latest"><b>v0.6.0</b> Set up providers, token limits, and reasoning effort without leaving the session <span aria-hidden="true">→</span></a>
 
     <h1>Build software.<br><span class="accent">Get work done.</span></h1>
 
@@ -123,7 +125,7 @@
       <p>Read, reason, act, and check the outcome in the same session. Bring the models and tools that fit your work.</p>
     </div>
     <div class="grid g3">
-      <div class="card"><span class="feature-number">01 / MODELS</span><h3>Your choice of model</h3><p>Connect Ollama, vLLM, or LM Studio locally, or use OpenAI-compatible, Anthropic-compatible, Azure, and AWS Bedrock APIs. Choose where model requests go.</p></div>
+      <div class="card"><span class="feature-number">01 / MODELS</span><h3>Your choice of model</h3><p>Connect Ollama, vLLM, or LM Studio locally, or use OpenAI, Anthropic, OpenRouter, Azure, and AWS Bedrock. Choose where model requests go, and <a href="#models">change it mid-session</a>.</p></div>
       <div class="card"><span class="feature-number">02 / DEVELOPMENT</span><h3>A complete coding loop</h3><p>Read a codebase, edit files, run tests, inspect language-server diagnostics, and review the diff. Background processes keep development servers within reach.</p></div>
       <div class="card"><span class="feature-number">03 / EXTENSIONS</span><h3>Bring your tools and skills</h3><p>Connect tools through MCP and install skills for specialized methods. Work mode uses the tools available to it, so you can shape it around your own tasks.</p></div>
       <div class="card"><span class="feature-number">04 / CONTINUITY</span><h3>Pick up where you left off</h3><p>Durable sessions preserve your conversation and work history. Resume after an interruption, steer an active turn, and review recorded file changes.</p></div>
@@ -133,8 +135,63 @@
   </div>
 </section>
 
+<!-- ============================================================== models -->
+<section id="models">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-kicker">Models, your way</div>
+      <h2>Pick a model. See what it can do.<br>Change it without leaving the session.</h2>
+      <p>
+        Setup proves a model works before it writes anything, tells you where each number came
+        from, and everything it saves can be changed later from inside a running session —
+        no configuration file to edit.
+      </p>
+    </div>
+
+    <ul class="chips" aria-label="Supported model providers">
+      <li>Ollama</li><li>vLLM</li><li>LM Studio</li><li>OpenAI</li><li>Anthropic</li>
+      <li>OpenRouter</li><li>Azure OpenAI &amp; AI Foundry</li><li>AWS Bedrock</li>
+      <li>Any OpenAI- or Anthropic-compatible endpoint</li>
+    </ul>
+
+    <div class="models-wrap">
+      <figure class="shot setup-shot">
+        <div class="shot-bar">
+          <i></i><i></i><i></i>
+          <span class="title">collo setup — token limits</span>
+        </div>
+        <div class="snippet"><span class="c">Token limits</span>
+<span class="d">How much qwen3-coder:30b can hold, and how
+much it may write in one answer.</span>
+
+<span class="m">Context window</span>  32768
+                <span class="d">reported by the endpoint. The model
+                supports up to 262144; the runtime is
+                serving less (for Ollama, raise
+                OLLAMA_CONTEXT_LENGTH and run setup
+                again)</span>
+
+Max output      16384
+                <span class="d">published limits for this model, not
+                measured; change it if your
+                deployment differs</span></div>
+        <figcaption>Illustrative: a local model whose runtime serves less context than the model supports. Type over either number, or accept it.</figcaption>
+      </figure>
+
+      <ul class="ticks">
+        <li><strong>Verified before it's saved.</strong> One ordinary request and one carrying a tool definition must both succeed. A failure names the endpoint, credential, or model at fault.</li>
+        <li><strong>Limits with their source.</strong> Context window and max output come from the endpoint where it says (Anthropic, vLLM, LM Studio, OpenRouter, or what Ollama is actually serving), otherwise from a deliberately conservative table. When nothing establishes a value, setup asks instead of guessing.</li>
+        <li><strong>Only the effort levels the model accepts.</strong> Setup checks your choice with one request; <code>/effort</code> changes it for the rest of a session.</li>
+        <li><strong>Change it live.</strong> <code>/providers</code> re-verifies, sets the default, switches or adds a model, edits the connection, temperature, or headers, renames, or removes a provider. <code>/model</code> brings each model's own limits.</li>
+        <li><strong>Claude keeps its train of thought.</strong> On Anthropic, Azure Foundry, and Bedrock, Claude's signed thinking goes back after each tool call, so it continues rather than starting over, and its thinking summary stays with the answer when you reopen the session.</li>
+        <li><strong>Your hand edits survive.</strong> Re-running setup keeps headers, pricing, timeouts, <code>${VAR}</code> references, and settings it never asked about. API keys are never written to the file.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
 <!-- ====================================================== execution modes -->
-<section id="execution">
+<section id="execution" class="ruled">
   <div class="wrap">
     <div class="sec-head">
       <div class="sec-kicker">Execution, at your pace</div>
@@ -514,10 +571,12 @@
       <div class="feat-group">
         <h4>Providers</h4>
         <ul>
-          <li>OpenAI and OpenAI-compatible (Ollama, vLLM, LM Studio)</li>
+          <li>OpenAI and OpenAI-compatible (Ollama, vLLM, LM Studio, OpenRouter)</li>
           <li>Anthropic-compatible APIs</li>
           <li>Azure OpenAI and Azure AI Foundry</li>
           <li>AWS Bedrock ConverseStream and Mantle</li>
+          <li>Per-model limits, reasoning effort, and pricing</li>
+          <li>Claude's signed thinking carried across tool calls</li>
           <li>Capability registry with pre-flight compatibility checks</li>
           <li>Classified failures, bounded retries, circuit health</li>
           <li>Automatic prompt caching where the route supports it</li>
@@ -540,7 +599,7 @@
         <h4>Interface</h4>
         <ul>
           <li>19 themes, syntax highlighting, tabs, command palette</li>
-          <li>Live reasoning when the model and provider expose it</li>
+          <li>Live reasoning, kept with each answer when a session is reopened</li>
           <li>Developer and Work task profiles</li>
           <li><code>NO_COLOR</code> support and a color-independent theme</li>
           <li>Side-by-side or unified diffs with hunk review</li>
@@ -558,7 +617,8 @@
           <li><code>collo run --jsonl</code> versioned event stream</li>
           <li>Published event schema via <code>collo schema events</code></li>
           <li>Offline trace replay with no providers or tools loaded</li>
-          <li>MCP over stdio and streamable HTTP, with server pinning</li>
+          <li>MCP 2026-07-28 over stdio and streamable HTTP; older servers negotiate down</li>
+          <li>MCP server pinning and live tool-catalog refresh</li>
           <li>Skills with SHA-256 identity and progressive loading</li>
           <li>Hooks on session, prompt, permission, tool, and stop events</li>
           <li>Named agent profiles with their own budgets and scopes</li>
@@ -605,7 +665,7 @@
 
     <ol class="steps">
       <li>
-        <b>Choose a model.</b> Setup discovers supported local endpoints and helps configure hosted providers. It checks that your choice can answer and accept tool definitions before saving the configuration.
+        <b>Choose a model.</b> Setup discovers supported local endpoints and helps configure hosted providers. It checks that your choice can answer and accept tool definitions, then shows its token limits and reasoning effort for you to accept or change. Later, <code>/providers</code> does the same from inside a session.
         <div class="cmd"><span class="prompt">$</span><code>collo setup</code>
           <button class="copy" type="button" data-copy="collo setup">copy</button></div>
       </li>
@@ -650,6 +710,7 @@
         <li>The audit ledger records what the permission layer decided and what execution returned. It is not a system-call audit.</li>
         <li>Provider traffic, remote MCP connections, hooks, and LSP processes run in the Collomia process — outside the command sandbox.</li>
         <li>Autonomy modes change approval behavior. They are explicitly not presented as an operating-system security boundary.</li>
+        <li>Release binaries are not Apple-notarized or Authenticode-signed. Checksums and GitHub build-provenance attestations are how a download is verified.</li>
       </ul>
       <p style="margin-top:18px">
         The full accounting lives in

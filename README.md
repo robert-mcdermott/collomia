@@ -59,6 +59,12 @@ that specialized tools are bundled. Example prompts describe possible requests,
 not guaranteed outcomes on every model. Screenshot source: main's tracked
 `docs/collo-screenshot.png` (3786 × 2152); the screenshot shows Developer mode.
 
+The hero's release pill names the current release and summarizes it in one
+line; update both when a release ships (its link, `releases/latest`, needs no
+change). The `#models` section's setup snippet is an illustrative rendering of
+the token-limits screen, written to match `internal/tui/setupview.go` on
+`main`; keep its wording in step if that screen changes.
+
 Before publishing, check desktop and mobile layout, in-page links, the expandable
 policy section, and copy buttons (including clipboard failure). Keep assets and
 scripts local. A failed clipboard operation must not show a success message.
