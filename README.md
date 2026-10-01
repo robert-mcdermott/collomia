@@ -9,7 +9,12 @@ supports research, analysis, automation, knowledge retrieval, document
 authoring, external actions, and direct questions in ordinary non-Git folders.
 Both use the same durable sessions, MCP and skills support, permission boundary,
 and headless JSONL interface. It ships as one `collo` binary for macOS, Linux,
-and Windows.
+and Windows, and works with local models (Ollama, vLLM, LM Studio) and hosted
+ones (OpenAI, Anthropic, OpenRouter, Azure, AWS Bedrock) alike.
+
+Collomia is in technical beta. See [beta status](docs/BETA.md) for what it is
+suited to today, and the [changelog](CHANGELOG.md) for what each release
+changed.
 
 The project is built around an unusually explicit trust boundary. Model-proposed
 actions pass through layered permissions, command analysis, OS sandboxing,
@@ -72,11 +77,21 @@ second generic file check when suitable scoped evidence already exists. See
   turns are flushed to stable storage, ambiguous mutations are never replayed,
   file changes are reviewable and undoable, and permission decisions and
   outcomes are written to an attributable, bounded audit ledger.
+- **Your models, configured without editing JSON.** Setup verifies that a
+  model both answers and accepts tool definitions before saving it, shows each
+  model's context window and output cap with where the numbers came from, and
+  offers only the reasoning-effort levels that model accepts. `/providers`,
+  `/model`, and `/effort` change providers, models, limits, and effort inside a
+  running session. On Anthropic, Azure Foundry, and Bedrock Claude routes, the
+  model's signed thinking is carried across tool calls so it continues its
+  reasoning instead of starting over.
 - **A complete coding loop in one binary.** Streaming provider support, atomic
   edits and patches, Git inspection and scoped commits, build/test detection,
   LSP diagnostics and navigation, background processes, image input, web
-  search/fetch, MCP, skills, hooks, and governed multi-agent delegation all use
-  the same permission and lifecycle machinery.
+  search/fetch, MCP (protocol 2026-07-28, negotiating down for older servers),
+  skills, hooks, and governed multi-agent delegation all use the same
+  permission and lifecycle machinery. `collo --web` serves the same interface
+  in a local browser tab.
 
 See the [feature overview](docs/FEATURES.md) for the complete list. The exact
 generated implementation status is in the
@@ -122,11 +137,24 @@ collo setup
 ```
 
 The wizard finds running local model servers and recognized hosted-provider
-credentials, lets you choose from available models, verifies both ordinary
-completion and tool support, resolves model limits, and writes a user-level
-configuration without storing an API key in the file. Running `collo` with no
-configured provider opens the same flow and continues directly into the first
-session after verification.
+credentials, lets you choose from available models, and verifies both ordinary
+completion and tool support. It then shows the model's context window and
+maximum output, saying whether each came from the endpoint, a published table,
+or an assumption, and lets you type your own values; when nothing could
+establish a limit it asks rather than guessing. For a model that reasons, it
+offers the effort levels that model accepts and checks your choice with one
+request. It writes a user-level configuration without storing an API key in
+the file. Running `collo` with no configured provider opens the same flow and
+continues directly into the first session after verification.
+
+Inside a session, `/providers` runs the same setup and applies the result
+immediately. Choosing a configured provider opens a menu to re-verify it, make
+it the default, switch or add a model, edit its connection, temperature, or
+headers, rename it, or remove it. `/model` switches models with each model's
+own limits, and `/effort` changes reasoning effort for the rest of the session.
+Re-running setup keeps settings you added by hand. See
+[adding or changing a provider](docs/USER_GUIDE.md#adding-or-changing-a-provider-later)
+and [token limits](docs/USER_GUIDE.md#the-two-token-limits-and-what-happens-when-you-omit-them).
 
 Then start Collomia in a repository for development, or any folder for Work:
 
@@ -137,6 +165,10 @@ collo
 cd /path/to/work-folder
 collo --mode work
 ```
+
+Add `--web` to open the same interface in your browser instead. It is served
+only on loopback with a fresh access token per launch; see the
+[browser terminal](docs/USER_GUIDE.md#browser-terminal) notes.
 
 Useful checks:
 
@@ -166,7 +198,8 @@ The top-level command surface is intentionally small:
 | Set up and inspect | `collo setup`, `collo init`, `collo config`, `collo doctor`, `collo capabilities` |
 | Trust and security | `collo trust`, `collo policy`, `collo auth`, `collo audit` |
 | Sessions and extensions | `collo sessions`, `collo skills`, `collo mcp` |
-| Diagnostics and integration | `collo support`, `collo completion`, `collo schema` |
+| Evaluate models | `collo eval` |
+| Diagnostics and integration | `collo support`, `collo completion`, `collo schema`, `collo version` |
 
 ## Task profiles and execution strategies
 
@@ -192,6 +225,13 @@ user turn at 256 provider responses by default. Use `--max-turns 500` for a long
 task or `/limits 500` in the TUI, including while it runs. See
 [completion and recovery](docs/COMPLETION.md).
 
+Standard completion uses the same file-evidence rules in Developer and Work.
+Disposable helpers belong in `.collomia-tmp/` and do not need separate
+acceptance; requested outputs and project changes still receive appropriate
+checks. Executable discovery is available during planning through
+`inspect_environment`, and command tools preserve the PATH used to launch
+Collo. See [runtime discovery](docs/USER_GUIDE.md#runtime-discovery-and-command-path).
+
 **Orchestrated Goal** is an explicit per-session option for work where a durable,
 inspectable graph and runtime-owned completion gates justify the additional
 overhead:
@@ -206,8 +246,10 @@ A finished graph stays attached so you can still inspect it; `/orchestrate done`
 releases it and returns the session to Standard mode, and for a goal with
 nothing left to run your next ordinary prompt does the same. Saved graphs remain
 inert until explicitly resumed. Graph bounds are visible,
-user-configurable, and extendable by the user; they never weaken permission,
-scope, verification, or publication gates. Read the
+user-configurable, and extendable by the user; `/orchestrate extend`
+replenishes worker and attempt allowances as well as the aggregate envelope,
+retaining accepted work. Bounds never weaken permission, scope, verification,
+or publication gates. Read the
 [Orchestrated Goal guide](docs/USER_GUIDE.md#orchestrated-goal)
 for choosing the mode and operating it, and the
 [architecture strategy](docs/ORCHESTRATION_STRATEGY.md) for its evidence,
@@ -217,13 +259,15 @@ The initial Work profile uses Standard execution only. Orchestrated Goal and
 write-capable delegates remain Developer-only because their state and isolation
 contracts are Git-backed; Collomia refuses that combination explicitly.
 
-## Documentation
+## Evaluating a model
 
 `collo eval list` previews the balanced coding/Work quality tasks without model
 calls. Use `collo eval run --live --provider NAME --output NEW_DIRECTORY` for
 bounded trials, then `report`, `review`, and `compare` to inspect scorecards and
 record acceptance. See [Quality evaluations](docs/QUALITY_EVALUATIONS.md) for
 the two-task smoke test and repeated baseline workflow.
+
+## Documentation
 
 | Topic | Documentation |
 | --- | --- |
@@ -244,11 +288,12 @@ the two-task smoke test and repeated baseline workflow.
 | Retained task notes and earlier evidence | [Task context](docs/TASK_CONTEXT.md) |
 | Real-model quality scorecards | [Quality evaluations](docs/QUALITY_EVALUATIONS.md) |
 | Release process and verification | [Releasing](docs/RELEASING.md) |
+| What changed in each release | [Changelog](CHANGELOG.md) |
 | Current priorities and implementation history | [Roadmap](ROADMAP.md) · [history](docs/ROADMAP_HISTORY.md) |
 
 ## Build from source
 
-Building requires the Go version declared in `go.mod` (currently Go 1.26.6):
+Building requires the Go version declared in `go.mod` (currently Go 1.26.8):
 
 ```sh
 git clone https://github.com/robert-mcdermott/collomia.git
@@ -265,15 +310,3 @@ the private process in [SECURITY.md](SECURITY.md).
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
-
-Standard completion uses the same file-evidence rules in Developer and Work.
-Disposable helpers belong in `.collomia-tmp/` and do not need separate acceptance;
-requested outputs and project changes still receive appropriate checks. See
-[completion behavior and scratch files](docs/COMPLETION.md).
-
-Executable discovery is available during planning through `inspect_environment`.
-Command tools preserve the PATH used to launch Collo; version checks run through
-ordinary primary execution. Orchestrated Goal's `/orchestrate extend` replenishes
-worker and attempt allowances as well as the aggregate envelope, retaining
-accepted work. See [runtime discovery](docs/USER_GUIDE.md#runtime-discovery-and-command-path)
-and the [current testing handoff](docs/IMPROVEMENT_PLAN.md).
